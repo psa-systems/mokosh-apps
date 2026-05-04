@@ -60,7 +60,9 @@ USER appuser
 ENV PORT=8080
 EXPOSE 8080
 
-LABEL org.opencontainers.image.source=https://dev.a8n.run/a8n-tools/mokosh-clients
+ARG GIT_SHA=""
+LABEL org.opencontainers.image.source=https://dev.a8n.run/psa-systems/mokosh-clients
 LABEL org.opencontainers.image.description="Mokosh Platform Dioxus client"
+LABEL org.opencontainers.image.revision="${GIT_SHA}"
 
 CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile"]
