@@ -61,7 +61,7 @@ ENV PORT=8080
 EXPOSE 8080
 
 ARG GIT_SHA=""
-LABEL org.opencontainers.image.source=https://dev.a8n.run/a8n-tools/mokosh-clients
+LABEL org.opencontainers.image.source=https://dev.a8n.run/psa-systems/mokosh-clients
 LABEL org.opencontainers.image.description="Mokosh Platform Dioxus client"
 LABEL org.opencontainers.image.revision="${GIT_SHA}"
 
