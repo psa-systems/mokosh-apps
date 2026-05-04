@@ -9,6 +9,15 @@ use crate::Route;
 /// Login page component
 #[component]
 pub fn LoginPage() -> Element {
+    let auth = use_auth();
+    let navigator = use_navigator();
+
+    use_effect(move || {
+        if auth.read().is_authenticated() {
+            navigator.push(Route::Dashboard {});
+        }
+    });
+
     let (mut form_state, submit) = use_login_form();
 
     rsx! {

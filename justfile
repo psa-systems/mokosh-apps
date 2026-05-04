@@ -17,9 +17,12 @@ css-build: ensure-npm
 css-watch: ensure-npm
     bun x @tailwindcss/cli --input input.css --output assets/styles.css --watch
 
-# Start the dx dev server
-dev: css-build
-    dx serve --port 8080 --addr 0.0.0.0
+# Start the dx dev server in Docker, bound to the host LAN IP
+dev:
+    #!/usr/bin/env nu
+    let host_ip = (sys net | where name =~ 'eth0|br0' | get ip | flatten | where protocol == 'ipv4' and loop == false | get 0.address)
+    print $"Binding dx serve to ($host_ip):4301"
+    with-env { HOST_IP: $host_ip } { docker compose up --build }
 
 # Run all checks (web, clippy, fmt)
 check: check-web check-clippy check-fmt

@@ -1,0 +1,27 @@
+services:
+  dev-mokosh-client:
+    container_name: dev-mokosh-client
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+      - dev-mokosh-client-target:/app/target
+      - dev-mokosh-client-node-modules:/app/node_modules
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "${HOST_IP}:4301:4301"
+    networks:
+      - dev-mokosh-private
+
+volumes:
+  dev-mokosh-client-target:
+    name: dev-mokosh-client-target
+  dev-mokosh-client-node-modules:
+    name: dev-mokosh-client-node-modules
+
+networks:
+  dev-mokosh-private:
+    name: dev-mokosh-private
