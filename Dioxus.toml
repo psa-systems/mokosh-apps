@@ -23,7 +23,7 @@ title = "Mokosh Platform"
 
 [server]
 # Server configuration
-port = 8080
+port = 4300
 ip = "0.0.0.0"
 
 [server.middleware]

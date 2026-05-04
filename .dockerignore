@@ -1,0 +1,25 @@
+# Secrets - never copy into any build context
+.env
+.env.*
+!.env.example
+
+# Build outputs
+target/
+node_modules/
+assets/styles.css
+
+# VCS
+.git/
+.gitignore
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*~
+
+# Docker / compose (not needed inside builder)
+compose.yml
+Dockerfile
+.dockerignore

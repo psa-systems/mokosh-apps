@@ -82,15 +82,39 @@ pub fn use_require_role(required_role: &'static str) -> Signal<AuthContext> {
 
 /// Provide authentication context to the application
 pub fn use_auth_provider() -> Signal<AuthContext> {
-    let auth = use_signal(|| AuthContext::default());
-
-    // TODO: Check for existing session on mount
-    // This would involve checking localStorage for a token
-    // and validating it with the server
-
+    let auth = use_signal(initial_auth_context);
     use_context_provider(|| auth);
-
     auth
+}
+
+/// DEV ONLY: when both ADMIN_EMAIL and ADMIN_PASSWORD are set at compile time
+/// AND non-empty, the app starts pre-authenticated as that admin user and the
+/// login screen is bypassed. Mirrors the bootstrap pattern from vervain-server.
+/// Compiled out of release builds via `cfg(debug_assertions)`.
+#[cfg(debug_assertions)]
+fn initial_auth_context() -> AuthContext {
+    match (option_env!("ADMIN_EMAIL"), option_env!("ADMIN_PASSWORD")) {
+        (Some(email), Some(password)) if !email.is_empty() && !password.is_empty() => AuthContext {
+            user: Some(CurrentUser {
+                id: uuid::Uuid::nil(),
+                tenant_id: uuid::Uuid::nil(),
+                email: email.to_string(),
+                first_name: "Admin".to_string(),
+                last_name: "User".to_string(),
+                role: crate::modules::auth::UserRole::Admin,
+                timezone: "UTC".to_string(),
+                avatar_url: None,
+            }),
+            is_loading: false,
+            error: None,
+        },
+        _ => AuthContext::default(),
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn initial_auth_context() -> AuthContext {
+    AuthContext::default()
 }
 
 /// Login form state

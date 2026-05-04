@@ -37,6 +37,6 @@ RUN mkdir src \
 
 # Source code is mounted via volumes in compose
 
-EXPOSE 8080
+EXPOSE 4301
 
-CMD ["sh", "-c", "bun x @tailwindcss/cli --input input.css --output assets/styles.css && dx serve --port 8080 --addr 0.0.0.0"]
+CMD ["sh", "-c", "bun x @tailwindcss/cli --input input.css --output assets/styles.css && dx serve --port 4301 --addr 0.0.0.0"]
