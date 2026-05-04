@@ -1,0 +1,40 @@
+# Configure Dioxus
+# https://dioxuslabs.com/learn/0.7/guides/tools/configure
+
+[application]
+# App name
+name = "mokosh-client"
+
+# Dioxus App Default Platform
+default_platform = "web"
+
+# resource (assets) file folder
+asset_dir = "assets"
+
+# Asset configuration
+[web.app]
+# HTML title tag content
+title = "Mokosh Platform"
+
+# CSS is included via asset!() macro in Rust code
+[web.resource]
+
+[web.resource.dev]
+
+[server]
+# Server configuration
+port = 8080
+ip = "0.0.0.0"
+
+[server.middleware]
+# Middleware configuration (compression, cors handled in code)
+
+[build]
+# Build configuration
+target_dir = "target"
+
+[bundle]
+# Desktop bundle configuration (if building native apps)
+identifier = "com.mokosh.platform"
+publisher = "Mokosh Platform"
+icon = ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
