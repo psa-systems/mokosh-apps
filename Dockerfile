@@ -1,6 +1,9 @@
 # Development Dockerfile - dx serve with hot reload
 FROM rust:1-slim-trixie
 
+ARG UID=1000
+ARG GID=1000
+
 RUN apt-get update && apt-get install --yes --no-install-recommends \
     pkg-config libssl-dev curl unzip \
     && rm -rf /var/lib/apt/lists/*
@@ -18,13 +21,19 @@ RUN curl --location --silent --show-error \
     | tar --extract --gzip --directory /usr/local/cargo/bin
 RUN cargo binstall dioxus-cli --no-confirm
 
-RUN mkdir --parents /app /data /config
+# Create non-root user matching host UID/GID so bind-mounted files stay host-owned
+RUN groupadd --gid ${GID} dev \
+    && useradd --uid ${UID} --gid ${GID} --create-home --shell /bin/bash dev \
+    && mkdir --parents /app /data /config \
+    && chown --recursive ${UID}:${GID} /app /data /config /usr/local/cargo
+
+USER dev
 
 WORKDIR /app
 
 # Copy manifests (dependency cache layer)
-COPY Cargo.toml Cargo.lock ./
-COPY package.json bun.lock ./
+COPY --chown=${UID}:${GID} Cargo.toml Cargo.lock ./
+COPY --chown=${UID}:${GID} package.json bun.lock ./
 
 RUN bun install --frozen-lockfile
 
