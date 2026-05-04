@@ -4,6 +4,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        UID: ${HOST_UID}
+        GID: ${HOST_GID}
+    user: ${HOST_UID}:${HOST_GID}
     volumes:
       - .:/app
       - dev-mokosh-client-target:/app/target
