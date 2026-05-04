@@ -25,3 +25,4 @@ volumes:
 networks:
   dev-mokosh-private:
     name: dev-mokosh-private
+    external: true
