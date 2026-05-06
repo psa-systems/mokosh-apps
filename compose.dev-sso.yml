@@ -14,8 +14,12 @@
 #   - MOKOSH_OIDC_* env vars target the public mokosh-server URL, so
 #     the SPA's authorize redirect, token POST, and userinfo all hit
 #     the same hostname Traefik terminates TLS on.
-
-name: dev-mokosh-client-${USER}
+#
+# The project name is intentionally NOT redefined: the base compose.yml
+# inherits the directory name (`mokosh-clients`), and per-developer
+# isolation already lives in container_name + Traefik label keys.
+# Overriding here would make compose treat the existing network from
+# the base file as foreign.
 
 services:
 

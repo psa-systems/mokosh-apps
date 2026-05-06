@@ -172,7 +172,11 @@ pub fn use_login_form() -> (Signal<LoginFormState>, impl Fn()) {
 /// experiences a transparent re-login rather than mysterious 401s.
 pub fn use_token_refresh() {
     let mut auth = use_auth();
-    let navigator = use_navigator();
+    // Note: this hook is mounted on the root `App` component, which is
+    // the *parent* of `Router`, not a descendant. `use_navigator()`
+    // panics when called outside a Router subtree, so on refresh
+    // failure we fall back to a hard `window.location` redirect to
+    // `/login`. Same end result for the user.
 
     use_future(move || async move {
         loop {
@@ -217,7 +221,14 @@ pub fn use_token_refresh() {
                         a.tokens = None;
                     }
                     crate::hooks::fetch::api::set_access_token(None);
-                    navigator.push(Route::Login {});
+                    // Hard redirect (see note on the hook above): we
+                    // are outside the Router subtree, so use_navigator
+                    // is unavailable. window.location.set_href works
+                    // regardless and triggers a full page reload,
+                    // which is appropriate after a forced sign-out.
+                    if let Some(win) = web_sys::window() {
+                        let _ = win.location().set_href("/login");
+                    }
                 }
             }
         }

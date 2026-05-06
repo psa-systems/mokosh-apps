@@ -46,6 +46,15 @@ dev-sso:
     print ""
     print $"Mokosh client \(SPA\): https://($env.USER)-mokosh.a8n.run"
 
+# Stop everything this repo runs (both LAN-IP and SSO modes),
+# regardless of which `just dev*` you started with. Volumes preserved.
+# `--remove-orphans` cleans up the dx server container from either file
+# layout. HOST_IP is set defensively so the base compose.yml's port
+# substitution does not warn during teardown.
+[doc("Stop the dev stack (LAN-IP and SSO modes). Volumes preserved.")]
+down:
+    HOST_IP=127.0.0.1 docker compose --file compose.yml --file compose.dev-sso.yml down --remove-orphans
+
 # Stop the SSO dev stack.
 [doc("Stop the SSO dev stack")]
 dev-sso-down:
