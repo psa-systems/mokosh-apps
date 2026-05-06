@@ -7,6 +7,7 @@
 //! Dioxus `[[web.proxy]]` and in prod via an outer reverse proxy).
 
 use dioxus::prelude::*;
+use futures_util::StreamExt;
 use serde::Deserialize;
 use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::JsCast;
@@ -58,12 +59,42 @@ struct LoginPayload {
     // login placeholder; persistence will land in a separate task).
 }
 
+/// Internal message dispatched from the JS `message` handler into the
+/// coroutine that runs inside the Dioxus runtime (where signal writes
+/// are legal). Necessary because JS event handlers fire outside of any
+/// Dioxus render/effect/callback context.
+enum GoogleAuthResult {
+    Success(CurrentUser),
+    Error(String),
+}
+
 /// Hook: returns a [`GoogleLoginHandle`] whose `start` callback opens
 /// the OAuth popup and listens for the postMessage response.
 pub fn use_google_login() -> GoogleLoginHandle {
     let mut status = use_signal(|| GoogleLoginStatus::Idle);
     let mut auth = super::auth::use_auth();
     let navigator = use_navigator();
+
+    // The JS `message` handler runs outside any Dioxus render context, so
+    // it cannot write signals directly (panics with "RefCell already
+    // borrowed" / Option::unwrap on missing runtime). It posts results
+    // into this coroutine instead, which IS scheduled by Dioxus and so
+    // can mutate signals safely.
+    let result_tx = use_coroutine(move |mut rx: UnboundedReceiver<GoogleAuthResult>| async move {
+        while let Some(result) = rx.next().await {
+            match result {
+                GoogleAuthResult::Success(user) => {
+                    auth.write().user = Some(user);
+                    auth.write().is_loading = false;
+                    *status.write() = GoogleLoginStatus::Idle;
+                    navigator.push(Route::Dashboard {});
+                }
+                GoogleAuthResult::Error(message) => {
+                    *status.write() = GoogleLoginStatus::Error(message);
+                }
+            }
+        }
+    });
 
     let start = use_callback(move |_| {
         *status.write() = GoogleLoginStatus::InProgress;
@@ -97,17 +128,8 @@ pub fn use_google_login() -> GoogleLoginHandle {
             }
         }
 
-        // Build the message handler closure. The closure must outlive
-        // its synchronous registration so we cannot let it drop here -
-        // `forget()` keeps it alive for the page lifetime. Cleaning
-        // up after a single message would require holding the closure
-        // in a Signal and removing the listener; the simplification
-        // is acceptable since the popup flow runs at most a handful
-        // of times per session.
-        let mut auth_for_handler = auth;
-        let nav = navigator;
-        let mut status_for_handler = status;
         let expected_origin = origin.clone();
+        let tx = result_tx;
         let handler = Closure::wrap(Box::new(move |event: MessageEvent| {
             // Origin check: only accept messages from our own origin.
             if event.origin() != expected_origin {
@@ -129,13 +151,10 @@ pub fn use_google_login() -> GoogleLoginHandle {
             }
             match msg.payload {
                 GoogleAuthPayload::Success { data } => {
-                    auth_for_handler.write().user = Some(data.user);
-                    auth_for_handler.write().is_loading = false;
-                    *status_for_handler.write() = GoogleLoginStatus::Idle;
-                    nav.push(Route::Dashboard {});
+                    tx.send(GoogleAuthResult::Success(data.user));
                 }
                 GoogleAuthPayload::Error { error } => {
-                    *status_for_handler.write() = GoogleLoginStatus::Error(error);
+                    tx.send(GoogleAuthResult::Error(error));
                 }
             }
         }) as Box<dyn FnMut(MessageEvent)>);
@@ -148,6 +167,10 @@ pub fn use_google_login() -> GoogleLoginHandle {
                 GoogleLoginStatus::Error("failed to register message listener".to_string());
             return;
         }
+        // The closure must outlive its synchronous registration so we
+        // cannot let it drop here. `forget()` keeps it alive for the
+        // page lifetime - acceptable since the popup flow runs at most
+        // a handful of times per session.
         handler.forget();
     });
 
