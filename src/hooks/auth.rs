@@ -3,6 +3,7 @@
 use dioxus::prelude::*;
 
 use crate::modules::auth::{AuthState, CurrentUser};
+use crate::modules::oidc::Tokens;
 use crate::Route;
 
 /// Authentication context for the application
@@ -11,6 +12,9 @@ pub struct AuthContext {
     pub user: Option<CurrentUser>,
     pub is_loading: bool,
     pub error: Option<String>,
+    /// OIDC tokens. Held in memory only; never persisted (XSS protection).
+    /// `None` until the user completes the authorize-redirect-callback dance.
+    pub tokens: Option<Tokens>,
 }
 
 impl AuthContext {
@@ -107,6 +111,7 @@ fn initial_auth_context() -> AuthContext {
             }),
             is_loading: false,
             error: None,
+            tokens: None,
         },
         _ => AuthContext::default(),
     }
@@ -127,61 +132,68 @@ pub struct LoginFormState {
     pub error: Option<String>,
 }
 
-/// Hook for login form
+/// Hook for the login page. Pressing the button starts the OIDC code
+/// flow with PKCE: `start_login` redirects the browser to mokosh-server's
+/// authorize endpoint. After the user signs in there, the browser comes
+/// back to `/auth/callback`, which exchanges the code for tokens and
+/// populates [`AuthContext`]. The form's email/password fields are kept
+/// in [`LoginFormState`] for compatibility with the existing UI but are
+/// not sent to the IdP from here (the IdP renders its own form).
 pub fn use_login_form() -> (Signal<LoginFormState>, impl Fn()) {
     let mut form_state = use_signal(LoginFormState::default);
-    let mut auth = use_auth();
-    let navigator = use_navigator();
 
     let submit = move || {
-        let state = form_state.read().clone();
-
         spawn(async move {
             form_state.write().is_submitting = true;
             form_state.write().error = None;
 
-            // TODO: Call login API
-            // For now, simulate a login
-            #[cfg(feature = "web")]
-            {
-                use gloo_timers::future::TimeoutFuture;
-                TimeoutFuture::new(1000).await;
-
-                // Simulate success
-                auth.write().user = Some(CurrentUser {
-                    id: uuid::Uuid::new_v4(),
-                    tenant_id: uuid::Uuid::new_v4(),
-                    email: state.email.clone(),
-                    first_name: "Demo".to_string(),
-                    last_name: "User".to_string(),
-                    role: crate::modules::auth::UserRole::Admin,
-                    timezone: "UTC".to_string(),
-                    avatar_url: None,
-                });
-                auth.write().is_loading = false;
-
-                navigator.push(Route::Dashboard {});
+            let cfg = crate::modules::oidc::OidcConfig::from_env();
+            // Returning to "/" means "send the user to /dashboard after
+            // login" in our callback handler.
+            if let Err(e) = crate::modules::oidc::start_login(&cfg, "/dashboard") {
+                form_state.write().error = Some(e.to_string());
+                form_state.write().is_submitting = false;
             }
-
-            form_state.write().is_submitting = false;
+            // On success the browser is navigating away; nothing else
+            // to do here.
         });
     };
 
     (form_state, submit)
 }
 
-/// Hook for logout
+/// Hook for logout. Clears tokens locally, then sends the browser to
+/// the OP's `/oauth2/logout` endpoint so the IdP-side session is also
+/// killed and any other relying parties get back-channel logout tokens.
 pub fn use_logout() -> impl FnMut() {
     let mut auth = use_auth();
     let navigator = use_navigator();
 
     move || {
-        // Clear auth state
-        auth.write().user = None;
+        let id_token_hint = auth
+            .read()
+            .tokens
+            .as_ref()
+            .map(|t| t.id_token.clone());
+        {
+            let mut a = auth.write();
+            a.user = None;
+            a.tokens = None;
+        }
 
-        // TODO: Call logout API to invalidate token
-
-        // Redirect to login
+        let cfg = crate::modules::oidc::OidcConfig::from_env();
+        let issuer = cfg.issuer.trim_end_matches('/');
+        let mut url = format!("{issuer}/oauth2/logout");
+        if let Some(hint) = id_token_hint {
+            url.push_str("?id_token_hint=");
+            let encoded: String = js_sys::encode_uri_component(&hint).into();
+            url.push_str(&encoded);
+        }
+        if let Some(win) = web_sys::window() {
+            if win.location().set_href(&url).is_ok() {
+                return;
+            }
+        }
         navigator.push(Route::Login {});
     }
 }

@@ -5,6 +5,7 @@
 pub mod admin;
 pub mod assets;
 pub mod auth;
+pub mod auth_callback;
 pub mod billing;
 pub mod calendar;
 pub mod contacts;

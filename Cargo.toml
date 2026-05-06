@@ -51,8 +51,13 @@ tracing = "0.1"
 gloo-net = "0.6"
 gloo-timers = { version = "0.3", features = ["futures"] }
 wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["Window", "Document", "Storage", "Navigator"] }
+web-sys = { version = "0.3", features = ["Window", "Document", "Storage", "Navigator", "Location", "UrlSearchParams"] }
 js-sys = "0.3"
+
+# OIDC / PKCE primitives (SPA public-client flow against mokosh-server)
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.9"
 
 # Markdown rendering
 pulldown-cmark = "0.12"

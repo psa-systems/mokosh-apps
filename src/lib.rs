@@ -24,6 +24,9 @@ pub enum Route {
     #[route("/login")]
     Login {},
 
+    #[route("/auth/callback")]
+    AuthCallback {},
+
     #[route("/forgot-password")]
     ForgotPassword {},
 
@@ -208,6 +211,11 @@ fn Home() -> Element {
 #[component]
 fn Login() -> Element {
     rsx! { auth::LoginPage {} }
+}
+
+#[component]
+fn AuthCallback() -> Element {
+    rsx! { auth_callback::AuthCallbackPage {} }
 }
 
 #[component]
