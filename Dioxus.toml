@@ -29,6 +29,15 @@ ip = "0.0.0.0"
 [server.middleware]
 # Middleware configuration (compression, cors handled in code)
 
+# Reverse-proxy /api/* to the mokosh-server container so the SPA and the
+# API share a single browser-visible origin in dev. Required for the
+# Google OAuth popup + postMessage flow to satisfy same-origin checks.
+# `server` is the in-network DNS name of the mokosh-server compose
+# service (the dev-mokosh-private-${USER} network is shared with the
+# server stack).
+[[web.proxy]]
+backend = "http://server:4301/api/"
+
 [build]
 # Build configuration
 target_dir = "target"
