@@ -7,7 +7,7 @@
 //! - Pagination
 
 mod auth;
-mod fetch;
+pub mod fetch;
 
 pub use auth::*;
 pub use fetch::*;

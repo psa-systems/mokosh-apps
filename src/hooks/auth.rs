@@ -180,6 +180,9 @@ pub fn use_logout() -> impl FnMut() {
             a.user = None;
             a.tokens = None;
         }
+        // Clear the global access-token holder so any in-flight api
+        // calls from this point on go out unauthenticated.
+        crate::hooks::fetch::api::set_access_token(None);
 
         let cfg = crate::modules::oidc::OidcConfig::from_env();
         let issuer = cfg.issuer.trim_end_matches('/');

@@ -53,6 +53,10 @@ pub fn AuthCallbackPage() -> Element {
                         _ => None,
                     })
                     .unwrap_or_default();
+                // Make the access token available to api::*_authed
+                // helpers across the app. Stored in the same in-memory
+                // holder used by every authed fetch call; no localStorage.
+                crate::hooks::fetch::api::set_access_token(Some(tokens.access_token.clone()));
                 {
                     let mut a = auth.write();
                     a.user = Some(CurrentUser {

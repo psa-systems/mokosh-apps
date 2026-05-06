@@ -154,6 +154,30 @@ pub mod api {
     #[cfg(feature = "web")]
     const API_BASE: &str = "/api/v1";
 
+    // Single-threaded global access-token holder. WASM is strictly
+    // single-threaded so a `RefCell` is safe; we don't need a mutex.
+    // The token lives only in memory: it is wiped on logout and never
+    // written to localStorage.
+    #[cfg(feature = "web")]
+    thread_local! {
+        static ACCESS_TOKEN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// Set the current access token. Called from the OIDC callback
+    /// handler once `complete_login` returns successfully.
+    #[cfg(feature = "web")]
+    pub fn set_access_token(token: Option<String>) {
+        ACCESS_TOKEN.with(|t| *t.borrow_mut() = token);
+    }
+
+    /// Read the current access token. Returns `None` before sign-in.
+    #[cfg(feature = "web")]
+    pub fn current_access_token() -> Option<String> {
+        ACCESS_TOKEN.with(|t| t.borrow().clone())
+    }
+
+    fn _doc_anchor_keep_module_grouping() {}
+
     /// Get request
     #[cfg(feature = "web")]
     pub async fn get<T: DeserializeOwned>(path: &str) -> Result<T, String> {
@@ -281,5 +305,47 @@ pub mod api {
         } else {
             Err(format!("Request failed with status: {}", response.status()))
         }
+    }
+
+    // --- Auto-authed wrappers --------------------------------------------
+    //
+    // These read the current access token from the thread-local holder so
+    // page code does not have to thread it through. If the user is not
+    // signed in (`ACCESS_TOKEN` is None) we send the request without an
+    // Authorization header and let the server's 401 surface naturally;
+    // the OIDC SPA pattern then redirects to the login page.
+
+    #[cfg(feature = "web")]
+    pub async fn get_authed<T: DeserializeOwned>(path: &str) -> Result<T, String> {
+        match current_access_token() {
+            Some(t) => get_with_auth(path, &t).await,
+            None => get(path).await,
+        }
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn post_authed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, String> {
+        match current_access_token() {
+            Some(t) => post_with_auth(path, body, &t).await,
+            None => post(path, body).await,
+        }
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn put_authed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, String> {
+        let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
+        put_with_auth(path, body, &t).await
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn delete_authed(path: &str) -> Result<(), String> {
+        let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
+        delete_with_auth(path, &t).await
     }
 }
