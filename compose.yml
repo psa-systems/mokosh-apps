@@ -16,7 +16,12 @@ services:
       - path: .env
         required: false
     ports:
+      # LAN-IP bind so other Docker containers on the host can reach the
+      # dev server, plus a localhost bind so the browser can hit
+      # http://localhost:4301 (required for Google OAuth - the redirect
+      # URI rejects plain HTTP on non-loopback hosts).
       - "${HOST_IP}:4301:4301"
+      - "127.0.0.1:4301:4301"
     networks:
       - private
 
