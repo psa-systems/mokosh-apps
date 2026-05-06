@@ -162,6 +162,68 @@ pub fn use_login_form() -> (Signal<LoginFormState>, impl Fn()) {
     (form_state, submit)
 }
 
+/// Background token-refresh loop. Mount once near the root of the app
+/// (alongside `use_auth_provider`). Polls the AuthContext every 30
+/// seconds; if the access token is within 60s of expiry, exchanges the
+/// refresh token for a new pair and pushes the result back into the
+/// context. On any refresh failure (the storage layer detected reuse,
+/// the refresh token has expired, the network is gone) the local auth
+/// state is cleared and the browser is sent to /login. The user
+/// experiences a transparent re-login rather than mysterious 401s.
+pub fn use_token_refresh() {
+    let mut auth = use_auth();
+    let navigator = use_navigator();
+
+    use_future(move || async move {
+        loop {
+            #[cfg(feature = "web")]
+            gloo_timers::future::TimeoutFuture::new(30_000).await;
+
+            // Snapshot what we need under a short read; never hold the
+            // lock across the network call.
+            let snap = {
+                let a = auth.read();
+                a.tokens
+                    .as_ref()
+                    .and_then(|t| {
+                        t.refresh_token
+                            .as_ref()
+                            .map(|rt| (t.access_token.clone(), rt.clone(), t.id_token.clone(), t.expires_at))
+                    })
+            };
+            let (_access, refresh, id_token, expires_at) = match snap {
+                Some(s) => s,
+                None => continue, // not signed in, nothing to do
+            };
+
+            // Refresh window: 60s before expiry. If we already missed
+            // it (clock jump / tab was backgrounded), refresh now.
+            let now = chrono::Utc::now();
+            if expires_at - now > chrono::Duration::seconds(60) {
+                continue;
+            }
+
+            let cfg = crate::modules::oidc::OidcConfig::from_env();
+            match crate::modules::oidc::refresh_tokens(&cfg, &refresh, &id_token).await {
+                Ok(new_tokens) => {
+                    crate::hooks::fetch::api::set_access_token(Some(new_tokens.access_token.clone()));
+                    auth.write().tokens = Some(new_tokens);
+                }
+                Err(e) => {
+                    tracing::warn!("token refresh failed; signing out: {e}");
+                    {
+                        let mut a = auth.write();
+                        a.user = None;
+                        a.tokens = None;
+                    }
+                    crate::hooks::fetch::api::set_access_token(None);
+                    navigator.push(Route::Login {});
+                }
+            }
+        }
+    });
+}
+
 /// Hook for logout. Clears tokens locally, then sends the browser to
 /// the OP's `/oauth2/logout` endpoint so the IdP-side session is also
 /// killed and any other relying parties get back-channel logout tokens.

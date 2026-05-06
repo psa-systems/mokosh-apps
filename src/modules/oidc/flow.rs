@@ -153,9 +153,19 @@ pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowEr
         .await
         .map_err(|e| FlowError::Network(format!("token body: {e}")))?;
 
+    // OIDC Core 3.1.3.3: the code-grant response MUST include an
+    // id_token when `openid` was in the request scope. We always
+    // request `openid`, so a missing field is a protocol violation.
+    let id_token = body
+        .id_token
+        .ok_or_else(|| FlowError::TokenEndpoint {
+            error: "invalid_response".into(),
+            description: "id_token missing from authorization_code response".into(),
+        })?;
+
     let tokens = Tokens {
         access_token: body.access_token,
-        id_token: body.id_token,
+        id_token,
         refresh_token: body.refresh_token,
         expires_at: Utc::now() + Duration::seconds(body.expires_in.max(0)),
         scope: body.scope.unwrap_or_default(),
@@ -163,10 +173,75 @@ pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowEr
     Ok((tokens, pending.return_to))
 }
 
+/// Exchange a refresh token for a fresh pair via `/oauth2/token`.
+///
+/// The mokosh-server side rotates under SERIALIZABLE isolation and
+/// detects reuse: any second attempt with the same refresh token
+/// revokes the entire family and returns `invalid_grant`. The caller
+/// should treat any error here as "session is over" and route the
+/// browser to the login page.
+///
+/// Note: the OP does not return a new `id_token` from a refresh grant
+/// (per OIDC Core 12.2; the prior id_token is still authoritative for
+/// the sub/aud/auth_time it carries). We preserve the previously
+/// issued one alongside the rotated access + refresh tokens.
+pub async fn refresh_tokens(
+    cfg: &OidcConfig,
+    refresh_token: &str,
+    prior_id_token: &str,
+) -> Result<Tokens, FlowError> {
+    let body = form_encode(&[
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh_token),
+        ("client_id", cfg.client_id),
+    ]);
+    let issuer = cfg.issuer.trim_end_matches('/');
+    let url = format!("{issuer}/oauth2/token");
+    let resp = Request::post(&url)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("Accept", "application/json")
+        .body(body)
+        .map_err(|e| FlowError::Network(e.to_string()))?
+        .send()
+        .await
+        .map_err(|e| FlowError::Network(e.to_string()))?;
+
+    if !resp.ok() {
+        let body: ErrorBody = resp
+            .json()
+            .await
+            .unwrap_or_else(|_| ErrorBody::generic("token_endpoint_failed"));
+        return Err(FlowError::TokenEndpoint {
+            error: body.error,
+            description: body.error_description.unwrap_or_default(),
+        });
+    }
+
+    let body: TokenBody = resp
+        .json()
+        .await
+        .map_err(|e| FlowError::Network(format!("token body: {e}")))?;
+
+    Ok(Tokens {
+        access_token: body.access_token,
+        // The OP omits id_token on a refresh response; carry the prior
+        // one so downstream code (logout's id_token_hint, claim parsing)
+        // keeps working.
+        id_token: body.id_token.unwrap_or_else(|| prior_id_token.to_string()),
+        refresh_token: body.refresh_token,
+        expires_at: Utc::now() + Duration::seconds(body.expires_in.max(0)),
+        scope: body.scope.unwrap_or_default(),
+    })
+}
+
 #[derive(Deserialize)]
 struct TokenBody {
     access_token: String,
-    id_token: String,
+    /// Optional on refresh responses (OIDC Core 12.2). Required on
+    /// authorization-code responses; the caller distinguishes by
+    /// context.
+    #[serde(default)]
+    id_token: Option<String>,
     #[serde(default)]
     refresh_token: Option<String>,
     expires_in: i64,

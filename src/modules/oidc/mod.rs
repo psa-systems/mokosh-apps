@@ -25,5 +25,5 @@ pub mod storage;
 pub mod tokens;
 
 pub use config::OidcConfig;
-pub use flow::{complete_login, start_login, FlowError};
+pub use flow::{complete_login, refresh_tokens, start_login, FlowError};
 pub use tokens::{IdTokenClaims, Tokens};
