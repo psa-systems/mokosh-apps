@@ -1,6 +1,6 @@
 services:
-  dev-mokosh-client:
-    container_name: dev-mokosh-client
+  client:
+    container_name: dev-mokosh-client-${USER:?USER missing - run via just dev}
     build:
       context: .
       dockerfile: Dockerfile
@@ -10,23 +10,23 @@ services:
     user: ${HOST_UID}:${HOST_GID}
     volumes:
       - .:/app
-      - dev-mokosh-client-target:/app/target
-      - dev-mokosh-client-node-modules:/app/node_modules
+      - client-target:/app/target
+      - client-node-modules:/app/node_modules
     env_file:
       - path: .env
         required: false
     ports:
       - "${HOST_IP}:4301:4301"
     networks:
-      - dev-mokosh-private
+      - private
 
 volumes:
-  dev-mokosh-client-target:
-    name: dev-mokosh-client-target
-  dev-mokosh-client-node-modules:
-    name: dev-mokosh-client-node-modules
+  client-target:
+    name: dev-mokosh-client-target-${USER:?USER missing - run via just dev}
+  client-node-modules:
+    name: dev-mokosh-client-node-modules-${USER:?USER missing - run via just dev}
 
 networks:
-  dev-mokosh-private:
-    name: dev-mokosh-private
+  private:
+    name: dev-mokosh-private-${USER:?USER missing - run via just dev}
     external: true
