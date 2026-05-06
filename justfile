@@ -26,6 +26,31 @@ dev:
     print $"Binding dx serve to ($host_ip):4301 as ($uid):($gid)"
     with-env { HOST_IP: $host_ip, HOST_UID: $uid, HOST_GID: $gid } { docker compose up --build }
 
+# Per-developer Traefik-routed instance for SSO testing.
+#   App: https://{USER}-mokosh.a8n.run
+# Run `just dev-sso` here AND in mokosh-server. The overlay requires
+# MOKOSH_OIDC_CLIENT_ID set in .env (or the shell), which comes from
+# `just register-client` in mokosh-server. The compose file fails loud
+# if it's missing.
+[doc("Start the SSO dev stack (Traefik-routed at *.a8n.run)")]
+dev-sso:
+    #!/usr/bin/env nu
+    let uid = (^id --user | str trim)
+    let gid = (^id --group | str trim)
+    # HOST_IP is referenced by the base compose.yml's port mapping; the
+    # overlay !resets it but the variable still has to substitute, so
+    # we set a harmless placeholder. --detach so the URL print runs.
+    with-env { HOST_IP: "127.0.0.1", HOST_UID: $uid, HOST_GID: $gid } {
+        docker compose --file compose.yml --file compose.dev-sso.yml up --build --detach
+    }
+    print ""
+    print $"Mokosh client \(SPA\): https://($env.USER)-mokosh.a8n.run"
+
+# Stop the SSO dev stack.
+[doc("Stop the SSO dev stack")]
+dev-sso-down:
+    docker compose --file compose.yml --file compose.dev-sso.yml down
+
 # Run all checks (web, clippy, fmt)
 check: check-web check-clippy check-fmt
 
