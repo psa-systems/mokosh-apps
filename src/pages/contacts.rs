@@ -206,7 +206,7 @@ pub fn CompanyNewPage() -> Element {
                                 TimeoutFuture::new(1000).await;
                             }
                             is_submitting.set(false);
-                            navigator.push(Route::CompanyList {});
+                            dioxus::prelude::navigator().push(Route::CompanyList {});
                         });
                     },
 
@@ -611,7 +611,7 @@ pub fn ContactNewPage() -> Element {
                                 TimeoutFuture::new(1000).await;
                             }
                             is_submitting.set(false);
-                            navigator.push(Route::ContactList {});
+                            dioxus::prelude::navigator().push(Route::ContactList {});
                         });
                     },
 

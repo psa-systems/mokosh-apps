@@ -222,7 +222,6 @@ pub fn ProjectNewPage() -> Element {
     let mut company = use_signal(String::new);
     let mut description = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
-    let navigator = use_navigator();
 
     let company_options = vec![
         SelectOption::new("1", "Acme Corp"),
@@ -253,7 +252,7 @@ pub fn ProjectNewPage() -> Element {
                                 TimeoutFuture::new(1000).await;
                             }
                             is_submitting.set(false);
-                            navigator.push(Route::ProjectList {});
+                            dioxus::prelude::navigator().push(Route::ProjectList {});
                         });
                     },
 

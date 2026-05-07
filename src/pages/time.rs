@@ -201,7 +201,6 @@ pub fn TimeEntryNewPage() -> Element {
     let mut description = use_signal(String::new);
     let mut is_billable = use_signal(|| true);
     let mut is_submitting = use_signal(|| false);
-    let navigator = use_navigator();
 
     let work_item_options = vec![
         SelectOption::new("tkt-1234", "TKT-1234: Email server issue"),
@@ -232,7 +231,7 @@ pub fn TimeEntryNewPage() -> Element {
                                 TimeoutFuture::new(1000).await;
                             }
                             is_submitting.set(false);
-                            navigator.push(Route::TimeEntryList {});
+                            dioxus::prelude::navigator().push(Route::TimeEntryList {});
                         });
                     },
 
