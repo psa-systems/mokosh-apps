@@ -18,7 +18,15 @@ pub fn AppLayout(props: AppLayoutProps) -> Element {
     let mut sidebar_open = use_signal(|| false);
 
     rsx! {
-        div { class: "min-h-screen bg-gray-100 dark:bg-gray-900",
+        // Audit P3-20: previously the outer wrapper used `min-h-screen` and
+        // the right column also used `min-h-screen`, so both the body and
+        // the (independently overflow-y-auto) sidebar could grow scrollbars
+        // - producing the "two scrollbars at narrow viewport heights" the
+        // audit flagged. Pin the chrome to one viewport height and let only
+        // the inner main panel scroll, so there is exactly one vertical
+        // scrollbar (in the content area) and the sidebar scroll only kicks
+        // in when the nav itself overflows.
+        div { class: "h-screen bg-gray-100 dark:bg-gray-900 overflow-hidden",
             // Mobile sidebar backdrop
             if *sidebar_open.read() {
                 div {
@@ -34,15 +42,15 @@ pub fn AppLayout(props: AppLayoutProps) -> Element {
             }
 
             // Main content area
-            div { class: "lg:pl-64 flex flex-col min-h-screen",
+            div { class: "lg:pl-64 flex flex-col h-screen",
                 // Top header bar
                 Header {
                     title: props.title.clone(),
                     on_menu_click: move |_| sidebar_open.set(true),
                 }
 
-                // Main content
-                main { class: "flex-1 py-6",
+                // Main content - the only vertical scroll surface in the layout
+                main { class: "flex-1 overflow-y-auto overscroll-contain py-6",
                     div { class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
                         {props.children}
                     }
@@ -84,7 +92,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
 
         // Desktop sidebar
         div { class: "hidden lg:fixed lg:inset-y-0 lg:flex lg:w-64 lg:flex-col",
-            div { class: "flex flex-col flex-grow bg-gray-900 overflow-y-auto",
+            div { class: "flex flex-col flex-grow bg-gray-900 overflow-y-auto overscroll-contain",
                 div { class: "flex items-center h-16 px-4 bg-gray-800",
                     span { class: "text-xl font-bold text-white", "Mokosh Platform" }
                 }
