@@ -124,8 +124,15 @@ fn ContractRow(props: ContractRowProps) -> Element {
         _ => BadgeVariant::Gray,
     };
 
+    let navigator = use_navigator();
+
+    let id = props.id.clone();
+
+
     rsx! {
         TableRow {
+            clickable: true,
+            onclick: move |_| { navigator.push(Route::ContractDetail { id: id.clone() }); },
             TableCell {
                 Link {
                     to: Route::ContractDetail { id: props.id.clone() },

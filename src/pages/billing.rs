@@ -138,8 +138,15 @@ fn InvoiceRow(props: InvoiceRowProps) -> Element {
         _ => BadgeVariant::Gray,
     };
 
+    let navigator = use_navigator();
+
+    let id = props.id.clone();
+
+
     rsx! {
         TableRow {
+            clickable: true,
+            onclick: move |_| { navigator.push(Route::InvoiceDetail { id: id.clone() }); },
             TableCell {
                 Link {
                     to: Route::InvoiceDetail { id: props.id.clone() },

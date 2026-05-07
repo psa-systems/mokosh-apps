@@ -185,11 +185,13 @@ fn TicketRow(props: TicketRowProps) -> Element {
         _ => BadgeVariant::Gray,
     };
 
+    let navigator = use_navigator();
+    let id = props.id.clone();
+
     rsx! {
-        TableRow { clickable: true,
-            onclick: move |_| {
-                // Navigate to ticket detail
-            },
+        TableRow {
+            clickable: true,
+            onclick: move |_| { navigator.push(Route::TicketDetail { id: id.clone() }); },
             TableCell {
                 div {
                     Link {

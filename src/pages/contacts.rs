@@ -141,8 +141,13 @@ fn CompanyRow(props: CompanyRowProps) -> Element {
         _ => BadgeVariant::Gray,
     };
 
+    let navigator = use_navigator();
+    let id = props.id.clone();
+
     rsx! {
         TableRow {
+            clickable: true,
+            onclick: move |_| { navigator.push(Route::CompanyDetail { id: id.clone() }); },
             TableCell {
                 Link {
                     to: Route::CompanyDetail { id: props.id.clone() },
@@ -530,8 +535,13 @@ struct ContactRowProps {
 
 #[component]
 fn ContactRow(props: ContactRowProps) -> Element {
+    let navigator = use_navigator();
+    let id = props.id.clone();
+
     rsx! {
         TableRow {
+            clickable: true,
+            onclick: move |_| { navigator.push(Route::ContactDetail { id: id.clone() }); },
             TableCell {
                 Link {
                     to: Route::ContactDetail { id: props.id.clone() },

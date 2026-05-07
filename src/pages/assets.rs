@@ -125,8 +125,15 @@ fn AssetRow(props: AssetRowProps) -> Element {
         _ => BadgeVariant::Gray,
     };
 
+    let navigator = use_navigator();
+
+    let id = props.id.clone();
+
+
     rsx! {
         TableRow {
+            clickable: true,
+            onclick: move |_| { navigator.push(Route::AssetDetail { id: id.clone() }); },
             TableCell {
                 Link {
                     to: Route::AssetDetail { id: props.id.clone() },
