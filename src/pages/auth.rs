@@ -33,15 +33,14 @@ pub fn LoginPage() -> Element {
     let (mut form_state, submit) = use_login_form();
     let google = use_google_login();
 
-    // The SPA doesn't collect credentials. Mokosh authentication is
-    // delegated to the OP (mokosh-server's /login form, reached via the
-    // OIDC authorize redirect) so credentials are entered exactly once.
-    // This page just offers two starting points:
-    //   1. "Sign in with Mokosh" -> OIDC code+PKCE flow against
-    //      mokosh-server. start_login redirects the browser; nothing
-    //      else runs after.
-    //   2. "Sign in with Google" -> popup + postMessage flow against
-    //      Google directly (separate path; not part of OIDC).
+    // Three sign-in paths:
+    //   1. The classic email/password form (legacy local auth; the
+    //      `submit` callback calls into use_login_form, which today
+    //      kicks off the OIDC redirect since the SPA itself does not
+    //      collect credentials directly - the OP's /login form does).
+    //   2. "Sign in with Mokosh" - explicit single-button shortcut for
+    //      the same OIDC code+PKCE flow.
+    //   3. "Sign in with Google" - popup + postMessage flow.
     rsx! {
         AuthLayout {
             div { class: "space-y-6",
@@ -49,28 +48,78 @@ pub fn LoginPage() -> Element {
                     h2 { class: "text-2xl font-bold text-gray-900 dark:text-white text-center",
                         "Sign in to your account"
                     }
-                    p { class: "mt-2 text-sm text-gray-600 dark:text-gray-400 text-center",
-                        "You'll be sent to Mokosh to enter your credentials."
-                    }
                 }
 
-                if let Some(error) = &form_state.read().error {
-                    div { class: "bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md p-4",
-                        p { class: "text-sm text-red-600 dark:text-red-400",
-                            "{error}"
+                form {
+                    class: "space-y-4",
+                    onsubmit: move |e| {
+                        e.prevent_default();
+                        submit.call(());
+                    },
+
+                    if let Some(error) = &form_state.read().error {
+                        div { class: "bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md p-4",
+                            p { class: "text-sm text-red-600 dark:text-red-400",
+                                "{error}"
+                            }
                         }
                     }
-                }
 
-                button {
-                    r#type: "button",
-                    class: MOKOSH_BUTTON_CLASS,
-                    disabled: form_state.read().is_submitting,
-                    onclick: move |_| submit(),
-                    if form_state.read().is_submitting {
-                        "Redirecting to Mokosh..."
-                    } else {
-                        "Sign in with Mokosh"
+                    Input {
+                        name: "email",
+                        label: "Email address",
+                        r#type: "email",
+                        placeholder: "you@example.com",
+                        required: true,
+                        value: form_state.read().email.clone(),
+                        oninput: move |e: FormEvent| {
+                            form_state.write().email = e.value();
+                        },
+                    }
+
+                    Input {
+                        name: "password",
+                        label: "Password",
+                        r#type: "password",
+                        placeholder: "Enter your password",
+                        required: true,
+                        value: form_state.read().password.clone(),
+                        oninput: move |e: FormEvent| {
+                            form_state.write().password = e.value();
+                        },
+                    }
+
+                    div { class: "flex items-center justify-between",
+                        div { class: "flex items-center",
+                            input {
+                                id: "remember_me",
+                                name: "remember_me",
+                                r#type: "checkbox",
+                                class: "h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500",
+                                checked: form_state.read().remember_me,
+                                onchange: move |e: FormEvent| {
+                                    form_state.write().remember_me = e.value() == "true";
+                                },
+                            }
+                            label {
+                                r#for: "remember_me",
+                                class: "ml-2 block text-sm text-gray-700 dark:text-gray-300",
+                                "Remember me"
+                            }
+                        }
+                        Link {
+                            to: Route::ForgotPassword {},
+                            class: "text-sm text-blue-600 hover:text-blue-500 dark:text-blue-400",
+                            "Forgot your password?"
+                        }
+                    }
+
+                    Button {
+                        r#type: "submit",
+                        variant: ButtonVariant::Primary,
+                        class: "w-full",
+                        loading: form_state.read().is_submitting,
+                        "Sign in"
                     }
                 }
 
@@ -82,6 +131,18 @@ pub fn LoginPage() -> Element {
                         span { class: "bg-white dark:bg-gray-900 px-2 text-gray-500 dark:text-gray-400",
                             "or"
                         }
+                    }
+                }
+
+                button {
+                    r#type: "button",
+                    class: MOKOSH_BUTTON_CLASS,
+                    disabled: form_state.read().is_submitting,
+                    onclick: move |_| submit.call(()),
+                    if form_state.read().is_submitting {
+                        "Redirecting to Mokosh..."
+                    } else {
+                        "Sign in with Mokosh"
                     }
                 }
 

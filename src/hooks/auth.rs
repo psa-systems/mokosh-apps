@@ -139,10 +139,13 @@ pub struct LoginFormState {
 /// populates [`AuthContext`]. The form's email/password fields are kept
 /// in [`LoginFormState`] for compatibility with the existing UI but are
 /// not sent to the IdP from here (the IdP renders its own form).
-pub fn use_login_form() -> (Signal<LoginFormState>, impl Fn()) {
+pub fn use_login_form() -> (Signal<LoginFormState>, Callback<()>) {
     let mut form_state = use_signal(LoginFormState::default);
 
-    let submit = move || {
+    // Callback (not `impl Fn`) so the LoginPage can wire it to BOTH
+    // the form's onsubmit and the "Sign in with Mokosh" button's
+    // onclick - `Callback` is `Copy`, plain closures are not.
+    let submit = use_callback(move |_| {
         spawn(async move {
             form_state.write().is_submitting = true;
             form_state.write().error = None;
@@ -157,7 +160,7 @@ pub fn use_login_form() -> (Signal<LoginFormState>, impl Fn()) {
             // On success the browser is navigating away; nothing else
             // to do here.
         });
-    };
+    });
 
     (form_state, submit)
 }
