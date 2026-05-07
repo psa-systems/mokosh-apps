@@ -289,18 +289,22 @@ struct SlaWarningItemProps {
 
 #[component]
 fn SlaWarningItem(props: SlaWarningItemProps) -> Element {
+    // Audit P2-11/P2-12: previous palette had dark-red text on dark-red
+    // bg in dark mode (and same for yellow), failing WCAG AA. Lighten
+    // the foreground so the contrast ratio against the dark-tinted bg
+    // crosses the 4.5:1 normal-text threshold.
     let (bg_class, text_class) = match props.level.as_str() {
         "danger" => (
             "bg-red-100 dark:bg-red-900/20",
-            "text-red-600 dark:text-red-400",
+            "text-red-700 dark:text-red-200",
         ),
         "warning" => (
             "bg-yellow-100 dark:bg-yellow-900/20",
-            "text-yellow-600 dark:text-yellow-400",
+            "text-yellow-800 dark:text-yellow-200",
         ),
         _ => (
             "bg-blue-100 dark:bg-blue-900/20",
-            "text-blue-600 dark:text-blue-400",
+            "text-blue-700 dark:text-blue-200",
         ),
     };
 
