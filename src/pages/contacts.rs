@@ -197,6 +197,17 @@ pub fn CompanyNewPage() -> Element {
                     onsubmit: move |e: FormEvent| {
                         e.prevent_default();
                         is_submitting.set(true);
+                        // P1-04: mock submit until create_company endpoint
+                        // is wired through the client.
+                        spawn(async move {
+                            #[cfg(feature = "web")]
+                            {
+                                use gloo_timers::future::TimeoutFuture;
+                                TimeoutFuture::new(1000).await;
+                            }
+                            is_submitting.set(false);
+                            navigator.push(Route::CompanyList {});
+                        });
                     },
 
                     crate::components::Input {
@@ -591,6 +602,17 @@ pub fn ContactNewPage() -> Element {
                     onsubmit: move |e: FormEvent| {
                         e.prevent_default();
                         is_submitting.set(true);
+                        // P1-04: mock submit until create_contact endpoint
+                        // is wired through the client.
+                        spawn(async move {
+                            #[cfg(feature = "web")]
+                            {
+                                use gloo_timers::future::TimeoutFuture;
+                                TimeoutFuture::new(1000).await;
+                            }
+                            is_submitting.set(false);
+                            navigator.push(Route::ContactList {});
+                        });
                     },
 
                     div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",

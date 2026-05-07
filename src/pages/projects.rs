@@ -222,6 +222,7 @@ pub fn ProjectNewPage() -> Element {
     let mut company = use_signal(String::new);
     let mut description = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
+    let navigator = use_navigator();
 
     let company_options = vec![
         SelectOption::new("1", "Acme Corp"),
@@ -242,6 +243,18 @@ pub fn ProjectNewPage() -> Element {
                     onsubmit: move |e: FormEvent| {
                         e.prevent_default();
                         is_submitting.set(true);
+                        // P1-04: mock 1s "submit" so the spinner doesn't
+                        // get stuck. Real POST lands when server F7-style
+                        // module exists for projects.
+                        spawn(async move {
+                            #[cfg(feature = "web")]
+                            {
+                                use gloo_timers::future::TimeoutFuture;
+                                TimeoutFuture::new(1000).await;
+                            }
+                            is_submitting.set(false);
+                            navigator.push(Route::ProjectList {});
+                        });
                     },
 
                     crate::components::Input {

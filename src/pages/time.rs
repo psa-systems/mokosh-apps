@@ -201,6 +201,7 @@ pub fn TimeEntryNewPage() -> Element {
     let mut description = use_signal(String::new);
     let mut is_billable = use_signal(|| true);
     let mut is_submitting = use_signal(|| false);
+    let navigator = use_navigator();
 
     let work_item_options = vec![
         SelectOption::new("tkt-1234", "TKT-1234: Email server issue"),
@@ -222,6 +223,17 @@ pub fn TimeEntryNewPage() -> Element {
                     onsubmit: move |e: FormEvent| {
                         e.prevent_default();
                         is_submitting.set(true);
+                        // P1-04: mock submit while server time-tracking
+                        // module is still placeholder.
+                        spawn(async move {
+                            #[cfg(feature = "web")]
+                            {
+                                use gloo_timers::future::TimeoutFuture;
+                                TimeoutFuture::new(1000).await;
+                            }
+                            is_submitting.set(false);
+                            navigator.push(Route::TimeEntryList {});
+                        });
                     },
 
                     div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
