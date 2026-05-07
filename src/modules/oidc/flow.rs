@@ -77,16 +77,47 @@ pub fn start_login(cfg: &OidcConfig, return_to: impl Into<String>) -> Result<(),
         .map_err(|_| FlowError::Redirect("set_href failed".into()))
 }
 
-/// Handle the callback URL. Reads `code` + `state` from the current
-/// location's query string, verifies state against the pending flow,
-/// exchanges the code at the token endpoint, returns parsed tokens plus
-/// the URL the original `start_login` asked to return to.
+/// Snapshot of `?code=...&state=...` taken before the Dioxus router
+/// mounts. Some routers (Dioxus 0.7 included) call
+/// `history.replaceState()` during initialisation to normalise the URL
+/// to its declared route shape (no query params), which would erase
+/// the OAuth response before `AuthCallbackPage` ever reads it. We
+/// freeze the original `window.location.search` in a thread-local at
+/// program entry; `complete_login` reads from here.
+///
+/// WASM is single-threaded, so the `RefCell` is safe.
+thread_local! {
+    static INITIAL_SEARCH: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Capture `window.location.search` once. Call from `main()` before
+/// `dioxus::launch(App)` so the snapshot is taken before the Router
+/// has a chance to rewrite the URL.
+pub fn snapshot_initial_search() {
+    let s = web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .unwrap_or_default();
+    INITIAL_SEARCH.with(|cell| *cell.borrow_mut() = Some(s));
+}
+
+fn current_search() -> String {
+    INITIAL_SEARCH
+        .with(|cell| cell.borrow().clone())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            web_sys::window().and_then(|w| w.location().search().ok())
+        })
+        .unwrap_or_default()
+}
+
+/// Handle the callback URL. Reads `code` + `state` from the snapshot
+/// taken at startup (see [`snapshot_initial_search`]), verifies state
+/// against the pending flow, exchanges the code at the token endpoint,
+/// returns parsed tokens plus the URL the original `start_login` asked
+/// to return to.
 pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowError> {
-    let win = web_sys::window().ok_or_else(|| FlowError::Redirect("no window".into()))?;
-    let search = win
-        .location()
-        .search()
-        .map_err(|_| FlowError::Redirect("location.search".into()))?;
+    let search = current_search();
     let params = web_sys::UrlSearchParams::new_with_str(&search)
         .map_err(|_| FlowError::Redirect("UrlSearchParams".into()))?;
     let code = params
