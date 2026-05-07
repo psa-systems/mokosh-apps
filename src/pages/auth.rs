@@ -6,6 +6,18 @@ use crate::components::{AuthLayout, Button, ButtonVariant, Input};
 use crate::hooks::{use_auth, use_google_login, use_login_form, GoogleLoginStatus};
 use crate::Route;
 
+const MOKOSH_BUTTON_CLASS: &str =
+    "w-full inline-flex items-center justify-center gap-3 rounded-md \
+     bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm \
+     hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed";
+
+const GOOGLE_BUTTON_CLASS: &str =
+    "w-full inline-flex items-center justify-center gap-3 rounded-md border \
+     border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-4 py-2 \
+     text-sm font-medium text-gray-700 dark:text-gray-200 shadow-sm \
+     hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 \
+     disabled:cursor-not-allowed";
+
 /// Login page component
 #[component]
 pub fn LoginPage() -> Element {
@@ -21,6 +33,15 @@ pub fn LoginPage() -> Element {
     let (mut form_state, submit) = use_login_form();
     let google = use_google_login();
 
+    // The SPA doesn't collect credentials. Mokosh authentication is
+    // delegated to the OP (mokosh-server's /login form, reached via the
+    // OIDC authorize redirect) so credentials are entered exactly once.
+    // This page just offers two starting points:
+    //   1. "Sign in with Mokosh" -> OIDC code+PKCE flow against
+    //      mokosh-server. start_login redirects the browser; nothing
+    //      else runs after.
+    //   2. "Sign in with Google" -> popup + postMessage flow against
+    //      Google directly (separate path; not part of OIDC).
     rsx! {
         AuthLayout {
             div { class: "space-y-6",
@@ -28,78 +49,28 @@ pub fn LoginPage() -> Element {
                     h2 { class: "text-2xl font-bold text-gray-900 dark:text-white text-center",
                         "Sign in to your account"
                     }
+                    p { class: "mt-2 text-sm text-gray-600 dark:text-gray-400 text-center",
+                        "You'll be sent to Mokosh to enter your credentials."
+                    }
                 }
 
-                form {
-                    class: "space-y-4",
-                    onsubmit: move |e| {
-                        e.prevent_default();
-                        submit();
-                    },
-
-                    if let Some(error) = &form_state.read().error {
-                        div { class: "bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md p-4",
-                            p { class: "text-sm text-red-600 dark:text-red-400",
-                                "{error}"
-                            }
+                if let Some(error) = &form_state.read().error {
+                    div { class: "bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md p-4",
+                        p { class: "text-sm text-red-600 dark:text-red-400",
+                            "{error}"
                         }
                     }
+                }
 
-                    Input {
-                        name: "email",
-                        label: "Email address",
-                        r#type: "email",
-                        placeholder: "you@example.com",
-                        required: true,
-                        value: form_state.read().email.clone(),
-                        oninput: move |e: FormEvent| {
-                            form_state.write().email = e.value();
-                        },
-                    }
-
-                    Input {
-                        name: "password",
-                        label: "Password",
-                        r#type: "password",
-                        placeholder: "Enter your password",
-                        required: true,
-                        value: form_state.read().password.clone(),
-                        oninput: move |e: FormEvent| {
-                            form_state.write().password = e.value();
-                        },
-                    }
-
-                    div { class: "flex items-center justify-between",
-                        div { class: "flex items-center",
-                            input {
-                                id: "remember_me",
-                                name: "remember_me",
-                                r#type: "checkbox",
-                                class: "h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500",
-                                checked: form_state.read().remember_me,
-                                onchange: move |e: FormEvent| {
-                                    form_state.write().remember_me = e.value() == "true";
-                                },
-                            }
-                            label {
-                                r#for: "remember_me",
-                                class: "ml-2 block text-sm text-gray-700 dark:text-gray-300",
-                                "Remember me"
-                            }
-                        }
-                        Link {
-                            to: Route::ForgotPassword {},
-                            class: "text-sm text-blue-600 hover:text-blue-500 dark:text-blue-400",
-                            "Forgot your password?"
-                        }
-                    }
-
-                    Button {
-                        r#type: "submit",
-                        variant: ButtonVariant::Primary,
-                        class: "w-full",
-                        loading: form_state.read().is_submitting,
-                        "Sign in"
+                button {
+                    r#type: "button",
+                    class: MOKOSH_BUTTON_CLASS,
+                    disabled: form_state.read().is_submitting,
+                    onclick: move |_| submit(),
+                    if form_state.read().is_submitting {
+                        "Redirecting to Mokosh..."
+                    } else {
+                        "Sign in with Mokosh"
                     }
                 }
 
@@ -124,7 +95,7 @@ pub fn LoginPage() -> Element {
 
                 button {
                     r#type: "button",
-                    class: "w-full inline-flex items-center justify-center gap-3 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed",
+                    class: GOOGLE_BUTTON_CLASS,
                     disabled: matches!(google.status.read().clone(), GoogleLoginStatus::InProgress),
                     onclick: move |_| google.start.call(()),
                     // Inline Google "G" mark (multi-color SVG) per Google branding guidelines.
