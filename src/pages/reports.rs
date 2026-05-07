@@ -2,9 +2,7 @@
 
 use dioxus::prelude::*;
 
-use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ChartIcon, IconSize, PageHeader,
-};
+use crate::components::{AppLayout, Card, ChartIcon, IconSize, PageHeader};
 use crate::Route;
 
 /// Reports home page
@@ -130,36 +128,43 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
         AppLayout { title: report_title,
             PageHeader {
                 title: report_title,
-                actions: rsx! {
-                    Button { variant: ButtonVariant::Secondary, "Export PDF" }
-                    Button { variant: ButtonVariant::Secondary, "Export CSV" }
-                    Button { variant: ButtonVariant::Primary, "Schedule" }
-                },
+                // Audit P1-07: Export PDF / Export CSV / Schedule buttons
+                // were decorative (no onclick, no export endpoint, no
+                // schedule UI). Hidden until reports module ships exports.
             }
 
             // Date range filter
             Card { class: "mb-6",
                 div { class: "flex flex-wrap gap-4 items-center",
+                    // P2-14: Dioxus 0.7 doesn't render `selected:` on a
+                    // bare `option`, so the user saw a blank input.
+                    // Drive the displayed text via the parent select's
+                    // `value:` attribute (which Dioxus 0.7 does honor).
                     div { class: "flex items-center space-x-2",
                         label { class: "text-sm text-gray-500", "Date Range:" }
-                        select { class: "rounded-md border-gray-300 text-sm",
-                            option { "Last 7 days" }
-                            option { selected: true, "Last 30 days" }
-                            option { "This Month" }
-                            option { "Last Month" }
-                            option { "This Quarter" }
-                            option { "Custom" }
+                        select {
+                            class: "rounded-md border-gray-300 text-sm",
+                            value: "30",
+                            option { value: "7", "Last 7 days" }
+                            option { value: "30", "Last 30 days" }
+                            option { value: "month", "This Month" }
+                            option { value: "last-month", "Last Month" }
+                            option { value: "quarter", "This Quarter" }
+                            option { value: "custom", "Custom" }
                         }
                     }
                     div { class: "flex items-center space-x-2",
                         label { class: "text-sm text-gray-500", "Group By:" }
-                        select { class: "rounded-md border-gray-300 text-sm",
-                            option { "Day" }
-                            option { selected: true, "Week" }
-                            option { "Month" }
+                        select {
+                            class: "rounded-md border-gray-300 text-sm",
+                            value: "week",
+                            option { value: "day", "Day" }
+                            option { value: "week", "Week" }
+                            option { value: "month", "Month" }
                         }
                     }
-                    Button { variant: ButtonVariant::Secondary, "Apply Filters" }
+                    // Audit P1-07: Apply Filters button was decorative
+                    // (filters auto-render, no submit endpoint).
                 }
             }
 
@@ -187,21 +192,15 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
                 }
 
                 Card { title: "Trend",
-                    div { class: "h-64 flex items-center justify-center text-gray-400",
-                        "[Chart placeholder - Ticket volume over time]"
-                    }
+                    ChartComingSoon { caption: "Ticket volume over time" }
                 }
 
                 Card { title: "By Status",
-                    div { class: "h-64 flex items-center justify-center text-gray-400",
-                        "[Chart placeholder - Tickets by status pie chart]"
-                    }
+                    ChartComingSoon { caption: "Tickets by status" }
                 }
 
                 Card { title: "By Priority",
-                    div { class: "h-64 flex items-center justify-center text-gray-400",
-                        "[Chart placeholder - Tickets by priority bar chart]"
-                    }
+                    ChartComingSoon { caption: "Tickets by priority" }
                 }
             }
 
@@ -244,6 +243,22 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
                     }
                 }
             }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct ChartComingSoonProps {
+    caption: &'static str,
+}
+
+#[component]
+fn ChartComingSoon(props: ChartComingSoonProps) -> Element {
+    rsx! {
+        div { class: "h-64 flex flex-col items-center justify-center gap-2 rounded-md border border-dashed border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40",
+            ChartIcon { size: IconSize::Large, class: "text-gray-400".to_string() }
+            p { class: "text-sm font-medium text-gray-600 dark:text-gray-300", "Charts coming soon" }
+            p { class: "text-xs text-gray-500 dark:text-gray-400", "{props.caption}" }
         }
     }
 }

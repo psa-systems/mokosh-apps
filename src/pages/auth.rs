@@ -147,7 +147,6 @@ pub fn LoginPage() -> Element {
                 div { class: "text-center text-sm text-gray-600 dark:text-gray-400",
                     "Don't have an account? "
                     a {
-                        href: "#",
                         class: "text-blue-600 hover:text-blue-500 dark:text-blue-400",
                         "Contact us"
                     }
@@ -253,6 +252,7 @@ pub struct ResetPasswordPageProps {
 }
 
 #[component]
+#[allow(unused_variables)]
 pub fn ResetPasswordPage(props: ResetPasswordPageProps) -> Element {
     let mut password = use_signal(String::new);
     let mut confirm_password = use_signal(String::new);

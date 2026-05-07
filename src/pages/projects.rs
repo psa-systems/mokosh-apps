@@ -242,6 +242,18 @@ pub fn ProjectNewPage() -> Element {
                     onsubmit: move |e: FormEvent| {
                         e.prevent_default();
                         is_submitting.set(true);
+                        // P1-04: mock 1s "submit" so the spinner doesn't
+                        // get stuck. Real POST lands when server F7-style
+                        // module exists for projects.
+                        spawn(async move {
+                            #[cfg(feature = "web")]
+                            {
+                                use gloo_timers::future::TimeoutFuture;
+                                TimeoutFuture::new(1000).await;
+                            }
+                            is_submitting.set(false);
+                            dioxus::prelude::navigator().push(Route::ProjectList {});
+                        });
                     },
 
                     crate::components::Input {
@@ -509,6 +521,7 @@ pub struct ProjectTasksPageProps {
 }
 
 #[component]
+#[allow(unused_variables)]
 pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
     rsx! {
         AppLayout { title: "Project Tasks",

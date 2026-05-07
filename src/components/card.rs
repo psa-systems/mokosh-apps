@@ -25,10 +25,23 @@ pub struct CardProps {
 pub fn Card(props: CardProps) -> Element {
     let base_class =
         "bg-white dark:bg-gray-800 rounded-lg shadow border border-gray-200 dark:border-gray-700";
-    let padding_class = if props.padding { "p-6" } else { "" };
-    let class = format!("{} {} {}", base_class, padding_class, props.class);
+    let class = format!("{} {}", base_class, props.class);
 
     let has_header = !props.title.is_empty();
+    // The header always self-pads (px-6 pt-6 pb-4) so its title and
+    // actions stay aligned with table cells below regardless of whether
+    // the card body keeps its own padding. The body section is padded
+    // separately, so a full-bleed table (padding: false) sits flush
+    // edge-to-edge while the header stays neatly inset.
+    let body_class = if props.padding {
+        if has_header {
+            "px-6 pb-6 pt-4"
+        } else {
+            "p-6"
+        }
+    } else {
+        ""
+    };
 
     rsx! {
         div { class: "{class}",
@@ -38,7 +51,9 @@ pub fn Card(props: CardProps) -> Element {
                     actions: props.actions,
                 }
             }
-            {props.children}
+            div { class: "{body_class}",
+                {props.children}
+            }
         }
     }
 }
@@ -57,7 +72,7 @@ pub struct CardHeaderProps {
 #[component]
 pub fn CardHeader(props: CardHeaderProps) -> Element {
     let class = format!(
-        "flex items-center justify-between pb-4 border-b border-gray-200 dark:border-gray-700 {}",
+        "flex items-center justify-between px-6 pt-6 pb-4 border-b border-gray-200 dark:border-gray-700 {}",
         props.class
     );
 
@@ -130,7 +145,11 @@ pub fn StatCard(props: StatCardProps) -> Element {
                             "{props.value}"
                         }
                         if !props.change.is_empty() {
-                            span { class: "ml-2 text-sm font-medium {change_class}",
+                            // P2-17: was `text-sm` (~11px) next to a 32px
+                            // stat number — easy to miss. Bump to text-base
+                            // and a heavier weight so the delta reads at
+                            // a glance.
+                            span { class: "ml-2 text-base font-semibold {change_class}",
                                 "{props.change}"
                             }
                         }

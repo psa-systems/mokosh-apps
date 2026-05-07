@@ -135,7 +135,7 @@ fn TenantRow(props: TenantRowProps) -> Element {
     };
 
     rsx! {
-        TableRow { clickable: true,
+        TableRow {
             TableCell {
                 div {
                     span { class: "font-medium text-gray-900 dark:text-white", "{props.name}" }

@@ -129,21 +129,27 @@ struct CategoryCardProps {
 
 #[component]
 fn CategoryCard(props: CategoryCardProps) -> Element {
+    // P2-19: card was styled `cursor-pointer` but had no wrapping Link;
+    // clicking it did nothing. Wrap in Link to the article list.
     rsx! {
-        Card { class: "hover:shadow-lg transition-shadow cursor-pointer",
-            div { class: "flex items-start",
-                div { class: "flex-shrink-0 w-10 h-10 bg-blue-100 dark:bg-blue-900 rounded-lg flex items-center justify-center",
-                    BookIcon { class: "h-5 w-5 text-blue-600 dark:text-blue-400".to_string() }
-                }
-                div { class: "ml-4",
-                    h3 { class: "text-lg font-medium text-gray-900 dark:text-white",
-                        "{props.title}"
+        Link {
+            to: Route::KBArticleList {},
+            class: "block",
+            Card { class: "hover:shadow-lg transition-shadow cursor-pointer",
+                div { class: "flex items-start",
+                    div { class: "flex-shrink-0 w-10 h-10 bg-blue-100 dark:bg-blue-900 rounded-lg flex items-center justify-center",
+                        BookIcon { class: "h-5 w-5 text-blue-600 dark:text-blue-400".to_string() }
                     }
-                    p { class: "text-sm text-gray-500 dark:text-gray-400 mt-1",
-                        "{props.description}"
-                    }
-                    p { class: "text-sm text-blue-600 dark:text-blue-400 mt-2",
-                        "{props.article_count} articles"
+                    div { class: "ml-4",
+                        h3 { class: "text-lg font-medium text-gray-900 dark:text-white",
+                            "{props.title}"
+                        }
+                        p { class: "text-sm text-gray-500 dark:text-gray-400 mt-1",
+                            "{props.description}"
+                        }
+                        p { class: "text-sm text-blue-600 dark:text-blue-400 mt-2",
+                            "{props.article_count} articles"
+                        }
                     }
                 }
             }
@@ -214,7 +220,7 @@ pub fn KBArticleListPage() -> Element {
                         }
                     }
                     TableBody {
-                        TableRow { clickable: true,
+                        TableRow {
                             TableCell {
                                 Link {
                                     to: Route::KBArticleDetail { id: "1".to_string() },
@@ -226,7 +232,7 @@ pub fn KBArticleListPage() -> Element {
                             TableCell { Badge { variant: BadgeVariant::Blue, "Internal" } }
                             TableCell { class: "text-gray-500", "2 hours ago" }
                         }
-                        TableRow { clickable: true,
+                        TableRow {
                             TableCell {
                                 Link {
                                     to: Route::KBArticleDetail { id: "2".to_string() },
@@ -284,6 +290,7 @@ pub struct KBArticleDetailPageProps {
 }
 
 #[component]
+#[allow(unused_variables)]
 pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     rsx! {
         AppLayout { title: "Article",
@@ -372,13 +379,13 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
 
                     Card { title: "Related Articles",
                         div { class: "space-y-2 text-sm",
-                            a { href: "#", class: "block text-blue-600 hover:text-blue-500",
+                            a { class: "block text-blue-600 hover:text-blue-500",
                                 "Active Directory Best Practices"
                             }
-                            a { href: "#", class: "block text-blue-600 hover:text-blue-500",
+                            a { class: "block text-blue-600 hover:text-blue-500",
                                 "Setting Up AD Password Policies"
                             }
-                            a { href: "#", class: "block text-blue-600 hover:text-blue-500",
+                            a { class: "block text-blue-600 hover:text-blue-500",
                                 "Unlocking User Accounts"
                             }
                         }
