@@ -38,14 +38,23 @@ dev-sso:
     #!/usr/bin/env nu
     let uid = (^id --user | str trim)
     let gid = (^id --group | str trim)
+    let user_name = (^whoami | str trim)
+    # The base compose.yml declares the per-developer private network
+    # `dev-mokosh-private-${USER}` as `external: true`, so compose will
+    # NOT create it. Ensure it exists (idempotent: docker network
+    # inspect returns 0 when present, otherwise create).
+    let net = $"dev-mokosh-private-($user_name)"
+    if (do { ^docker network inspect $net } | complete | get exit_code) != 0 {
+        ^docker network create $net out> /dev/null
+    }
     # HOST_IP is referenced by the base compose.yml's port mapping; the
     # overlay !resets it but the variable still has to substitute, so
     # we set a harmless placeholder. --detach so the URL print runs.
-    with-env { HOST_IP: "127.0.0.1", HOST_UID: $uid, HOST_GID: $gid } {
+    with-env { HOST_IP: "127.0.0.1", HOST_UID: $uid, HOST_GID: $gid, USER: $user_name } {
         docker compose --file compose.yml --file compose.dev-sso.yml up --build --detach
     }
     print ""
-    print $"Mokosh client \(SPA\): https://($env.USER)-mokosh.a8n.run"
+    print $"Mokosh client \(SPA\): https://($user_name)-mokosh.a8n.run"
 
 # Stop everything this repo runs (both LAN-IP and SSO modes),
 # regardless of which `just dev*` you started with. Volumes preserved.
@@ -54,7 +63,18 @@ dev-sso:
 # substitution does not warn during teardown.
 [doc("Stop the dev stack (LAN-IP and SSO modes). Volumes preserved.")]
 down:
-    HOST_IP=127.0.0.1 docker compose --file compose.yml --file compose.dev-sso.yml down --remove-orphans
+    #!/usr/bin/env nu
+    # Same external-network defensiveness as `dev-sso`: compose refuses
+    # to even validate the file if the declared external network is
+    # missing.
+    let user_name = (^whoami | str trim)
+    let net = $"dev-mokosh-private-($user_name)"
+    if (do { ^docker network inspect $net } | complete | get exit_code) != 0 {
+        ^docker network create $net out> /dev/null
+    }
+    with-env { HOST_IP: "127.0.0.1", USER: $user_name } {
+        docker compose --file compose.yml --file compose.dev-sso.yml down --remove-orphans
+    }
 
 # Stop the SSO dev stack.
 [doc("Stop the SSO dev stack")]

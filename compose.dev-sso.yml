@@ -23,13 +23,19 @@
 
 services:
 
-  dev-mokosh-client:
-    container_name: dev-mokosh-client-${USER}
+  # Service key MUST match the base file's key (`client`); otherwise
+  # compose treats the overlay as defining a new service instead of
+  # extending the existing one. The base file owns
+  # `container_name: dev-mokosh-client-${USER}`, so we don't need to
+  # restate it here.
+  client:
     networks:
-      - dev-mokosh-private
+      # Local key from the base file (mapped to
+      # `dev-mokosh-private-${USER}` via that file's `networks:` block).
+      - private
       - traefik-public
-    # Drop the host port binding from compose.yml; Traefik is sole
-    # ingress for this profile.
+    # Drop both host port bindings from compose.yml (LAN-IP + 127.0.0.1
+    # for Google OAuth); Traefik is sole ingress for this profile.
     ports: !reset []
     labels:
       traefik.enable: true
