@@ -235,8 +235,13 @@ fn RecentTicketRow(props: RecentTicketRowProps) -> Element {
         _ => BadgeVariant::Gray,
     };
 
+    let navigator = use_navigator();
+    let id = props.number.clone();
+
     rsx! {
         TableRow {
+            clickable: true,
+            onclick: move |_| { navigator.push(Route::TicketDetail { id: id.clone() }); },
             TableCell {
                 div {
                     span { class: "font-medium text-blue-600", "{props.number}" }
@@ -308,8 +313,13 @@ fn SlaWarningItem(props: SlaWarningItemProps) -> Element {
         ),
     };
 
+    let navigator = use_navigator();
+    let id = props.ticket.clone();
+
     rsx! {
-        div { class: "flex items-center justify-between p-3 rounded-lg {bg_class}",
+        div {
+            class: "flex items-center justify-between p-3 rounded-lg cursor-pointer hover:opacity-80 transition-opacity {bg_class}",
+            onclick: move |_| { navigator.push(Route::TicketDetail { id: id.clone() }); },
             div {
                 p { class: "text-sm font-medium text-gray-900 dark:text-white",
                     "{props.ticket}"
@@ -334,8 +344,22 @@ struct TimeEntryRowProps {
 
 #[component]
 fn TimeEntryRow(props: TimeEntryRowProps) -> Element {
+    // Description is shaped like "TKT-1234: Email troubleshooting" on
+    // the dashboard's mock data. If we can pull the leading TKT- token
+    // out, navigate straight to that ticket; otherwise fall back to
+    // the full time-entry list.
+    let navigator = use_navigator();
+    let target = match props.description.split_once(':') {
+        Some((token, _)) if token.starts_with("TKT-") => {
+            Route::TicketDetail { id: token.to_string() }
+        }
+        _ => Route::TimeEntryList {},
+    };
+
     rsx! {
         TableRow {
+            clickable: true,
+            onclick: move |_| { navigator.push(target.clone()); },
             TableCell { class: "text-gray-500",
                 "{props.date}"
             }
