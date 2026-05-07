@@ -309,12 +309,9 @@ pub fn TimesheetsPage() -> Element {
             PageHeader {
                 title: "Timesheets",
                 subtitle: "Weekly timesheet management",
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        "Submit Timesheet"
-                    }
-                },
+                // Audit P1-07: Submit Timesheet button was decorative (no
+                // onclick, no submission workflow). Hidden until timesheet
+                // approval flow ships.
             }
 
             // Week selector

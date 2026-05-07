@@ -219,11 +219,9 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         AppLayout { title: "Invoice Detail",
             PageHeader {
                 title: "Invoice INV-2025-001",
-                actions: rsx! {
-                    Button { variant: ButtonVariant::Secondary, "Download PDF" }
-                    Button { variant: ButtonVariant::Secondary, "Send" }
-                    Button { variant: ButtonVariant::Primary, "Record Payment" }
-                },
+                // Audit P1-07: Download PDF / Send / Record Payment buttons
+                // were decorative (no onclick, no backing endpoint). Hidden
+                // until the billing module ships the corresponding actions.
             }
 
             div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",

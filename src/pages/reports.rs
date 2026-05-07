@@ -3,7 +3,7 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ChartIcon, IconSize, PageHeader,
+    AppLayout, Badge, BadgeVariant, Card, ChartIcon, IconSize, PageHeader,
 };
 use crate::Route;
 
@@ -130,11 +130,9 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
         AppLayout { title: report_title,
             PageHeader {
                 title: report_title,
-                actions: rsx! {
-                    Button { variant: ButtonVariant::Secondary, "Export PDF" }
-                    Button { variant: ButtonVariant::Secondary, "Export CSV" }
-                    Button { variant: ButtonVariant::Primary, "Schedule" }
-                },
+                // Audit P1-07: Export PDF / Export CSV / Schedule buttons
+                // were decorative (no onclick, no export endpoint, no
+                // schedule UI). Hidden until reports module ships exports.
             }
 
             // Date range filter
@@ -167,7 +165,8 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
                             option { value: "month", "Month" }
                         }
                     }
-                    Button { variant: ButtonVariant::Secondary, "Apply Filters" }
+                    // Audit P1-07: Apply Filters button was decorative
+                    // (filters auto-render, no submit endpoint).
                 }
             }
 

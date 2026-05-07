@@ -194,10 +194,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
             PageHeader {
                 title: "Exchange Server 01",
                 subtitle: "Acme Corp",
-                actions: rsx! {
-                    Button { variant: ButtonVariant::Secondary, "Edit" }
-                    Button { variant: ButtonVariant::Primary, "Remote Connect" }
-                },
+                // Audit P1-07: Edit / Remote Connect buttons were
+                // decorative (no onclick, no RMM integration). Hidden
+                // until asset edit + RMM connection flows ship.
             }
 
             div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",

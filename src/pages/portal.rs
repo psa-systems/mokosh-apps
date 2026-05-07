@@ -469,9 +469,10 @@ pub fn PortalInvoiceListPage() -> Element {
                             TableCell { "Jan 1, 2025" }
                             TableCell { class: "font-medium", "$2,500.00" }
                             TableCell { Badge { variant: BadgeVariant::Yellow, "Pending" } }
-                            TableCell {
-                                Button { variant: ButtonVariant::Primary, "Pay Now" }
-                            }
+                            // Audit P1-07: "Pay Now" button was decorative
+                            // (no onclick, no payment integration). Hidden
+                            // until the portal payments flow ships.
+                            TableCell { "" }
                         }
                         TableRow {
                             TableCell { class: "font-medium", "INV-2024-012" }

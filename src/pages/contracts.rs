@@ -193,10 +193,9 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
             PageHeader {
                 title: "Managed Services Agreement",
                 subtitle: "Acme Corp",
-                actions: rsx! {
-                    Button { variant: ButtonVariant::Secondary, "Edit" }
-                    Button { variant: ButtonVariant::Primary, "Renew" }
-                },
+                // Audit P1-07: Edit / Renew buttons were decorative (no
+                // onclick, no contract-edit endpoint). Hidden until the
+                // contracts module ships those flows.
             }
 
             div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
