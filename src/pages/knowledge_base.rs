@@ -214,7 +214,7 @@ pub fn KBArticleListPage() -> Element {
                         }
                     }
                     TableBody {
-                        TableRow { clickable: true,
+                        TableRow {
                             TableCell {
                                 Link {
                                     to: Route::KBArticleDetail { id: "1".to_string() },
@@ -226,7 +226,7 @@ pub fn KBArticleListPage() -> Element {
                             TableCell { Badge { variant: BadgeVariant::Blue, "Internal" } }
                             TableCell { class: "text-gray-500", "2 hours ago" }
                         }
-                        TableRow { clickable: true,
+                        TableRow {
                             TableCell {
                                 Link {
                                     to: Route::KBArticleDetail { id: "2".to_string() },

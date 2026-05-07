@@ -236,7 +236,7 @@ fn RecentTicketRow(props: RecentTicketRowProps) -> Element {
     };
 
     rsx! {
-        TableRow { clickable: true,
+        TableRow {
             TableCell {
                 div {
                     span { class: "font-medium text-blue-600", "{props.number}" }

@@ -221,7 +221,7 @@ pub fn PortalTicketListPage() -> Element {
                         }
                     }
                     TableBody {
-                        TableRow { clickable: true,
+                        TableRow {
                             TableCell {
                                 div {
                                     span { class: "font-medium text-blue-600", "TKT-1234" }
@@ -231,7 +231,7 @@ pub fn PortalTicketListPage() -> Element {
                             TableCell { Badge { variant: BadgeVariant::Yellow, "In Progress" } }
                             TableCell { class: "text-gray-500", "5 min ago" }
                         }
-                        TableRow { clickable: true,
+                        TableRow {
                             TableCell {
                                 div {
                                     span { class: "font-medium text-blue-600", "TKT-1231" }
@@ -241,7 +241,7 @@ pub fn PortalTicketListPage() -> Element {
                             TableCell { Badge { variant: BadgeVariant::Blue, "Open" } }
                             TableCell { class: "text-gray-500", "3 hours ago" }
                         }
-                        TableRow { clickable: true,
+                        TableRow {
                             TableCell {
                                 div {
                                     span { class: "font-medium text-blue-600", "TKT-1228" }

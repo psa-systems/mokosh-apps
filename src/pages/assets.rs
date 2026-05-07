@@ -126,7 +126,7 @@ fn AssetRow(props: AssetRowProps) -> Element {
     };
 
     rsx! {
-        TableRow { clickable: true,
+        TableRow {
             TableCell {
                 Link {
                     to: Route::AssetDetail { id: props.id.clone() },
@@ -258,7 +258,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 }
                             }
                             TableBody {
-                                TableRow { clickable: true,
+                                TableRow {
                                     TableCell {
                                         div {
                                             span { class: "font-medium text-blue-600", "TKT-1234" }
@@ -268,7 +268,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     TableCell { Badge { variant: BadgeVariant::Blue, "Open" } }
                                     TableCell { class: "text-gray-500", "Today" }
                                 }
-                                TableRow { clickable: true,
+                                TableRow {
                                     TableCell {
                                         div {
                                             span { class: "font-medium text-blue-600", "TKT-1150" }

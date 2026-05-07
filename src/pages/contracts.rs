@@ -125,7 +125,7 @@ fn ContractRow(props: ContractRowProps) -> Element {
     };
 
     rsx! {
-        TableRow { clickable: true,
+        TableRow {
             TableCell {
                 Link {
                     to: Route::ContractDetail { id: props.id.clone() },

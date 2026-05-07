@@ -139,7 +139,7 @@ fn InvoiceRow(props: InvoiceRowProps) -> Element {
     };
 
     rsx! {
-        TableRow { clickable: true,
+        TableRow {
             TableCell {
                 Link {
                     to: Route::InvoiceDetail { id: props.id.clone() },

@@ -169,7 +169,7 @@ struct TimeEntryRowProps {
 #[component]
 fn TimeEntryRow(props: TimeEntryRowProps) -> Element {
     rsx! {
-        TableRow { clickable: true,
+        TableRow {
             TableCell { class: "text-gray-500", "{props.date}" }
             TableCell { "{props.user}" }
             TableCell {
