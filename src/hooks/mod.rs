@@ -9,7 +9,9 @@
 mod auth;
 mod fetch;
 mod google_oauth;
+mod sidebar;
 
 pub use auth::*;
 pub use fetch::*;
 pub use google_oauth::*;
+pub use sidebar::*;

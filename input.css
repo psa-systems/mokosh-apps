@@ -110,6 +110,20 @@
   }
 }
 
+@layer utilities {
+  /* Hide the scrollbar visuals while keeping the element scrollable.
+     Used on the sidebar so a long nav list can still scroll without
+     the scrollbar trough sitting flush against the right edge of
+     the column. */
+  .scrollbar-hide {
+    -ms-overflow-style: none;   /* IE / Edge legacy */
+    scrollbar-width: none;       /* Firefox */
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;               /* Chrome / Safari / WebKit */
+  }
+}
+
 /* Custom component styles */
 @layer components {
   /* Card component */
