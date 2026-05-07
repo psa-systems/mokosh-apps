@@ -163,11 +163,15 @@ struct NavItemProps {
 
 #[component]
 fn NavItem(props: NavItemProps) -> Element {
-    // TODO: Check if current route matches
-    let is_active = false;
+    // Highlight the item whose `to` matches the current route. Exact
+    // PartialEq match for now — detail pages (e.g. TicketDetail) will
+    // not highlight their parent list nav until a path-prefix check is
+    // added later.
+    let current_route: Route = use_route();
+    let is_active = current_route == props.to;
 
     let class = if is_active {
-        "group flex items-center px-3 py-2 text-sm font-medium rounded-md bg-gray-800 text-white"
+        "group flex items-center px-3 py-2 text-sm font-medium rounded-md bg-gray-800 text-white border-l-2 border-blue-500"
     } else {
         "group flex items-center px-3 py-2 text-sm font-medium rounded-md text-gray-300 hover:bg-gray-700 hover:text-white"
     };
