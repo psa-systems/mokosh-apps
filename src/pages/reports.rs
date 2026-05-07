@@ -195,21 +195,15 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
                 }
 
                 Card { title: "Trend",
-                    div { class: "h-64 flex items-center justify-center text-gray-400",
-                        "[Chart placeholder - Ticket volume over time]"
-                    }
+                    ChartComingSoon { caption: "Ticket volume over time" }
                 }
 
                 Card { title: "By Status",
-                    div { class: "h-64 flex items-center justify-center text-gray-400",
-                        "[Chart placeholder - Tickets by status pie chart]"
-                    }
+                    ChartComingSoon { caption: "Tickets by status" }
                 }
 
                 Card { title: "By Priority",
-                    div { class: "h-64 flex items-center justify-center text-gray-400",
-                        "[Chart placeholder - Tickets by priority bar chart]"
-                    }
+                    ChartComingSoon { caption: "Tickets by priority" }
                 }
             }
 
@@ -252,6 +246,22 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
                     }
                 }
             }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct ChartComingSoonProps {
+    caption: &'static str,
+}
+
+#[component]
+fn ChartComingSoon(props: ChartComingSoonProps) -> Element {
+    rsx! {
+        div { class: "h-64 flex flex-col items-center justify-center gap-2 rounded-md border border-dashed border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40",
+            ChartIcon { size: IconSize::Large, class: "text-gray-400".to_string() }
+            p { class: "text-sm font-medium text-gray-600 dark:text-gray-300", "Charts coming soon" }
+            p { class: "text-xs text-gray-500 dark:text-gray-400", "{props.caption}" }
         }
     }
 }
