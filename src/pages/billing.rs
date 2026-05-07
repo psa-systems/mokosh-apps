@@ -214,6 +214,7 @@ pub struct InvoiceDetailPageProps {
 }
 
 #[component]
+#[allow(unused_variables)]
 pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     rsx! {
         AppLayout { title: "Invoice Detail",

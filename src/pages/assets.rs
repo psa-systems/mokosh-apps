@@ -188,6 +188,7 @@ pub struct AssetDetailPageProps {
 }
 
 #[component]
+#[allow(unused_variables)]
 pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     rsx! {
         AppLayout { title: "Asset Detail",
@@ -354,6 +355,9 @@ struct AlertItemProps {
 }
 
 #[component]
+// rsx! interpolation on `icon_class` (line below) doesn't register as
+// a use to rustc, so silence the false-positive lint here.
+#[allow(unused_variables)]
 fn AlertItem(props: AlertItemProps) -> Element {
     let (bg_class, icon_class) = match props.severity.as_str() {
         "critical" => (

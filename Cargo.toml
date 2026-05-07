@@ -18,6 +18,13 @@ default = ["web", "multi-tenant"]
 web = []
 multi-tenant = []
 single-tenant = []
+# `server` is intentionally unset on the client. Several modules under
+# src/modules/* are shared in shape with the server side and gate their
+# server-only code (routes, services, sqlx) behind `#[cfg(feature =
+# "server")]`. Declaring the feature here (without enabling it) tells
+# rustc the name is known so the cfg checks pass silently rather than
+# emitting `unexpected cfg condition value: server` for every gate.
+server = []
 
 [lib]
 name = "mokosh_client"

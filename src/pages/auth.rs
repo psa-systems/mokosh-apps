@@ -252,6 +252,7 @@ pub struct ResetPasswordPageProps {
 }
 
 #[component]
+#[allow(unused_variables)]
 pub fn ResetPasswordPage(props: ResetPasswordPageProps) -> Element {
     let mut password = use_signal(String::new);
     let mut confirm_password = use_signal(String::new);

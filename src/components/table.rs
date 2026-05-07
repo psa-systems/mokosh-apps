@@ -2,8 +2,7 @@
 
 use dioxus::prelude::*;
 
-use super::button::Spinner;
-use super::icons::{ChevronDownIcon, ChevronRightIcon};
+use super::icons::ChevronRightIcon;
 
 /// Table container props
 #[derive(Props, Clone, PartialEq)]

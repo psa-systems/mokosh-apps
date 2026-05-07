@@ -3,10 +3,8 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ChevronRightIcon, IconSize,
-    PageHeader, PlusIcon,
+    AppLayout, Button, ButtonVariant, Card, ChevronRightIcon, IconSize, PageHeader, PlusIcon,
 };
-use crate::Route;
 
 /// Calendar page
 #[component]

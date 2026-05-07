@@ -521,6 +521,7 @@ pub struct ProjectTasksPageProps {
 }
 
 #[component]
+#[allow(unused_variables)]
 pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
     rsx! {
         AppLayout { title: "Project Tasks",

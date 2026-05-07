@@ -187,6 +187,7 @@ pub struct ContractDetailPageProps {
 }
 
 #[component]
+#[allow(unused_variables)]
 pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
     rsx! {
         AppLayout { title: "Contract Detail",

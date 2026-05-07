@@ -252,6 +252,7 @@ pub struct CompanyDetailPageProps {
 }
 
 #[component]
+#[allow(unused_variables)]
 pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     rsx! {
         AppLayout { title: "Company Detail",
@@ -676,6 +677,7 @@ pub struct ContactDetailPageProps {
 }
 
 #[component]
+#[allow(unused_variables)]
 pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     rsx! {
         AppLayout { title: "Contact Detail",

@@ -4,8 +4,8 @@ use dioxus::prelude::*;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ChevronRightIcon, DataTable,
-    IconSize, PageHeader, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody, TableCell,
-    TableHead, TableHeader, TableRow,
+    IconSize, PageHeader, PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableHead,
+    TableHeader, TableRow,
 };
 use crate::Route;
 
@@ -302,8 +302,6 @@ pub fn TimeEntryNewPage() -> Element {
 /// Timesheets page
 #[component]
 pub fn TimesheetsPage() -> Element {
-    let mut selected_week = use_signal(|| "2025-01-13".to_string());
-
     rsx! {
         AppLayout { title: "Timesheets",
             PageHeader {

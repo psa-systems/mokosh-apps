@@ -2,7 +2,7 @@
 
 use dioxus::prelude::*;
 
-use crate::modules::auth::{AuthState, CurrentUser};
+use crate::modules::auth::CurrentUser;
 use crate::Route;
 
 /// Authentication context for the application

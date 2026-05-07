@@ -290,6 +290,7 @@ pub struct KBArticleDetailPageProps {
 }
 
 #[component]
+#[allow(unused_variables)]
 pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     rsx! {
         AppLayout { title: "Article",

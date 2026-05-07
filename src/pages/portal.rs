@@ -3,9 +3,8 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    Badge, BadgeVariant, BookIcon, Button, ButtonVariant, Card, CurrencyIcon, DataTable, IconSize,
-    PageHeader, PlusIcon, PortalLayout, SearchInput, Table, TableBody, TableCell, TableHead,
-    TableHeader, TableRow,
+    Badge, BadgeVariant, BookIcon, Button, ButtonVariant, Card, CurrencyIcon, IconSize, PlusIcon,
+    PortalLayout, SearchInput, Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 };
 use crate::Route;
 
@@ -346,6 +345,7 @@ pub struct PortalTicketDetailPageProps {
 }
 
 #[component]
+#[allow(unused_variables)]
 pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
     rsx! {
         PortalLayout { title: "Ticket Detail",
@@ -506,6 +506,7 @@ pub struct PortalInvoiceDetailPageProps {
 }
 
 #[component]
+#[allow(unused_variables)]
 pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
     rsx! {
         PortalLayout { title: "Invoice Detail",

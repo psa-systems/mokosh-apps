@@ -2,7 +2,6 @@
 
 use dioxus::prelude::*;
 
-use crate::components::{Button, ButtonVariant};
 use crate::Route;
 
 /// Landing page component
