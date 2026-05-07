@@ -130,7 +130,11 @@ pub fn StatCard(props: StatCardProps) -> Element {
                             "{props.value}"
                         }
                         if !props.change.is_empty() {
-                            span { class: "ml-2 text-sm font-medium {change_class}",
+                            // P2-17: was `text-sm` (~11px) next to a 32px
+                            // stat number — easy to miss. Bump to text-base
+                            // and a heavier weight so the delta reads at
+                            // a glance.
+                            span { class: "ml-2 text-base font-semibold {change_class}",
                                 "{props.change}"
                             }
                         }

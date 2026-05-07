@@ -229,11 +229,63 @@ pub fn Header(props: HeaderProps) -> Element {
                         span { class: "absolute top-1 right-1 block h-2 w-2 rounded-full bg-red-400" }
                     }
 
-                    // User menu
-                    div { class: "relative",
-                        button { class: "flex items-center",
-                            UserCircleIcon { size: IconSize::Large, class: "text-gray-400".to_string() }
-                        }
+                    // User menu (P3-26 avatar dropdown)
+                    UserMenu {}
+                }
+            }
+        }
+    }
+}
+
+/// Avatar-button + dropdown for the top-bar user menu. P3-26 from the
+/// audit: previously the avatar was a plain button with no dropdown,
+/// leaving users hunting for Logout / Profile.
+#[component]
+fn UserMenu() -> Element {
+    let mut open = use_signal(|| false);
+    let mut auth = crate::hooks::use_auth();
+    let navigator = use_navigator();
+
+    rsx! {
+        div { class: "relative",
+            button {
+                class: "flex items-center focus:outline-none",
+                aria_label: "User menu",
+                onclick: move |_| {
+                    let next = !*open.read();
+                    open.set(next);
+                },
+                UserCircleIcon { size: IconSize::Large, class: "text-gray-400".to_string() }
+            }
+            if *open.read() {
+                div {
+                    class: "absolute right-0 mt-2 w-44 rounded-md shadow-lg bg-white dark:bg-gray-800 ring-1 ring-black ring-opacity-5 z-20",
+                    role: "menu",
+                    button {
+                        class: "block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
+                        onclick: move |_| {
+                            open.set(false);
+                            navigator.push(Route::Settings {});
+                        },
+                        "Profile"
+                    }
+                    button {
+                        class: "block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
+                        onclick: move |_| {
+                            open.set(false);
+                            navigator.push(Route::Settings {});
+                        },
+                        "Settings"
+                    }
+                    div { class: "border-t border-gray-200 dark:border-gray-700 my-1" }
+                    button {
+                        class: "block w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-700",
+                        onclick: move |_| {
+                            open.set(false);
+                            auth.write().user = None;
+                            navigator.push(Route::Login {});
+                        },
+                        "Logout"
                     }
                 }
             }

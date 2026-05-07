@@ -140,23 +140,31 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
             // Date range filter
             Card { class: "mb-6",
                 div { class: "flex flex-wrap gap-4 items-center",
+                    // P2-14: Dioxus 0.7 doesn't render `selected:` on a
+                    // bare `option`, so the user saw a blank input.
+                    // Drive the displayed text via the parent select's
+                    // `value:` attribute (which Dioxus 0.7 does honor).
                     div { class: "flex items-center space-x-2",
                         label { class: "text-sm text-gray-500", "Date Range:" }
-                        select { class: "rounded-md border-gray-300 text-sm",
-                            option { "Last 7 days" }
-                            option { selected: true, "Last 30 days" }
-                            option { "This Month" }
-                            option { "Last Month" }
-                            option { "This Quarter" }
-                            option { "Custom" }
+                        select {
+                            class: "rounded-md border-gray-300 text-sm",
+                            value: "30",
+                            option { value: "7", "Last 7 days" }
+                            option { value: "30", "Last 30 days" }
+                            option { value: "month", "This Month" }
+                            option { value: "last-month", "Last Month" }
+                            option { value: "quarter", "This Quarter" }
+                            option { value: "custom", "Custom" }
                         }
                     }
                     div { class: "flex items-center space-x-2",
                         label { class: "text-sm text-gray-500", "Group By:" }
-                        select { class: "rounded-md border-gray-300 text-sm",
-                            option { "Day" }
-                            option { selected: true, "Week" }
-                            option { "Month" }
+                        select {
+                            class: "rounded-md border-gray-300 text-sm",
+                            value: "week",
+                            option { value: "day", "Day" }
+                            option { value: "week", "Week" }
+                            option { value: "month", "Month" }
                         }
                     }
                     Button { variant: ButtonVariant::Secondary, "Apply Filters" }

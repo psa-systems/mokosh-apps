@@ -129,21 +129,27 @@ struct CategoryCardProps {
 
 #[component]
 fn CategoryCard(props: CategoryCardProps) -> Element {
+    // P2-19: card was styled `cursor-pointer` but had no wrapping Link;
+    // clicking it did nothing. Wrap in Link to the article list.
     rsx! {
-        Card { class: "hover:shadow-lg transition-shadow cursor-pointer",
-            div { class: "flex items-start",
-                div { class: "flex-shrink-0 w-10 h-10 bg-blue-100 dark:bg-blue-900 rounded-lg flex items-center justify-center",
-                    BookIcon { class: "h-5 w-5 text-blue-600 dark:text-blue-400".to_string() }
-                }
-                div { class: "ml-4",
-                    h3 { class: "text-lg font-medium text-gray-900 dark:text-white",
-                        "{props.title}"
+        Link {
+            to: Route::KBArticleList {},
+            class: "block",
+            Card { class: "hover:shadow-lg transition-shadow cursor-pointer",
+                div { class: "flex items-start",
+                    div { class: "flex-shrink-0 w-10 h-10 bg-blue-100 dark:bg-blue-900 rounded-lg flex items-center justify-center",
+                        BookIcon { class: "h-5 w-5 text-blue-600 dark:text-blue-400".to_string() }
                     }
-                    p { class: "text-sm text-gray-500 dark:text-gray-400 mt-1",
-                        "{props.description}"
-                    }
-                    p { class: "text-sm text-blue-600 dark:text-blue-400 mt-2",
-                        "{props.article_count} articles"
+                    div { class: "ml-4",
+                        h3 { class: "text-lg font-medium text-gray-900 dark:text-white",
+                            "{props.title}"
+                        }
+                        p { class: "text-sm text-gray-500 dark:text-gray-400 mt-1",
+                            "{props.description}"
+                        }
+                        p { class: "text-sm text-blue-600 dark:text-blue-400 mt-2",
+                            "{props.article_count} articles"
+                        }
                     }
                 }
             }
