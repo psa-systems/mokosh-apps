@@ -426,7 +426,13 @@ pub fn PageHeader(props: PageHeaderProps) -> Element {
             }
             div { class: "md:flex md:items-center md:justify-between",
                 div { class: "min-w-0 flex-1",
-                    h2 { class: "text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:tracking-tight",
+                    // `leading-7` (28px) was paired with `sm:text-3xl`
+                    // (30px font) plus `sm:truncate` (overflow:hidden),
+                    // which clipped the descenders of g/j/p/q/y on every
+                    // page title at sm and up. Bump line-height to
+                    // `leading-9` (36px) at the same breakpoint as the
+                    // larger font so descenders sit inside the line box.
+                    h2 { class: "text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:leading-9 sm:tracking-tight",
                         "{props.title}"
                     }
                     if !props.subtitle.is_empty() {

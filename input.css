@@ -92,6 +92,22 @@
     @apply h-4 w-4 rounded border-gray-300 text-blue-600
            focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700;
   }
+
+  /* Descender safety net for headings.
+     `truncate` (and its responsive variants like `sm:truncate`) compile
+     to `overflow: hidden`, which clips the descenders of g/j/p/q/y when
+     line-height is smaller than ~1.2x the font-size. Tailwind's preset
+     line-heights for text-xl and up sit right at that boundary, so any
+     custom `leading-X` override is one rounding away from clipping.
+     Reserve a sliver of bottom space and floor the line-height for any
+     heading that opts in to truncation, so the clip never reaches the
+     glyph. Targets every variant by matching "truncate" anywhere in the
+     class attribute. */
+  h1[class*="truncate"], h2[class*="truncate"], h3[class*="truncate"],
+  h4[class*="truncate"], h5[class*="truncate"], h6[class*="truncate"] {
+    line-height: 1.25;
+    padding-bottom: 0.125em;
+  }
 }
 
 /* Custom component styles */
