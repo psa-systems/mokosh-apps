@@ -198,7 +198,9 @@ fn PortalInvoiceItem(props: PortalInvoiceItemProps) -> Element {
 #[component]
 pub fn PortalTicketListPage() -> Element {
     rsx! {
-        PortalLayout { title: "My Tickets",
+        // Title is rendered once below alongside the "New Ticket"
+        // action button (P1-10 dedup).
+        PortalLayout {
             div { class: "flex items-center justify-between mb-6",
                 h1 { class: "text-2xl font-bold text-gray-900 dark:text-white", "My Tickets" }
                 Link {
@@ -262,7 +264,8 @@ pub fn PortalTicketListPage() -> Element {
 #[component]
 pub fn PortalTicketNewPage() -> Element {
     rsx! {
-        PortalLayout { title: "Submit Ticket",
+        // P1-10 dedup: title rendered once below.
+        PortalLayout {
             h1 { class: "text-2xl font-bold text-gray-900 dark:text-white mb-6", "Submit a Ticket" }
 
             Card {
@@ -445,7 +448,8 @@ fn UpdateItem(props: UpdateItemProps) -> Element {
 #[component]
 pub fn PortalInvoiceListPage() -> Element {
     rsx! {
-        PortalLayout { title: "Invoices",
+        // P1-10 dedup: title rendered once below.
+        PortalLayout {
             h1 { class: "text-2xl font-bold text-gray-900 dark:text-white mb-6", "Invoices" }
 
             Card { padding: false,
@@ -526,7 +530,8 @@ pub fn PortalKBPage() -> Element {
     let mut search = use_signal(String::new);
 
     rsx! {
-        PortalLayout { title: "Knowledge Base",
+        // P1-10 dedup: title rendered once below.
+        PortalLayout {
             h1 { class: "text-2xl font-bold text-gray-900 dark:text-white mb-6", "Knowledge Base" }
 
             Card { class: "mb-6",
