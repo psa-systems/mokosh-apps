@@ -4,8 +4,8 @@ use dioxus::prelude::*;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ChevronRightIcon, DataTable,
-    IconSize, PageHeader, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody, TableCell,
-    TableHead, TableHeader, TableRow,
+    IconSize, PageHeader, PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableHead,
+    TableHeader, TableRow,
 };
 use crate::Route;
 
@@ -169,7 +169,7 @@ struct TimeEntryRowProps {
 #[component]
 fn TimeEntryRow(props: TimeEntryRowProps) -> Element {
     rsx! {
-        TableRow { clickable: true,
+        TableRow {
             TableCell { class: "text-gray-500", "{props.date}" }
             TableCell { "{props.user}" }
             TableCell {
@@ -222,6 +222,17 @@ pub fn TimeEntryNewPage() -> Element {
                     onsubmit: move |e: FormEvent| {
                         e.prevent_default();
                         is_submitting.set(true);
+                        // P1-04: mock submit while server time-tracking
+                        // module is still placeholder.
+                        spawn(async move {
+                            #[cfg(feature = "web")]
+                            {
+                                use gloo_timers::future::TimeoutFuture;
+                                TimeoutFuture::new(1000).await;
+                            }
+                            is_submitting.set(false);
+                            dioxus::prelude::navigator().push(Route::TimeEntryList {});
+                        });
                     },
 
                     div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
@@ -291,19 +302,14 @@ pub fn TimeEntryNewPage() -> Element {
 /// Timesheets page
 #[component]
 pub fn TimesheetsPage() -> Element {
-    let mut selected_week = use_signal(|| "2025-01-13".to_string());
-
     rsx! {
         AppLayout { title: "Timesheets",
             PageHeader {
                 title: "Timesheets",
                 subtitle: "Weekly timesheet management",
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        "Submit Timesheet"
-                    }
-                },
+                // Audit P1-07: Submit Timesheet button was decorative (no
+                // onclick, no submission workflow). Hidden until timesheet
+                // approval flow ships.
             }
 
             // Week selector

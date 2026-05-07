@@ -141,8 +141,13 @@ fn CompanyRow(props: CompanyRowProps) -> Element {
         _ => BadgeVariant::Gray,
     };
 
+    let navigator = use_navigator();
+    let id = props.id.clone();
+
     rsx! {
-        TableRow { clickable: true,
+        TableRow {
+            clickable: true,
+            onclick: move |_| { navigator.push(Route::CompanyDetail { id: id.clone() }); },
             TableCell {
                 Link {
                     to: Route::CompanyDetail { id: props.id.clone() },
@@ -192,6 +197,17 @@ pub fn CompanyNewPage() -> Element {
                     onsubmit: move |e: FormEvent| {
                         e.prevent_default();
                         is_submitting.set(true);
+                        // P1-04: mock submit until create_company endpoint
+                        // is wired through the client.
+                        spawn(async move {
+                            #[cfg(feature = "web")]
+                            {
+                                use gloo_timers::future::TimeoutFuture;
+                                TimeoutFuture::new(1000).await;
+                            }
+                            is_submitting.set(false);
+                            dioxus::prelude::navigator().push(Route::CompanyList {});
+                        });
                     },
 
                     crate::components::Input {
@@ -236,6 +252,7 @@ pub struct CompanyDetailPageProps {
 }
 
 #[component]
+#[allow(unused_variables)]
 pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     rsx! {
         AppLayout { title: "Company Detail",
@@ -278,7 +295,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                 }
                             }
                             TableBody {
-                                TableRow { clickable: true,
+                                TableRow {
                                     TableCell {
                                         Link {
                                             to: Route::ContactDetail { id: "1".to_string() },
@@ -290,7 +307,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                     TableCell { "(555) 123-4567" }
                                     TableCell { Badge { variant: BadgeVariant::Blue, "Primary" } }
                                 }
-                                TableRow { clickable: true,
+                                TableRow {
                                     TableCell {
                                         Link {
                                             to: Route::ContactDetail { id: "2".to_string() },
@@ -302,7 +319,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                     TableCell { "(555) 123-4568" }
                                     TableCell { "IT Manager" }
                                 }
-                                TableRow { clickable: true,
+                                TableRow {
                                     TableCell {
                                         Link {
                                             to: Route::ContactDetail { id: "3".to_string() },
@@ -338,7 +355,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                 }
                             }
                             TableBody {
-                                TableRow { clickable: true,
+                                TableRow {
                                     TableCell {
                                         div {
                                             span { class: "font-medium text-blue-600", "TKT-1234" }
@@ -348,7 +365,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                     TableCell { Badge { variant: BadgeVariant::Blue, "Open" } }
                                     TableCell { class: "text-gray-500", "5 min ago" }
                                 }
-                                TableRow { clickable: true,
+                                TableRow {
                                     TableCell {
                                         div {
                                             span { class: "font-medium text-blue-600", "TKT-1231" }
@@ -530,8 +547,13 @@ struct ContactRowProps {
 
 #[component]
 fn ContactRow(props: ContactRowProps) -> Element {
+    let navigator = use_navigator();
+    let id = props.id.clone();
+
     rsx! {
-        TableRow { clickable: true,
+        TableRow {
+            clickable: true,
+            onclick: move |_| { navigator.push(Route::ContactDetail { id: id.clone() }); },
             TableCell {
                 Link {
                     to: Route::ContactDetail { id: props.id.clone() },
@@ -581,6 +603,17 @@ pub fn ContactNewPage() -> Element {
                     onsubmit: move |e: FormEvent| {
                         e.prevent_default();
                         is_submitting.set(true);
+                        // P1-04: mock submit until create_contact endpoint
+                        // is wired through the client.
+                        spawn(async move {
+                            #[cfg(feature = "web")]
+                            {
+                                use gloo_timers::future::TimeoutFuture;
+                                TimeoutFuture::new(1000).await;
+                            }
+                            is_submitting.set(false);
+                            dioxus::prelude::navigator().push(Route::ContactList {});
+                        });
                     },
 
                     div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
@@ -644,6 +677,7 @@ pub struct ContactDetailPageProps {
 }
 
 #[component]
+#[allow(unused_variables)]
 pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     rsx! {
         AppLayout { title: "Contact Detail",

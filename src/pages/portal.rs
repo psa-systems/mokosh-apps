@@ -3,9 +3,8 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    Badge, BadgeVariant, BookIcon, Button, ButtonVariant, Card, CurrencyIcon, DataTable, IconSize,
-    PageHeader, PlusIcon, PortalLayout, SearchInput, Table, TableBody, TableCell, TableHead,
-    TableHeader, TableRow,
+    Badge, BadgeVariant, BookIcon, Button, ButtonVariant, Card, CurrencyIcon, IconSize, PlusIcon,
+    PortalLayout, SearchInput, Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 };
 use crate::Route;
 
@@ -198,7 +197,9 @@ fn PortalInvoiceItem(props: PortalInvoiceItemProps) -> Element {
 #[component]
 pub fn PortalTicketListPage() -> Element {
     rsx! {
-        PortalLayout { title: "My Tickets",
+        // Title is rendered once below alongside the "New Ticket"
+        // action button (P1-10 dedup).
+        PortalLayout {
             div { class: "flex items-center justify-between mb-6",
                 h1 { class: "text-2xl font-bold text-gray-900 dark:text-white", "My Tickets" }
                 Link {
@@ -221,7 +222,7 @@ pub fn PortalTicketListPage() -> Element {
                         }
                     }
                     TableBody {
-                        TableRow { clickable: true,
+                        TableRow {
                             TableCell {
                                 div {
                                     span { class: "font-medium text-blue-600", "TKT-1234" }
@@ -231,7 +232,7 @@ pub fn PortalTicketListPage() -> Element {
                             TableCell { Badge { variant: BadgeVariant::Yellow, "In Progress" } }
                             TableCell { class: "text-gray-500", "5 min ago" }
                         }
-                        TableRow { clickable: true,
+                        TableRow {
                             TableCell {
                                 div {
                                     span { class: "font-medium text-blue-600", "TKT-1231" }
@@ -241,7 +242,7 @@ pub fn PortalTicketListPage() -> Element {
                             TableCell { Badge { variant: BadgeVariant::Blue, "Open" } }
                             TableCell { class: "text-gray-500", "3 hours ago" }
                         }
-                        TableRow { clickable: true,
+                        TableRow {
                             TableCell {
                                 div {
                                     span { class: "font-medium text-blue-600", "TKT-1228" }
@@ -262,11 +263,19 @@ pub fn PortalTicketListPage() -> Element {
 #[component]
 pub fn PortalTicketNewPage() -> Element {
     rsx! {
-        PortalLayout { title: "Submit Ticket",
+        // P1-10 dedup: title rendered once below.
+        PortalLayout {
             h1 { class: "text-2xl font-bold text-gray-900 dark:text-white mb-6", "Submit a Ticket" }
 
             Card {
-                form { class: "space-y-6",
+                form {
+                    class: "space-y-6",
+                    // Without an explicit handler the browser default-submits
+                    // as GET, leaking subject/description/priority into the
+                    // URL and blanking the SPA. Stop that until a real
+                    // /portal/tickets POST endpoint exists (server F6).
+                    onsubmit: move |e: FormEvent| { e.prevent_default(); },
+
                     crate::components::Input {
                         name: "subject",
                         label: "Subject",
@@ -336,6 +345,7 @@ pub struct PortalTicketDetailPageProps {
 }
 
 #[component]
+#[allow(unused_variables)]
 pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
     rsx! {
         PortalLayout { title: "Ticket Detail",
@@ -438,7 +448,8 @@ fn UpdateItem(props: UpdateItemProps) -> Element {
 #[component]
 pub fn PortalInvoiceListPage() -> Element {
     rsx! {
-        PortalLayout { title: "Invoices",
+        // P1-10 dedup: title rendered once below.
+        PortalLayout {
             h1 { class: "text-2xl font-bold text-gray-900 dark:text-white mb-6", "Invoices" }
 
             Card { padding: false,
@@ -458,9 +469,10 @@ pub fn PortalInvoiceListPage() -> Element {
                             TableCell { "Jan 1, 2025" }
                             TableCell { class: "font-medium", "$2,500.00" }
                             TableCell { Badge { variant: BadgeVariant::Yellow, "Pending" } }
-                            TableCell {
-                                Button { variant: ButtonVariant::Primary, "Pay Now" }
-                            }
+                            // Audit P1-07: "Pay Now" button was decorative
+                            // (no onclick, no payment integration). Hidden
+                            // until the portal payments flow ships.
+                            TableCell { "" }
                         }
                         TableRow {
                             TableCell { class: "font-medium", "INV-2024-012" }
@@ -494,6 +506,7 @@ pub struct PortalInvoiceDetailPageProps {
 }
 
 #[component]
+#[allow(unused_variables)]
 pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
     rsx! {
         PortalLayout { title: "Invoice Detail",
@@ -519,7 +532,8 @@ pub fn PortalKBPage() -> Element {
     let mut search = use_signal(String::new);
 
     rsx! {
-        PortalLayout { title: "Knowledge Base",
+        // P1-10 dedup: title rendered once below.
+        PortalLayout {
             h1 { class: "text-2xl font-bold text-gray-900 dark:text-white mb-6", "Knowledge Base" }
 
             Card { class: "mb-6",
@@ -569,7 +583,6 @@ struct PortalArticleItemProps {
 fn PortalArticleItem(props: PortalArticleItemProps) -> Element {
     rsx! {
         a {
-            href: "#",
             class: "block p-3 -mx-3 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg transition-colors",
             h4 { class: "font-medium text-gray-900 dark:text-white", "{props.title}" }
             p { class: "text-sm text-gray-500 mt-1", "{props.category}" }

@@ -23,8 +23,9 @@ dev:
     let host_ip = (sys net | where name =~ 'eth0|br0' | get ip | flatten | where protocol == 'ipv4' and loop == false | get 0.address)
     let uid = (^id --user | str trim)
     let gid = (^id --group | str trim)
-    print $"Binding dx serve to ($host_ip):4301 as ($uid):($gid)"
-    with-env { HOST_IP: $host_ip, HOST_UID: $uid, HOST_GID: $gid } { docker compose up --build }
+    let user_name = (^whoami | str trim)
+    print $"Binding dx serve to ($host_ip):4301 as ($user_name) \(uid ($uid):($gid)\)"
+    with-env { HOST_IP: $host_ip, HOST_UID: $uid, HOST_GID: $gid, USER: $user_name } { docker compose up --build }
 
 # Per-developer Traefik-routed instance for SSO testing.
 #   App: https://{USER}-mokosh.a8n.run

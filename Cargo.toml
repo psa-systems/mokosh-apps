@@ -18,6 +18,13 @@ default = ["web", "multi-tenant"]
 web = []
 multi-tenant = []
 single-tenant = []
+# `server` is intentionally unset on the client. Several modules under
+# src/modules/* are shared in shape with the server side and gate their
+# server-only code (routes, services, sqlx) behind `#[cfg(feature =
+# "server")]`. Declaring the feature here (without enabling it) tells
+# rustc the name is known so the cfg checks pass silently rather than
+# emitting `unexpected cfg condition value: server` for every gate.
+server = []
 
 [lib]
 name = "mokosh_client"
@@ -50,8 +57,9 @@ tracing = "0.1"
 # WASM-friendly HTTP client
 gloo-net = "0.6"
 gloo-timers = { version = "0.3", features = ["futures"] }
+futures-util = "0.3"
 wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["Window", "Document", "Storage", "Navigator", "Location", "UrlSearchParams"] }
+web-sys = { version = "0.3", features = ["Window", "Document", "Storage", "Navigator", "Location", "UrlSearchParams", "MessageEvent", "EventTarget", "Event"] }
 js-sys = "0.3"
 
 # OIDC / PKCE primitives (SPA public-client flow against mokosh-server)

@@ -2,8 +2,7 @@
 
 use dioxus::prelude::*;
 
-use super::button::Spinner;
-use super::icons::{ChevronDownIcon, ChevronRightIcon};
+use super::icons::ChevronRightIcon;
 
 /// Table container props
 #[derive(Props, Clone, PartialEq)]
@@ -315,9 +314,16 @@ pub fn Pagination(props: PaginationProps) -> Element {
                 }
                 div {
                     nav { class: "isolate inline-flex -space-x-px rounded-md shadow-sm", aria_label: "Pagination",
-                        // Previous button
+                        // Previous button. P3-22: explicit class shift on
+                        // boundary so the disabled state is unambiguously
+                        // distinct from the active state (audit: "Looks
+                        // identical to active > button").
                         button {
-                            class: "relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 disabled:opacity-50 disabled:cursor-not-allowed dark:ring-gray-600 dark:hover:bg-gray-800",
+                            class: if props.current_page <= 1 {
+                                "relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-300 ring-1 ring-inset ring-gray-200 cursor-not-allowed bg-gray-50 dark:text-gray-600 dark:ring-gray-700 dark:bg-gray-900"
+                            } else {
+                                "relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:ring-gray-600 dark:hover:bg-gray-800"
+                            },
                             disabled: props.current_page <= 1,
                             onclick: move |_| props.onpagechange.call(props.current_page - 1),
                             ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
@@ -342,9 +348,13 @@ pub fn Pagination(props: PaginationProps) -> Element {
                             }
                         }
 
-                        // Next button
+                        // Next button (mirror of prev for P3-22).
                         button {
-                            class: "relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 disabled:opacity-50 disabled:cursor-not-allowed dark:ring-gray-600 dark:hover:bg-gray-800",
+                            class: if props.current_page >= total_pages {
+                                "relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-300 ring-1 ring-inset ring-gray-200 cursor-not-allowed bg-gray-50 dark:text-gray-600 dark:ring-gray-700 dark:bg-gray-900"
+                            } else {
+                                "relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:ring-gray-600 dark:hover:bg-gray-800"
+                            },
                             disabled: props.current_page >= total_pages,
                             onclick: move |_| props.onpagechange.call(props.current_page + 1),
                             ChevronRightIcon { class: "h-5 w-5".to_string() }

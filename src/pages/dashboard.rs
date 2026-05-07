@@ -235,8 +235,13 @@ fn RecentTicketRow(props: RecentTicketRowProps) -> Element {
         _ => BadgeVariant::Gray,
     };
 
+    let navigator = use_navigator();
+    let id = props.number.clone();
+
     rsx! {
-        TableRow { clickable: true,
+        TableRow {
+            clickable: true,
+            onclick: move |_| { navigator.push(Route::TicketDetail { id: id.clone() }); },
             TableCell {
                 div {
                     span { class: "font-medium text-blue-600", "{props.number}" }
@@ -289,23 +294,32 @@ struct SlaWarningItemProps {
 
 #[component]
 fn SlaWarningItem(props: SlaWarningItemProps) -> Element {
+    // Audit P2-11/P2-12: previous palette had dark-red text on dark-red
+    // bg in dark mode (and same for yellow), failing WCAG AA. Lighten
+    // the foreground so the contrast ratio against the dark-tinted bg
+    // crosses the 4.5:1 normal-text threshold.
     let (bg_class, text_class) = match props.level.as_str() {
         "danger" => (
             "bg-red-100 dark:bg-red-900/20",
-            "text-red-600 dark:text-red-400",
+            "text-red-700 dark:text-red-200",
         ),
         "warning" => (
             "bg-yellow-100 dark:bg-yellow-900/20",
-            "text-yellow-600 dark:text-yellow-400",
+            "text-yellow-800 dark:text-yellow-200",
         ),
         _ => (
             "bg-blue-100 dark:bg-blue-900/20",
-            "text-blue-600 dark:text-blue-400",
+            "text-blue-700 dark:text-blue-200",
         ),
     };
 
+    let navigator = use_navigator();
+    let id = props.ticket.clone();
+
     rsx! {
-        div { class: "flex items-center justify-between p-3 rounded-lg {bg_class}",
+        div {
+            class: "flex items-center justify-between p-3 rounded-lg cursor-pointer hover:opacity-80 transition-opacity {bg_class}",
+            onclick: move |_| { navigator.push(Route::TicketDetail { id: id.clone() }); },
             div {
                 p { class: "text-sm font-medium text-gray-900 dark:text-white",
                     "{props.ticket}"
@@ -330,8 +344,22 @@ struct TimeEntryRowProps {
 
 #[component]
 fn TimeEntryRow(props: TimeEntryRowProps) -> Element {
+    // Description is shaped like "TKT-1234: Email troubleshooting" on
+    // the dashboard's mock data. If we can pull the leading TKT- token
+    // out, navigate straight to that ticket; otherwise fall back to
+    // the full time-entry list.
+    let navigator = use_navigator();
+    let target = match props.description.split_once(':') {
+        Some((token, _)) if token.starts_with("TKT-") => {
+            Route::TicketDetail { id: token.to_string() }
+        }
+        _ => Route::TimeEntryList {},
+    };
+
     rsx! {
         TableRow {
+            clickable: true,
+            onclick: move |_| { navigator.push(target.clone()); },
             TableCell { class: "text-gray-500",
                 "{props.date}"
             }

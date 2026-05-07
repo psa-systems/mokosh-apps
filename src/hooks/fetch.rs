@@ -1,7 +1,6 @@
 //! Data fetching hooks
 
 use dioxus::prelude::*;
-use serde::de::DeserializeOwned;
 use std::future::Future;
 
 /// Fetch state for async data loading
@@ -121,7 +120,6 @@ where
 {
     let mut state = use_signal(FetchState::<PaginatedData<T>>::default);
     let mut page = use_signal(|| initial_page);
-    let fetch_fn_clone = fetch_fn.clone();
 
     // Fetch when page changes
     use_effect(move || {

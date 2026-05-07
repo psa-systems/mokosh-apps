@@ -125,8 +125,15 @@ fn AssetRow(props: AssetRowProps) -> Element {
         _ => BadgeVariant::Gray,
     };
 
+    let navigator = use_navigator();
+
+    let id = props.id.clone();
+
+
     rsx! {
-        TableRow { clickable: true,
+        TableRow {
+            clickable: true,
+            onclick: move |_| { navigator.push(Route::AssetDetail { id: id.clone() }); },
             TableCell {
                 Link {
                     to: Route::AssetDetail { id: props.id.clone() },
@@ -181,16 +188,16 @@ pub struct AssetDetailPageProps {
 }
 
 #[component]
+#[allow(unused_variables)]
 pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     rsx! {
         AppLayout { title: "Asset Detail",
             PageHeader {
                 title: "Exchange Server 01",
                 subtitle: "Acme Corp",
-                actions: rsx! {
-                    Button { variant: ButtonVariant::Secondary, "Edit" }
-                    Button { variant: ButtonVariant::Primary, "Remote Connect" }
-                },
+                // Audit P1-07: Edit / Remote Connect buttons were
+                // decorative (no onclick, no RMM integration). Hidden
+                // until asset edit + RMM connection flows ship.
             }
 
             div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
@@ -258,7 +265,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 }
                             }
                             TableBody {
-                                TableRow { clickable: true,
+                                TableRow {
                                     TableCell {
                                         div {
                                             span { class: "font-medium text-blue-600", "TKT-1234" }
@@ -268,7 +275,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     TableCell { Badge { variant: BadgeVariant::Blue, "Open" } }
                                     TableCell { class: "text-gray-500", "Today" }
                                 }
-                                TableRow { clickable: true,
+                                TableRow {
                                     TableCell {
                                         div {
                                             span { class: "font-medium text-blue-600", "TKT-1150" }
@@ -329,7 +336,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 span { class: "text-sm text-gray-500", "Tactical RMM" }
                                 Badge { variant: BadgeVariant::Green, "Connected" }
                             }
-                            a { href: "#", class: "block text-sm text-blue-600 hover:text-blue-500",
+                            a { class: "block text-sm text-blue-600 hover:text-blue-500",
                                 "Open in Tactical RMM"
                             }
                         }
@@ -348,6 +355,9 @@ struct AlertItemProps {
 }
 
 #[component]
+// rsx! interpolation on `icon_class` (line below) doesn't register as
+// a use to rustc, so silence the false-positive lint here.
+#[allow(unused_variables)]
 fn AlertItem(props: AlertItemProps) -> Element {
     let (bg_class, icon_class) = match props.severity.as_str() {
         "critical" => (

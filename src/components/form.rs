@@ -58,7 +58,7 @@ pub fn Input(props: InputProps) -> Element {
                     class: "block text-sm font-medium text-gray-700 dark:text-gray-300",
                     "{props.label}"
                     if props.required {
-                        span { class: "text-red-500 ml-1", "*" }
+                        span { class: "text-red-500 ml-1", aria_label: "required", role: "img", "*" }
                     }
                 }
             }
@@ -130,7 +130,7 @@ pub fn Textarea(props: TextareaProps) -> Element {
                     class: "block text-sm font-medium text-gray-700 dark:text-gray-300",
                     "{props.label}"
                     if props.required {
-                        span { class: "text-red-500 ml-1", "*" }
+                        span { class: "text-red-500 ml-1", aria_label: "required", role: "img", "*" }
                     }
                 }
             }
@@ -219,7 +219,7 @@ pub fn Select(props: SelectProps) -> Element {
                     class: "block text-sm font-medium text-gray-700 dark:text-gray-300",
                     "{props.label}"
                     if props.required {
-                        span { class: "text-red-500 ml-1", "*" }
+                        span { class: "text-red-500 ml-1", aria_label: "required", role: "img", "*" }
                     }
                 }
             }

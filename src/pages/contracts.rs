@@ -124,8 +124,15 @@ fn ContractRow(props: ContractRowProps) -> Element {
         _ => BadgeVariant::Gray,
     };
 
+    let navigator = use_navigator();
+
+    let id = props.id.clone();
+
+
     rsx! {
-        TableRow { clickable: true,
+        TableRow {
+            clickable: true,
+            onclick: move |_| { navigator.push(Route::ContractDetail { id: id.clone() }); },
             TableCell {
                 Link {
                     to: Route::ContractDetail { id: props.id.clone() },
@@ -180,16 +187,16 @@ pub struct ContractDetailPageProps {
 }
 
 #[component]
+#[allow(unused_variables)]
 pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
     rsx! {
         AppLayout { title: "Contract Detail",
             PageHeader {
                 title: "Managed Services Agreement",
                 subtitle: "Acme Corp",
-                actions: rsx! {
-                    Button { variant: ButtonVariant::Secondary, "Edit" }
-                    Button { variant: ButtonVariant::Primary, "Renew" }
-                },
+                // Audit P1-07: Edit / Renew buttons were decorative (no
+                // onclick, no contract-edit endpoint). Hidden until the
+                // contracts module ships those flows.
             }
 
             div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
@@ -317,11 +324,11 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
 
                     Card { title: "Documents",
                         div { class: "space-y-2",
-                            a { href: "#", class: "flex items-center text-sm text-blue-600 hover:text-blue-500",
+                            a { class: "flex items-center text-sm text-blue-600 hover:text-blue-500",
                                 DocumentIcon { size: IconSize::Small, class: "mr-2".to_string() }
                                 "Contract PDF"
                             }
-                            a { href: "#", class: "flex items-center text-sm text-blue-600 hover:text-blue-500",
+                            a { class: "flex items-center text-sm text-blue-600 hover:text-blue-500",
                                 DocumentIcon { size: IconSize::Small, class: "mr-2".to_string() }
                                 "SLA Agreement"
                             }

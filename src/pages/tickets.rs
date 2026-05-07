@@ -3,9 +3,9 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ClockIcon, DataTable, EmptyState,
-    IconSize, Modal, PageHeader, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody,
-    TableCell, TableHead, TableHeader, TableRow, Textarea, UserCircleIcon,
+    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ClockIcon, DataTable, IconSize,
+    Modal, PageHeader, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody, TableCell,
+    TableHead, TableHeader, TableRow, Textarea, UserCircleIcon,
 };
 use crate::Route;
 
@@ -185,11 +185,13 @@ fn TicketRow(props: TicketRowProps) -> Element {
         _ => BadgeVariant::Gray,
     };
 
+    let navigator = use_navigator();
+    let id = props.id.clone();
+
     rsx! {
-        TableRow { clickable: true,
-            onclick: move |_| {
-                // Navigate to ticket detail
-            },
+        TableRow {
+            clickable: true,
+            onclick: move |_| { navigator.push(Route::TicketDetail { id: id.clone() }); },
             TableCell {
                 div {
                     Link {
@@ -341,6 +343,7 @@ pub struct TicketDetailPageProps {
 }
 
 #[component]
+#[allow(unused_variables)]
 pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let mut show_note_modal = use_signal(|| false);
 
