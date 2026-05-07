@@ -266,7 +266,14 @@ pub fn PortalTicketNewPage() -> Element {
             h1 { class: "text-2xl font-bold text-gray-900 dark:text-white mb-6", "Submit a Ticket" }
 
             Card {
-                form { class: "space-y-6",
+                form {
+                    class: "space-y-6",
+                    // Without an explicit handler the browser default-submits
+                    // as GET, leaking subject/description/priority into the
+                    // URL and blanking the SPA. Stop that until a real
+                    // /portal/tickets POST endpoint exists (server F6).
+                    onsubmit: move |e: FormEvent| { e.prevent_default(); },
+
                     crate::components::Input {
                         name: "subject",
                         label: "Subject",
