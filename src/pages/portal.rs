@@ -581,7 +581,6 @@ struct PortalArticleItemProps {
 fn PortalArticleItem(props: PortalArticleItemProps) -> Element {
     rsx! {
         a {
-            href: "#",
             class: "block p-3 -mx-3 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg transition-colors",
             h4 { class: "font-medium text-gray-900 dark:text-white", "{props.title}" }
             p { class: "text-sm text-gray-500 mt-1", "{props.category}" }

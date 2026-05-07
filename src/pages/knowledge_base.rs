@@ -372,13 +372,13 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
 
                     Card { title: "Related Articles",
                         div { class: "space-y-2 text-sm",
-                            a { href: "#", class: "block text-blue-600 hover:text-blue-500",
+                            a { class: "block text-blue-600 hover:text-blue-500",
                                 "Active Directory Best Practices"
                             }
-                            a { href: "#", class: "block text-blue-600 hover:text-blue-500",
+                            a { class: "block text-blue-600 hover:text-blue-500",
                                 "Setting Up AD Password Policies"
                             }
-                            a { href: "#", class: "block text-blue-600 hover:text-blue-500",
+                            a { class: "block text-blue-600 hover:text-blue-500",
                                 "Unlocking User Accounts"
                             }
                         }

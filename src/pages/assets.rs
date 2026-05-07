@@ -329,7 +329,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 span { class: "text-sm text-gray-500", "Tactical RMM" }
                                 Badge { variant: BadgeVariant::Green, "Connected" }
                             }
-                            a { href: "#", class: "block text-sm text-blue-600 hover:text-blue-500",
+                            a { class: "block text-sm text-blue-600 hover:text-blue-500",
                                 "Open in Tactical RMM"
                             }
                         }

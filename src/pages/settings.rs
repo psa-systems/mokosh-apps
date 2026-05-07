@@ -328,11 +328,11 @@ pub fn NotificationSettingsPage() -> Element {
 
                 Card { title: "Email Templates",
                     div { class: "space-y-3",
-                        a { href: "#", class: "block text-blue-600 hover:text-blue-500 text-sm", "New Ticket Notification" }
-                        a { href: "#", class: "block text-blue-600 hover:text-blue-500 text-sm", "Ticket Updated Notification" }
-                        a { href: "#", class: "block text-blue-600 hover:text-blue-500 text-sm", "SLA Warning" }
-                        a { href: "#", class: "block text-blue-600 hover:text-blue-500 text-sm", "Invoice Sent" }
-                        a { href: "#", class: "block text-blue-600 hover:text-blue-500 text-sm", "Password Reset" }
+                        a { class: "block text-blue-600 hover:text-blue-500 text-sm", "New Ticket Notification" }
+                        a { class: "block text-blue-600 hover:text-blue-500 text-sm", "Ticket Updated Notification" }
+                        a { class: "block text-blue-600 hover:text-blue-500 text-sm", "SLA Warning" }
+                        a { class: "block text-blue-600 hover:text-blue-500 text-sm", "Invoice Sent" }
+                        a { class: "block text-blue-600 hover:text-blue-500 text-sm", "Password Reset" }
                     }
                 }
             }

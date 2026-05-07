@@ -120,9 +120,9 @@ pub fn HomePage() -> Element {
                             "© 2025 Mokosh Platform. All rights reserved."
                         }
                         div { class: "flex space-x-6 mt-4 md:mt-0",
-                            a { href: "#", class: "text-gray-400 hover:text-white text-sm", "Privacy Policy" }
-                            a { href: "#", class: "text-gray-400 hover:text-white text-sm", "Terms of Service" }
-                            a { href: "#", class: "text-gray-400 hover:text-white text-sm", "Contact" }
+                            a { class: "text-gray-400 hover:text-white text-sm", "Privacy Policy" }
+                            a { class: "text-gray-400 hover:text-white text-sm", "Terms of Service" }
+                            a { class: "text-gray-400 hover:text-white text-sm", "Contact" }
                         }
                     }
                 }

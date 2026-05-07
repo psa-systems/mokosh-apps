@@ -317,11 +317,11 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
 
                     Card { title: "Documents",
                         div { class: "space-y-2",
-                            a { href: "#", class: "flex items-center text-sm text-blue-600 hover:text-blue-500",
+                            a { class: "flex items-center text-sm text-blue-600 hover:text-blue-500",
                                 DocumentIcon { size: IconSize::Small, class: "mr-2".to_string() }
                                 "Contract PDF"
                             }
-                            a { href: "#", class: "flex items-center text-sm text-blue-600 hover:text-blue-500",
+                            a { class: "flex items-center text-sm text-blue-600 hover:text-blue-500",
                                 DocumentIcon { size: IconSize::Small, class: "mr-2".to_string() }
                                 "SLA Agreement"
                             }
