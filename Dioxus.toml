@@ -13,14 +13,13 @@ asset_dir = "assets"
 
 # Asset configuration
 [web.app]
-# Set the HTML title here (NOT in index.html). dx 0.7's serve+build
-# injects a `<title>` into the served HTML using this value. When this
-# field is missing, dx falls back to its own default ("dioxus | ⛺")
-# which, combined with a literal <title> in index.html, produced the
-# "Mokosh Platformdioxus | ⛺" concatenation. Keeping a single source
-# here also avoids the older "Mokosh PlatformMokosh Platform" doubling
-# that the original P1-09 audit flagged.
-title = "Mokosh Platform"
+# dx 0.7.7 APPENDS this string to whatever already lives inside the
+# `<title>` element in index.html. When the field is unset, dx
+# defaults to "dioxus | ⛺", producing tab titles like
+# "Mokosh Platformdioxus | ⛺". Setting it to an empty string makes
+# the append a no-op so index.html's literal <title>Mokosh Platform</title>
+# is the entire tab title.
+title = ""
 
 # CSS is included via asset!() macro in Rust code
 [web.resource]
