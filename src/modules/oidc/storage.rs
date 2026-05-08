@@ -1,10 +1,55 @@
-//! Tiny `sessionStorage` helpers used to bridge the redirect.
+//! Tiny `sessionStorage` helpers used to bridge the redirect AND to
+//! survive a full page reload.
 //!
-//! sessionStorage is cleared when the tab closes and is per-origin, which
-//! is appropriate for short-lived flow state (verifier + state + nonce).
-//! Tokens themselves are NEVER written here: see `tokens.rs`.
+//! sessionStorage is cleared when the tab closes and is per-origin.
+//! Two distinct payloads:
+//!
+//!  * `STATE_KEY` (`PendingFlow`) - short-lived OIDC code-flow state
+//!    (verifier + state + nonce). Written by `start_login`, removed by
+//!    `complete_login`.
+//!  * `AUTH_KEY` (`StoredTokens`) - the access/id/refresh-token bundle
+//!    after a successful login, so URL-bar navigation and tab reload
+//!    rehydrate `AuthContext` instead of dropping the user back on the
+//!    login page. We deliberately use sessionStorage rather than
+//!    localStorage: the bundle disappears when the tab closes, which
+//!    matches user expectations and matches the lifetime of the OP
+//!    session cookie. An XSS in the SPA can already read tokens out
+//!    of memory, so writing them to sessionStorage adds little
+//!    additional exposure compared to the alternative
+//!    (localStorage cross-tab leak, or background-refresh complexity
+//!    via `prompt=none`).
 
 const STATE_KEY: &str = "mokosh_oidc_flow_v1";
+const AUTH_KEY: &str = "mokosh_auth_bundle_v1";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct StoredTokens {
+    pub access_token: String,
+    pub id_token: String,
+    pub refresh_token: Option<String>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+    pub scope: String,
+}
+
+pub fn save_auth(t: &StoredTokens) {
+    if let Ok(storage) = session_storage() {
+        if let Ok(json) = serde_json::to_string(t) {
+            let _ = storage.set_item(AUTH_KEY, &json);
+        }
+    }
+}
+
+pub fn load_auth() -> Option<StoredTokens> {
+    let storage = session_storage().ok()?;
+    let raw = storage.get_item(AUTH_KEY).ok().flatten()?;
+    serde_json::from_str(&raw).ok()
+}
+
+pub fn clear_auth() {
+    if let Ok(storage) = session_storage() {
+        let _ = storage.remove_item(AUTH_KEY);
+    }
+}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct PendingFlow {

@@ -114,13 +114,72 @@ fn initial_auth_context() -> AuthContext {
             error: None,
             tokens: None,
         },
-        _ => AuthContext::default(),
+        _ => rehydrate_from_storage().unwrap_or_default(),
     }
 }
 
 #[cfg(not(debug_assertions))]
 fn initial_auth_context() -> AuthContext {
-    AuthContext::default()
+    rehydrate_from_storage().unwrap_or_default()
+}
+
+/// Pull a persisted token bundle out of `sessionStorage` and rebuild
+/// an `AuthContext` from it. Called once at WASM boot so a URL-bar
+/// navigation or tab reload doesn't drop the user back on /login.
+/// The id_token's claims are the source of truth for the
+/// `CurrentUser` view model: the same parsing as the OIDC callback.
+/// Returns `None` (caller falls back to `default()`) if there is no
+/// stored bundle, the bundle's id_token is malformed, or
+/// sessionStorage is disabled.
+fn rehydrate_from_storage() -> Option<AuthContext> {
+    use crate::modules::oidc::storage::load_auth;
+    use crate::modules::oidc::Tokens;
+
+    let stored = load_auth()?;
+    let tokens = Tokens {
+        access_token: stored.access_token,
+        id_token: stored.id_token,
+        refresh_token: stored.refresh_token,
+        expires_at: stored.expires_at,
+        scope: stored.scope,
+    };
+    let claims = tokens.id_claims().ok()?;
+    let user_id = claims
+        .sub
+        .parse::<uuid::Uuid>()
+        .unwrap_or_else(|_| uuid::Uuid::nil());
+    let tenant_id = claims
+        .tenant_id
+        .as_deref()
+        .and_then(|s| s.parse::<uuid::Uuid>().ok())
+        .unwrap_or_else(uuid::Uuid::nil);
+    let role = claims
+        .role
+        .as_deref()
+        .and_then(|s| match s {
+            "admin" => Some(crate::modules::auth::UserRole::Admin),
+            "manager" => Some(crate::modules::auth::UserRole::Manager),
+            "finance" => Some(crate::modules::auth::UserRole::Finance),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    crate::hooks::fetch::api::set_access_token(Some(tokens.access_token.clone()));
+    Some(AuthContext {
+        user: Some(CurrentUser {
+            id: user_id,
+            tenant_id,
+            email: claims.email.clone().unwrap_or_default(),
+            first_name: String::new(),
+            last_name: String::new(),
+            role,
+            timezone: "UTC".to_string(),
+            avatar_url: None,
+        }),
+        is_loading: false,
+        error: None,
+        tokens: Some(tokens),
+    })
 }
 
 /// Login form state
@@ -185,6 +244,15 @@ pub fn use_login_form() -> (Signal<LoginFormState>, Callback<()>) {
                         })
                         .unwrap_or_default();
                     crate::hooks::fetch::api::set_access_token(Some(tokens.access_token.clone()));
+                    crate::modules::oidc::storage::save_auth(
+                        &crate::modules::oidc::storage::StoredTokens {
+                            access_token: tokens.access_token.clone(),
+                            id_token: tokens.id_token.clone(),
+                            refresh_token: tokens.refresh_token.clone(),
+                            expires_at: tokens.expires_at,
+                            scope: tokens.scope.clone(),
+                        },
+                    );
                     {
                         let mut a = auth.write();
                         a.user = Some(crate::modules::auth::CurrentUser {
@@ -264,6 +332,15 @@ pub fn use_token_refresh() {
             match crate::modules::oidc::refresh_tokens(&cfg, &refresh, &id_token).await {
                 Ok(new_tokens) => {
                     crate::hooks::fetch::api::set_access_token(Some(new_tokens.access_token.clone()));
+                    crate::modules::oidc::storage::save_auth(
+                        &crate::modules::oidc::storage::StoredTokens {
+                            access_token: new_tokens.access_token.clone(),
+                            id_token: new_tokens.id_token.clone(),
+                            refresh_token: new_tokens.refresh_token.clone(),
+                            expires_at: new_tokens.expires_at,
+                            scope: new_tokens.scope.clone(),
+                        },
+                    );
                     auth.write().tokens = Some(new_tokens);
                 }
                 Err(e) => {
@@ -274,6 +351,7 @@ pub fn use_token_refresh() {
                         a.tokens = None;
                     }
                     crate::hooks::fetch::api::set_access_token(None);
+                    crate::modules::oidc::storage::clear_auth();
                     // Hard redirect (see note on the hook above): we
                     // are outside the Router subtree, so use_navigator
                     // is unavailable. window.location.set_href works
@@ -357,6 +435,10 @@ pub fn use_logout() -> impl FnMut() {
                 let _ = crate::modules::oidc::revoke_refresh_token(&cfg, &rt).await;
             });
         }
+
+        // Drop the persisted bundle so a reload after logout does
+        // not silently re-authenticate from a stale id_token.
+        crate::modules::oidc::storage::clear_auth();
 
         if let Some(win) = web_sys::window() {
             let _ = win.location().replace("/login");
