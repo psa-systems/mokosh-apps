@@ -6,11 +6,6 @@ use crate::components::{AuthLayout, Button, ButtonVariant, Input};
 use crate::hooks::{use_auth, use_google_login, use_login_form, GoogleLoginStatus};
 use crate::Route;
 
-const MOKOSH_BUTTON_CLASS: &str =
-    "w-full inline-flex items-center justify-center gap-3 rounded-md \
-     bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm \
-     hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed";
-
 const GOOGLE_BUTTON_CLASS: &str =
     "w-full inline-flex items-center justify-center gap-3 rounded-md border \
      border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-4 py-2 \
@@ -33,14 +28,11 @@ pub fn LoginPage() -> Element {
     let (mut form_state, submit) = use_login_form();
     let google = use_google_login();
 
-    // Three sign-in paths:
-    //   1. The classic email/password form (legacy local auth; the
-    //      `submit` callback calls into use_login_form, which today
-    //      kicks off the OIDC redirect since the SPA itself does not
-    //      collect credentials directly - the OP's /login form does).
-    //   2. "Sign in with Mokosh" - explicit single-button shortcut for
-    //      the same OIDC code+PKCE flow.
-    //   3. "Sign in with Google" - popup + postMessage flow.
+    // Two sign-in paths:
+    //   1. Email/password form: posts directly to /v1/auth/login, which
+    //      mints tokens for the SPA's first-party client in the same
+    //      response. Single page, no redirect dance.
+    //   2. "Sign in with Google": popup + postMessage flow.
     rsx! {
         AuthLayout {
             div { class: "space-y-6",
@@ -131,18 +123,6 @@ pub fn LoginPage() -> Element {
                         span { class: "bg-white dark:bg-gray-900 px-2 text-gray-500 dark:text-gray-400",
                             "or"
                         }
-                    }
-                }
-
-                button {
-                    r#type: "button",
-                    class: MOKOSH_BUTTON_CLASS,
-                    disabled: form_state.read().is_submitting,
-                    onclick: move |_| submit.call(()),
-                    if form_state.read().is_submitting {
-                        "Redirecting to Mokosh..."
-                    } else {
-                        "Sign in with Mokosh"
                     }
                 }
 

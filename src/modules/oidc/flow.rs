@@ -265,6 +265,91 @@ pub async fn refresh_tokens(
     })
 }
 
+/// Direct password login against `/v1/auth/login`. The request includes
+/// our `client_id`, so the response body carries a minted token bundle
+/// in addition to setting the OP-session cookie. We treat it like an
+/// authorization_code response (`id_token` required) and return the
+/// resulting [`Tokens`] for the SPA to push into [`AuthContext`].
+///
+/// This is the path the regular email/password form takes. The OIDC
+/// authorize-redirect flow remains available in the codebase for any
+/// future relying party but is not used by the hub SPA itself.
+pub async fn password_login(
+    cfg: &OidcConfig,
+    email: &str,
+    password: &str,
+) -> Result<Tokens, FlowError> {
+    let issuer = cfg.issuer.trim_end_matches('/');
+    let url = format!("{issuer}/v1/auth/login");
+    let body = serde_json::json!({
+        "email": email,
+        "password": password,
+        "client_id": cfg.client_id,
+        "scope": cfg.scopes,
+    });
+    let resp = Request::post(&url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .json(&body)
+        .map_err(|e| FlowError::Network(e.to_string()))?
+        .send()
+        .await
+        .map_err(|e| FlowError::Network(e.to_string()))?;
+
+    if !resp.ok() {
+        let status = resp.status();
+        let raw = resp.text().await.unwrap_or_default();
+        let parsed: Option<ErrorBody> = serde_json::from_str(&raw).ok();
+        let (err, desc) = match parsed {
+            Some(b) => (b.error, b.error_description.unwrap_or_default()),
+            None => (
+                "login_failed".to_string(),
+                if status == 401 || status == 403 {
+                    "Invalid email or password".to_string()
+                } else {
+                    format!("HTTP {status}")
+                },
+            ),
+        };
+        return Err(FlowError::TokenEndpoint {
+            error: err,
+            description: desc,
+        });
+    }
+
+    let body: LoginBody = resp
+        .json()
+        .await
+        .map_err(|e| FlowError::Network(format!("login body: {e}")))?;
+    let bundle = body.tokens.ok_or_else(|| FlowError::TokenEndpoint {
+        error: "invalid_response".into(),
+        description: "server did not return tokens (missing client_id?)".into(),
+    })?;
+
+    Ok(Tokens {
+        access_token: bundle.access_token,
+        id_token: bundle.id_token,
+        refresh_token: Some(bundle.refresh_token),
+        expires_at: Utc::now() + Duration::seconds(bundle.expires_in.max(0)),
+        scope: bundle.scope,
+    })
+}
+
+#[derive(Deserialize)]
+struct LoginBody {
+    #[serde(default)]
+    tokens: Option<LoginTokenBundle>,
+}
+
+#[derive(Deserialize)]
+struct LoginTokenBundle {
+    access_token: String,
+    id_token: String,
+    refresh_token: String,
+    expires_in: i64,
+    scope: String,
+}
+
 #[derive(Deserialize)]
 struct TokenBody {
     access_token: String,

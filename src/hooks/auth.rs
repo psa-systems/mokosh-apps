@@ -2,7 +2,7 @@
 
 use dioxus::prelude::*;
 
-use crate::modules::auth::{AuthState, CurrentUser};
+use crate::modules::auth::CurrentUser;
 use crate::modules::oidc::Tokens;
 use crate::Route;
 
@@ -132,33 +132,82 @@ pub struct LoginFormState {
     pub error: Option<String>,
 }
 
-/// Hook for the login page. Pressing the button starts the OIDC code
-/// flow with PKCE: `start_login` redirects the browser to mokosh-server's
-/// authorize endpoint. After the user signs in there, the browser comes
-/// back to `/auth/callback`, which exchanges the code for tokens and
-/// populates [`AuthContext`]. The form's email/password fields are kept
-/// in [`LoginFormState`] for compatibility with the existing UI but are
-/// not sent to the IdP from here (the IdP renders its own form).
+/// Hook for the login page. Submitting the form POSTs the credentials
+/// directly to mokosh-server's `/v1/auth/login` endpoint. When the
+/// request includes our `client_id`, the server responds with both the
+/// OP-session cookie AND a minted OIDC token bundle, so the SPA gets
+/// the same access/refresh/id tokens it would have received via the
+/// OIDC code+PKCE redirect dance - without ever bouncing through a
+/// second login page. The OP login UI was retired with this change;
+/// the only sign-in screen users see is the SPA's own form.
 pub fn use_login_form() -> (Signal<LoginFormState>, Callback<()>) {
     let mut form_state = use_signal(LoginFormState::default);
+    let mut auth = use_auth();
+    let navigator = use_navigator();
 
-    // Callback (not `impl Fn`) so the LoginPage can wire it to BOTH
-    // the form's onsubmit and the "Sign in with Mokosh" button's
-    // onclick - `Callback` is `Copy`, plain closures are not.
     let submit = use_callback(move |_| {
+        let email = form_state.read().email.clone();
+        let password = form_state.read().password.clone();
+        let nav = navigator;
         spawn(async move {
             form_state.write().is_submitting = true;
             form_state.write().error = None;
 
             let cfg = crate::modules::oidc::OidcConfig::from_env();
-            // Returning to "/" means "send the user to /dashboard after
-            // login" in our callback handler.
-            if let Err(e) = crate::modules::oidc::start_login(&cfg, "/dashboard") {
-                form_state.write().error = Some(e.to_string());
-                form_state.write().is_submitting = false;
+            match crate::modules::oidc::password_login(&cfg, &email, &password).await {
+                Ok(tokens) => {
+                    let claims = match tokens.id_claims() {
+                        Ok(c) => c,
+                        Err(e) => {
+                            form_state.write().error = Some(format!("invalid id_token: {e}"));
+                            form_state.write().is_submitting = false;
+                            return;
+                        }
+                    };
+                    let user_id = claims
+                        .sub
+                        .parse::<uuid::Uuid>()
+                        .unwrap_or_else(|_| uuid::Uuid::nil());
+                    let tenant_id = claims
+                        .tenant_id
+                        .as_deref()
+                        .and_then(|s| s.parse::<uuid::Uuid>().ok())
+                        .unwrap_or_else(uuid::Uuid::nil);
+                    let role = claims
+                        .role
+                        .as_deref()
+                        .and_then(|s| match s {
+                            "admin" => Some(crate::modules::auth::UserRole::Admin),
+                            "manager" => Some(crate::modules::auth::UserRole::Manager),
+                            "finance" => Some(crate::modules::auth::UserRole::Finance),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    crate::hooks::fetch::api::set_access_token(Some(tokens.access_token.clone()));
+                    {
+                        let mut a = auth.write();
+                        a.user = Some(crate::modules::auth::CurrentUser {
+                            id: user_id,
+                            tenant_id,
+                            email: claims.email.clone().unwrap_or_default(),
+                            first_name: String::new(),
+                            last_name: String::new(),
+                            role,
+                            timezone: "UTC".to_string(),
+                            avatar_url: None,
+                        });
+                        a.is_loading = false;
+                        a.error = None;
+                        a.tokens = Some(tokens);
+                    }
+                    form_state.write().is_submitting = false;
+                    nav.push(Route::Dashboard {});
+                }
+                Err(e) => {
+                    form_state.write().error = Some(e.to_string());
+                    form_state.write().is_submitting = false;
+                }
             }
-            // On success the browser is navigating away; nothing else
-            // to do here.
         });
     });
 
