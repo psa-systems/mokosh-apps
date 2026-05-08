@@ -529,9 +529,12 @@ fn InviteRow(props: InviteRowProps) -> Element {
         spawn(async move {
             busy.set(true);
             let cfg = crate::modules::oidc::OidcConfig::from_env();
-            // Body is `{reason}` (optional); empty object is fine,
-            // the server defaults to "(no reason given)".
-            let _: Result<serde_json::Value, _> = crate::modules::oidc::issuer_post_authed(
+            // Server returns 204 NoContent; use the no-body helper so
+            // the empty response doesn't trip the JSON parser. The
+            // request body is `{reason}` (all optional); empty object
+            // works since the server defaults reason to "(no reason
+            // given)".
+            let _ = crate::modules::oidc::issuer_post_authed_no_body(
                 &cfg,
                 &format!("/v1/auth/invites/{id}/revoke"),
                 &serde_json::json!({}),

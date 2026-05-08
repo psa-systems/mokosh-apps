@@ -9,8 +9,6 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{AuthLayout, Button, ButtonVariant, Input};
-use crate::hooks::fetch::api;
-use crate::Route;
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 struct InvitePreview {
@@ -82,18 +80,29 @@ pub fn InviteAcceptPage(token: String) -> Element {
     let mut last_name = use_signal(String::new);
     let mut field_error: Signal<Option<(String, String)>> = use_signal(|| None);
 
-    // Initial preview load.
+    // Initial preview load. Hits the issuer URL directly: invite
+    // endpoints live on the auth router which is merged at the
+    // mokosh-server root, NOT under the same-origin /api/v1/* proxy
+    // (that path goes to the legacy psa_router which has no
+    // matching route). Public endpoint, no Bearer needed.
     let token_load = token.clone();
     use_future(move || {
         let token = token_load.clone();
         async move {
-            let url = format!("/auth/invites/by-token/{token}");
-            match api::get::<InvitePreview>(&url).await {
+            let cfg = crate::modules::oidc::OidcConfig::from_env();
+            let path = format!("/v1/auth/invites/by-token/{token}");
+            match crate::modules::oidc::issuer_get::<InvitePreview>(&cfg, &path).await {
                 Ok(preview) => state.set(AcceptState::Ready(preview)),
-                Err(e) if is_404(&e) => state.set(AcceptState::Error(invalid_message())),
-                Err(e) => state.set(AcceptState::Error(format!(
-                    "Could not load invite: {e}"
-                ))),
+                Err(e) => {
+                    let msg = e.to_string();
+                    if is_404(&msg) {
+                        state.set(AcceptState::Error(invalid_message()));
+                    } else {
+                        state.set(AcceptState::Error(format!(
+                            "Could not load invite: {msg}"
+                        )));
+                    }
+                }
             }
         }
     });
@@ -123,8 +132,9 @@ pub fn InviteAcceptPage(token: String) -> Element {
                 "first_name": if first.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(first) },
                 "last_name":  if last.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(last) },
             });
-            let url = format!("/auth/invites/by-token/{token}/accept");
-            match api::post::<AcceptedUser, _>(&url, &body).await {
+            let cfg = crate::modules::oidc::OidcConfig::from_env();
+            let path = format!("/v1/auth/invites/by-token/{token}/accept");
+            match crate::modules::oidc::issuer_post::<AcceptedUser, _>(&cfg, &path, &body).await {
                 Ok(accepted) => {
                     state.set(AcceptState::Done(accepted.email.clone()));
                     // Brief delay so the success message is visible.
@@ -143,20 +153,21 @@ pub fn InviteAcceptPage(token: String) -> Element {
                     }
                 }
                 Err(e) => {
-                    if let Some((field, msg)) = parse_field_error(&e) {
+                    let raw = e.to_string();
+                    if let Some((field, msg)) = parse_field_error(&raw) {
                         field_error.set(Some((field, msg)));
                         let snapshot = state.read().clone();
                         if let AcceptState::Submitting(p) = snapshot {
                             state.set(AcceptState::Ready(p));
                         }
-                    } else if is_404(&e) {
+                    } else if is_404(&raw) {
                         state.set(AcceptState::Error(invalid_message()));
-                    } else if is_409(&e) {
+                    } else if is_409(&raw) {
                         state.set(AcceptState::Error(
                             "This invite has already been accepted. Please sign in.".into(),
                         ));
                     } else {
-                        state.set(AcceptState::Error(format!("Could not accept invite: {e}")));
+                        state.set(AcceptState::Error(format!("Could not accept invite: {raw}")));
                     }
                 }
             }

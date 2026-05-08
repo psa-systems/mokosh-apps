@@ -265,6 +265,84 @@ pub async fn refresh_tokens(
     })
 }
 
+/// Issuer-targeted unauthenticated GET, for public endpoints (e.g.
+/// `/v1/auth/invites/by-token/<token>`). Same cross-origin shape as
+/// the authed variants but skips the Authorization header.
+pub async fn issuer_get<T: serde::de::DeserializeOwned>(
+    cfg: &OidcConfig,
+    path: &str,
+) -> Result<T, FlowError> {
+    let issuer = cfg.issuer.trim_end_matches('/');
+    let url = format!("{issuer}{path}");
+    let resp = Request::get(&url)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| FlowError::Network(e.to_string()))?;
+    if !resp.ok() {
+        let raw = resp.text().await.unwrap_or_default();
+        return Err(FlowError::Network(raw));
+    }
+    resp.json::<T>()
+        .await
+        .map_err(|e| FlowError::Network(format!("body: {e}")))
+}
+
+/// Issuer-targeted unauthenticated POST with JSON body, for public
+/// endpoints. Used by the invite-acceptance flow.
+pub async fn issuer_post<T: serde::de::DeserializeOwned, B: serde::Serialize>(
+    cfg: &OidcConfig,
+    path: &str,
+    body: &B,
+) -> Result<T, FlowError> {
+    let issuer = cfg.issuer.trim_end_matches('/');
+    let url = format!("{issuer}{path}");
+    let resp = Request::post(&url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .json(body)
+        .map_err(|e| FlowError::Network(e.to_string()))?
+        .send()
+        .await
+        .map_err(|e| FlowError::Network(e.to_string()))?;
+    if !resp.ok() {
+        let raw = resp.text().await.unwrap_or_default();
+        return Err(FlowError::Network(raw));
+    }
+    resp.json::<T>()
+        .await
+        .map_err(|e| FlowError::Network(format!("body: {e}")))
+}
+
+/// Issuer-authed POST with body, response body discarded. Use for
+/// endpoints that return 204 (revoke) or whose response we do not
+/// need. Without this, every 204 response was failing JSON parsing
+/// and looking like an error to the caller.
+pub async fn issuer_post_authed_no_body<B: serde::Serialize>(
+    cfg: &OidcConfig,
+    path: &str,
+    body: &B,
+) -> Result<(), FlowError> {
+    let token = crate::hooks::fetch::api::current_access_token()
+        .ok_or_else(|| FlowError::Network("not signed in".into()))?;
+    let issuer = cfg.issuer.trim_end_matches('/');
+    let url = format!("{issuer}{path}");
+    let resp = Request::post(&url)
+        .header("Authorization", &format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .json(body)
+        .map_err(|e| FlowError::Network(e.to_string()))?
+        .send()
+        .await
+        .map_err(|e| FlowError::Network(e.to_string()))?;
+    if !resp.ok() {
+        let raw = resp.text().await.unwrap_or_default();
+        return Err(FlowError::Network(raw));
+    }
+    Ok(())
+}
+
 /// Issuer-authed GET. Hits `{issuer}{path}` with the in-memory access
 /// token in `Authorization: Bearer`. Used for self-service auth APIs
 /// that live on the issuer host (e.g. `/v1/auth/sessions`) and are
