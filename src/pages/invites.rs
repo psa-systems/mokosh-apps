@@ -9,12 +9,13 @@
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::JsCast;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, Input, PageHeader, Table,
     TableBody, TableCell, TableHead, TableHeader, TableRow,
 };
-use crate::hooks::{fetch::api, use_require_role};
+use crate::hooks::use_require_role;
 use crate::Route;
 
 // ---------------------------------------------------------------------------
@@ -47,6 +48,19 @@ pub struct InvitesEnvelope {
 #[derive(Clone, Debug, Deserialize)]
 pub struct IssueInviteSuccess {
     pub invite: InviteView,
+    /// Shareable invite link returned by the server so the admin can
+    /// copy it directly out of the UI without depending on email
+    /// delivery. SMTP delivery (if configured) is additive.
+    #[serde(default)]
+    pub accept_url: Option<String>,
+    #[serde(default)]
+    pub warning: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ResendInviteSuccess {
+    #[serde(default)]
+    pub accept_url: Option<String>,
     #[serde(default)]
     pub warning: Option<String>,
 }
@@ -146,6 +160,100 @@ fn relative(ts: chrono::DateTime<chrono::Utc>) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Components
+// ---------------------------------------------------------------------------
+
+#[derive(Props, Clone, PartialEq)]
+struct InviteSuccessCardProps {
+    invite_email: String,
+    accept_url: String,
+    warning: Option<String>,
+    on_invite_another: EventHandler<()>,
+    on_done: EventHandler<()>,
+}
+
+/// Shown after an invite is issued. Surfaces the accept URL so the
+/// admin can copy + share it directly without depending on email
+/// delivery (LogMailer in dev only logs the link to the server's
+/// stdout). When SMTP is wired up the email gets sent in addition;
+/// the copyable link stays as the canonical fallback.
+#[component]
+fn InviteSuccessCard(props: InviteSuccessCardProps) -> Element {
+    let url = props.accept_url.clone();
+    let copy = move |_| {
+        // Best-effort copy via `navigator.clipboard.writeText`. We
+        // call it through Reflect to avoid pulling in the
+        // web-sys "Clipboard" feature; fire-and-forget on the
+        // returned Promise. If clipboard is unavailable (older
+        // browser, non-HTTPS context), the readonly input above
+        // still lets the admin select-all and copy by hand.
+        if let Some(win) = web_sys::window() {
+            let nav: wasm_bindgen::JsValue = win.navigator().into();
+            if let Ok(clipboard) =
+                js_sys::Reflect::get(&nav, &wasm_bindgen::JsValue::from_str("clipboard"))
+            {
+                if let Ok(write_fn) = js_sys::Reflect::get(
+                    &clipboard,
+                    &wasm_bindgen::JsValue::from_str("writeText"),
+                ) {
+                    if let Ok(write_fn) = write_fn.dyn_into::<js_sys::Function>() {
+                        let _ = write_fn.call1(&clipboard, &wasm_bindgen::JsValue::from_str(&url));
+                    }
+                }
+            }
+        }
+    };
+
+    rsx! {
+        div { class: "rounded-md border border-green-300 dark:border-green-800 bg-green-50 dark:bg-green-900/20 p-4 space-y-3",
+            div {
+                p { class: "text-sm font-medium text-green-800 dark:text-green-300",
+                    "Invite sent to {props.invite_email}"
+                }
+                if let Some(w) = props.warning.as_deref() {
+                    p { class: "mt-1 text-xs text-yellow-700 dark:text-yellow-400",
+                        "Warning: {w}"
+                    }
+                }
+            }
+            div {
+                label { class: "block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1",
+                    "Shareable link"
+                }
+                div { class: "flex gap-2",
+                    input {
+                        r#type: "text",
+                        readonly: true,
+                        value: "{props.accept_url}",
+                        class: "flex-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-xs font-mono",
+                    }
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: copy,
+                        "Copy"
+                    }
+                }
+                p { class: "mt-1 text-xs text-gray-500",
+                    "Send this link to the invitee. It expires in 7 days and can only be used once."
+                }
+            }
+            div { class: "flex justify-end gap-2 pt-2",
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| props.on_invite_another.call(()),
+                    "Invite another"
+                }
+                Button {
+                    variant: ButtonVariant::Primary,
+                    onclick: move |_| props.on_done.call(()),
+                    "Done"
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Pages
 // ---------------------------------------------------------------------------
 
@@ -160,6 +268,7 @@ pub fn InviteCreatePage() -> Element {
     let mut error: Signal<Option<String>> = use_signal(|| None);
     let mut warning: Signal<Option<String>> = use_signal(|| None);
     let mut submitting = use_signal(|| false);
+    let mut success: Signal<Option<IssueInviteSuccess>> = use_signal(|| None);
 
     let submit = move || {
         let body = IssueInviteBody {
@@ -178,19 +287,25 @@ pub fn InviteCreatePage() -> Element {
             error.set(None);
             warning.set(None);
             submitting.set(true);
-            match api::post_authed::<IssueInviteSuccess, _>("/auth/invites", &body).await {
+            let cfg = crate::modules::oidc::OidcConfig::from_env();
+            match crate::modules::oidc::issuer_post_authed::<IssueInviteSuccess, _>(
+                &cfg,
+                "/v1/auth/invites",
+                &body,
+            )
+            .await
+            {
                 Ok(resp) => {
-                    if let Some(w) = resp.warning {
+                    if let Some(w) = resp.warning.as_deref() {
                         warning.set(Some(format!(
-                            "Invite created but the email failed to send ({w}). Use Resend on the invite list."
+                            "Invite created but the email failed to send ({w}). Copy the link below and share it manually."
                         )));
-                        submitting.set(false);
-                    } else {
-                        navigator.push(Route::InviteList {});
                     }
+                    success.set(Some(resp));
+                    submitting.set(false);
                 }
                 Err(e) => {
-                    error.set(Some(parse_error_message(&e)));
+                    error.set(Some(parse_error_message(&e.to_string())));
                     submitting.set(false);
                 }
             }
@@ -199,11 +314,26 @@ pub fn InviteCreatePage() -> Element {
 
     rsx! {
         AppLayout { title: "Invite user".to_string(),
-            div { class: "max-w-2xl mx-auto",
+            div { class: "max-w-2xl mx-auto space-y-6",
+                if let Some(s) = success.read().clone() {
+                    InviteSuccessCard {
+                        invite_email: s.invite.email.clone(),
+                        accept_url: s.accept_url.clone().unwrap_or_default(),
+                        warning: s.warning.clone(),
+                        on_invite_another: move |_| {
+                            success.set(None);
+                            email.set(String::new());
+                            note.set(String::new());
+                            error.set(None);
+                            warning.set(None);
+                        },
+                        on_done: move |_| { navigator.push(Route::InviteList {}); },
+                    }
+                }
                 Card {
                     PageHeader {
                         title: "Invite a teammate".to_string(),
-                        subtitle: "They'll receive an email with a one-time link.".to_string(),
+                        subtitle: "They'll receive a one-time link. Copy it from the success card if you'd rather share it manually.".to_string(),
                     }
 
                     form {
@@ -293,10 +423,14 @@ pub fn InviteListPage() -> Element {
     use_future(move || async move {
         let _ = bump.read();
         invites.set(None);
-        let result = api::get_authed::<InvitesEnvelope>("/auth/invites")
-            .await
-            .map(|env| env.invites)
-            .map_err(|e| parse_error_message(&e));
+        let cfg = crate::modules::oidc::OidcConfig::from_env();
+        let result = crate::modules::oidc::issuer_get_authed::<InvitesEnvelope>(
+            &cfg,
+            "/v1/auth/invites",
+        )
+        .await
+        .map(|env| env.invites)
+        .map_err(|e| parse_error_message(&e.to_string()));
         invites.set(Some(result));
     });
 
@@ -379,8 +513,10 @@ fn InviteRow(props: InviteRowProps) -> Element {
     let resend = move || {
         spawn(async move {
             busy.set(true);
-            let _ = api::post_authed::<serde_json::Value, _>(
-                &format!("/auth/invites/{id}/resend"),
+            let cfg = crate::modules::oidc::OidcConfig::from_env();
+            let _: Result<ResendInviteSuccess, _> = crate::modules::oidc::issuer_post_authed(
+                &cfg,
+                &format!("/v1/auth/invites/{id}/resend"),
                 &serde_json::json!({}),
             )
             .await;
@@ -392,9 +528,13 @@ fn InviteRow(props: InviteRowProps) -> Element {
     let revoke = move || {
         spawn(async move {
             busy.set(true);
-            let _ = api::post_authed::<serde_json::Value, _>(
-                &format!("/auth/invites/{id}/revoke"),
-                &serde_json::json!({"reason": ""}),
+            let cfg = crate::modules::oidc::OidcConfig::from_env();
+            // Body is `{reason}` (optional); empty object is fine,
+            // the server defaults to "(no reason given)".
+            let _: Result<serde_json::Value, _> = crate::modules::oidc::issuer_post_authed(
+                &cfg,
+                &format!("/v1/auth/invites/{id}/revoke"),
+                &serde_json::json!({}),
             )
             .await;
             busy.set(false);

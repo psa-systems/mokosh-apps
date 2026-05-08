@@ -291,6 +291,39 @@ pub async fn issuer_get_authed<T: serde::de::DeserializeOwned>(
         .map_err(|e| FlowError::Network(format!("body: {e}")))
 }
 
+/// Issuer-authed POST with a JSON body. The 4xx error body is
+/// preserved as-is in the `Network` variant so callers can parse
+/// structured `{"error":"..."}` payloads. (`Network` is a
+/// transport-shaped variant by name, but in practice it's how the
+/// codebase already smuggles error bodies through; matches
+/// `password_login`'s style.)
+pub async fn issuer_post_authed<T: serde::de::DeserializeOwned, B: serde::Serialize>(
+    cfg: &OidcConfig,
+    path: &str,
+    body: &B,
+) -> Result<T, FlowError> {
+    let token = crate::hooks::fetch::api::current_access_token()
+        .ok_or_else(|| FlowError::Network("not signed in".into()))?;
+    let issuer = cfg.issuer.trim_end_matches('/');
+    let url = format!("{issuer}{path}");
+    let resp = Request::post(&url)
+        .header("Authorization", &format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .json(body)
+        .map_err(|e| FlowError::Network(e.to_string()))?
+        .send()
+        .await
+        .map_err(|e| FlowError::Network(e.to_string()))?;
+    if !resp.ok() {
+        let raw = resp.text().await.unwrap_or_default();
+        return Err(FlowError::Network(raw));
+    }
+    resp.json::<T>()
+        .await
+        .map_err(|e| FlowError::Network(format!("body: {e}")))
+}
+
 /// Issuer-authed POST with empty body. Returns Ok(()) on any 2xx
 /// response; the body is discarded. Used for the session-revoke
 /// endpoint which returns 204.
