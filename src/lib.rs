@@ -199,6 +199,9 @@ pub enum Route {
     #[route("/settings/users/invites")]
     InviteList {},
 
+    #[route("/settings/sessions")]
+    SessionsList {},
+
     #[route("/settings/teams")]
     TeamManagement {},
 
@@ -474,6 +477,11 @@ fn InviteCreate() -> Element {
 #[component]
 fn InviteList() -> Element {
     rsx! { invites::InviteListPage {} }
+}
+
+#[component]
+fn SessionsList() -> Element {
+    rsx! { sessions::SessionsPage {} }
 }
 
 #[component]

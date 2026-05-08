@@ -49,6 +49,12 @@ pub fn SettingsPage() -> Element {
                     route: Route::BillingSettings {},
                     icon: "billing",
                 }
+                SettingsCard {
+                    title: "Active sessions",
+                    description: "Devices currently signed in to your account",
+                    route: Route::SessionsList {},
+                    icon: "shield",
+                }
             }
         }
     }

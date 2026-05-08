@@ -265,6 +265,52 @@ pub async fn refresh_tokens(
     })
 }
 
+/// Issuer-authed GET. Hits `{issuer}{path}` with the in-memory access
+/// token in `Authorization: Bearer`. Used for self-service auth APIs
+/// that live on the issuer host (e.g. `/v1/auth/sessions`) and are
+/// not reachable through the same-origin `/api/*` proxy.
+pub async fn issuer_get_authed<T: serde::de::DeserializeOwned>(
+    cfg: &OidcConfig,
+    path: &str,
+) -> Result<T, FlowError> {
+    let token = crate::hooks::fetch::api::current_access_token()
+        .ok_or_else(|| FlowError::Network("not signed in".into()))?;
+    let issuer = cfg.issuer.trim_end_matches('/');
+    let url = format!("{issuer}{path}");
+    let resp = Request::get(&url)
+        .header("Authorization", &format!("Bearer {token}"))
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| FlowError::Network(e.to_string()))?;
+    if !resp.ok() {
+        return Err(FlowError::Network(format!("HTTP {}", resp.status())));
+    }
+    resp.json::<T>()
+        .await
+        .map_err(|e| FlowError::Network(format!("body: {e}")))
+}
+
+/// Issuer-authed POST with empty body. Returns Ok(()) on any 2xx
+/// response; the body is discarded. Used for the session-revoke
+/// endpoint which returns 204.
+pub async fn issuer_post_authed_empty(cfg: &OidcConfig, path: &str) -> Result<(), FlowError> {
+    let token = crate::hooks::fetch::api::current_access_token()
+        .ok_or_else(|| FlowError::Network("not signed in".into()))?;
+    let issuer = cfg.issuer.trim_end_matches('/');
+    let url = format!("{issuer}{path}");
+    let resp = Request::post(&url)
+        .header("Authorization", &format!("Bearer {token}"))
+        .header("Content-Length", "0")
+        .send()
+        .await
+        .map_err(|e| FlowError::Network(e.to_string()))?;
+    if !resp.ok() {
+        return Err(FlowError::Network(format!("HTTP {}", resp.status())));
+    }
+    Ok(())
+}
+
 /// RFC 7009 token revocation. Best-effort: the spec requires the OP
 /// to return 200 even for unknown/invalid tokens, so we treat any
 /// non-network failure as success. Used by the logout flow to kill
