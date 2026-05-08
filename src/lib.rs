@@ -33,6 +33,9 @@ pub enum Route {
     #[route("/reset-password/:token")]
     ResetPassword { token: String },
 
+    #[route("/invite/:token")]
+    InviteAccept { token: String },
+
     // Dashboard
     #[route("/dashboard")]
     Dashboard {},
@@ -156,6 +159,12 @@ pub enum Route {
     #[route("/settings/users")]
     UserManagement {},
 
+    #[route("/settings/users/invite")]
+    InviteCreate {},
+
+    #[route("/settings/users/invites")]
+    InviteList {},
+
     #[route("/settings/teams")]
     TeamManagement {},
 
@@ -226,6 +235,11 @@ fn ForgotPassword() -> Element {
 #[component]
 fn ResetPassword(token: String) -> Element {
     rsx! { auth::ResetPasswordPage { token } }
+}
+
+#[component]
+fn InviteAccept(token: String) -> Element {
+    rsx! { invite_accept::InviteAcceptPage { token } }
 }
 
 #[component]
@@ -411,6 +425,16 @@ fn Settings() -> Element {
 #[component]
 fn UserManagement() -> Element {
     rsx! { settings::UserManagementPage {} }
+}
+
+#[component]
+fn InviteCreate() -> Element {
+    rsx! { invites::InviteCreatePage {} }
+}
+
+#[component]
+fn InviteList() -> Element {
+    rsx! { invites::InviteListPage {} }
 }
 
 #[component]

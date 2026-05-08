@@ -12,6 +12,8 @@ pub mod contacts;
 pub mod contracts;
 pub mod dashboard;
 pub mod home;
+pub mod invite_accept;
+pub mod invites;
 pub mod knowledge_base;
 pub mod not_found;
 pub mod portal;
