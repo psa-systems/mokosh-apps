@@ -1,6 +1,7 @@
 //! Authentication hooks
 
 use dioxus::prelude::*;
+use wasm_bindgen::JsCast;
 
 use crate::modules::auth::CurrentUser;
 use crate::modules::oidc::Tokens;
@@ -284,6 +285,42 @@ pub fn use_token_refresh() {
                 }
             }
         }
+    });
+}
+
+/// Defeat back-forward-cache (bfcache) restoration of authenticated
+/// pages. Browsers snapshot the entire JS heap (including our
+/// in-memory auth signals) when a page is unloaded and restore it
+/// verbatim on back navigation, which would put a logged-out user
+/// back into a populated dashboard until something else triggers a
+/// re-render. We listen for `pageshow` with `persisted=true` (only
+/// fires for bfcache restores, not normal loads) and force a full
+/// reload, which reruns `initial_auth_context()` and drops the user
+/// onto `/login` if they have no live session.
+pub fn use_bfcache_invalidator() {
+    use_effect(move || {
+        let win = match web_sys::window() {
+            Some(w) => w,
+            None => return,
+        };
+        let handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |evt: web_sys::Event| {
+            // `persisted` is only present on PageTransitionEvent (the
+            // pageshow/pagehide payload). We read it via Reflect to
+            // avoid pulling in the PageTransitionEvent web-sys feature.
+            let persisted = js_sys::Reflect::get(&evt, &wasm_bindgen::JsValue::from_str("persisted"))
+                .ok()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if persisted {
+                if let Some(w) = web_sys::window() {
+                    let _ = w.location().reload();
+                }
+            }
+        }) as Box<dyn FnMut(web_sys::Event)>);
+        let _ = win
+            .add_event_listener_with_callback("pageshow", handler.as_ref().unchecked_ref());
+        // Listener must outlive its registration; SPA root, fires once.
+        handler.forget();
     });
 }
 
