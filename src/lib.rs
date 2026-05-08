@@ -13,6 +13,28 @@ pub mod utils;
 pub use modules::auth::{AuthState, CurrentUser};
 pub use utils::error::{AppError, AppResult};
 
+/// Layout component that gates all authenticated routes (declared
+/// here, before the `Route` enum, because the `Routable` derive
+/// expands the `#[layout(AuthGuard)]` reference at the enum site
+/// and needs the component already in scope).
+///
+/// Renders nothing when the user is not signed in and asks the
+/// navigator to replace the current entry with `/login` during
+/// render. The render-time guard is what defeats the back-button
+/// bypass: a popstate-driven re-render of a protected route never
+/// commits any of its content to the DOM, so there is no flash of
+/// authenticated UI before redirect.
+#[component]
+pub fn AuthGuard() -> Element {
+    let auth = hooks::use_auth();
+    let nav = use_navigator();
+    if !auth.read().is_authenticated() {
+        nav.replace(Route::Login {});
+        return rsx! {};
+    }
+    rsx! { Outlet::<Route> {} }
+}
+
 /// Application routes
 #[derive(Clone, Routable, Debug, PartialEq)]
 #[rustfmt::skip]
@@ -228,27 +250,6 @@ pub enum Route {
 
 // Route component wrappers - these import the actual page components
 use pages::*;
-
-/// Layout component that gates all authenticated routes. Renders
-/// nothing when the user is not signed in and asks the navigator to
-/// replace the current entry with `/login` synchronously during
-/// render. The render-time guard is what defeats the back-button
-/// bypass: a popstate-driven re-render of a protected route never
-/// commits any of its content to the DOM, so there is no flash of
-/// authenticated UI before redirect.
-#[component]
-fn AuthGuard() -> Element {
-    let auth = hooks::use_auth();
-    let nav = use_navigator();
-    if !auth.read().is_authenticated() {
-        // `replace`, not `push`: the back stack should not record a
-        // login redirect on top of the protected URL the user just
-        // tried to revisit.
-        nav.replace(Route::Login {});
-        return rsx! {};
-    }
-    rsx! { Outlet::<Route> {} }
-}
 
 #[component]
 fn Home() -> Element {
