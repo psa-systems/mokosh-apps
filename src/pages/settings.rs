@@ -1,11 +1,14 @@
 //! Settings pages
 
+use chrono::{DateTime, Utc};
 use dioxus::prelude::*;
+use serde::Deserialize;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, CogIcon, IconSize, PageHeader,
     PlusIcon,
 };
+use crate::hooks::use_require_role;
 use crate::Route;
 
 /// Main settings page
@@ -91,65 +94,217 @@ fn SettingsCard(props: SettingsCardProps) -> Element {
     }
 }
 
+// ---------------------------------------------------------------------------
+// User management - real data
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+struct UserView {
+    id: String,
+    email: String,
+    role: String,
+    status: String,
+    #[serde(default)]
+    first_name: Option<String>,
+    #[serde(default)]
+    last_name: Option<String>,
+    #[serde(default)]
+    email_verified: bool,
+    #[serde(default)]
+    mfa_enrolled: bool,
+    #[serde(default)]
+    last_login_at: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct UserListBody {
+    users: Vec<UserView>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct InvitesEnvelope {
+    invites: Vec<serde_json::Value>,
+}
+
+fn role_label(role: &str) -> &'static str {
+    match role {
+        "admin" => "Admin",
+        "manager" => "Manager",
+        "finance" => "Finance",
+        "member" => "Member",
+        "readonly" => "Read only",
+        _ => "Other",
+    }
+}
+
+fn role_badge(role: &str) -> BadgeVariant {
+    match role {
+        "admin" => BadgeVariant::Red,
+        "manager" => BadgeVariant::Blue,
+        "finance" => BadgeVariant::Green,
+        _ => BadgeVariant::Gray,
+    }
+}
+
+fn status_label(s: &str) -> &'static str {
+    match s {
+        "active" => "Active",
+        "suspended" => "Suspended",
+        "pending" => "Pending",
+        "deleted" => "Deleted",
+        _ => "Unknown",
+    }
+}
+
+fn status_badge(s: &str) -> BadgeVariant {
+    match s {
+        "active" => BadgeVariant::Green,
+        "suspended" => BadgeVariant::Gray,
+        "pending" => BadgeVariant::Blue,
+        _ => BadgeVariant::Gray,
+    }
+}
+
+fn display_name(u: &UserView) -> String {
+    match (u.first_name.as_deref(), u.last_name.as_deref()) {
+        (Some(f), Some(l)) if !f.is_empty() && !l.is_empty() => format!("{f} {l}"),
+        (Some(f), _) if !f.is_empty() => f.to_string(),
+        (_, Some(l)) if !l.is_empty() => l.to_string(),
+        _ => u.email.clone(),
+    }
+}
+
+fn relative_time(ts: DateTime<Utc>) -> String {
+    let d = Utc::now() - ts;
+    if d < chrono::Duration::minutes(1) {
+        "just now".into()
+    } else if d < chrono::Duration::hours(1) {
+        format!("{} min ago", d.num_minutes())
+    } else if d < chrono::Duration::days(1) {
+        format!("{}h ago", d.num_hours())
+    } else if d < chrono::Duration::days(30) {
+        format!("{}d ago", d.num_days())
+    } else {
+        ts.format("%Y-%m-%d").to_string()
+    }
+}
+
 /// User management page
 #[component]
 pub fn UserManagementPage() -> Element {
+    let _auth = use_require_role("admin");
+    let navigator = use_navigator();
+    let mut users: Signal<Option<Result<Vec<UserView>, String>>> = use_signal(|| None);
+    let mut invites_count: Signal<Option<usize>> = use_signal(|| None);
+    let mut bump = use_signal(|| 0u32);
+    let mut busy: Signal<Option<String>> = use_signal(|| None);
+
+    use_future(move || async move {
+        let _ = bump.read();
+        users.set(None);
+        invites_count.set(None);
+        let cfg = crate::modules::oidc::OidcConfig::from_env();
+        let result = crate::modules::oidc::issuer_get_authed::<UserListBody>(
+            &cfg,
+            "/v1/auth/users",
+        )
+        .await
+        .map(|b| b.users)
+        .map_err(|e| e.to_string());
+        users.set(Some(result));
+        // Pending-invites count (best effort; do not block users list).
+        if let Ok(env) = crate::modules::oidc::issuer_get_authed::<InvitesEnvelope>(
+            &cfg,
+            "/v1/auth/invites",
+        )
+        .await
+        {
+            invites_count.set(Some(env.invites.len()));
+        }
+    });
+
+    let refetch = use_callback(move |_| { bump.with_mut(|n| *n += 1); });
+
+    let toggle_status = use_callback(move |(id, currently_active): (String, bool)| {
+        busy.set(Some(id.clone()));
+        spawn(async move {
+            let cfg = crate::modules::oidc::OidcConfig::from_env();
+            let path = if currently_active {
+                format!("/v1/auth/users/{id}/suspend")
+            } else {
+                format!("/v1/auth/users/{id}/reactivate")
+            };
+            let _ = crate::modules::oidc::issuer_post_authed_empty(&cfg, &path).await;
+            busy.set(None);
+            refetch.call(());
+        });
+    });
+
     rsx! {
         AppLayout { title: "User Management",
             PageHeader {
-                title: "User Management",
-                subtitle: "Manage users and access control",
+                title: "User management".to_string(),
+                subtitle: "Active accounts in your organization. Use \"Invite user\" to add a new teammate.".to_string(),
                 actions: rsx! {
                     Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| { navigator.push(Route::InviteList {}); },
+                        if let Some(n) = *invites_count.read() {
+                            "Pending invites ({n})"
+                        } else {
+                            "Pending invites"
+                        }
+                    }
+                    Button {
                         variant: ButtonVariant::Primary,
+                        onclick: move |_| { navigator.push(Route::InviteCreate {}); },
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "Add User"
+                        "Invite user"
                     }
                 },
             }
 
             Card { padding: false,
-                table { class: "min-w-full divide-y divide-gray-200 dark:divide-gray-700",
-                    thead { class: "bg-gray-50 dark:bg-gray-800",
-                        tr {
-                            th { class: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase", "User" }
-                            th { class: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase", "Email" }
-                            th { class: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase", "Role" }
-                            th { class: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase", "Status" }
-                            th { class: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase", "Last Login" }
-                            th { class: "px-6 py-3", }
+                match users.read().clone() {
+                    None => rsx! { div { class: "p-8 text-center text-gray-500", "Loading..." } },
+                    Some(Err(msg)) => rsx! {
+                        div { class: "p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800",
+                            p { class: "text-sm text-red-600 dark:text-red-400", "Could not load users: {msg}" }
                         }
-                    }
-                    tbody { class: "bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700",
-                        UserRow {
-                            name: "John Smith",
-                            email: "john@company.com",
-                            role: "Admin",
-                            status: "Active",
-                            last_login: "Today, 9:15 AM",
+                    },
+                    Some(Ok(rows)) if rows.is_empty() => rsx! {
+                        div { class: "p-8 text-center text-gray-500",
+                            "No users yet. Invite your first teammate to get started."
                         }
-                        UserRow {
-                            name: "Jane Doe",
-                            email: "jane@company.com",
-                            role: "Technician",
-                            status: "Active",
-                            last_login: "Today, 8:30 AM",
+                    },
+                    Some(Ok(rows)) => rsx! {
+                        table { class: "min-w-full divide-y divide-gray-200 dark:divide-gray-700",
+                            thead { class: "bg-gray-50 dark:bg-gray-800",
+                                tr {
+                                    th { class: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase", "User" }
+                                    th { class: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase", "Role" }
+                                    th { class: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase", "Status" }
+                                    th { class: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase", "Last login" }
+                                    th { class: "px-6 py-3", }
+                                }
+                            }
+                            tbody { class: "bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700",
+                                for u in rows {
+                                    UserRow {
+                                        key: "{u.id}",
+                                        user: u.clone(),
+                                        busy_id: busy.read().clone(),
+                                        on_toggle: {
+                                            let id = u.id.clone();
+                                            let active = u.status == "active";
+                                            move |_| toggle_status.call((id.clone(), active))
+                                        },
+                                    }
+                                }
+                            }
                         }
-                        UserRow {
-                            name: "Mike Wilson",
-                            email: "mike@company.com",
-                            role: "Technician",
-                            status: "Active",
-                            last_login: "Yesterday",
-                        }
-                        UserRow {
-                            name: "Sarah Miller",
-                            email: "sarah@company.com",
-                            role: "Manager",
-                            status: "Inactive",
-                            last_login: "Dec 15, 2024",
-                        }
-                    }
+                    },
                 }
             }
         }
@@ -158,26 +313,22 @@ pub fn UserManagementPage() -> Element {
 
 #[derive(Props, Clone, PartialEq)]
 struct UserRowProps {
-    name: String,
-    email: String,
-    role: String,
-    status: String,
-    last_login: String,
+    user: UserView,
+    busy_id: Option<String>,
+    on_toggle: EventHandler<()>,
 }
 
 #[component]
 fn UserRow(props: UserRowProps) -> Element {
-    let status_variant = if props.status == "Active" {
-        BadgeVariant::Green
-    } else {
-        BadgeVariant::Gray
-    };
-
-    let role_variant = match props.role.as_str() {
-        "Admin" => BadgeVariant::Purple,
-        "Manager" => BadgeVariant::Blue,
-        _ => BadgeVariant::Gray,
-    };
+    let u = &props.user;
+    let name = display_name(u);
+    let initial = name.chars().next().unwrap_or('?').to_string();
+    let active = u.status == "active";
+    let busy = props.busy_id.as_deref() == Some(u.id.as_str());
+    let last = u
+        .last_login_at
+        .map(relative_time)
+        .unwrap_or_else(|| "never".to_string());
 
     rsx! {
         tr {
@@ -185,24 +336,29 @@ fn UserRow(props: UserRowProps) -> Element {
                 div { class: "flex items-center",
                     div { class: "w-10 h-10 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center",
                         span { class: "text-sm font-medium text-blue-600 dark:text-blue-400",
-                            {props.name.chars().next().unwrap_or('?').to_string()}
+                            "{initial}"
                         }
                     }
                     div { class: "ml-4",
-                        div { class: "text-sm font-medium text-gray-900 dark:text-white", "{props.name}" }
+                        div { class: "text-sm font-medium text-gray-900 dark:text-white", "{name}" }
+                        div { class: "text-xs text-gray-500", "{u.email}" }
                     }
                 }
             }
-            td { class: "px-6 py-4 whitespace-nowrap text-sm text-gray-500", "{props.email}" }
             td { class: "px-6 py-4 whitespace-nowrap",
-                Badge { variant: role_variant, "{props.role}" }
+                Badge { variant: role_badge(&u.role), "{role_label(&u.role)}" }
             }
             td { class: "px-6 py-4 whitespace-nowrap",
-                Badge { variant: status_variant, "{props.status}" }
+                Badge { variant: status_badge(&u.status), "{status_label(&u.status)}" }
             }
-            td { class: "px-6 py-4 whitespace-nowrap text-sm text-gray-500", "{props.last_login}" }
+            td { class: "px-6 py-4 whitespace-nowrap text-sm text-gray-500", "{last}" }
             td { class: "px-6 py-4 whitespace-nowrap text-right text-sm",
-                button { class: "text-blue-600 hover:text-blue-900", "Edit" }
+                Button {
+                    variant: if active { ButtonVariant::Secondary } else { ButtonVariant::Primary },
+                    loading: busy,
+                    onclick: move |_| props.on_toggle.call(()),
+                    if active { "Suspend" } else { "Reactivate" }
+                }
             }
         }
     }
