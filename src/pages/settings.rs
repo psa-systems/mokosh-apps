@@ -8,7 +8,7 @@ use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, CogIcon, IconSize, PageHeader,
     PlusIcon,
 };
-use crate::hooks::use_require_role;
+use crate::hooks::{use_auth, use_require_role};
 use crate::Route;
 
 /// Main settings page
@@ -195,6 +195,16 @@ fn relative_time(ts: DateTime<Utc>) -> String {
 pub fn UserManagementPage() -> Element {
     let _auth = use_require_role("admin");
     let navigator = use_navigator();
+    // Used to hide the Suspend button on the caller's own row. The
+    // server enforces this and the "last active admin" guard, but
+    // the UI treatment makes the trap impossible to even attempt.
+    let me = use_auth();
+    let my_id: String = me
+        .read()
+        .user
+        .as_ref()
+        .map(|u| u.id.to_string())
+        .unwrap_or_default();
     let mut users: Signal<Option<Result<Vec<UserView>, String>>> = use_signal(|| None);
     let mut invites_count: Signal<Option<usize>> = use_signal(|| None);
     let mut bump = use_signal(|| 0u32);
@@ -294,6 +304,7 @@ pub fn UserManagementPage() -> Element {
                                     UserRow {
                                         key: "{u.id}",
                                         user: u.clone(),
+                                        is_self: u.id == my_id,
                                         busy_id: busy.read().clone(),
                                         on_toggle: {
                                             let id = u.id.clone();
@@ -314,6 +325,7 @@ pub fn UserManagementPage() -> Element {
 #[derive(Props, Clone, PartialEq)]
 struct UserRowProps {
     user: UserView,
+    is_self: bool,
     busy_id: Option<String>,
     on_toggle: EventHandler<()>,
 }
@@ -340,7 +352,12 @@ fn UserRow(props: UserRowProps) -> Element {
                         }
                     }
                     div { class: "ml-4",
-                        div { class: "text-sm font-medium text-gray-900 dark:text-white", "{name}" }
+                        div { class: "text-sm font-medium text-gray-900 dark:text-white",
+                            "{name}"
+                            if props.is_self {
+                                span { class: "ml-2 text-xs text-gray-500", "(you)" }
+                            }
+                        }
                         div { class: "text-xs text-gray-500", "{u.email}" }
                     }
                 }
@@ -353,11 +370,19 @@ fn UserRow(props: UserRowProps) -> Element {
             }
             td { class: "px-6 py-4 whitespace-nowrap text-sm text-gray-500", "{last}" }
             td { class: "px-6 py-4 whitespace-nowrap text-right text-sm",
-                Button {
-                    variant: if active { ButtonVariant::Secondary } else { ButtonVariant::Primary },
-                    loading: busy,
-                    onclick: move |_| props.on_toggle.call(()),
-                    if active { "Suspend" } else { "Reactivate" }
+                // No Suspend button on the caller's own row. The API
+                // also rejects self-suspend (and last-active-admin
+                // suspend) so this UI treatment is purely about not
+                // showing an action that would be refused. Reactivate
+                // is unreachable from your own row anyway since you
+                // could not be signed in if you were suspended.
+                if !props.is_self {
+                    Button {
+                        variant: if active { ButtonVariant::Secondary } else { ButtonVariant::Primary },
+                        loading: busy,
+                        onclick: move |_| props.on_toggle.call(()),
+                        if active { "Suspend" } else { "Reactivate" }
+                    }
                 }
             }
         }
