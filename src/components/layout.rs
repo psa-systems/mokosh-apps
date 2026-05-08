@@ -105,8 +105,9 @@ pub fn Sidebar(props: SidebarProps) -> Element {
 #[component]
 fn SidebarContent() -> Element {
     rsx! {
-        nav { class: "flex-1 px-2 py-4 space-y-1",
-            NavItem { to: Route::Dashboard {}, icon: rsx!(HomeIcon {}), label: "Dashboard" }
+        div { class: "flex flex-col flex-1 min-h-0",
+            nav { class: "flex-1 px-2 py-4 space-y-1",
+                NavItem { to: Route::Dashboard {}, icon: rsx!(HomeIcon {}), label: "Dashboard" }
 
             NavSection { title: "Service Desk",
                 NavItem { to: Route::TicketList {}, icon: rsx!(TicketIcon {}), label: "Tickets" }
@@ -149,6 +150,26 @@ fn SidebarContent() -> Element {
             NavSection { title: "Configuration",
                 NavItem { to: Route::Settings {}, icon: rsx!(CogIcon {}), label: "Settings" }
             }
+            }
+            VersionFooter {}
+        }
+    }
+}
+
+/// Compact build-info line shown in every layout footer so support and
+/// developers can identify the running build at a glance.
+#[component]
+fn VersionFooter() -> Element {
+    use crate::utils::version::{BUILD_DATE, GIT_HASH, VERSION};
+    rsx! {
+        p {
+            class: "px-3 py-2 text-xs text-gray-500 dark:text-gray-500 text-center break-words",
+            title: "{VERSION} commit {GIT_HASH} built {BUILD_DATE}",
+            span { "{VERSION}" }
+            span { class: "mx-1", "-" }
+            span { class: "font-mono", "{GIT_HASH}" }
+            span { class: "mx-1", "-" }
+            span { "{BUILD_DATE}" }
         }
     }
 }
@@ -431,6 +452,7 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
                     p { class: "text-sm text-gray-500 dark:text-gray-400 text-center",
                         "Powered by Mokosh Platform"
                     }
+                    VersionFooter {}
                 }
             }
         }
@@ -460,6 +482,10 @@ pub fn AuthLayout(props: AuthLayoutProps) -> Element {
                 div { class: "bg-white dark:bg-gray-800 py-8 px-4 shadow sm:rounded-lg sm:px-10",
                     {props.children}
                 }
+            }
+
+            div { class: "mt-6 sm:mx-auto sm:w-full sm:max-w-md",
+                VersionFooter {}
             }
         }
     }
