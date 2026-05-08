@@ -265,6 +265,29 @@ pub async fn refresh_tokens(
     })
 }
 
+/// RFC 7009 token revocation. Best-effort: the spec requires the OP
+/// to return 200 even for unknown/invalid tokens, so we treat any
+/// non-network failure as success. Used by the logout flow to kill
+/// the refresh-token family server-side before the browser navigates
+/// away.
+pub async fn revoke_refresh_token(cfg: &OidcConfig, refresh_token: &str) -> Result<(), FlowError> {
+    let body = form_encode(&[
+        ("token", refresh_token),
+        ("token_type_hint", "refresh_token"),
+        ("client_id", cfg.client_id),
+    ]);
+    let issuer = cfg.issuer.trim_end_matches('/');
+    let url = format!("{issuer}/oauth2/revoke");
+    let _ = Request::post(&url)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(body)
+        .map_err(|e| FlowError::Network(e.to_string()))?
+        .send()
+        .await
+        .map_err(|e| FlowError::Network(e.to_string()))?;
+    Ok(())
+}
+
 /// Direct password login against `/v1/auth/login`. The request includes
 /// our `client_id`, so the response body carries a minted token bundle
 /// in addition to setting the OP-session cookie. We treat it like an

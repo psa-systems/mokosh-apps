@@ -287,41 +287,41 @@ pub fn use_token_refresh() {
     });
 }
 
-/// Hook for logout. Clears tokens locally, then sends the browser to
-/// the OP's `/oauth2/logout` endpoint so the IdP-side session is also
-/// killed and any other relying parties get back-channel logout tokens.
+/// Hook for logout. Three things happen:
+///   1. Refresh token is revoked at `/oauth2/revoke` (RFC 7009 form
+///      POST, no credentials needed). Killing the family ensures any
+///      stale tokens that survive in browser caches are useless.
+///   2. The in-memory auth signal and global access-token holder are
+///      cleared.
+///   3. The browser navigates to `/login` via `location.replace`, NOT
+///      `set_href`. Replace evicts the previous (authenticated) URL
+///      from history, so back-button cannot return to the
+///      authenticated view (which would otherwise reboot the SPA at
+///      `/dashboard` and momentarily flash protected content).
 pub fn use_logout() -> impl FnMut() {
     let mut auth = use_auth();
-    let navigator = use_navigator();
 
     move || {
-        let id_token_hint = auth
+        let refresh = auth
             .read()
             .tokens
             .as_ref()
-            .map(|t| t.id_token.clone());
+            .and_then(|t| t.refresh_token.clone());
         {
             let mut a = auth.write();
             a.user = None;
             a.tokens = None;
         }
-        // Clear the global access-token holder so any in-flight api
-        // calls from this point on go out unauthenticated.
         crate::hooks::fetch::api::set_access_token(None);
 
-        let cfg = crate::modules::oidc::OidcConfig::from_env();
-        let issuer = cfg.issuer.trim_end_matches('/');
-        let mut url = format!("{issuer}/oauth2/logout");
-        if let Some(hint) = id_token_hint {
-            url.push_str("?id_token_hint=");
-            let encoded: String = js_sys::encode_uri_component(&hint).into();
-            url.push_str(&encoded);
-        }
-        if let Some(win) = web_sys::window() {
-            if win.location().set_href(&url).is_ok() {
-                return;
+        spawn(async move {
+            if let Some(rt) = refresh {
+                let cfg = crate::modules::oidc::OidcConfig::from_env();
+                let _ = crate::modules::oidc::revoke_refresh_token(&cfg, &rt).await;
             }
-        }
-        navigator.push(Route::Login {});
+            if let Some(win) = web_sys::window() {
+                let _ = win.location().replace("/login");
+            }
+        });
     }
 }
