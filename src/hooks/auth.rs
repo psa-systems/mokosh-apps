@@ -324,19 +324,25 @@ pub fn use_bfcache_invalidator() {
     });
 }
 
-/// Hook for logout. Three things happen:
-///   1. Refresh token is revoked at `/oauth2/revoke` (RFC 7009 form
-///      POST, no credentials needed). Killing the family ensures any
-///      stale tokens that survive in browser caches are useless.
-///   2. The in-memory auth signal and global access-token holder are
-///      cleared.
-///   3. The browser navigates to `/login` via `location.replace`, NOT
-///      `set_href`. Replace evicts the previous (authenticated) URL
-///      from history, so back-button cannot return to the
-///      authenticated view (which would otherwise reboot the SPA at
-///      `/dashboard` and momentarily flash protected content).
+/// Hook for logout.
+///
+/// Order matters here: the call to `location.replace("/login")` MUST
+/// run before any write to the auth signal. Otherwise:
+///   - `auth.write(user=None)` schedules a Dioxus re-render
+///   - the microtask fires, route guards see an unauthenticated user
+///     on `/dashboard` and call `navigator.push(Login)`, which adds
+///     `/login` on TOP of `/dashboard` in history
+///   - by the time we navigate away, `/dashboard` is still at
+///     `history[-1]` and the back button puts the user right back
+///     onto an authenticated-looking page
+///
+/// Doing the navigation first avoids the re-render entirely: the
+/// page is already on its way to a full reload, which will reset all
+/// in-memory state from scratch. The refresh-token revoke is
+/// fire-and-forget; modern browsers complete in-flight fetches even
+/// after the document starts unloading.
 pub fn use_logout() -> impl FnMut() {
-    let mut auth = use_auth();
+    let auth = use_auth();
 
     move || {
         let refresh = auth
@@ -344,21 +350,16 @@ pub fn use_logout() -> impl FnMut() {
             .tokens
             .as_ref()
             .and_then(|t| t.refresh_token.clone());
-        {
-            let mut a = auth.write();
-            a.user = None;
-            a.tokens = None;
-        }
-        crate::hooks::fetch::api::set_access_token(None);
 
-        spawn(async move {
-            if let Some(rt) = refresh {
-                let cfg = crate::modules::oidc::OidcConfig::from_env();
+        if let Some(rt) = refresh {
+            let cfg = crate::modules::oidc::OidcConfig::from_env();
+            spawn(async move {
                 let _ = crate::modules::oidc::revoke_refresh_token(&cfg, &rt).await;
-            }
-            if let Some(win) = web_sys::window() {
-                let _ = win.location().replace("/login");
-            }
-        });
+            });
+        }
+
+        if let Some(win) = web_sys::window() {
+            let _ = win.location().replace("/login");
+        }
     }
 }
