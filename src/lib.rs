@@ -36,9 +36,21 @@ pub enum Route {
     #[route("/invite/:token")]
     InviteAccept { token: String },
 
-    // Dashboard
-    #[route("/dashboard")]
-    Dashboard {},
+    // ======================================================================
+    // Authenticated routes. The `AuthGuard` layout below renders nothing
+    // (and synchronously navigates to /login) whenever the in-memory
+    // auth signal reports the user as unauthenticated. This is what
+    // stops the back-button from flashing /dashboard after logout: a
+    // popstate-driven re-render of a protected route is gated *during*
+    // render, not after, so the dashboard component never gets a frame
+    // to display its content. `use_require_auth` inside individual
+    // pages still runs but is now a redundant safety net.
+    // ======================================================================
+    #[layout(AuthGuard)]
+
+      // Dashboard
+      #[route("/dashboard")]
+      Dashboard {},
 
     // Tickets
     #[route("/tickets")]
@@ -182,6 +194,11 @@ pub enum Route {
     #[route("/admin/tenants")]
     TenantManagement {},
 
+    // End of AuthGuard scope. Portal routes have their own layout and
+    // auth model (client portal vs internal tools); the catch-all 404
+    // is intentionally public so logged-out users see a real 404 page.
+    #[end_layout]
+
     // Client Portal Routes (separate layout)
     #[route("/portal")]
     PortalHome {},
@@ -211,6 +228,27 @@ pub enum Route {
 
 // Route component wrappers - these import the actual page components
 use pages::*;
+
+/// Layout component that gates all authenticated routes. Renders
+/// nothing when the user is not signed in and asks the navigator to
+/// replace the current entry with `/login` synchronously during
+/// render. The render-time guard is what defeats the back-button
+/// bypass: a popstate-driven re-render of a protected route never
+/// commits any of its content to the DOM, so there is no flash of
+/// authenticated UI before redirect.
+#[component]
+fn AuthGuard() -> Element {
+    let auth = hooks::use_auth();
+    let nav = use_navigator();
+    if !auth.read().is_authenticated() {
+        // `replace`, not `push`: the back stack should not record a
+        // login redirect on top of the protected URL the user just
+        // tried to revisit.
+        nav.replace(Route::Login {});
+        return rsx! {};
+    }
+    rsx! { Outlet::<Route> {} }
+}
 
 #[component]
 fn Home() -> Element {
