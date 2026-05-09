@@ -21,6 +21,14 @@ RUN cargo binstall dioxus-cli --no-confirm
 # Install WASM target for client build
 RUN rustup target add wasm32-unknown-unknown
 
+# Cap concurrent rustc / build-script processes. CI sets this to the
+# full host nproc since this is the only build on the runner. The
+# default keeps ad-hoc local builds from oversubscribing a small
+# laptop. Overridable via `--build-arg CARGO_BUILD_JOBS=N`.
+ARG CARGO_BUILD_JOBS=2
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
+RUN echo "build parallelism: CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} (host nproc=$(nproc))"
+
 # --- Dependency caching (no source) ---
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src \
