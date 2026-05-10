@@ -315,6 +315,13 @@ pub fn InviteCreatePage() -> Element {
     rsx! {
         AppLayout { title: "Invite user".to_string(),
             div { class: "max-w-2xl mx-auto space-y-6",
+                div {
+                    Link {
+                        to: Route::UserManagement {},
+                        class: "text-sm text-blue-600 hover:text-blue-500 dark:text-blue-400",
+                        "← Back to user management"
+                    }
+                }
                 if let Some(s) = success.read().clone() {
                     InviteSuccessCard {
                         invite_email: s.invite.email.clone(),
@@ -438,6 +445,13 @@ pub fn InviteListPage() -> Element {
 
     rsx! {
         AppLayout { title: "Pending invites".to_string(),
+            div { class: "mb-4",
+                Link {
+                    to: Route::UserManagement {},
+                    class: "text-sm text-blue-600 hover:text-blue-500 dark:text-blue-400",
+                    "← Back to user management"
+                }
+            }
             div { class: "flex justify-between items-center mb-4",
                 PageHeader { title: "Pending invites".to_string() }
                 Button {
