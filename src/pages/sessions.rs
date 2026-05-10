@@ -63,12 +63,27 @@ pub fn SessionsPage() -> Element {
 
     // Callback (Copy) so each row gets a cheap reference. Captures
     // `load` and the revoking signal; spawn handles the await.
-    let revoke = use_callback(move |id: String| {
+    //
+    // The `is_current` flag is the trigger for a full client-side
+    // sign-out: server revoke alone leaves the still-valid (up to its
+    // ~10-minute exp) access token in memory + sessionStorage, so the
+    // user can keep clicking around until the next refresh fails. We
+    // mirror `use_logout` for that case: clear the persisted token
+    // bundle and replace the history entry with /login.
+    let revoke = use_callback(move |(id, is_current): (String, bool)| {
         revoking.set(Some(id.clone()));
         spawn(async move {
             let cfg = crate::modules::oidc::OidcConfig::from_env();
             let path = format!("/v1/auth/sessions/{id}/revoke");
             let _ = crate::modules::oidc::issuer_post_authed_empty(&cfg, &path).await;
+            if is_current {
+                crate::modules::oidc::storage::clear_auth();
+                crate::hooks::fetch::api::set_access_token(None);
+                if let Some(win) = web_sys::window() {
+                    let _ = win.location().replace("/login");
+                }
+                return;
+            }
             revoking.set(None);
             load.call(());
         });
@@ -101,7 +116,8 @@ pub fn SessionsPage() -> Element {
                                     revoking_id: revoking.read().clone(),
                                     on_revoke: {
                                         let id = s.id.clone();
-                                        move |_| revoke.call(id.clone())
+                                        let is_current = s.is_current;
+                                        move |_| revoke.call((id.clone(), is_current))
                                     },
                                 }
                             }
