@@ -58,6 +58,12 @@ pub enum Route {
     #[route("/invite/:token")]
     InviteAccept { token: String },
 
+    #[route("/signup")]
+    Signup {},
+
+    #[route("/signup/:token")]
+    SignupComplete { token: String },
+
     // ======================================================================
     // Authenticated routes. The `AuthGuard` layout below renders nothing
     // (and synchronously navigates to /login) whenever the in-memory
@@ -282,6 +288,16 @@ fn ResetPassword(token: String) -> Element {
 #[component]
 fn InviteAccept(token: String) -> Element {
     rsx! { invite_accept::InviteAcceptPage { token } }
+}
+
+#[component]
+fn Signup() -> Element {
+    rsx! { signup::SignupPage {} }
+}
+
+#[component]
+fn SignupComplete(token: String) -> Element {
+    rsx! { signup_complete::SignupCompletePage { token } }
 }
 
 #[component]

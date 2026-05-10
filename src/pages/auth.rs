@@ -238,9 +238,10 @@ pub fn LoginPage() -> Element {
 
                 div { class: "text-center text-sm text-gray-600 dark:text-gray-400",
                     "Don't have an account? "
-                    a {
+                    Link {
+                        to: Route::Signup {},
                         class: "text-blue-600 hover:text-blue-500 dark:text-blue-400",
-                        "Contact us"
+                        "Sign up"
                     }
                 }
             }

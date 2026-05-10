@@ -21,5 +21,7 @@ pub mod projects;
 pub mod reports;
 pub mod sessions;
 pub mod settings;
+pub mod signup;
+pub mod signup_complete;
 pub mod tickets;
 pub mod time;
