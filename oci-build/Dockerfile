@@ -31,7 +31,9 @@ RUN echo "build parallelism: CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} (host nproc=$(
 
 # --- Dependency caching (no source) ---
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir src \
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    mkdir src \
     && echo "fn main() {}" > src/main.rs \
     && echo "" > src/lib.rs \
     && cargo build --release --target wasm32-unknown-unknown \
@@ -47,7 +49,9 @@ COPY . .
 RUN bun x @tailwindcss/cli --input input.css --output assets/styles.css --minify
 
 # Build fullstack client (WASM bundle + static assets)
-RUN dx build --release
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    dx build --release
 
 # Runtime stage - serve static assets via Caddy
 FROM alpine:3.21
