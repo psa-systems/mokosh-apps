@@ -3,8 +3,68 @@
 use dioxus::prelude::*;
 
 use crate::components::{AuthLayout, Button, ButtonVariant, Input};
-use crate::hooks::{use_auth, use_google_login, use_login_form, GoogleLoginStatus};
+use crate::hooks::{
+    use_auth, use_google_login, use_login_form_with_return_to, GoogleLoginStatus,
+};
 use crate::Route;
+
+/// Read `?return_to=...` from the current URL and return it only if it
+/// passes the strict open-redirect guard (must be the serialized
+/// authorize query produced by mokosh-auth-http; anything else is
+/// rejected). Returns `None` if absent or invalid.
+fn read_safe_return_to() -> Option<String> {
+    #[cfg(feature = "web")]
+    {
+        let win = web_sys::window()?;
+        let search = win.location().search().ok()?;
+        let trimmed = search.strip_prefix('?').unwrap_or(&search);
+        for pair in trimmed.split('&') {
+            let mut it = pair.splitn(2, '=');
+            if it.next()? == "return_to" {
+                let raw = it.next().unwrap_or("");
+                let decoded: String = js_sys::decode_uri_component(raw).ok()?.into();
+                if is_safe_return_to(&decoded) {
+                    return Some(decoded);
+                }
+                return None;
+            }
+        }
+    }
+    None
+}
+
+fn is_safe_return_to(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    if s.contains('\n') || s.contains('\r') {
+        return false;
+    }
+    // The only return_to we ever produce is the serialized authorize
+    // query (response_type=code&client_id=...&redirect_uri=...&...).
+    // Anything else is suspect.
+    s.starts_with("response_type=")
+}
+
+/// Build the full authorize URL from a previously-validated `return_to`
+/// payload and navigate the browser there. The OP-session cookie set
+/// during login covers the issuer host, so this top-level navigation
+/// completes the OIDC code-flow without any extra round-trips.
+#[cfg(feature = "web")]
+fn bounce_to_authorize(return_to: &str) {
+    let cfg = crate::modules::oidc::OidcConfig::from_env();
+    let url = format!(
+        "{}/oauth2/authorize?{}",
+        cfg.issuer.trim_end_matches('/'),
+        return_to
+    );
+    if let Some(win) = web_sys::window() {
+        let _ = win.location().assign(&url);
+    }
+}
+
+#[cfg(not(feature = "web"))]
+fn bounce_to_authorize(_return_to: &str) {}
 
 const GOOGLE_BUTTON_CLASS: &str =
     "w-full inline-flex items-center justify-center gap-3 rounded-md border \
@@ -19,13 +79,33 @@ pub fn LoginPage() -> Element {
     let auth = use_auth();
     let navigator = use_navigator();
 
-    use_effect(move || {
-        if auth.read().is_authenticated() {
-            navigator.push(Route::Dashboard {});
+    // `?return_to=<authorize_query>` is set when an OIDC relying party
+    // redirects an unauthenticated user through `/oauth2/authorize`,
+    // which 302s here. After a successful login we navigate to
+    // `<issuer>/oauth2/authorize?<return_to>`; the OP-session cookie is
+    // now set on `.a8n.run`, so the authorize endpoint sees it on that
+    // top-level navigation and 302s on to the RP with a code. See
+    // docs/mokosh-auth/09-single-login-bridge.md.
+    //
+    // The guard rejects everything that does not begin with
+    // `response_type=` so this query parameter cannot be used as an
+    // open-redirect to an arbitrary URL.
+    let return_to = read_safe_return_to();
+
+    use_effect({
+        let return_to = return_to.clone();
+        move || {
+            if auth.read().is_authenticated() {
+                if let Some(rt) = &return_to {
+                    bounce_to_authorize(rt);
+                } else {
+                    navigator.push(Route::Dashboard {});
+                }
+            }
         }
     });
 
-    let (mut form_state, submit) = use_login_form();
+    let (mut form_state, submit) = use_login_form_with_return_to(return_to.clone());
     let google = use_google_login();
 
     // Two sign-in paths:

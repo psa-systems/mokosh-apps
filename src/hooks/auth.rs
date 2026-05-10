@@ -201,14 +201,30 @@ pub struct LoginFormState {
 /// second login page. The OP login UI was retired with this change;
 /// the only sign-in screen users see is the SPA's own form.
 pub fn use_login_form() -> (Signal<LoginFormState>, Callback<()>) {
+    use_login_form_with_return_to(None)
+}
+
+/// Variant of [`use_login_form`] that, on successful login, navigates
+/// to the OIDC authorize URL reconstructed from a `return_to` query
+/// payload instead of pushing /dashboard. Used when an external RP
+/// redirected the user through `/oauth2/authorize` and we need to
+/// bounce them back so the OP can mint a code.
+///
+/// Caller has already validated `return_to` via the strict open-
+/// redirect guard in `pages/auth.rs`.
+pub fn use_login_form_with_return_to(
+    return_to: Option<String>,
+) -> (Signal<LoginFormState>, Callback<()>) {
     let mut form_state = use_signal(LoginFormState::default);
     let mut auth = use_auth();
     let navigator = use_navigator();
+    let return_to = use_signal(move || return_to);
 
     let submit = use_callback(move |_| {
         let email = form_state.read().email.clone();
         let password = form_state.read().password.clone();
         let nav = navigator;
+        let rt = return_to.read().clone();
         spawn(async move {
             form_state.write().is_submitting = true;
             form_state.write().error = None;
@@ -270,7 +286,24 @@ pub fn use_login_form() -> (Signal<LoginFormState>, Callback<()>) {
                         a.tokens = Some(tokens);
                     }
                     form_state.write().is_submitting = false;
-                    nav.push(Route::Dashboard {});
+                    if let Some(rt) = rt {
+                        // Bounce back into /oauth2/authorize. The OP
+                        // session cookie just set by /v1/auth/login
+                        // will ride this top-level navigation, so the
+                        // authorize endpoint sees an active session
+                        // and 302s on to the RP with a code.
+                        let cfg = crate::modules::oidc::OidcConfig::from_env();
+                        let url = format!(
+                            "{}/oauth2/authorize?{}",
+                            cfg.issuer.trim_end_matches('/'),
+                            rt
+                        );
+                        if let Some(win) = web_sys::window() {
+                            let _ = win.location().assign(&url);
+                        }
+                    } else {
+                        nav.push(Route::Dashboard {});
+                    }
                 }
                 Err(e) => {
                     form_state.write().error = Some(e.to_string());
