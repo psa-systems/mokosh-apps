@@ -1,8 +1,36 @@
 # Mokosh Platform - Dioxus Client - Task Runner
 
+# Image used by the pre-commit hook. Matches ci-build/Dockerfile so `just pre-commit` and the Forgejo `check.yml` job run a toolchain compatible with the rust-builder-glibc image the client is built against.
+dev_image := "ghcr.io/niceguyit/rust-builder-glibc:v1.0.0-rust1.94-trixie"
+
 # List available recipes
 default:
     @just --list
+
+# Install the git pre-commit hook (run once per fresh clone). Writes a stub at .git/hooks/pre-commit that execs `just pre-commit`. Bypass with `git commit --no-verify`.
+install-hooks:
+    #!/usr/bin/env nu
+    let hook = ".git/hooks/pre-commit"
+    # Remove first so a leftover symlink from an older install does not get
+    # written through to its target file. `try` swallows the not-found case.
+    try { rm $hook }
+    "#!/usr/bin/env sh\nexec just pre-commit\n" | save $hook
+    ^chmod +x $hook
+    print $"Wrote ($hook) -> just pre-commit"
+
+# Run the same checks as .forgejo/workflows/check.yml inside the rust-builder-glibc image so the toolchain matches CI.
+pre-commit:
+    #!/usr/bin/env nu
+    let img = "{{ dev_image }}"
+    print "\n[pre-commit] cargo fmt --all --check"
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume dev-mokosh-clients-cargo-target:/build/target --volume dev-mokosh-clients-cargo-registry:/usr/local/cargo/registry $img cargo fmt --all --check
+    print "\n[pre-commit] cargo clippy --all-targets -- -D warnings"
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume dev-mokosh-clients-cargo-target:/build/target --volume dev-mokosh-clients-cargo-registry:/usr/local/cargo/registry $img cargo clippy --all-targets -- -D warnings
+    print "\n[pre-commit] cargo check --target wasm32-unknown-unknown"
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume dev-mokosh-clients-cargo-target:/build/target --volume dev-mokosh-clients-cargo-registry:/usr/local/cargo/registry $img cargo check --target wasm32-unknown-unknown
+    print "\n[pre-commit] cargo test --lib"
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume dev-mokosh-clients-cargo-target:/build/target --volume dev-mokosh-clients-cargo-registry:/usr/local/cargo/registry $img cargo test --lib
+    print "\n[pre-commit] all checks passed"
 
 # Install JS dependencies
 [private]
