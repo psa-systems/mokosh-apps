@@ -1,25 +1,9 @@
-# Mokosh Platform client - Dioxus WASM web bundle
-# Build stage (trixie for glibc 2.41, required by pre-built dioxus-cli binary)
-FROM rust:1.93-slim-trixie AS builder
+# Mokosh Platform client - Dioxus WASM web bundle.
+# Base image bundles Rust 1.93 + WASM target + bun + cargo-binstall + dioxus-cli
+# (pinned). See niceguyit/oci-images/rust-builder.
+FROM ghcr.io/niceguyit/rust-builder-dioxus:v1.0.0-dioxus0.7.7-rust1.93-trixie AS builder
 
 WORKDIR /build
-
-RUN apt-get update && apt-get install --yes --no-install-recommends \
-    curl pkg-config libssl-dev unzip \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Bun (for Tailwind v4 CSS build)
-RUN curl --location --silent --show-error --fail https://bun.sh/install \
-    | env BUN_INSTALL=/usr/local bash
-
-# Install cargo-binstall, then use it to fetch pre-built dioxus-cli
-RUN curl --location --silent --show-error \
-    https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-x86_64-unknown-linux-gnu.tgz \
-    | tar --extract --gzip --directory /usr/local/cargo/bin
-RUN cargo binstall dioxus-cli@0.7.7 --no-confirm
-
-# Install WASM target for client build
-RUN rustup target add wasm32-unknown-unknown
 
 # Cap concurrent rustc / build-script processes. CI sets this to the
 # full host nproc since this is the only build on the runner. The
