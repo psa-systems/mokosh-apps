@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use dioxus::prelude::*;
 use serde::Deserialize;
 
-use crate::components::{AppLayout, Button, ButtonVariant, Card, PageHeader};
+use crate::components::{AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, PageHeader};
 use crate::hooks::use_require_auth;
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -22,6 +22,13 @@ struct SessionView {
     user_agent: Option<String>,
     #[serde(default)]
     ip: Option<String>,
+    /// `true` for the row that matches the access token the SPA
+    /// used to fetch this list. The server identifies it via the
+    /// `mokosh_op_session_id` claim. Older servers omit the field;
+    /// the row falls back to the standard "no badge, can revoke"
+    /// presentation.
+    #[serde(default)]
+    is_current: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -128,8 +135,13 @@ fn SessionRow(props: SessionRowProps) -> Element {
     rsx! {
         div { class: "flex items-start justify-between gap-4 p-4",
             div { class: "min-w-0 flex-1",
-                p { class: "text-sm font-medium text-gray-900 dark:text-white truncate",
-                    "{device}"
+                div { class: "flex items-center gap-2 flex-wrap",
+                    p { class: "text-sm font-medium text-gray-900 dark:text-white truncate",
+                        "{device}"
+                    }
+                    if s.is_current {
+                        Badge { variant: BadgeVariant::Green, "Current session" }
+                    }
                 }
                 p { class: "mt-1 text-xs text-gray-500 dark:text-gray-400",
                     "IP {ip} - last active {last_active}"
@@ -142,7 +154,7 @@ fn SessionRow(props: SessionRowProps) -> Element {
                 variant: ButtonVariant::Secondary,
                 loading: busy,
                 onclick: move |_| props.on_revoke.call(()),
-                "Revoke"
+                if s.is_current { "Sign out" } else { "Revoke" }
             }
         }
     }
