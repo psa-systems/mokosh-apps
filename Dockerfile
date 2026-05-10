@@ -1,5 +1,5 @@
 # Development Dockerfile - dx serve with hot reload
-FROM rust:1-slim-trixie
+FROM ghcr.io/niceguyit/rust-builder-glibc:v1.0.0-rust1.94-trixie
 
 ARG UID=1000
 ARG GID=1000
@@ -9,7 +9,6 @@ RUN apt-get update && apt-get install --yes --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # WASM target
-RUN rustup target add wasm32-unknown-unknown
 
 # Install Bun (Tailwind v4 CSS)
 RUN curl --location --silent --show-error --fail https://bun.sh/install \
@@ -19,7 +18,6 @@ RUN curl --location --silent --show-error --fail https://bun.sh/install \
 RUN curl --location --silent --show-error \
     https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-x86_64-unknown-linux-gnu.tgz \
     | tar --extract --gzip --directory /usr/local/cargo/bin
-RUN cargo binstall dioxus-cli --no-confirm
 
 # Create non-root user matching host UID/GID so bind-mounted files stay host-owned
 RUN groupadd --gid ${GID} dev \
