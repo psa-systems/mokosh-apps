@@ -6,7 +6,7 @@
 //! - Form handling
 //! - Pagination
 
-mod auth;
+pub mod auth;
 // `fetch` is `pub` (not `mod`) because its inner `api` submodule is
 // referenced from places outside hooks/* (oidc callback, login handler)
 // to set/clear the global access-token holder. Keep this `pub` form

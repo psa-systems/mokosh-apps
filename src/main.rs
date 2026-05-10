@@ -2,7 +2,8 @@
 
 use dioxus::prelude::*;
 use mokosh_client::hooks::{
-    use_auth_provider, use_bfcache_invalidator, use_sidebar_provider, use_token_refresh,
+    use_auth_provider, use_bfcache_invalidator, use_memberships_loader, use_sidebar_provider,
+    use_token_refresh,
 };
 use mokosh_client::Route;
 
@@ -26,6 +27,9 @@ fn App() -> Element {
     // the user is not signed in. Mounted once at the app root so it
     // keeps running across navigations.
     use_token_refresh();
+    // Load /v1/auth/memberships after sign-in so AuthContext.memberships
+    // is populated for the tenant switcher.
+    use_memberships_loader();
     // Force a full reload when the browser restores this page from
     // bfcache. Without this, hitting back after logout would restore
     // the dashboard's prior JS state (including populated auth) from

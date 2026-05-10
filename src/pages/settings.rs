@@ -58,6 +58,12 @@ pub fn SettingsPage() -> Element {
                     route: Route::SessionsList {},
                     icon: "shield",
                 }
+                SettingsCard {
+                    title: "Switch tenant",
+                    description: "Pick which tenant you want to act under",
+                    route: Route::ActiveTenant {},
+                    icon: "users",
+                }
             }
         }
     }

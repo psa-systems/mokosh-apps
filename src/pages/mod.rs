@@ -2,6 +2,7 @@
 //!
 //! Each submodule contains the page components for a specific feature area.
 
+pub mod active_tenant;
 pub mod admin;
 pub mod assets;
 pub mod auth;

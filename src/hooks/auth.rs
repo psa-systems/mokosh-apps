@@ -7,6 +7,19 @@ use crate::modules::auth::CurrentUser;
 use crate::modules::oidc::Tokens;
 use crate::Route;
 
+/// One row in [`AuthContext::memberships`]. Mirrors the shape of the
+/// server's `/v1/auth/memberships` response so the switcher UI can
+/// render directly off the cached vec.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+pub struct MembershipView {
+    pub tenant_id: String,
+    pub tenant_name: String,
+    pub tenant_kind: String,
+    pub role: String,
+    pub status: String,
+    pub is_active: bool,
+}
+
 /// Authentication context for the application
 #[derive(Clone, Default)]
 pub struct AuthContext {
@@ -16,6 +29,14 @@ pub struct AuthContext {
     /// OIDC tokens. Held in memory only; never persisted (XSS protection).
     /// `None` until the user completes the authorize-redirect-callback dance.
     pub tokens: Option<Tokens>,
+    /// Tenant the user is currently acting under. Sourced from the
+    /// `mokosh_active_tenant` claim in the access token; updated on
+    /// switch. None before sign-in.
+    pub active_tenant_id: Option<uuid::Uuid>,
+    /// Every membership the user has. Loaded from /v1/auth/memberships
+    /// after sign-in; powers the tenant switcher UI. Empty before
+    /// sign-in.
+    pub memberships: Vec<MembershipView>,
 }
 
 impl AuthContext {
@@ -113,6 +134,8 @@ fn initial_auth_context() -> AuthContext {
             is_loading: false,
             error: None,
             tokens: None,
+            active_tenant_id: None,
+            memberships: Vec::new(),
         },
         _ => rehydrate_from_storage().unwrap_or_default(),
     }
@@ -164,6 +187,11 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
         })
         .unwrap_or_default();
 
+    let active_tenant_id = claims
+        .active_tenant_id
+        .as_deref()
+        .and_then(|s| s.parse::<uuid::Uuid>().ok())
+        .or(Some(tenant_id));
     crate::hooks::fetch::api::set_access_token(Some(tokens.access_token.clone()));
     Some(AuthContext {
         user: Some(CurrentUser {
@@ -179,6 +207,11 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
         is_loading: false,
         error: None,
         tokens: Some(tokens),
+        active_tenant_id,
+        // memberships: empty on rehydrate; the App-level loader hook
+        // re-fetches them once the SPA mounts. Avoids persisting the
+        // membership list (it can drift independently of the token).
+        memberships: Vec::new(),
     })
 }
 
@@ -259,6 +292,11 @@ pub fn use_login_form_with_return_to(
                             _ => None,
                         })
                         .unwrap_or_default();
+                    let active_tenant_id = claims
+                        .active_tenant_id
+                        .as_deref()
+                        .and_then(|s| s.parse::<uuid::Uuid>().ok())
+                        .unwrap_or(tenant_id);
                     crate::hooks::fetch::api::set_access_token(Some(tokens.access_token.clone()));
                     crate::modules::oidc::storage::save_auth(
                         &crate::modules::oidc::storage::StoredTokens {
@@ -284,6 +322,7 @@ pub fn use_login_form_with_return_to(
                         a.is_loading = false;
                         a.error = None;
                         a.tokens = Some(tokens);
+                        a.active_tenant_id = Some(active_tenant_id);
                     }
                     form_state.write().is_submitting = false;
                     if let Some(rt) = rt {
@@ -314,6 +353,51 @@ pub fn use_login_form_with_return_to(
     });
 
     (form_state, submit)
+}
+
+/// Load `/v1/auth/memberships` into AuthContext after sign-in. Watches
+/// the auth signal and re-fetches whenever the user transitions from
+/// "no membership list" to "have a session" (login, page reload that
+/// rehydrates from sessionStorage). Cheap GET, runs at most a few
+/// times per session. Mount once at the app root.
+pub fn use_memberships_loader() {
+    let mut auth = use_auth();
+    use_effect(move || {
+        let needs_load = {
+            let a = auth.read();
+            a.is_authenticated() && a.memberships.is_empty()
+        };
+        if !needs_load {
+            return;
+        }
+        spawn(async move {
+            let cfg = crate::modules::oidc::OidcConfig::from_env();
+            #[derive(serde::Deserialize)]
+            struct Body {
+                memberships: Vec<MembershipView>,
+                #[serde(default)]
+                active_tenant_id: Option<String>,
+            }
+            match crate::modules::oidc::issuer_get_authed::<Body>(&cfg, "/v1/auth/memberships")
+                .await
+            {
+                Ok(b) => {
+                    let active = b
+                        .active_tenant_id
+                        .as_deref()
+                        .and_then(|s| s.parse::<uuid::Uuid>().ok());
+                    let mut a = auth.write();
+                    a.memberships = b.memberships;
+                    if active.is_some() {
+                        a.active_tenant_id = active;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("memberships load failed: {e}");
+                }
+            }
+        });
+    });
 }
 
 /// Background token-refresh loop. Mount once near the root of the app

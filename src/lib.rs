@@ -208,6 +208,9 @@ pub enum Route {
     #[route("/settings/sessions")]
     SessionsList {},
 
+    #[route("/settings/active-tenant")]
+    ActiveTenant {},
+
     #[route("/settings/teams")]
     TeamManagement {},
 
@@ -498,6 +501,11 @@ fn InviteList() -> Element {
 #[component]
 fn SessionsList() -> Element {
     rsx! { sessions::SessionsPage {} }
+}
+
+#[component]
+fn ActiveTenant() -> Element {
+    rsx! { active_tenant::ActiveTenantPage {} }
 }
 
 #[component]

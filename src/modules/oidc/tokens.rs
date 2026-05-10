@@ -27,6 +27,11 @@ pub struct IdTokenClaims {
     pub email_verified: Option<bool>,
     #[serde(default, rename = "mokosh_tenant_id")]
     pub tenant_id: Option<String>,
+    /// Tenant the user is currently acting under. Set by the server
+    /// at login / switch / refresh. Older servers omit this field;
+    /// the SPA falls back to `tenant_id` (home tenant) in that case.
+    #[serde(default, rename = "mokosh_active_tenant")]
+    pub active_tenant_id: Option<String>,
     #[serde(default, rename = "mokosh_role")]
     pub role: Option<String>,
     pub exp: i64,
