@@ -16,7 +16,7 @@ RUN curl --location --silent --show-error --fail https://bun.sh/install \
 RUN curl --location --silent --show-error \
     https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-x86_64-unknown-linux-gnu.tgz \
     | tar --extract --gzip --directory /usr/local/cargo/bin
-RUN cargo binstall dioxus-cli --no-confirm
+RUN cargo binstall dioxus-cli@0.7.7 --no-confirm
 
 # Install WASM target for client build
 RUN rustup target add wasm32-unknown-unknown
