@@ -1,7 +1,7 @@
 # Mokosh Platform client - Dioxus WASM web bundle.
 # Base image bundles Rust 1.93 + WASM target + bun + cargo-binstall + dioxus-cli
 # (pinned). See niceguyit/oci-images/rust-builder.
-FROM ghcr.io/niceguyit/rust-builder-dioxus:v1.0.0-dioxus0.7.7-rust1.93-trixie AS builder
+FROM ghcr.io/niceguyit/rust-builder-glibc:v1.0.0-rust1.94-trixie AS builder
 
 WORKDIR /build
 
