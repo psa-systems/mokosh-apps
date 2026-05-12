@@ -8,6 +8,19 @@ use crate::hooks::{
 };
 use crate::Route;
 
+/// Pluck `details.<field>` out of a backend error body shaped like
+/// `{"error":"invalid_request","details":{"field":"message"}}`.
+/// Returns the message verbatim so the SPA can surface it inline.
+fn parse_first_field_error(raw: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(raw).ok()?;
+    if v.get("error")?.as_str()? != "invalid_request" {
+        return None;
+    }
+    let details = v.get("details")?.as_object()?;
+    let (_, value) = details.iter().next()?;
+    Some(value.as_str()?.to_string())
+}
+
 /// Read `?return_to=...` from the current URL and return it only if it
 /// passes the strict open-redirect guard (must be the serialized
 /// authorize query produced by mokosh-auth-http; anything else is
@@ -260,13 +273,17 @@ pub fn ForgotPasswordPage() -> Element {
         e.prevent_default();
         is_submitting.set(true);
 
+        let addr = email.read().trim().to_string();
         spawn(async move {
-            // TODO: Call API to send password reset email
-            #[cfg(feature = "web")]
-            {
-                use gloo_timers::future::TimeoutFuture;
-                TimeoutFuture::new(1000).await;
-            }
+            let cfg = crate::modules::oidc::OidcConfig::from_env();
+            let body = serde_json::json!({ "email": addr });
+            // Server returns 200 whether the email is registered or
+            // not. We ignore the response and render the same
+            // "if an account exists" message in both cases. Network
+            // failures also collapse to the same UX: the user gets a
+            // "check your email" page; clicking again is rate-limited.
+            let _: Result<serde_json::Value, _> =
+                crate::modules::oidc::issuer_post(&cfg, "/v1/auth/password-reset", &body).await;
 
             is_submitting.set(false);
             submitted.set(true);
@@ -345,7 +362,6 @@ pub struct ResetPasswordPageProps {
 }
 
 #[component]
-#[allow(unused_variables)]
 pub fn ResetPasswordPage(props: ResetPasswordPageProps) -> Element {
     let mut password = use_signal(String::new);
     let mut confirm_password = use_signal(String::new);
@@ -353,16 +369,12 @@ pub fn ResetPasswordPage(props: ResetPasswordPageProps) -> Element {
     let mut success = use_signal(|| false);
     let mut is_submitting = use_signal(|| false);
 
+    let token = props.token.clone();
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
 
         let pw = password.read().clone();
         let confirm = confirm_password.read().clone();
-
-        if pw.len() < 8 {
-            error.set(Some("Password must be at least 8 characters".to_string()));
-            return;
-        }
 
         if pw != confirm {
             error.set(Some("Passwords do not match".to_string()));
@@ -372,16 +384,45 @@ pub fn ResetPasswordPage(props: ResetPasswordPageProps) -> Element {
         is_submitting.set(true);
         error.set(None);
 
+        let token = token.clone();
+        let pw_for_async = pw.clone();
+        let confirm_for_async = confirm.clone();
         spawn(async move {
-            // TODO: Call API to reset password with token
-            #[cfg(feature = "web")]
-            {
-                use gloo_timers::future::TimeoutFuture;
-                TimeoutFuture::new(1000).await;
+            let cfg = crate::modules::oidc::OidcConfig::from_env();
+            let path =
+                format!("/v1/auth/password-reset/by-token/{token}/complete");
+            let body = serde_json::json!({
+                "password": pw_for_async,
+                "password_confirmation": confirm_for_async,
+            });
+            // We accept any JSON-shaped 2xx; the response carries
+            // {user_id, redirect_to} on success but the SPA only
+            // needs to know it succeeded.
+            match crate::modules::oidc::issuer_post::<serde_json::Value, _>(&cfg, &path, &body).await {
+                Ok(_) => {
+                    success.set(true);
+                }
+                Err(e) => {
+                    let raw = e.to_string();
+                    // Server's invalid_request shape carries
+                    // { details: { field: msg } }. Surface the
+                    // field-specific message when present.
+                    if let Some(msg) = parse_first_field_error(&raw) {
+                        error.set(Some(msg));
+                    } else if raw.contains("reset_not_found") {
+                        error.set(Some(
+                            "This reset link is invalid, expired, or has already been used.".into(),
+                        ));
+                    } else if raw.contains("HTTP 429") || raw.contains("rate") {
+                        error.set(Some(
+                            "Too many attempts. Please wait a moment and try again.".into(),
+                        ));
+                    } else {
+                        error.set(Some(format!("Could not reset password: {raw}")));
+                    }
+                }
             }
-
             is_submitting.set(false);
-            success.set(true);
         });
     };
 
