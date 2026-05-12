@@ -211,6 +211,12 @@ pub enum Route {
     #[route("/settings/security")]
     Security {},
 
+    #[route("/settings/profile")]
+    Profile {},
+
+    #[route("/settings/audit-logs")]
+    AuditLogs {},
+
     #[route("/settings/active-tenant")]
     ActiveTenant {},
 
@@ -509,6 +515,16 @@ fn SessionsList() -> Element {
 #[component]
 fn Security() -> Element {
     rsx! { security::SecurityPage {} }
+}
+
+#[component]
+fn Profile() -> Element {
+    rsx! { profile::ProfilePage {} }
+}
+
+#[component]
+fn AuditLogs() -> Element {
+    rsx! { audit_logs::AuditLogsPage {} }
 }
 
 #[component]

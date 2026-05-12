@@ -65,6 +65,18 @@ pub fn SettingsPage() -> Element {
                     icon: "shield",
                 }
                 SettingsCard {
+                    title: "Profile",
+                    description: "Your name, timezone, avatar, password",
+                    route: Route::Profile {},
+                    icon: "users",
+                }
+                SettingsCard {
+                    title: "Audit logs",
+                    description: "Security events recorded by the auth subsystem",
+                    route: Route::AuditLogs {},
+                    icon: "shield",
+                }
+                SettingsCard {
                     title: "Switch tenant",
                     description: "Pick which tenant you want to act under",
                     route: Route::ActiveTenant {},
