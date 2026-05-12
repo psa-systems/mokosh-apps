@@ -29,6 +29,8 @@ struct SessionView {
     /// presentation.
     #[serde(default)]
     is_current: bool,
+    #[serde(default)]
+    display_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -136,31 +138,130 @@ struct SessionRowProps {
     on_revoke: EventHandler<()>,
 }
 
+/// Best-effort short label for a UA string. We do not pull a parser
+/// crate; the heuristic just picks the most relevant browser + OS
+/// fragment so the Sessions row reads "Chrome on Windows" rather than
+/// 200 characters of UA. Falls back to "Unknown device".
+fn ua_short_label(ua: Option<&str>) -> String {
+    let Some(ua) = ua else {
+        return "Unknown device".into();
+    };
+    let browser = if ua.contains("Edg/") {
+        "Edge"
+    } else if ua.contains("Chrome/") && !ua.contains("Chromium/") {
+        "Chrome"
+    } else if ua.contains("Firefox/") {
+        "Firefox"
+    } else if ua.contains("Safari/") && !ua.contains("Chrome/") {
+        "Safari"
+    } else {
+        "Browser"
+    };
+    let os = if ua.contains("Windows") {
+        "Windows"
+    } else if ua.contains("Mac OS X") || ua.contains("Macintosh") {
+        "macOS"
+    } else if ua.contains("Android") {
+        "Android"
+    } else if ua.contains("iPhone") || ua.contains("iPad") {
+        "iOS"
+    } else if ua.contains("Linux") {
+        "Linux"
+    } else {
+        "device"
+    };
+    format!("{browser} on {os}")
+}
+
 #[component]
 fn SessionRow(props: SessionRowProps) -> Element {
-    let s = &props.session;
+    let s = props.session.clone();
     let busy = props.revoking_id.as_deref() == Some(s.id.as_str());
-    let device = s
-        .user_agent
+    let default_label = ua_short_label(s.user_agent.as_deref());
+    let label = s
+        .display_name
         .clone()
-        .unwrap_or_else(|| "Unknown device".to_string());
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| default_label.clone());
     let ip = s.ip.clone().unwrap_or_else(|| "unknown".to_string());
     let last_active = s.last_active_at.format("%Y-%m-%d %H:%M UTC").to_string();
     let signed_in = s.created_at.format("%Y-%m-%d %H:%M UTC").to_string();
+
+    let mut editing = use_signal(|| false);
+    let mut draft = use_signal(|| s.display_name.clone().unwrap_or_default());
+    let mut saving = use_signal(|| false);
+
+    let id_for_save = s.id.clone();
+    let save = use_callback(move |_| {
+        let id = id_for_save.clone();
+        let value = draft.read().trim().to_string();
+        spawn(async move {
+            saving.set(true);
+            let cfg = crate::modules::oidc::OidcConfig::from_env();
+            let path = format!("/v1/auth/sessions/{id}/rename");
+            let body = serde_json::json!({
+                "display_name": if value.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(value) }
+            });
+            let _ = crate::modules::oidc::issuer_post_authed::<serde_json::Value, _>(
+                &cfg, &path, &body,
+            )
+            .await;
+            saving.set(false);
+            editing.set(false);
+            // Bump the parent's list refresh via window event - simpler
+            // than threading another callback through; the page re-fetches
+            // on mount + when the user navigates back.
+            if let Some(w) = web_sys::window() {
+                let _ = w.location().reload();
+            }
+        });
+    });
 
     rsx! {
         div { class: "flex items-start justify-between gap-4 p-4",
             div { class: "min-w-0 flex-1",
                 div { class: "flex items-center gap-2 flex-wrap",
-                    p { class: "text-sm font-medium text-gray-900 dark:text-white truncate",
-                        "{device}"
+                    if *editing.read() {
+                        input {
+                            r#type: "text",
+                            class: "block rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white text-sm",
+                            placeholder: "{default_label}",
+                            value: "{draft.read()}",
+                            oninput: move |e| draft.set(e.value()),
+                        }
+                        button {
+                            r#type: "button",
+                            class: "text-xs text-blue-600 hover:text-blue-500",
+                            disabled: *saving.read(),
+                            onclick: move |_| save.call(()),
+                            if *saving.read() { "Saving..." } else { "Save" }
+                        }
+                        button {
+                            r#type: "button",
+                            class: "text-xs text-gray-500 hover:text-gray-700",
+                            onclick: move |_| {
+                                editing.set(false);
+                                draft.set(s.display_name.clone().unwrap_or_default());
+                            },
+                            "Cancel"
+                        }
+                    } else {
+                        p { class: "text-sm font-medium text-gray-900 dark:text-white truncate",
+                            "{label}"
+                        }
+                        button {
+                            r#type: "button",
+                            class: "text-xs text-gray-500 hover:text-blue-600",
+                            onclick: move |_| editing.set(true),
+                            "Rename"
+                        }
                     }
                     if s.is_current {
                         Badge { variant: BadgeVariant::Green, "Current session" }
                     }
                 }
                 p { class: "mt-1 text-xs text-gray-500 dark:text-gray-400",
-                    "IP {ip} - last active {last_active}"
+                    "{default_label} - IP {ip} - last active {last_active}"
                 }
                 p { class: "text-xs text-gray-500 dark:text-gray-400",
                     "Signed in {signed_in}"
