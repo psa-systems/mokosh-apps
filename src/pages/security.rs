@@ -66,6 +66,21 @@ struct EnrollmentInProgress {
     submitting: bool,
 }
 
+/// Banner shown when an action raced with another tab / a stale page
+/// state. We surface it INSIDE the card without trashing `status` so the
+/// user can keep navigating.
+#[derive(Clone, PartialEq)]
+struct InlineNotice {
+    message: String,
+    severity: NoticeSeverity,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum NoticeSeverity {
+    Info,
+    Error,
+}
+
 #[derive(Clone, PartialEq)]
 struct StepUpInProgress {
     /// Active challenge from /step-up/start; SPA must POST this with
@@ -90,6 +105,7 @@ pub fn SecurityPage() -> Element {
     let mut enrollment: Signal<Option<EnrollmentInProgress>> = use_signal(|| None);
     let mut step_up: Signal<Option<StepUpInProgress>> = use_signal(|| None);
     let mut fresh_codes: Signal<Option<Vec<String>>> = use_signal(|| None);
+    let mut notice: Signal<Option<InlineNotice>> = use_signal(|| None);
     let mut bump = use_signal(|| 0u32);
 
     use_future(move || async move {
@@ -106,6 +122,7 @@ pub fn SecurityPage() -> Element {
 
     let start_enroll = use_callback(move |_| {
         spawn(async move {
+            notice.set(None);
             let cfg = crate::modules::oidc::OidcConfig::from_env();
             let r = crate::modules::oidc::issuer_post_authed::<SetupBody, _>(
                 &cfg,
@@ -121,7 +138,25 @@ pub fn SecurityPage() -> Element {
                     confirm_error: None,
                     submitting: false,
                 })),
-                Err(e) => status.set(Some(Err(e.to_string()))),
+                Err(e) => {
+                    // Most common conflict: the DB says this account is
+                    // already enrolled even though the SPA showed the
+                    // Disabled state. Refetch the status; the SPA will
+                    // re-render into the Enrolled view.
+                    let msg = format!("{e}");
+                    if msg.contains("already_enrolled") {
+                        notice.set(Some(InlineNotice {
+                            message: "Two-factor was already enabled on this account; refreshing status.".into(),
+                            severity: NoticeSeverity::Info,
+                        }));
+                        bump.with_mut(|n| *n += 1);
+                    } else {
+                        notice.set(Some(InlineNotice {
+                            message: format!("Could not start enrollment: {msg}"),
+                            severity: NoticeSeverity::Error,
+                        }));
+                    }
+                }
             }
         });
     });
@@ -284,6 +319,15 @@ pub fn SecurityPage() -> Element {
 
             div { class: "max-w-2xl space-y-6",
                 Card { title: "Two-factor authentication",
+                    if let Some(n) = notice.read().clone() {
+                        {
+                            let cls = match n.severity {
+                                NoticeSeverity::Info => "text-sm text-blue-600 bg-blue-50 dark:bg-blue-900/20 px-3 py-2 rounded mb-3",
+                                NoticeSeverity::Error => "text-sm text-red-600 bg-red-50 dark:bg-red-900/20 px-3 py-2 rounded mb-3",
+                            };
+                            rsx! { div { class: "{cls}", "{n.message}" } }
+                        }
+                    }
                     match &*status.read() {
                         None => rsx! { p { class: "text-sm text-gray-500", "Loading..." } },
                         Some(Err(e)) => rsx! {
