@@ -230,6 +230,33 @@ pub struct LoginFormState {
     /// 6-digit TOTP code or 11-char recovery code, populated by the
     /// MFA prompt input. Submitted alongside the challenge.
     pub mfa_code: String,
+    /// "Trust this browser for 7 days" checkbox state on the MFA
+    /// prompt. When true, a successful verify also issues a
+    /// `trust_token` that the SPA stores in localStorage and sends on
+    /// the next sign-in to skip the MFA prompt.
+    pub remember_device: bool,
+}
+
+const TRUST_TOKEN_STORAGE_KEY: &str = "mokosh.trust_token";
+
+fn read_trust_token() -> Option<String> {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|s| s.get_item(TRUST_TOKEN_STORAGE_KEY).ok().flatten())
+        .filter(|s| !s.is_empty())
+}
+
+fn write_trust_token(token: &str) {
+    if let Some(Ok(Some(s))) = web_sys::window().map(|w| w.local_storage()) {
+        let _ = s.set_item(TRUST_TOKEN_STORAGE_KEY, token);
+    }
+}
+
+#[allow(dead_code)]
+fn clear_trust_token() {
+    if let Some(Ok(Some(s))) = web_sys::window().map(|w| w.local_storage()) {
+        let _ = s.remove_item(TRUST_TOKEN_STORAGE_KEY);
+    }
 }
 
 /// Hook for the login page. Submitting the form POSTs the credentials
@@ -272,7 +299,10 @@ pub fn use_login_form_with_return_to(
             form_state.write().is_submitting = true;
             form_state.write().error = None;
             let cfg = crate::modules::oidc::OidcConfig::from_env();
-            match crate::modules::oidc::password_login(&cfg, &email, &password).await {
+            let trust = read_trust_token();
+            match crate::modules::oidc::password_login(&cfg, &email, &password, trust.as_deref())
+                .await
+            {
                 Ok(crate::modules::oidc::LoginOutcome::Success(tokens)) => {
                     apply_login_tokens(form_state, auth, nav_to_dashboard, rt, tokens);
                 }
@@ -298,13 +328,19 @@ pub fn use_login_form_with_return_to(
             None => return,
         };
         let code = form_state.read().mfa_code.trim().to_string();
+        let remember = form_state.read().remember_device;
         let rt = return_to.read().clone();
         spawn(async move {
             form_state.write().is_submitting = true;
             form_state.write().error = None;
             let cfg = crate::modules::oidc::OidcConfig::from_env();
-            match crate::modules::oidc::mfa_verify(&cfg, &challenge, &code).await {
-                Ok(tokens) => apply_login_tokens(form_state, auth, nav_to_dashboard, rt, tokens),
+            match crate::modules::oidc::mfa_verify(&cfg, &challenge, &code, remember).await {
+                Ok(ok) => {
+                    if let Some(trust) = ok.trust_token.as_deref() {
+                        write_trust_token(trust);
+                    }
+                    apply_login_tokens(form_state, auth, nav_to_dashboard, rt, ok.tokens);
+                }
                 Err(crate::modules::oidc::FlowError::TokenEndpoint { error, .. })
                     if error == "challenge_not_found" =>
                 {
@@ -314,9 +350,21 @@ pub fn use_login_form_with_return_to(
                     s.mfa_code.clear();
                     s.is_submitting = false;
                 }
-                Err(e) => {
+                Err(crate::modules::oidc::FlowError::TokenEndpoint { error, .. })
+                    if error == "rate_limited" =>
+                {
                     let mut s = form_state.write();
-                    s.error = Some(format!("Invalid code: {e}"));
+                    s.error = Some(
+                        "Too many attempts. Wait a few minutes before trying again."
+                            .into(),
+                    );
+                    s.mfa_code.clear();
+                    s.is_submitting = false;
+                }
+                Err(_) => {
+                    let mut s = form_state.write();
+                    s.error = Some("That code didn't match. Try again.".into());
+                    s.mfa_code.clear();
                     s.is_submitting = false;
                 }
             }

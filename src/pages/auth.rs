@@ -161,8 +161,40 @@ pub fn LoginPage() -> Element {
                             required: true,
                             value: form_state.read().mfa_code.clone(),
                             oninput: move |e: FormEvent| {
-                                form_state.write().mfa_code = e.value();
+                                let raw = e.value();
+                                form_state.write().mfa_code = raw.clone();
+                                // Auto-submit the moment the user types
+                                // the 6th digit. Recovery codes (11
+                                // chars with a hyphen) still need the
+                                // explicit Verify button because they
+                                // include alpha characters and we
+                                // shouldn't fire halfway through.
+                                let trimmed = raw.trim();
+                                if trimmed.len() == 6
+                                    && trimmed.chars().all(|c| c.is_ascii_digit())
+                                    && !form_state.read().is_submitting
+                                {
+                                    submit_mfa.call(());
+                                }
                             },
+                        }
+
+                        div { class: "flex items-center",
+                            input {
+                                id: "mfa_remember",
+                                name: "mfa_remember",
+                                r#type: "checkbox",
+                                class: "h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500",
+                                checked: form_state.read().remember_device,
+                                onchange: move |e: FormEvent| {
+                                    form_state.write().remember_device = e.value() == "true";
+                                },
+                            }
+                            label {
+                                r#for: "mfa_remember",
+                                class: "ml-2 block text-sm text-gray-700 dark:text-gray-300",
+                                "Trust this browser for 7 days"
+                            }
                         }
 
                         Button {

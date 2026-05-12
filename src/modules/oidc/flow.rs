@@ -475,6 +475,7 @@ pub async fn password_login(
     cfg: &OidcConfig,
     email: &str,
     password: &str,
+    trust_token: Option<&str>,
 ) -> Result<LoginOutcome, FlowError> {
     let issuer = cfg.issuer.trim_end_matches('/');
     let url = format!("{issuer}/v1/auth/login");
@@ -483,6 +484,7 @@ pub async fn password_login(
         "password": password,
         "client_id": cfg.client_id,
         "scope": cfg.scopes,
+        "trust_token": trust_token,
     });
     let resp = Request::post(&url)
         .header("Content-Type", "application/json")
@@ -547,14 +549,26 @@ pub async fn password_login(
 /// Complete an MFA-gated login. Submits the challenge token + the
 /// user's six-digit TOTP code (or a recovery code) to
 /// `/v1/auth/mfa/verify` and returns the OIDC tokens.
+pub struct MfaVerifyOk {
+    pub tokens: Tokens,
+    /// Issued when `remember_device=true` on the verify call. The SPA
+    /// stores this in localStorage and sends it on the next /login.
+    pub trust_token: Option<String>,
+}
+
 pub async fn mfa_verify(
     cfg: &OidcConfig,
     challenge: &str,
     code: &str,
-) -> Result<Tokens, FlowError> {
+    remember_device: bool,
+) -> Result<MfaVerifyOk, FlowError> {
     let issuer = cfg.issuer.trim_end_matches('/');
     let url = format!("{issuer}/v1/auth/mfa/verify");
-    let body = serde_json::json!({ "challenge": challenge, "code": code });
+    let body = serde_json::json!({
+        "challenge": challenge,
+        "code": code,
+        "remember_device": remember_device,
+    });
     let resp = Request::post(&url)
         .header("Content-Type", "application/json")
         .header("Accept", "application/json")
@@ -584,12 +598,15 @@ pub async fn mfa_verify(
         error: "invalid_response".into(),
         description: "verify did not return tokens".into(),
     })?;
-    Ok(Tokens {
-        access_token: bundle.access_token,
-        id_token: bundle.id_token,
-        refresh_token: Some(bundle.refresh_token),
-        expires_at: Utc::now() + Duration::seconds(bundle.expires_in.max(0)),
-        scope: bundle.scope,
+    Ok(MfaVerifyOk {
+        tokens: Tokens {
+            access_token: bundle.access_token,
+            id_token: bundle.id_token,
+            refresh_token: Some(bundle.refresh_token),
+            expires_at: Utc::now() + Duration::seconds(bundle.expires_in.max(0)),
+            scope: bundle.scope,
+        },
+        trust_token: body.trust_token,
     })
 }
 
@@ -597,6 +614,8 @@ pub async fn mfa_verify(
 struct LoginBody {
     #[serde(default)]
     tokens: Option<LoginTokenBundle>,
+    #[serde(default)]
+    trust_token: Option<String>,
     #[serde(default)]
     mfa_required: Option<bool>,
     #[serde(default)]
