@@ -223,6 +223,13 @@ pub struct LoginFormState {
     pub remember_me: bool,
     pub is_submitting: bool,
     pub error: Option<String>,
+    /// Set when the server returned `mfa_required: true`. The SPA pivots
+    /// from the email/password form to a "enter your authenticator code"
+    /// prompt that POSTs back to /v1/auth/mfa/verify with this challenge.
+    pub mfa_challenge: Option<String>,
+    /// 6-digit TOTP code or 11-char recovery code, populated by the
+    /// MFA prompt input. Submitted alongside the challenge.
+    pub mfa_code: String,
 }
 
 /// Hook for the login page. Submitting the form POSTs the credentials
@@ -233,7 +240,7 @@ pub struct LoginFormState {
 /// OIDC code+PKCE redirect dance - without ever bouncing through a
 /// second login page. The OP login UI was retired with this change;
 /// the only sign-in screen users see is the SPA's own form.
-pub fn use_login_form() -> (Signal<LoginFormState>, Callback<()>) {
+pub fn use_login_form() -> (Signal<LoginFormState>, Callback<()>, Callback<()>) {
     use_login_form_with_return_to(None)
 }
 
@@ -247,112 +254,162 @@ pub fn use_login_form() -> (Signal<LoginFormState>, Callback<()>) {
 /// redirect guard in `pages/auth.rs`.
 pub fn use_login_form_with_return_to(
     return_to: Option<String>,
-) -> (Signal<LoginFormState>, Callback<()>) {
+) -> (Signal<LoginFormState>, Callback<()>, Callback<()>) {
     let mut form_state = use_signal(LoginFormState::default);
-    let mut auth = use_auth();
+    let auth = use_auth();
     let navigator = use_navigator();
     let return_to = use_signal(move || return_to);
+
+    let nav_to_dashboard = use_callback(move |_| {
+        navigator.push(Route::Dashboard {});
+    });
 
     let submit = use_callback(move |_| {
         let email = form_state.read().email.clone();
         let password = form_state.read().password.clone();
-        let nav = navigator;
         let rt = return_to.read().clone();
         spawn(async move {
             form_state.write().is_submitting = true;
             form_state.write().error = None;
-
             let cfg = crate::modules::oidc::OidcConfig::from_env();
             match crate::modules::oidc::password_login(&cfg, &email, &password).await {
-                Ok(tokens) => {
-                    let claims = match tokens.id_claims() {
-                        Ok(c) => c,
-                        Err(e) => {
-                            form_state.write().error = Some(format!("invalid id_token: {e}"));
-                            form_state.write().is_submitting = false;
-                            return;
-                        }
-                    };
-                    let user_id = claims
-                        .sub
-                        .parse::<uuid::Uuid>()
-                        .unwrap_or_else(|_| uuid::Uuid::nil());
-                    let tenant_id = claims
-                        .tenant_id
-                        .as_deref()
-                        .and_then(|s| s.parse::<uuid::Uuid>().ok())
-                        .unwrap_or_else(uuid::Uuid::nil);
-                    let role = claims
-                        .role
-                        .as_deref()
-                        .and_then(|s| match s {
-                            "admin" => Some(crate::modules::auth::UserRole::Admin),
-                            "manager" => Some(crate::modules::auth::UserRole::Manager),
-                            "finance" => Some(crate::modules::auth::UserRole::Finance),
-                            _ => None,
-                        })
-                        .unwrap_or_default();
-                    let active_tenant_id = claims
-                        .active_tenant_id
-                        .as_deref()
-                        .and_then(|s| s.parse::<uuid::Uuid>().ok())
-                        .unwrap_or(tenant_id);
-                    crate::hooks::fetch::api::set_access_token(Some(tokens.access_token.clone()));
-                    crate::modules::oidc::storage::save_auth(
-                        &crate::modules::oidc::storage::StoredTokens {
-                            access_token: tokens.access_token.clone(),
-                            id_token: tokens.id_token.clone(),
-                            refresh_token: tokens.refresh_token.clone(),
-                            expires_at: tokens.expires_at,
-                            scope: tokens.scope.clone(),
-                        },
-                    );
-                    {
-                        let mut a = auth.write();
-                        a.user = Some(crate::modules::auth::CurrentUser {
-                            id: user_id,
-                            tenant_id,
-                            email: claims.email.clone().unwrap_or_default(),
-                            first_name: String::new(),
-                            last_name: String::new(),
-                            role,
-                            timezone: "UTC".to_string(),
-                            avatar_url: None,
-                        });
-                        a.is_loading = false;
-                        a.error = None;
-                        a.tokens = Some(tokens);
-                        a.active_tenant_id = Some(active_tenant_id);
-                    }
-                    form_state.write().is_submitting = false;
-                    if let Some(rt) = rt {
-                        // Bounce back into /oauth2/authorize. The OP
-                        // session cookie just set by /v1/auth/login
-                        // will ride this top-level navigation, so the
-                        // authorize endpoint sees an active session
-                        // and 302s on to the RP with a code.
-                        let cfg = crate::modules::oidc::OidcConfig::from_env();
-                        let url = format!(
-                            "{}/oauth2/authorize?{}",
-                            cfg.issuer.trim_end_matches('/'),
-                            rt
-                        );
-                        if let Some(win) = web_sys::window() {
-                            let _ = win.location().assign(&url);
-                        }
-                    } else {
-                        nav.push(Route::Dashboard {});
-                    }
+                Ok(crate::modules::oidc::LoginOutcome::Success(tokens)) => {
+                    apply_login_tokens(form_state, auth, nav_to_dashboard, rt, tokens);
+                }
+                Ok(crate::modules::oidc::LoginOutcome::MfaRequired { challenge, .. }) => {
+                    let mut s = form_state.write();
+                    s.is_submitting = false;
+                    s.error = None;
+                    s.mfa_challenge = Some(challenge);
+                    s.mfa_code.clear();
                 }
                 Err(e) => {
-                    form_state.write().error = Some(e.to_string());
-                    form_state.write().is_submitting = false;
+                    let mut s = form_state.write();
+                    s.error = Some(e.to_string());
+                    s.is_submitting = false;
                 }
             }
         });
     });
 
-    (form_state, submit)
+    let submit_mfa = use_callback(move |_| {
+        let challenge = match form_state.read().mfa_challenge.clone() {
+            Some(c) => c,
+            None => return,
+        };
+        let code = form_state.read().mfa_code.trim().to_string();
+        let rt = return_to.read().clone();
+        spawn(async move {
+            form_state.write().is_submitting = true;
+            form_state.write().error = None;
+            let cfg = crate::modules::oidc::OidcConfig::from_env();
+            match crate::modules::oidc::mfa_verify(&cfg, &challenge, &code).await {
+                Ok(tokens) => apply_login_tokens(form_state, auth, nav_to_dashboard, rt, tokens),
+                Err(crate::modules::oidc::FlowError::TokenEndpoint { error, .. })
+                    if error == "challenge_not_found" =>
+                {
+                    let mut s = form_state.write();
+                    s.error = Some("Your code prompt expired. Please sign in again.".into());
+                    s.mfa_challenge = None;
+                    s.mfa_code.clear();
+                    s.is_submitting = false;
+                }
+                Err(e) => {
+                    let mut s = form_state.write();
+                    s.error = Some(format!("Invalid code: {e}"));
+                    s.is_submitting = false;
+                }
+            }
+        });
+    });
+
+    (form_state, submit, submit_mfa)
+}
+
+fn apply_login_tokens(
+    mut form_state: Signal<LoginFormState>,
+    mut auth: Signal<AuthContext>,
+    nav_to_dashboard: Callback<()>,
+    rt: Option<String>,
+    tokens: crate::modules::oidc::Tokens,
+) {
+    let claims = match tokens.id_claims() {
+        Ok(c) => c,
+        Err(e) => {
+            let mut s = form_state.write();
+            s.error = Some(format!("invalid id_token: {e}"));
+            s.is_submitting = false;
+            return;
+        }
+    };
+    let user_id = claims
+        .sub
+        .parse::<uuid::Uuid>()
+        .unwrap_or_else(|_| uuid::Uuid::nil());
+    let tenant_id = claims
+        .tenant_id
+        .as_deref()
+        .and_then(|s| s.parse::<uuid::Uuid>().ok())
+        .unwrap_or_else(uuid::Uuid::nil);
+    let role = claims
+        .role
+        .as_deref()
+        .and_then(|s| match s {
+            "admin" => Some(crate::modules::auth::UserRole::Admin),
+            "manager" => Some(crate::modules::auth::UserRole::Manager),
+            "finance" => Some(crate::modules::auth::UserRole::Finance),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let active_tenant_id = claims
+        .active_tenant_id
+        .as_deref()
+        .and_then(|s| s.parse::<uuid::Uuid>().ok())
+        .unwrap_or(tenant_id);
+    crate::hooks::fetch::api::set_access_token(Some(tokens.access_token.clone()));
+    crate::modules::oidc::storage::save_auth(&crate::modules::oidc::storage::StoredTokens {
+        access_token: tokens.access_token.clone(),
+        id_token: tokens.id_token.clone(),
+        refresh_token: tokens.refresh_token.clone(),
+        expires_at: tokens.expires_at,
+        scope: tokens.scope.clone(),
+    });
+    {
+        let mut a = auth.write();
+        a.user = Some(crate::modules::auth::CurrentUser {
+            id: user_id,
+            tenant_id,
+            email: claims.email.clone().unwrap_or_default(),
+            first_name: String::new(),
+            last_name: String::new(),
+            role,
+            timezone: "UTC".to_string(),
+            avatar_url: None,
+        });
+        a.is_loading = false;
+        a.error = None;
+        a.tokens = Some(tokens);
+        a.active_tenant_id = Some(active_tenant_id);
+    }
+    {
+        let mut s = form_state.write();
+        s.is_submitting = false;
+        s.mfa_challenge = None;
+        s.mfa_code.clear();
+    }
+    if let Some(rt) = rt {
+        let cfg = crate::modules::oidc::OidcConfig::from_env();
+        let url = format!(
+            "{}/oauth2/authorize?{}",
+            cfg.issuer.trim_end_matches('/'),
+            rt
+        );
+        if let Some(win) = web_sys::window() {
+            let _ = win.location().assign(&url);
+        }
+    } else {
+        nav_to_dashboard.call(());
+    }
 }
 
 /// Load `/v1/auth/memberships` into AuthContext after sign-in. Watches

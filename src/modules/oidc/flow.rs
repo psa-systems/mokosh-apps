@@ -454,11 +454,28 @@ pub async fn revoke_refresh_token(cfg: &OidcConfig, refresh_token: &str) -> Resu
 /// This is the path the regular email/password form takes. The OIDC
 /// authorize-redirect flow remains available in the codebase for any
 /// future relying party but is not used by the hub SPA itself.
+/// Outcome of `password_login`. The server returns one of two shapes:
+///
+/// - `Success(Tokens)` - no MFA on this account; tokens are issued
+///   immediately and the SPA can complete the sign-in.
+/// - `MfaRequired { challenge, expires_in }` - the server verified the
+///   password and is waiting for a TOTP code (or a recovery code). The
+///   SPA holds the challenge for one screen and POSTs it to
+///   `/v1/auth/mfa/verify` along with the user's code.
+#[derive(Debug)]
+pub enum LoginOutcome {
+    Success(Tokens),
+    MfaRequired {
+        challenge: String,
+        expires_in: i64,
+    },
+}
+
 pub async fn password_login(
     cfg: &OidcConfig,
     email: &str,
     password: &str,
-) -> Result<Tokens, FlowError> {
+) -> Result<LoginOutcome, FlowError> {
     let issuer = cfg.issuer.trim_end_matches('/');
     let url = format!("{issuer}/v1/auth/login");
     let body = serde_json::json!({
@@ -501,11 +518,72 @@ pub async fn password_login(
         .json()
         .await
         .map_err(|e| FlowError::Network(format!("login body: {e}")))?;
+
+    if body.mfa_required.unwrap_or(false) {
+        let challenge = body.challenge.ok_or_else(|| FlowError::TokenEndpoint {
+            error: "invalid_response".into(),
+            description: "mfa_required=true but no challenge".into(),
+        })?;
+        return Ok(LoginOutcome::MfaRequired {
+            challenge,
+            expires_in: body.expires_in.unwrap_or(0),
+        });
+    }
+
     let bundle = body.tokens.ok_or_else(|| FlowError::TokenEndpoint {
         error: "invalid_response".into(),
         description: "server did not return tokens (missing client_id?)".into(),
     })?;
 
+    Ok(LoginOutcome::Success(Tokens {
+        access_token: bundle.access_token,
+        id_token: bundle.id_token,
+        refresh_token: Some(bundle.refresh_token),
+        expires_at: Utc::now() + Duration::seconds(bundle.expires_in.max(0)),
+        scope: bundle.scope,
+    }))
+}
+
+/// Complete an MFA-gated login. Submits the challenge token + the
+/// user's six-digit TOTP code (or a recovery code) to
+/// `/v1/auth/mfa/verify` and returns the OIDC tokens.
+pub async fn mfa_verify(
+    cfg: &OidcConfig,
+    challenge: &str,
+    code: &str,
+) -> Result<Tokens, FlowError> {
+    let issuer = cfg.issuer.trim_end_matches('/');
+    let url = format!("{issuer}/v1/auth/mfa/verify");
+    let body = serde_json::json!({ "challenge": challenge, "code": code });
+    let resp = Request::post(&url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .json(&body)
+        .map_err(|e| FlowError::Network(e.to_string()))?
+        .send()
+        .await
+        .map_err(|e| FlowError::Network(e.to_string()))?;
+    if !resp.ok() {
+        let status = resp.status();
+        let raw = resp.text().await.unwrap_or_default();
+        let parsed: Option<ErrorBody> = serde_json::from_str(&raw).ok();
+        let (err, desc) = match parsed {
+            Some(b) => (b.error, b.error_description.unwrap_or_default()),
+            None => ("mfa_verify_failed".into(), format!("HTTP {status}")),
+        };
+        return Err(FlowError::TokenEndpoint {
+            error: err,
+            description: desc,
+        });
+    }
+    let body: LoginBody = resp
+        .json()
+        .await
+        .map_err(|e| FlowError::Network(format!("verify body: {e}")))?;
+    let bundle = body.tokens.ok_or_else(|| FlowError::TokenEndpoint {
+        error: "invalid_response".into(),
+        description: "verify did not return tokens".into(),
+    })?;
     Ok(Tokens {
         access_token: bundle.access_token,
         id_token: bundle.id_token,
@@ -519,6 +597,12 @@ pub async fn password_login(
 struct LoginBody {
     #[serde(default)]
     tokens: Option<LoginTokenBundle>,
+    #[serde(default)]
+    mfa_required: Option<bool>,
+    #[serde(default)]
+    challenge: Option<String>,
+    #[serde(default)]
+    expires_in: Option<i64>,
 }
 
 #[derive(Deserialize)]

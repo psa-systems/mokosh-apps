@@ -118,7 +118,7 @@ pub fn LoginPage() -> Element {
         }
     });
 
-    let (mut form_state, submit) = use_login_form_with_return_to(return_to.clone());
+    let (mut form_state, submit, submit_mfa) = use_login_form_with_return_to(return_to.clone());
     let google = use_google_login();
 
     // Two sign-in paths:
@@ -135,76 +135,128 @@ pub fn LoginPage() -> Element {
                     }
                 }
 
-                form {
-                    class: "space-y-4",
-                    onsubmit: move |e| {
-                        e.prevent_default();
-                        submit.call(());
-                    },
-
-                    if let Some(error) = &form_state.read().error {
-                        div { class: "bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md p-4",
-                            p { class: "text-sm text-red-600 dark:text-red-400",
-                                "{error}"
-                            }
-                        }
-                    }
-
-                    Input {
-                        name: "email",
-                        label: "Email address",
-                        r#type: "email",
-                        placeholder: "you@example.com",
-                        required: true,
-                        value: form_state.read().email.clone(),
-                        oninput: move |e: FormEvent| {
-                            form_state.write().email = e.value();
+                if form_state.read().mfa_challenge.is_some() {
+                    form {
+                        class: "space-y-4",
+                        onsubmit: move |e| {
+                            e.prevent_default();
+                            submit_mfa.call(());
                         },
-                    }
 
-                    Input {
-                        name: "password",
-                        label: "Password",
-                        r#type: "password",
-                        placeholder: "Enter your password",
-                        required: true,
-                        value: form_state.read().password.clone(),
-                        oninput: move |e: FormEvent| {
-                            form_state.write().password = e.value();
+                        p { class: "text-sm text-gray-600 dark:text-gray-300",
+                            "Enter the 6-digit code from your authenticator app, or paste a recovery code."
+                        }
+
+                        if let Some(error) = &form_state.read().error {
+                            div { class: "bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md p-4",
+                                p { class: "text-sm text-red-600 dark:text-red-400", "{error}" }
+                            }
+                        }
+
+                        Input {
+                            name: "mfa_code",
+                            label: "Authenticator code",
+                            r#type: "text",
+                            placeholder: "123456",
+                            required: true,
+                            value: form_state.read().mfa_code.clone(),
+                            oninput: move |e: FormEvent| {
+                                form_state.write().mfa_code = e.value();
+                            },
+                        }
+
+                        Button {
+                            r#type: "submit",
+                            variant: ButtonVariant::Primary,
+                            class: "w-full",
+                            loading: form_state.read().is_submitting,
+                            "Verify"
+                        }
+
+                        button {
+                            r#type: "button",
+                            class: "block w-full text-center text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700",
+                            onclick: move |_| {
+                                let mut s = form_state.write();
+                                s.mfa_challenge = None;
+                                s.mfa_code.clear();
+                                s.error = None;
+                            },
+                            "Cancel and sign in again"
+                        }
+                    }
+                } else {
+                    form {
+                        class: "space-y-4",
+                        onsubmit: move |e| {
+                            e.prevent_default();
+                            submit.call(());
                         },
-                    }
 
-                    div { class: "flex items-center justify-between",
-                        div { class: "flex items-center",
-                            input {
-                                id: "remember_me",
-                                name: "remember_me",
-                                r#type: "checkbox",
-                                class: "h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500",
-                                checked: form_state.read().remember_me,
-                                onchange: move |e: FormEvent| {
-                                    form_state.write().remember_me = e.value() == "true";
-                                },
-                            }
-                            label {
-                                r#for: "remember_me",
-                                class: "ml-2 block text-sm text-gray-700 dark:text-gray-300",
-                                "Remember me"
+                        if let Some(error) = &form_state.read().error {
+                            div { class: "bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md p-4",
+                                p { class: "text-sm text-red-600 dark:text-red-400",
+                                    "{error}"
+                                }
                             }
                         }
-                        Link {
-                            to: Route::ForgotPassword {},
-                            class: "text-sm text-blue-600 hover:text-blue-500 dark:text-blue-400",
-                            "Forgot your password?"
-                        }
-                    }
 
-                    Button {
-                        r#type: "submit",
-                        variant: ButtonVariant::Primary,
-                        class: "w-full",
-                        loading: form_state.read().is_submitting,
-                        "Sign in"
+                        Input {
+                            name: "email",
+                            label: "Email address",
+                            r#type: "email",
+                            placeholder: "you@example.com",
+                            required: true,
+                            value: form_state.read().email.clone(),
+                            oninput: move |e: FormEvent| {
+                                form_state.write().email = e.value();
+                            },
+                        }
+
+                        Input {
+                            name: "password",
+                            label: "Password",
+                            r#type: "password",
+                            placeholder: "Enter your password",
+                            required: true,
+                            value: form_state.read().password.clone(),
+                            oninput: move |e: FormEvent| {
+                                form_state.write().password = e.value();
+                            },
+                        }
+
+                        div { class: "flex items-center justify-between",
+                            div { class: "flex items-center",
+                                input {
+                                    id: "remember_me",
+                                    name: "remember_me",
+                                    r#type: "checkbox",
+                                    class: "h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500",
+                                    checked: form_state.read().remember_me,
+                                    onchange: move |e: FormEvent| {
+                                        form_state.write().remember_me = e.value() == "true";
+                                    },
+                                }
+                                label {
+                                    r#for: "remember_me",
+                                    class: "ml-2 block text-sm text-gray-700 dark:text-gray-300",
+                                    "Remember me"
+                                }
+                            }
+                            Link {
+                                to: Route::ForgotPassword {},
+                                class: "text-sm text-blue-600 hover:text-blue-500 dark:text-blue-400",
+                                "Forgot your password?"
+                            }
+                        }
+
+                        Button {
+                            r#type: "submit",
+                            variant: ButtonVariant::Primary,
+                            class: "w-full",
+                            loading: form_state.read().is_submitting,
+                            "Sign in"
+                        }
                     }
                 }
 

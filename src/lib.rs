@@ -208,6 +208,9 @@ pub enum Route {
     #[route("/settings/sessions")]
     SessionsList {},
 
+    #[route("/settings/security")]
+    Security {},
+
     #[route("/settings/active-tenant")]
     ActiveTenant {},
 
@@ -501,6 +504,11 @@ fn InviteList() -> Element {
 #[component]
 fn SessionsList() -> Element {
     rsx! { sessions::SessionsPage {} }
+}
+
+#[component]
+fn Security() -> Element {
+    rsx! { security::SecurityPage {} }
 }
 
 #[component]

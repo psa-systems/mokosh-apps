@@ -59,6 +59,12 @@ pub fn SettingsPage() -> Element {
                     icon: "shield",
                 }
                 SettingsCard {
+                    title: "Security",
+                    description: "Two-factor authentication and recovery codes",
+                    route: Route::Security {},
+                    icon: "shield",
+                }
+                SettingsCard {
                     title: "Switch tenant",
                     description: "Pick which tenant you want to act under",
                     route: Route::ActiveTenant {},
