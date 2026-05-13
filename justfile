@@ -109,6 +109,15 @@ down:
 dev-sso-down:
     docker compose --file compose.yml --file compose.dev-sso.yml down
 
+# Bring the SSO dev stack down and back up. Useful after pulling a
+# code change or editing compose env vars: `down` waits for containers
+# to fully terminate before `dev-sso` starts the fresh ones, so the
+# rebuild picks up the new state. `down` is synchronous (docker
+# compose down blocks until removal completes) and `dev-sso` uses
+# `--detach`, so this returns once the new stack is up.
+[doc("Stop the dev stack and start dev-sso fresh.")]
+restart: down dev-sso
+
 # Run all checks (web, clippy, fmt)
 check: check-web check-clippy check-fmt
 
