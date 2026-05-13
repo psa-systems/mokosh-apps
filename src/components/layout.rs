@@ -328,18 +328,23 @@ fn UserMenu() -> Element {
     let cfg = crate::modules::oidc::OidcConfig::from_env();
     let hub_profile = cfg.hub_url("/settings/profile");
     let hub_dashboard = cfg.hub_url("/dashboard");
-    let hub_login = cfg.hub_url("/login");
+    let hub_logout = cfg.hub_url("/logout");
 
     let logout = move |_| {
         open.set(false);
-        // Clear local OIDC tokens then hand the browser to the hub's
-        // sign-in page; the hub's /login knows what to do from there
-        // (return_to back into this app if the user arrived via SSO).
+        // Tear down THIS SPA's local state, then redirect to the
+        // hub's canonical /logout page. Bunyip's /logout POSTs
+        // /v1/auth/logout (clears the .a8n.run-scoped OP session
+        // cookie via Set-Cookie), drops bunyip's localStorage
+        // tokens, and lands the user on /login. Without that
+        // round-trip, the OP cookie would still be live and a
+        // subsequent visit here would silently sign the user back
+        // in via the SSO bridge.
         crate::modules::oidc::storage::clear_auth();
         crate::hooks::fetch::api::set_access_token(None);
         auth.write().user = None;
         if let Some(win) = web_sys::window() {
-            let _ = win.location().replace(&hub_login);
+            let _ = win.location().replace(&hub_logout);
         }
     };
 
