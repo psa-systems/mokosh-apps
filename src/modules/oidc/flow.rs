@@ -105,9 +105,7 @@ fn current_search() -> String {
     INITIAL_SEARCH
         .with(|cell| cell.borrow().clone())
         .filter(|s| !s.is_empty())
-        .or_else(|| {
-            web_sys::window().and_then(|w| w.location().search().ok())
-        })
+        .or_else(|| web_sys::window().and_then(|w| w.location().search().ok()))
         .unwrap_or_default()
 }
 
@@ -120,12 +118,10 @@ pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowEr
     let search = current_search();
     let params = web_sys::UrlSearchParams::new_with_str(&search)
         .map_err(|_| FlowError::Redirect("UrlSearchParams".into()))?;
-    let code = params
-        .get("code")
-        .ok_or_else(|| FlowError::TokenEndpoint {
-            error: "invalid_request".into(),
-            description: "missing code".into(),
-        })?;
+    let code = params.get("code").ok_or_else(|| FlowError::TokenEndpoint {
+        error: "invalid_request".into(),
+        description: "missing code".into(),
+    })?;
     let state = params
         .get("state")
         .ok_or_else(|| FlowError::TokenEndpoint {
@@ -187,12 +183,10 @@ pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowEr
     // OIDC Core 3.1.3.3: the code-grant response MUST include an
     // id_token when `openid` was in the request scope. We always
     // request `openid`, so a missing field is a protocol violation.
-    let id_token = body
-        .id_token
-        .ok_or_else(|| FlowError::TokenEndpoint {
-            error: "invalid_response".into(),
-            description: "id_token missing from authorization_code response".into(),
-        })?;
+    let id_token = body.id_token.ok_or_else(|| FlowError::TokenEndpoint {
+        error: "invalid_response".into(),
+        description: "id_token missing from authorization_code response".into(),
+    })?;
 
     let tokens = Tokens {
         access_token: body.access_token,
@@ -465,10 +459,7 @@ pub async fn revoke_refresh_token(cfg: &OidcConfig, refresh_token: &str) -> Resu
 #[derive(Debug)]
 pub enum LoginOutcome {
     Success(Tokens),
-    MfaRequired {
-        challenge: String,
-        expires_in: i64,
-    },
+    MfaRequired { challenge: String, expires_in: i64 },
 }
 
 pub async fn password_login(

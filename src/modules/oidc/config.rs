@@ -11,6 +11,12 @@ pub struct OidcConfig {
     /// If `None`, the runtime default is `<origin>/auth/callback`.
     pub redirect_uri: Option<&'static str>,
     pub scopes: &'static str,
+    /// Origin of the Bunyip hub (e.g. `https://a contributor-bunyip.a8n.run`).
+    /// Used by the legacy `/login`, `/forgot-password`,
+    /// `/reset-password/:token`, `/invite/:token`, and signup redirect
+    /// stubs so existing bookmarks land on the hub instead of a 404. No
+    /// trailing slash.
+    pub hub_base_url: &'static str,
 }
 
 impl OidcConfig {
@@ -29,7 +35,15 @@ impl OidcConfig {
                 Some(s) => s,
                 None => "openid email offline_access",
             },
+            hub_base_url: match option_env!("MOKOSH_HUB_BASE_URL") {
+                Some(s) => s,
+                None => "http://localhost:4302",
+            },
         }
+    }
+
+    pub fn hub_url(&self, path: &str) -> String {
+        format!("{}{}", self.hub_base_url.trim_end_matches('/'), path)
     }
 
     /// Resolve the redirect_uri. Falls back to `<origin>/auth/callback`

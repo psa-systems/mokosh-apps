@@ -215,251 +215,6 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
     })
 }
 
-/// Login form state
-#[derive(Clone, Default)]
-pub struct LoginFormState {
-    pub email: String,
-    pub password: String,
-    pub remember_me: bool,
-    pub is_submitting: bool,
-    pub error: Option<String>,
-    /// Set when the server returned `mfa_required: true`. The SPA pivots
-    /// from the email/password form to a "enter your authenticator code"
-    /// prompt that POSTs back to /v1/auth/mfa/verify with this challenge.
-    pub mfa_challenge: Option<String>,
-    /// 6-digit TOTP code or 11-char recovery code, populated by the
-    /// MFA prompt input. Submitted alongside the challenge.
-    pub mfa_code: String,
-    /// "Trust this browser for 7 days" checkbox state on the MFA
-    /// prompt. When true, a successful verify also issues a
-    /// `trust_token` that the SPA stores in localStorage and sends on
-    /// the next sign-in to skip the MFA prompt.
-    pub remember_device: bool,
-}
-
-const TRUST_TOKEN_STORAGE_KEY: &str = "mokosh.trust_token";
-
-fn read_trust_token() -> Option<String> {
-    web_sys::window()
-        .and_then(|w| w.local_storage().ok().flatten())
-        .and_then(|s| s.get_item(TRUST_TOKEN_STORAGE_KEY).ok().flatten())
-        .filter(|s| !s.is_empty())
-}
-
-fn write_trust_token(token: &str) {
-    if let Some(Ok(Some(s))) = web_sys::window().map(|w| w.local_storage()) {
-        let _ = s.set_item(TRUST_TOKEN_STORAGE_KEY, token);
-    }
-}
-
-#[allow(dead_code)]
-fn clear_trust_token() {
-    if let Some(Ok(Some(s))) = web_sys::window().map(|w| w.local_storage()) {
-        let _ = s.remove_item(TRUST_TOKEN_STORAGE_KEY);
-    }
-}
-
-/// Hook for the login page. Submitting the form POSTs the credentials
-/// directly to mokosh-server's `/v1/auth/login` endpoint. When the
-/// request includes our `client_id`, the server responds with both the
-/// OP-session cookie AND a minted OIDC token bundle, so the SPA gets
-/// the same access/refresh/id tokens it would have received via the
-/// OIDC code+PKCE redirect dance - without ever bouncing through a
-/// second login page. The OP login UI was retired with this change;
-/// the only sign-in screen users see is the SPA's own form.
-pub fn use_login_form() -> (Signal<LoginFormState>, Callback<()>, Callback<()>) {
-    use_login_form_with_return_to(None)
-}
-
-/// Variant of [`use_login_form`] that, on successful login, navigates
-/// to the OIDC authorize URL reconstructed from a `return_to` query
-/// payload instead of pushing /dashboard. Used when an external RP
-/// redirected the user through `/oauth2/authorize` and we need to
-/// bounce them back so the OP can mint a code.
-///
-/// Caller has already validated `return_to` via the strict open-
-/// redirect guard in `pages/auth.rs`.
-pub fn use_login_form_with_return_to(
-    return_to: Option<String>,
-) -> (Signal<LoginFormState>, Callback<()>, Callback<()>) {
-    let mut form_state = use_signal(LoginFormState::default);
-    let auth = use_auth();
-    let navigator = use_navigator();
-    let return_to = use_signal(move || return_to);
-
-    let nav_to_dashboard = use_callback(move |_| {
-        navigator.push(Route::Dashboard {});
-    });
-
-    let submit = use_callback(move |_| {
-        let email = form_state.read().email.clone();
-        let password = form_state.read().password.clone();
-        let rt = return_to.read().clone();
-        spawn(async move {
-            form_state.write().is_submitting = true;
-            form_state.write().error = None;
-            let cfg = crate::modules::oidc::OidcConfig::from_env();
-            let trust = read_trust_token();
-            match crate::modules::oidc::password_login(&cfg, &email, &password, trust.as_deref())
-                .await
-            {
-                Ok(crate::modules::oidc::LoginOutcome::Success(tokens)) => {
-                    apply_login_tokens(form_state, auth, nav_to_dashboard, rt, tokens);
-                }
-                Ok(crate::modules::oidc::LoginOutcome::MfaRequired { challenge, .. }) => {
-                    let mut s = form_state.write();
-                    s.is_submitting = false;
-                    s.error = None;
-                    s.mfa_challenge = Some(challenge);
-                    s.mfa_code.clear();
-                }
-                Err(e) => {
-                    let mut s = form_state.write();
-                    s.error = Some(e.to_string());
-                    s.is_submitting = false;
-                }
-            }
-        });
-    });
-
-    let submit_mfa = use_callback(move |_| {
-        let challenge = match form_state.read().mfa_challenge.clone() {
-            Some(c) => c,
-            None => return,
-        };
-        let code = form_state.read().mfa_code.trim().to_string();
-        let remember = form_state.read().remember_device;
-        let rt = return_to.read().clone();
-        spawn(async move {
-            form_state.write().is_submitting = true;
-            form_state.write().error = None;
-            let cfg = crate::modules::oidc::OidcConfig::from_env();
-            match crate::modules::oidc::mfa_verify(&cfg, &challenge, &code, remember).await {
-                Ok(ok) => {
-                    if let Some(trust) = ok.trust_token.as_deref() {
-                        write_trust_token(trust);
-                    }
-                    apply_login_tokens(form_state, auth, nav_to_dashboard, rt, ok.tokens);
-                }
-                Err(crate::modules::oidc::FlowError::TokenEndpoint { error, .. })
-                    if error == "challenge_not_found" =>
-                {
-                    let mut s = form_state.write();
-                    s.error = Some("Your code prompt expired. Please sign in again.".into());
-                    s.mfa_challenge = None;
-                    s.mfa_code.clear();
-                    s.is_submitting = false;
-                }
-                Err(crate::modules::oidc::FlowError::TokenEndpoint { error, .. })
-                    if error == "rate_limited" =>
-                {
-                    let mut s = form_state.write();
-                    s.error = Some(
-                        "Too many attempts. Wait a few minutes before trying again."
-                            .into(),
-                    );
-                    s.mfa_code.clear();
-                    s.is_submitting = false;
-                }
-                Err(_) => {
-                    let mut s = form_state.write();
-                    s.error = Some("That code didn't match. Try again.".into());
-                    s.mfa_code.clear();
-                    s.is_submitting = false;
-                }
-            }
-        });
-    });
-
-    (form_state, submit, submit_mfa)
-}
-
-fn apply_login_tokens(
-    mut form_state: Signal<LoginFormState>,
-    mut auth: Signal<AuthContext>,
-    nav_to_dashboard: Callback<()>,
-    rt: Option<String>,
-    tokens: crate::modules::oidc::Tokens,
-) {
-    let claims = match tokens.id_claims() {
-        Ok(c) => c,
-        Err(e) => {
-            let mut s = form_state.write();
-            s.error = Some(format!("invalid id_token: {e}"));
-            s.is_submitting = false;
-            return;
-        }
-    };
-    let user_id = claims
-        .sub
-        .parse::<uuid::Uuid>()
-        .unwrap_or_else(|_| uuid::Uuid::nil());
-    let tenant_id = claims
-        .tenant_id
-        .as_deref()
-        .and_then(|s| s.parse::<uuid::Uuid>().ok())
-        .unwrap_or_else(uuid::Uuid::nil);
-    let role = claims
-        .role
-        .as_deref()
-        .and_then(|s| match s {
-            "admin" => Some(crate::modules::auth::UserRole::Admin),
-            "manager" => Some(crate::modules::auth::UserRole::Manager),
-            "finance" => Some(crate::modules::auth::UserRole::Finance),
-            _ => None,
-        })
-        .unwrap_or_default();
-    let active_tenant_id = claims
-        .active_tenant_id
-        .as_deref()
-        .and_then(|s| s.parse::<uuid::Uuid>().ok())
-        .unwrap_or(tenant_id);
-    crate::hooks::fetch::api::set_access_token(Some(tokens.access_token.clone()));
-    crate::modules::oidc::storage::save_auth(&crate::modules::oidc::storage::StoredTokens {
-        access_token: tokens.access_token.clone(),
-        id_token: tokens.id_token.clone(),
-        refresh_token: tokens.refresh_token.clone(),
-        expires_at: tokens.expires_at,
-        scope: tokens.scope.clone(),
-    });
-    {
-        let mut a = auth.write();
-        a.user = Some(crate::modules::auth::CurrentUser {
-            id: user_id,
-            tenant_id,
-            email: claims.email.clone().unwrap_or_default(),
-            first_name: String::new(),
-            last_name: String::new(),
-            role,
-            timezone: "UTC".to_string(),
-            avatar_url: None,
-        });
-        a.is_loading = false;
-        a.error = None;
-        a.tokens = Some(tokens);
-        a.active_tenant_id = Some(active_tenant_id);
-    }
-    {
-        let mut s = form_state.write();
-        s.is_submitting = false;
-        s.mfa_challenge = None;
-        s.mfa_code.clear();
-    }
-    if let Some(rt) = rt {
-        let cfg = crate::modules::oidc::OidcConfig::from_env();
-        let url = format!(
-            "{}/oauth2/authorize?{}",
-            cfg.issuer.trim_end_matches('/'),
-            rt
-        );
-        if let Some(win) = web_sys::window() {
-            let _ = win.location().assign(&url);
-        }
-    } else {
-        nav_to_dashboard.call(());
-    }
-}
-
 /// Load `/v1/auth/memberships` into AuthContext after sign-in. Watches
 /// the auth signal and re-fetches whenever the user transitions from
 /// "no membership list" to "have a session" (login, page reload that
@@ -530,13 +285,16 @@ pub fn use_token_refresh() {
             // lock across the network call.
             let snap = {
                 let a = auth.read();
-                a.tokens
-                    .as_ref()
-                    .and_then(|t| {
-                        t.refresh_token
-                            .as_ref()
-                            .map(|rt| (t.access_token.clone(), rt.clone(), t.id_token.clone(), t.expires_at))
+                a.tokens.as_ref().and_then(|t| {
+                    t.refresh_token.as_ref().map(|rt| {
+                        (
+                            t.access_token.clone(),
+                            rt.clone(),
+                            t.id_token.clone(),
+                            t.expires_at,
+                        )
                     })
+                })
             };
             let (_access, refresh, id_token, expires_at) = match snap {
                 Some(s) => s,
@@ -553,7 +311,9 @@ pub fn use_token_refresh() {
             let cfg = crate::modules::oidc::OidcConfig::from_env();
             match crate::modules::oidc::refresh_tokens(&cfg, &refresh, &id_token).await {
                 Ok(new_tokens) => {
-                    crate::hooks::fetch::api::set_access_token(Some(new_tokens.access_token.clone()));
+                    crate::hooks::fetch::api::set_access_token(Some(
+                        new_tokens.access_token.clone(),
+                    ));
                     crate::modules::oidc::storage::save_auth(
                         &crate::modules::oidc::storage::StoredTokens {
                             access_token: new_tokens.access_token.clone(),
@@ -607,18 +367,19 @@ pub fn use_bfcache_invalidator() {
             // `persisted` is only present on PageTransitionEvent (the
             // pageshow/pagehide payload). We read it via Reflect to
             // avoid pulling in the PageTransitionEvent web-sys feature.
-            let persisted = js_sys::Reflect::get(&evt, &wasm_bindgen::JsValue::from_str("persisted"))
-                .ok()
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let persisted =
+                js_sys::Reflect::get(&evt, &wasm_bindgen::JsValue::from_str("persisted"))
+                    .ok()
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
             if persisted {
                 if let Some(w) = web_sys::window() {
                     let _ = w.location().reload();
                 }
             }
-        }) as Box<dyn FnMut(web_sys::Event)>);
-        let _ = win
-            .add_event_listener_with_callback("pageshow", handler.as_ref().unchecked_ref());
+        })
+            as Box<dyn FnMut(web_sys::Event)>);
+        let _ = win.add_event_listener_with_callback("pageshow", handler.as_ref().unchecked_ref());
         // Listener must outlive its registration; SPA root, fires once.
         handler.forget();
     });

@@ -142,7 +142,6 @@ fn InvoiceRow(props: InvoiceRowProps) -> Element {
 
     let id = props.id.clone();
 
-
     rsx! {
         TableRow {
             clickable: true,

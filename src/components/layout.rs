@@ -147,9 +147,6 @@ fn SidebarContent() -> Element {
                 NavItem { to: Route::Reports {}, icon: rsx!(ChartIcon {}), label: "Reports" }
             }
 
-            NavSection { title: "Configuration",
-                NavItem { to: Route::Settings {}, icon: rsx!(CogIcon {}), label: "Settings" }
-            }
             }
             VersionFooter {}
         }
@@ -328,7 +325,23 @@ pub fn TopBar(props: TopBarProps) -> Element {
 fn UserMenu() -> Element {
     let mut open = use_signal(|| false);
     let mut auth = crate::hooks::use_auth();
-    let navigator = use_navigator();
+    let cfg = crate::modules::oidc::OidcConfig::from_env();
+    let hub_profile = cfg.hub_url("/settings/profile");
+    let hub_dashboard = cfg.hub_url("/dashboard");
+    let hub_login = cfg.hub_url("/login");
+
+    let logout = move |_| {
+        open.set(false);
+        // Clear local OIDC tokens then hand the browser to the hub's
+        // sign-in page; the hub's /login knows what to do from there
+        // (return_to back into this app if the user arrived via SSO).
+        crate::modules::oidc::storage::clear_auth();
+        crate::hooks::fetch::api::set_access_token(None);
+        auth.write().user = None;
+        if let Some(win) = web_sys::window() {
+            let _ = win.location().replace(&hub_login);
+        }
+    };
 
     rsx! {
         div { class: "relative",
@@ -342,38 +355,27 @@ fn UserMenu() -> Element {
                 UserCircleIcon { size: IconSize::Large, class: "text-gray-400".to_string() }
             }
             if *open.read() {
-                // Inset items by 1 unit so each hover bg can be rounded
-                // independently inside the rounded shell - keeps the
-                // corners visually rounded even when hovering the
-                // first/last items. Avoids overflow-hidden, which would
-                // clip the menu's shadow.
                 div {
                     class: "absolute right-0 mt-2 w-44 rounded-md shadow-lg bg-white dark:bg-gray-800 ring-1 ring-black ring-opacity-5 z-20 p-1",
                     role: "menu",
-                    button {
+                    // Profile + Apps live on the bunyip hub; cross-origin
+                    // top-level <a> rather than the router Link so the
+                    // browser actually navigates instead of trying to
+                    // resolve the URL against this SPA's Route enum.
+                    a {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
-                        onclick: move |_| {
-                            open.set(false);
-                            navigator.push(Route::Profile {});
-                        },
+                        href: "{hub_profile}",
                         "Profile"
                     }
-                    button {
+                    a {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
-                        onclick: move |_| {
-                            open.set(false);
-                            navigator.push(Route::Settings {});
-                        },
-                        "Settings"
+                        href: "{hub_dashboard}",
+                        "Apps"
                     }
                     div { class: "border-t border-gray-200 dark:border-gray-700 my-1" }
                     button {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-700",
-                        onclick: move |_| {
-                            open.set(false);
-                            auth.write().user = None;
-                            navigator.push(Route::Login {});
-                        },
+                        onclick: logout,
                         "Logout"
                     }
                 }

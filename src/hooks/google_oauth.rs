@@ -80,21 +80,23 @@ pub fn use_google_login() -> GoogleLoginHandle {
     // borrowed" / Option::unwrap on missing runtime). It posts results
     // into this coroutine instead, which IS scheduled by Dioxus and so
     // can mutate signals safely.
-    let result_tx = use_coroutine(move |mut rx: UnboundedReceiver<GoogleAuthResult>| async move {
-        while let Some(result) = rx.next().await {
-            match result {
-                GoogleAuthResult::Success(user) => {
-                    auth.write().user = Some(user);
-                    auth.write().is_loading = false;
-                    *status.write() = GoogleLoginStatus::Idle;
-                    navigator.push(Route::Dashboard {});
-                }
-                GoogleAuthResult::Error(message) => {
-                    *status.write() = GoogleLoginStatus::Error(message);
+    let result_tx = use_coroutine(
+        move |mut rx: UnboundedReceiver<GoogleAuthResult>| async move {
+            while let Some(result) = rx.next().await {
+                match result {
+                    GoogleAuthResult::Success(user) => {
+                        auth.write().user = Some(user);
+                        auth.write().is_loading = false;
+                        *status.write() = GoogleLoginStatus::Idle;
+                        navigator.push(Route::Dashboard {});
+                    }
+                    GoogleAuthResult::Error(message) => {
+                        *status.write() = GoogleLoginStatus::Error(message);
+                    }
                 }
             }
-        }
-    });
+        },
+    );
 
     let start = use_callback(move |_| {
         *status.write() = GoogleLoginStatus::InProgress;
@@ -110,9 +112,8 @@ pub fn use_google_login() -> GoogleLoginHandle {
         let origin = match win.location().origin() {
             Ok(o) => o,
             Err(_) => {
-                *status.write() = GoogleLoginStatus::Error(
-                    "could not read window.location.origin".to_string(),
-                );
+                *status.write() =
+                    GoogleLoginStatus::Error("could not read window.location.origin".to_string());
                 return;
             }
         };

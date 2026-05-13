@@ -129,7 +129,6 @@ fn AssetRow(props: AssetRowProps) -> Element {
 
     let id = props.id.clone();
 
-
     rsx! {
         TableRow {
             clickable: true,

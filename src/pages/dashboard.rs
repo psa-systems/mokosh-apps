@@ -350,9 +350,9 @@ fn TimeEntryRow(props: TimeEntryRowProps) -> Element {
     // the full time-entry list.
     let navigator = use_navigator();
     let target = match props.description.split_once(':') {
-        Some((token, _)) if token.starts_with("TKT-") => {
-            Route::TicketDetail { id: token.to_string() }
-        }
+        Some((token, _)) if token.starts_with("TKT-") => Route::TicketDetail {
+            id: token.to_string(),
+        },
         _ => Route::TimeEntryList {},
     };
 

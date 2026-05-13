@@ -193,44 +193,15 @@ pub enum Route {
     ReportDetail { report_type: String },
 
     // Settings
-    #[route("/settings")]
-    Settings {},
-
-    #[route("/settings/users")]
-    UserManagement {},
-
-    #[route("/settings/users/invite")]
-    InviteCreate {},
-
-    #[route("/settings/users/invites")]
-    InviteList {},
-
-    #[route("/settings/sessions")]
-    SessionsList {},
-
-    #[route("/settings/security")]
-    Security {},
-
-    #[route("/settings/profile")]
-    Profile {},
-
-    #[route("/settings/audit-logs")]
-    AuditLogs {},
-
+    //
+    // Account-management surfaces (profile, security, sessions, audit
+    // logs, user management, invites) moved to the Bunyip hub in
+    // docs/bunyip/08-mokosh-clients-cleanup.md. The per-PSA-feature
+    // settings (teams, notifications, integrations, billing-config)
+    // belong here but their pages are not implemented yet; bring them
+    // back as `/operations/*` routes when the work is scheduled.
     #[route("/settings/active-tenant")]
     ActiveTenant {},
-
-    #[route("/settings/teams")]
-    TeamManagement {},
-
-    #[route("/settings/notifications")]
-    NotificationSettings {},
-
-    #[route("/settings/integrations")]
-    IntegrationSettings {},
-
-    #[route("/settings/billing")]
-    BillingSettings {},
 
     // Admin (multi-tenant only)
     #[cfg(feature = "multi-tenant")]
@@ -272,6 +243,34 @@ pub enum Route {
 // Route component wrappers - these import the actual page components
 use pages::*;
 
+/// Top-level navigate to the Bunyip hub. Used by the legacy
+/// account-surface routes (`/login`, `/forgot-password`, etc.) so that
+/// existing bookmarks keep working instead of 404ing. `replace()`
+/// rather than `assign()` so the hub's URL takes over the history
+/// entry; the back button skips the dead mokosh-clients URL.
+fn redirect_to_hub(path: &str) {
+    if let Some(win) = web_sys::window() {
+        let cfg = crate::modules::oidc::OidcConfig::from_env();
+        let url = cfg.hub_url(path);
+        let _ = win.location().replace(&url);
+    }
+}
+
+#[component]
+fn HubRedirect(target: String, label: &'static str) -> Element {
+    use_effect({
+        let target = target.clone();
+        move || {
+            redirect_to_hub(&target);
+        }
+    });
+    rsx! {
+        div { class: "min-h-screen flex items-center justify-center p-8 text-sm text-gray-500 dark:text-gray-400",
+            "Redirecting to {label}..."
+        }
+    }
+}
+
 #[component]
 fn Home() -> Element {
     rsx! { home::HomePage {} }
@@ -279,7 +278,7 @@ fn Home() -> Element {
 
 #[component]
 fn Login() -> Element {
-    rsx! { auth::LoginPage {} }
+    rsx! { HubRedirect { target: "/login".to_string(), label: "sign in" } }
 }
 
 #[component]
@@ -289,27 +288,27 @@ fn AuthCallback() -> Element {
 
 #[component]
 fn ForgotPassword() -> Element {
-    rsx! { auth::ForgotPasswordPage {} }
+    rsx! { HubRedirect { target: "/forgot-password".to_string(), label: "password reset" } }
 }
 
 #[component]
 fn ResetPassword(token: String) -> Element {
-    rsx! { auth::ResetPasswordPage { token } }
+    rsx! { HubRedirect { target: format!("/reset-password/{token}"), label: "password reset" } }
 }
 
 #[component]
 fn InviteAccept(token: String) -> Element {
-    rsx! { invite_accept::InviteAcceptPage { token } }
+    rsx! { HubRedirect { target: format!("/invitations/accept?token={token}"), label: "invite accept" } }
 }
 
 #[component]
 fn Signup() -> Element {
-    rsx! { signup::SignupPage {} }
+    rsx! { HubRedirect { target: "/signup".to_string(), label: "sign up" } }
 }
 
 #[component]
 fn SignupComplete(token: String) -> Element {
-    rsx! { signup_complete::SignupCompletePage { token } }
+    rsx! { HubRedirect { target: format!("/signup/{token}"), label: "sign up" } }
 }
 
 #[component]
@@ -488,68 +487,8 @@ fn ReportDetail(report_type: String) -> Element {
 }
 
 #[component]
-fn Settings() -> Element {
-    rsx! { settings::SettingsPage {} }
-}
-
-#[component]
-fn UserManagement() -> Element {
-    rsx! { settings::UserManagementPage {} }
-}
-
-#[component]
-fn InviteCreate() -> Element {
-    rsx! { invites::InviteCreatePage {} }
-}
-
-#[component]
-fn InviteList() -> Element {
-    rsx! { invites::InviteListPage {} }
-}
-
-#[component]
-fn SessionsList() -> Element {
-    rsx! { sessions::SessionsPage {} }
-}
-
-#[component]
-fn Security() -> Element {
-    rsx! { security::SecurityPage {} }
-}
-
-#[component]
-fn Profile() -> Element {
-    rsx! { profile::ProfilePage {} }
-}
-
-#[component]
-fn AuditLogs() -> Element {
-    rsx! { audit_logs::AuditLogsPage {} }
-}
-
-#[component]
 fn ActiveTenant() -> Element {
     rsx! { active_tenant::ActiveTenantPage {} }
-}
-
-#[component]
-fn TeamManagement() -> Element {
-    rsx! { settings::TeamManagementPage {} }
-}
-
-#[component]
-fn NotificationSettings() -> Element {
-    rsx! { settings::NotificationSettingsPage {} }
-}
-
-#[component]
-fn IntegrationSettings() -> Element {
-    rsx! { settings::IntegrationSettingsPage {} }
-}
-
-#[component]
-fn BillingSettings() -> Element {
-    rsx! { settings::BillingSettingsPage {} }
 }
 
 #[cfg(feature = "multi-tenant")]
