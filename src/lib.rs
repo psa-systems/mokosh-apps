@@ -517,7 +517,10 @@ fn ReportDetail(report_type: String) -> Element {
 
 #[component]
 fn ActiveTenant() -> Element {
-    rsx! { active_tenant::ActiveTenantPage {} }
+    // Tenant switching moved to the bunyip hub per
+    // docs/migration/settings-split.md. Bookmarks at the legacy URL
+    // bounce there instead of 404ing.
+    rsx! { HubRedirect { target: "/settings/active-tenant".to_string(), label: "tenant switcher" } }
 }
 
 #[cfg(feature = "multi-tenant")]
