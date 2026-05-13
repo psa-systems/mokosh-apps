@@ -27,10 +27,39 @@ pub use utils::error::{AppError, AppResult};
 #[component]
 pub fn AuthGuard() -> Element {
     let auth = hooks::use_auth();
-    let nav = use_navigator();
-    if !auth.read().is_authenticated() {
-        nav.replace(Route::Login {});
-        return rsx! {};
+    let auth_state = auth.read();
+    if auth_state.is_loading {
+        // Still hydrating tokens from sessionStorage. Render a
+        // placeholder so we do not kick off the OIDC dance just to
+        // find we already have a session.
+        return rsx! {
+            div { class: "min-h-screen flex items-center justify-center text-sm text-gray-500",
+                "Loading..."
+            }
+        };
+    }
+    if !auth_state.is_authenticated() {
+        // No local session. Kick off the OIDC code+PKCE flow ON THIS
+        // ORIGIN so the PendingFlow (code_verifier + state + nonce)
+        // lands in *this* SPA's sessionStorage and /auth/callback can
+        // complete the code exchange. start_login replaces the page
+        // with /oauth2/authorize. From there:
+        //   - if the user has an OP session cookie (e.g. they signed
+        //     in on the Bunyip hub and clicked a launcher tile),
+        //     authorize 302s straight back to /auth/callback?code=...
+        //   - otherwise authorize 302s to bunyip's /login?return_to=
+        //     and the SSO bridge closes the loop after they sign in.
+        //
+        // The legacy `/login` redirect stub stays in place for users
+        // who hit that URL directly via a bookmark; it sends them to
+        // bunyip's /login, which then bounces them back here.
+        let cfg = crate::modules::oidc::OidcConfig::from_env();
+        let _ = crate::modules::oidc::start_login(&cfg, "");
+        return rsx! {
+            div { class: "min-h-screen flex items-center justify-center text-sm text-gray-500",
+                "Signing you in..."
+            }
+        };
     }
     rsx! { Outlet::<Route> {} }
 }
