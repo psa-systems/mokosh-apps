@@ -32,7 +32,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Dioxus framework
-dioxus = { version = "0.7.2", features = ["router", "web"] }
+dioxus = { version = "0.7.7", features = ["router", "web"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -59,8 +59,13 @@ gloo-net = "0.6"
 gloo-timers = { version = "0.3", features = ["futures"] }
 futures-util = "0.3"
 wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["Window", "Document", "Storage", "Navigator", "Location", "MessageEvent", "EventTarget", "Event"] }
+web-sys = { version = "0.3", features = ["Window", "Document", "Storage", "Navigator", "Location", "UrlSearchParams", "MessageEvent", "EventTarget", "Event"] }
 js-sys = "0.3"
+
+# OIDC / PKCE primitives (SPA public-client flow against mokosh-server)
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.9"
 
 # Markdown rendering
 pulldown-cmark = "0.12"

@@ -1,8 +1,36 @@
 # Mokosh Platform - Dioxus Client - Task Runner
 
+# Image used by the pre-commit hook. Matches ci-build/Dockerfile so `just pre-commit` and the Forgejo `check.yml` job run a toolchain compatible with the rust-builder-glibc image the client is built against.
+dev_image := "ghcr.io/niceguyit/rust-builder-glibc:v1.0.0-rust1.94-trixie"
+
 # List available recipes
 default:
     @just --list
+
+# Install the git pre-commit hook (run once per fresh clone). Writes a stub at .git/hooks/pre-commit that execs `just pre-commit`. Bypass with `git commit --no-verify`.
+install-hooks:
+    #!/usr/bin/env nu
+    let hook = ".git/hooks/pre-commit"
+    # Remove first so a leftover symlink from an older install does not get
+    # written through to its target file. `try` swallows the not-found case.
+    try { rm $hook }
+    "#!/usr/bin/env sh\nexec just pre-commit\n" | save $hook
+    ^chmod +x $hook
+    print $"Wrote ($hook) -> just pre-commit"
+
+# Run the same checks as .forgejo/workflows/check.yml inside the rust-builder-glibc image so the toolchain matches CI.
+pre-commit:
+    #!/usr/bin/env nu
+    let img = "{{ dev_image }}"
+    print "\n[pre-commit] cargo fmt --all --check"
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume dev-mokosh-clients-cargo-target:/build/target --volume dev-mokosh-clients-cargo-registry:/usr/local/cargo/registry $img cargo fmt --all --check
+    print "\n[pre-commit] cargo clippy --all-targets -- -D warnings"
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume dev-mokosh-clients-cargo-target:/build/target --volume dev-mokosh-clients-cargo-registry:/usr/local/cargo/registry $img cargo clippy --all-targets -- -D warnings
+    print "\n[pre-commit] cargo check --target wasm32-unknown-unknown"
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume dev-mokosh-clients-cargo-target:/build/target --volume dev-mokosh-clients-cargo-registry:/usr/local/cargo/registry $img cargo check --target wasm32-unknown-unknown
+    print "\n[pre-commit] cargo test --lib"
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume dev-mokosh-clients-cargo-target:/build/target --volume dev-mokosh-clients-cargo-registry:/usr/local/cargo/registry $img cargo test --lib
+    print "\n[pre-commit] all checks passed"
 
 # Install JS dependencies
 [private]
@@ -26,6 +54,69 @@ dev:
     let user_name = (^whoami | str trim)
     print $"Binding dx serve to ($host_ip):4301 as ($user_name) \(uid ($uid):($gid)\)"
     with-env { HOST_IP: $host_ip, HOST_UID: $uid, HOST_GID: $gid, USER: $user_name } { docker compose up --build }
+
+# Per-developer Traefik-routed instance for SSO testing.
+#   App: https://{USER}-mokosh.a8n.run
+# Run `just dev-sso` here AND in mokosh-server. The overlay requires
+# MOKOSH_OIDC_CLIENT_ID set in .env (or the shell), which comes from
+# `just register-client` in mokosh-server. The compose file fails loud
+# if it's missing.
+[doc("Start the SSO dev stack (Traefik-routed at *.a8n.run)")]
+dev-sso:
+    #!/usr/bin/env nu
+    let uid = (^id --user | str trim)
+    let gid = (^id --group | str trim)
+    let user_name = (^whoami | str trim)
+    # The base compose.yml declares the per-developer private network
+    # `dev-mokosh-private-${USER}` as `external: true`, so compose will
+    # NOT create it. Ensure it exists (idempotent: docker network
+    # inspect returns 0 when present, otherwise create).
+    let net = $"dev-mokosh-private-($user_name)"
+    if (do { ^docker network inspect $net } | complete | get exit_code) != 0 {
+        ^docker network create $net out> /dev/null
+    }
+    # HOST_IP is referenced by the base compose.yml's port mapping; the
+    # overlay !resets it but the variable still has to substitute, so
+    # we set a harmless placeholder. --detach so the URL print runs.
+    with-env { HOST_IP: "127.0.0.1", HOST_UID: $uid, HOST_GID: $gid, USER: $user_name } {
+        docker compose --file compose.yml --file compose.dev-sso.yml up --build --detach
+    }
+    print ""
+    print $"Mokosh client \(SPA\): https://($user_name)-mokosh.a8n.run"
+
+# Stop everything this repo runs (both LAN-IP and SSO modes),
+# regardless of which `just dev*` you started with. Volumes preserved.
+# `--remove-orphans` cleans up the dx server container from either file
+# layout. HOST_IP is set defensively so the base compose.yml's port
+# substitution does not warn during teardown.
+[doc("Stop the dev stack (LAN-IP and SSO modes). Volumes preserved.")]
+down:
+    #!/usr/bin/env nu
+    # Same external-network defensiveness as `dev-sso`: compose refuses
+    # to even validate the file if the declared external network is
+    # missing.
+    let user_name = (^whoami | str trim)
+    let net = $"dev-mokosh-private-($user_name)"
+    if (do { ^docker network inspect $net } | complete | get exit_code) != 0 {
+        ^docker network create $net out> /dev/null
+    }
+    with-env { HOST_IP: "127.0.0.1", USER: $user_name } {
+        docker compose --file compose.yml --file compose.dev-sso.yml down --remove-orphans
+    }
+
+# Stop the SSO dev stack.
+[doc("Stop the SSO dev stack")]
+dev-sso-down:
+    docker compose --file compose.yml --file compose.dev-sso.yml down
+
+# Bring the SSO dev stack down and back up. Useful after pulling a
+# code change or editing compose env vars: `down` waits for containers
+# to fully terminate before `dev-sso` starts the fresh ones, so the
+# rebuild picks up the new state. `down` is synchronous (docker
+# compose down blocks until removal completes) and `dev-sso` uses
+# `--detach`, so this returns once the new stack is up.
+[doc("Stop the dev stack and start dev-sso fresh.")]
+restart: down dev-sso
 
 # Run all checks (web, clippy, fmt)
 check: check-web check-clippy check-fmt

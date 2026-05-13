@@ -1,0 +1,68 @@
+# Per-developer Traefik-routed dev instance for SSO testing.
+#
+# Layered ON TOP of compose.yml:
+#   docker compose -f compose.yml -f compose.dev-sso.yml up --build
+#
+# `just dev-sso` is the supported entry point.
+#
+# What this overlay changes:
+#   - The dx serve container drops its host LAN port binding and joins
+#     the shared `traefik-public` network instead.
+#   - Traefik labels route https://${USER}-mokosh.a8n.run to the dx
+#     server inside the container (port 4301, matching the existing
+#     `dx serve` config and Dioxus.toml).
+#   - MOKOSH_OIDC_* env vars target the public mokosh-server URL, so
+#     the SPA's authorize redirect, token POST, and userinfo all hit
+#     the same hostname Traefik terminates TLS on.
+#
+# The project name is intentionally NOT redefined: the base compose.yml
+# inherits the directory name (`mokosh-clients`), and per-developer
+# isolation already lives in container_name + Traefik label keys.
+# Overriding here would make compose treat the existing network from
+# the base file as foreign.
+
+services:
+
+  # Service key MUST match the base file's key (`client`); otherwise
+  # compose treats the overlay as defining a new service instead of
+  # extending the existing one. The base file owns
+  # `container_name: dev-mokosh-client-${USER}`, so we don't need to
+  # restate it here.
+  client:
+    networks:
+      # Local key from the base file (mapped to
+      # `dev-mokosh-private-${USER}` via that file's `networks:` block).
+      - private
+      - traefik-public
+    # Drop both host port bindings from compose.yml (LAN-IP + 127.0.0.1
+    # for Google OAuth); Traefik is sole ingress for this profile.
+    ports: !reset []
+    labels:
+      traefik.enable: true
+      traefik.docker.network: network-traefik-public
+      traefik.http.routers.mokosh-${USER}.rule: Host(`${USER}-mokosh.a8n.run`)
+      traefik.http.routers.mokosh-${USER}.entrypoints: web-secure
+      traefik.http.routers.mokosh-${USER}.tls.certresolver: cert-cloudflare
+      traefik.http.services.mokosh-${USER}.loadbalancer.server.port: 4301
+    environment:
+      # Compile-time defaults baked into the WASM bundle. Override in
+      # .env if you need to point at a different IdP for one-off
+      # testing.
+      MOKOSH_OIDC_ISSUER: https://${USER}-mokosh-api.a8n.run
+      MOKOSH_OIDC_REDIRECT_URI: https://${USER}-mokosh.a8n.run/auth/callback
+      MOKOSH_OIDC_SCOPES: openid email offline_access
+      # MOKOSH_OIDC_CLIENT_ID is set in .env after `just register-client`
+      # in mokosh-server prints the UUID; we don't bake a placeholder
+      # here so a misconfiguration fails loud rather than silently
+      # using a wrong client_id.
+      MOKOSH_OIDC_CLIENT_ID: ${MOKOSH_OIDC_CLIENT_ID:?run `just register-client` in mokosh-server, then set MOKOSH_OIDC_CLIENT_ID in mokosh-clients/.env}
+      # Where account-management surfaces live. Bookmarks at the legacy
+      # /login, /forgot-password, /reset-password/:token, /invite/:token,
+      # /signup pages now redirect to the hub; the avatar dropdown links
+      # cross-origin too.
+      MOKOSH_HUB_BASE_URL: http://${USER}-bunyip.a8n.run
+
+networks:
+  traefik-public:
+    name: network-traefik-public
+    external: true

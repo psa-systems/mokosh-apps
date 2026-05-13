@@ -105,8 +105,9 @@ pub fn Sidebar(props: SidebarProps) -> Element {
 #[component]
 fn SidebarContent() -> Element {
     rsx! {
-        nav { class: "flex-1 px-2 py-4 space-y-1",
-            NavItem { to: Route::Dashboard {}, icon: rsx!(HomeIcon {}), label: "Dashboard" }
+        div { class: "flex flex-col flex-1 min-h-0",
+            nav { class: "flex-1 px-2 py-4 space-y-1",
+                NavItem { to: Route::Dashboard {}, icon: rsx!(HomeIcon {}), label: "Dashboard" }
 
             NavSection { title: "Service Desk",
                 NavItem { to: Route::TicketList {}, icon: rsx!(TicketIcon {}), label: "Tickets" }
@@ -146,9 +147,26 @@ fn SidebarContent() -> Element {
                 NavItem { to: Route::Reports {}, icon: rsx!(ChartIcon {}), label: "Reports" }
             }
 
-            NavSection { title: "Configuration",
-                NavItem { to: Route::Settings {}, icon: rsx!(CogIcon {}), label: "Settings" }
             }
+            VersionFooter {}
+        }
+    }
+}
+
+/// Compact build-info line shown in every layout footer so support and
+/// developers can identify the running build at a glance.
+#[component]
+fn VersionFooter() -> Element {
+    use crate::utils::version::{BUILD_DATE, GIT_HASH, VERSION};
+    rsx! {
+        p {
+            class: "px-3 py-2 text-xs text-gray-500 dark:text-gray-500 text-center break-words",
+            title: "{VERSION} commit {GIT_HASH} built {BUILD_DATE}",
+            span { "{VERSION}" }
+            span { class: "mx-1", "-" }
+            span { class: "font-mono", "{GIT_HASH}" }
+            span { class: "mx-1", "-" }
+            span { "{BUILD_DATE}" }
         }
     }
 }
@@ -307,7 +325,28 @@ pub fn TopBar(props: TopBarProps) -> Element {
 fn UserMenu() -> Element {
     let mut open = use_signal(|| false);
     let mut auth = crate::hooks::use_auth();
-    let navigator = use_navigator();
+    let cfg = crate::modules::oidc::OidcConfig::from_env();
+    let hub_profile = cfg.hub_url("/settings/profile");
+    let hub_dashboard = cfg.hub_url("/dashboard");
+    let hub_logout = cfg.hub_url("/logout");
+
+    let logout = move |_| {
+        open.set(false);
+        // Tear down THIS SPA's local state, then redirect to the
+        // hub's canonical /logout page. Bunyip's /logout POSTs
+        // /v1/auth/logout (clears the .a8n.run-scoped OP session
+        // cookie via Set-Cookie), drops bunyip's localStorage
+        // tokens, and lands the user on /login. Without that
+        // round-trip, the OP cookie would still be live and a
+        // subsequent visit here would silently sign the user back
+        // in via the SSO bridge.
+        crate::modules::oidc::storage::clear_auth();
+        crate::hooks::fetch::api::set_access_token(None);
+        auth.write().user = None;
+        if let Some(win) = web_sys::window() {
+            let _ = win.location().replace(&hub_logout);
+        }
+    };
 
     rsx! {
         div { class: "relative",
@@ -321,38 +360,27 @@ fn UserMenu() -> Element {
                 UserCircleIcon { size: IconSize::Large, class: "text-gray-400".to_string() }
             }
             if *open.read() {
-                // Inset items by 1 unit so each hover bg can be rounded
-                // independently inside the rounded shell - keeps the
-                // corners visually rounded even when hovering the
-                // first/last items. Avoids overflow-hidden, which would
-                // clip the menu's shadow.
                 div {
                     class: "absolute right-0 mt-2 w-44 rounded-md shadow-lg bg-white dark:bg-gray-800 ring-1 ring-black ring-opacity-5 z-20 p-1",
                     role: "menu",
-                    button {
+                    // Profile + Apps live on the bunyip hub; cross-origin
+                    // top-level <a> rather than the router Link so the
+                    // browser actually navigates instead of trying to
+                    // resolve the URL against this SPA's Route enum.
+                    a {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
-                        onclick: move |_| {
-                            open.set(false);
-                            navigator.push(Route::Settings {});
-                        },
+                        href: "{hub_profile}",
                         "Profile"
                     }
-                    button {
+                    a {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
-                        onclick: move |_| {
-                            open.set(false);
-                            navigator.push(Route::Settings {});
-                        },
-                        "Settings"
+                        href: "{hub_dashboard}",
+                        "Apps"
                     }
                     div { class: "border-t border-gray-200 dark:border-gray-700 my-1" }
                     button {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-700",
-                        onclick: move |_| {
-                            open.set(false);
-                            auth.write().user = None;
-                            navigator.push(Route::Login {});
-                        },
+                        onclick: logout,
                         "Logout"
                     }
                 }
@@ -431,6 +459,7 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
                     p { class: "text-sm text-gray-500 dark:text-gray-400 text-center",
                         "Powered by Mokosh Platform"
                     }
+                    VersionFooter {}
                 }
             }
         }
@@ -460,6 +489,10 @@ pub fn AuthLayout(props: AuthLayoutProps) -> Element {
                 div { class: "bg-white dark:bg-gray-800 py-8 px-4 shadow sm:rounded-lg sm:px-10",
                     {props.children}
                 }
+            }
+
+            div { class: "mt-6 sm:mx-auto sm:w-full sm:max-w-md",
+                VersionFooter {}
             }
         }
     }
