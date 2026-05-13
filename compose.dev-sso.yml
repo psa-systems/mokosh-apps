@@ -60,7 +60,7 @@ services:
       # /login, /forgot-password, /reset-password/:token, /invite/:token,
       # /signup pages now redirect to the hub; the avatar dropdown links
       # cross-origin too.
-      MOKOSH_HUB_BASE_URL: https://${USER}-bunyip.a8n.run
+      MOKOSH_HUB_BASE_URL: http://${USER}-bunyip.a8n.run
 
 networks:
   traefik-public:

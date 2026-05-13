@@ -37,7 +37,7 @@ impl OidcConfig {
             },
             hub_base_url: match option_env!("MOKOSH_HUB_BASE_URL") {
                 Some(s) => s,
-                None => "http://localhost:4302",
+                None => "http://localhost:4400",
             },
         }
     }
