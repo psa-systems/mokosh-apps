@@ -9,10 +9,53 @@
 
 use chrono::{Datelike, Duration, Local, NaiveDate, Weekday};
 use dioxus::prelude::*;
+use serde::Deserialize;
 
 use crate::components::{
     AppLayout, Button, ButtonVariant, Card, ChevronRightIcon, IconSize, PageHeader, PlusIcon,
 };
+
+/// Calendar event as returned by `GET /api/v1/calendar/events`. The
+/// frontend only needs the title and the date for grid rendering.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteCalendarEvent {
+    title: String,
+    start_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Source of the calendar events the page is rendering. Used to decide
+/// whether to show the "demo data - backend not wired yet" indicator
+/// and whether the "New Appointment" CTA can be enabled.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum EventSource {
+    /// Backend returned a list (possibly empty). The calendar is live.
+    Backend,
+    /// Backend errored or returned 404. Falling back to seeded demo data.
+    Demo,
+}
+
+/// Pick events for a given grid cell. When the backend is reachable
+/// (`EventSource::Backend`), filter the remote list to events whose
+/// `start_at` lands on `date` (UTC for now; future iteration adds
+/// per-user timezone). When the backend isn't wired or errored
+/// (`EventSource::Demo`), fall through to the seeded demo list.
+fn events_for_date(
+    date: NaiveDate,
+    remote: &[RemoteCalendarEvent],
+    source: EventSource,
+) -> Vec<String> {
+    match source {
+        EventSource::Backend => remote
+            .iter()
+            .filter(|e| e.start_at.date_naive() == date)
+            .map(|e| e.title.clone())
+            .collect(),
+        EventSource::Demo => demo_events_for(date)
+            .into_iter()
+            .map(String::from)
+            .collect(),
+    }
+}
 
 /// Pin demo events to specific January-2025 days. Everything else
 /// renders an empty grid; clearer than leaving Jan-2025 events showing
@@ -94,12 +137,33 @@ fn calendar_cells(active: NaiveDate) -> Vec<(NaiveDate, bool)> {
 /// Calendar page
 #[component]
 pub fn CalendarPage() -> Element {
-    // Default to Jan 2025 so the existing demo data shows up. Real
-    // calendar would default to Local::now() once we have a backend.
-    let initial =
-        NaiveDate::from_ymd_opt(2025, 1, 1).unwrap_or_else(|| Local::now().naive_local().date());
-    let mut active_month = use_signal(|| initial);
+    // Default to Jan 2025 so the existing demo data shows up when the
+    // backend has no events. Once a tenant has real events, the page
+    // defaults to today.
     let today_real = Local::now().naive_local().date();
+    let mut active_month = use_signal(|| {
+        NaiveDate::from_ymd_opt(2025, 1, 1).unwrap_or(today_real)
+    });
+
+    // Fetch the live event list. If the backend isn't wired yet (404),
+    // returns errors, or the user isn't authed, we fall back to the
+    // demo data so the page never renders empty. `EventSource` tells
+    // the UI which mode it's in so users see the difference.
+    let events_resource = use_resource(|| async {
+        let token = match crate::hooks::fetch::api::current_access_token() {
+            Some(t) => t,
+            None => return (Vec::new(), EventSource::Demo),
+        };
+        match crate::hooks::fetch::api::get_with_auth::<Vec<RemoteCalendarEvent>>(
+            "/calendar/events",
+            &token,
+        )
+        .await
+        {
+            Ok(events) => (events, EventSource::Backend),
+            Err(_) => (Vec::new(), EventSource::Demo),
+        }
+    });
 
     let title = {
         let m = active_month();
@@ -207,13 +271,31 @@ pub fn CalendarPage() -> Element {
                                 }
                             }
 
-                            div { class: "grid grid-cols-7 gap-px bg-gray-200 dark:bg-gray-700 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden",
-                                for (date, in_active) in calendar_cells(active_month()) {
-                                    CalendarDay {
-                                        day: date.day(),
-                                        is_other_month: !in_active,
-                                        is_today: date == today_real,
-                                        events: demo_events_for(date).into_iter().map(String::from).collect(),
+                            // Render based on the fetched events. While
+                            // pending, render an empty grid (preserves layout).
+                            {
+                                let (remote_events, source) = match &*events_resource.read_unchecked() {
+                                    Some((events, source)) => (events.clone(), *source),
+                                    None => (Vec::new(), EventSource::Demo),
+                                };
+                                rsx! {
+                                    if source == EventSource::Demo {
+                                        // Surface the fallback state so users know
+                                        // the calendar is showing seeded demo data.
+                                        div {
+                                            class: "mb-3 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
+                                            "Backend calendar API not reachable - showing demo events. Events you create won't be saved."
+                                        }
+                                    }
+                                    div { class: "grid grid-cols-7 gap-px bg-gray-200 dark:bg-gray-700 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden",
+                                        for (date, in_active) in calendar_cells(active_month()) {
+                                            CalendarDay {
+                                                day: date.day(),
+                                                is_other_month: !in_active,
+                                                is_today: date == today_real,
+                                                events: events_for_date(date, &remote_events, source),
+                                            }
+                                        }
                                     }
                                 }
                             }
