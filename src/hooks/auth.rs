@@ -65,6 +65,25 @@ impl AuthContext {
             .map(|u| roles.contains(&u.role.as_str()))
             .unwrap_or(false)
     }
+
+    /// Return the membership matching `active_tenant_id` so callers can
+    /// pull a display-ready tenant name or role for the current scope
+    /// without re-walking the membership list. None before sign-in or
+    /// while memberships are still loading.
+    pub fn active_membership(&self) -> Option<&MembershipView> {
+        let active = self.active_tenant_id?;
+        let active_str = active.to_string();
+        self.memberships
+            .iter()
+            .find(|m| m.tenant_id == active_str)
+    }
+
+    /// Display name for the active org, or `None` when there isn't one
+    /// to show (pre-login, mid-bootstrap, or active tenant somehow
+    /// missing from memberships).
+    pub fn active_org_name(&self) -> Option<&str> {
+        self.active_membership().map(|m| m.tenant_name.as_str())
+    }
 }
 
 /// Hook to access authentication state

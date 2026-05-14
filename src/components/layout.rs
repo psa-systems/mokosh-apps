@@ -269,6 +269,8 @@ pub struct TopBarProps {
 
 #[component]
 pub fn TopBar(props: TopBarProps) -> Element {
+    let auth = crate::hooks::use_auth();
+    let active_org = auth.read().active_org_name().map(str::to_string);
     rsx! {
         header { class: "h-16 flex items-center bg-gray-800 border-b border-gray-700 shrink-0 z-20",
             // Brand block - same width as the sidebar below it.
@@ -283,8 +285,16 @@ pub fn TopBar(props: TopBarProps) -> Element {
                 }
                 Link {
                     to: Route::Dashboard {},
-                    class: "text-xl font-bold text-white truncate",
-                    "Mokosh Platform"
+                    class: "flex flex-col leading-tight min-w-0",
+                    span { class: "text-base font-bold text-white truncate",
+                        "Mokosh Platform"
+                    }
+                    // Active-org indicator. Hidden until auth resolves an
+                    // active tenant - we don't show a "no org" state in
+                    // the brand slot to avoid a confusing flash on load.
+                    if let Some(name) = active_org.as_deref() {
+                        span { class: "text-xs text-gray-400 truncate", "{name}" }
+                    }
                 }
             }
 
