@@ -19,7 +19,7 @@ pub fn AuthCallbackPage() -> Element {
     let mut error_msg: Signal<Option<String>> = use_signal(|| None);
 
     use_future(move || async move {
-        let cfg = OidcConfig::from_env();
+        let cfg = OidcConfig::for_current_origin();
         match complete_login(&cfg).await {
             Ok((tokens, return_to)) => {
                 let claims = match tokens.id_claims() {

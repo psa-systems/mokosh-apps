@@ -331,7 +331,7 @@ pub fn TopBar(props: TopBarProps) -> Element {
 fn UserMenu() -> Element {
     let mut open = use_signal(|| false);
     let mut auth = crate::hooks::use_auth();
-    let cfg = crate::modules::oidc::OidcConfig::from_env();
+    let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
     let hub_profile = cfg.hub_url("/settings/profile");
     let hub_dashboard = cfg.hub_url("/dashboard");
     let hub_logout = cfg.hub_url("/logout");

@@ -231,7 +231,7 @@ pub fn use_memberships_loader() {
             return;
         }
         spawn(async move {
-            let cfg = crate::modules::oidc::OidcConfig::from_env();
+            let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
             #[derive(serde::Deserialize)]
             struct Body {
                 memberships: Vec<MembershipView>,
@@ -308,7 +308,7 @@ pub fn use_token_refresh() {
                 continue;
             }
 
-            let cfg = crate::modules::oidc::OidcConfig::from_env();
+            let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
             match crate::modules::oidc::refresh_tokens(&cfg, &refresh, &id_token).await {
                 Ok(new_tokens) => {
                     crate::hooks::fetch::api::set_access_token(Some(
@@ -413,7 +413,7 @@ pub fn use_logout() -> impl FnMut() {
             .and_then(|t| t.refresh_token.clone());
 
         if let Some(rt) = refresh {
-            let cfg = crate::modules::oidc::OidcConfig::from_env();
+            let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
             spawn(async move {
                 let _ = crate::modules::oidc::revoke_refresh_token(&cfg, &rt).await;
             });

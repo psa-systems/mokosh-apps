@@ -42,6 +42,34 @@ impl OidcConfig {
         }
     }
 
+    /// Build a config with `issuer` and `hub_base_url` derived from the
+    /// current browser origin when running on the production hostname pattern
+    /// (`msp.<tld>`). One image works for both staging (`msp.a8n.systems`) and
+    /// production (`msp.psa.systems`); compile-time `option_env!` defaults still
+    /// apply for dev (`localhost`) and any unrecognised host.
+    ///
+    /// Issuer mapping: `msp.<tld>` → `https://msp-api.<tld>`
+    /// Hub mapping:    `msp.<tld>` → `https://<tld>` (Bunyip apex)
+    pub fn for_current_origin() -> Self {
+        let mut cfg = Self::from_env();
+        let Some(win) = web_sys::window() else {
+            return cfg;
+        };
+        let Ok(host) = win.location().host() else {
+            return cfg;
+        };
+        let Some(rest) = host.strip_prefix("msp.") else {
+            return cfg;
+        };
+        // Leak once at startup so the existing `&'static str` shape holds.
+        // Bounded leak: at most two short strings per session.
+        let issuer: &'static str = Box::leak(format!("https://msp-api.{rest}").into_boxed_str());
+        let hub: &'static str = Box::leak(format!("https://{rest}").into_boxed_str());
+        cfg.issuer = issuer;
+        cfg.hub_base_url = hub;
+        cfg
+    }
+
     pub fn hub_url(&self, path: &str) -> String {
         format!("{}{}", self.hub_base_url.trim_end_matches('/'), path)
     }
