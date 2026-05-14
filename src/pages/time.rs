@@ -1,5 +1,6 @@
 //! Time tracking pages
 
+use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use dioxus::prelude::*;
 
 use crate::components::{
@@ -8,6 +9,38 @@ use crate::components::{
     TableHeader, TableRow,
 };
 use crate::Route;
+
+/// Start of the Monday-Sunday week that contains `date`.
+fn monday_of_week(date: NaiveDate) -> NaiveDate {
+    let offset = match date.weekday() {
+        Weekday::Mon => 0,
+        Weekday::Tue => 1,
+        Weekday::Wed => 2,
+        Weekday::Thu => 3,
+        Weekday::Fri => 4,
+        Weekday::Sat => 5,
+        Weekday::Sun => 6,
+    };
+    date - Duration::days(offset)
+}
+
+fn month_name(month: u32) -> &'static str {
+    match month {
+        1 => "January",
+        2 => "February",
+        3 => "March",
+        4 => "April",
+        5 => "May",
+        6 => "June",
+        7 => "July",
+        8 => "August",
+        9 => "September",
+        10 => "October",
+        11 => "November",
+        12 => "December",
+        _ => "",
+    }
+}
 
 /// Time entry list page
 #[component]
@@ -302,6 +335,24 @@ pub fn TimeEntryNewPage() -> Element {
 /// Timesheets page
 #[component]
 pub fn TimesheetsPage() -> Element {
+    // Default to the week of Jan 13 2025 so the existing demo grid lines
+    // up. Move to chrono::Local::now() when a real timesheet backend lands.
+    let initial = NaiveDate::from_ymd_opt(2025, 1, 13)
+        .unwrap_or_else(|| chrono::Local::now().naive_local().date());
+    let mut week_start = use_signal(|| monday_of_week(initial));
+
+    let label = {
+        let start = week_start();
+        let end = start + Duration::days(6);
+        format!(
+            "Week of {} {}-{}, {}",
+            month_name(start.month()),
+            start.day(),
+            end.day(),
+            start.year()
+        )
+    };
+
     rsx! {
         AppLayout { title: "Timesheets",
             PageHeader {
@@ -315,13 +366,25 @@ pub fn TimesheetsPage() -> Element {
             // Week selector
             Card { class: "mb-6",
                 div { class: "flex items-center justify-between",
-                    button { class: "p-2 text-gray-400 hover:text-gray-600",
+                    button {
+                        r#type: "button",
+                        class: "p-2 text-gray-400 hover:text-gray-600",
+                        title: "Previous week",
+                        onclick: move |_| {
+                            week_start.set(week_start() - Duration::days(7));
+                        },
                         ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
                     }
                     span { class: "text-lg font-medium text-gray-900 dark:text-white",
-                        "Week of January 13-19, 2025"
+                        "{label}"
                     }
-                    button { class: "p-2 text-gray-400 hover:text-gray-600",
+                    button {
+                        r#type: "button",
+                        class: "p-2 text-gray-400 hover:text-gray-600",
+                        title: "Next week",
+                        onclick: move |_| {
+                            week_start.set(week_start() + Duration::days(7));
+                        },
                         ChevronRightIcon { class: "h-5 w-5".to_string() }
                     }
                 }

@@ -1,20 +1,127 @@
 //! Calendar and dispatch pages
+//!
+//! The calendar grid is generated from the `active_month` signal so
+//! prev/next/today actually navigate. Per-day event content is still
+//! demo data (no backend yet); we surface that with disabled stubs on
+//! the "New Appointment" CTA and the Week/Day view toggles. Stubs use
+//! `<button disabled title="Coming soon">` so users see them as
+//! intentional placeholders.
 
+use chrono::{Datelike, Duration, Local, NaiveDate, Weekday};
 use dioxus::prelude::*;
 
 use crate::components::{
     AppLayout, Button, ButtonVariant, Card, ChevronRightIcon, IconSize, PageHeader, PlusIcon,
 };
 
+/// Pin demo events to specific January-2025 days. Everything else
+/// renders an empty grid; clearer than leaving Jan-2025 events showing
+/// when the user navigates to March.
+fn demo_events_for(date: NaiveDate) -> Vec<&'static str> {
+    if date.year() != 2025 || date.month() != 1 {
+        return vec![];
+    }
+    match date.day() {
+        1 => vec!["New Year Holiday"],
+        6 => vec!["Acme Corp - Onsite"],
+        8 => vec!["TechStart Meeting"],
+        10 => vec!["Team Standup", "Client Call"],
+        13 => vec!["Network Upgrade"],
+        15 => vec!["Acme Onsite", "Quarterly Review"],
+        21 => vec!["Server Migration"],
+        _ => vec![],
+    }
+}
+
+fn month_name(month: u32) -> &'static str {
+    match month {
+        1 => "January",
+        2 => "February",
+        3 => "March",
+        4 => "April",
+        5 => "May",
+        6 => "June",
+        7 => "July",
+        8 => "August",
+        9 => "September",
+        10 => "October",
+        11 => "November",
+        12 => "December",
+        _ => "",
+    }
+}
+
+/// Add `delta` months to `date`, clamping the day to the new month's
+/// last valid day. Used by the prev/next month buttons.
+fn shift_months(date: NaiveDate, delta: i32) -> NaiveDate {
+    let total = date.year() * 12 + (date.month() as i32 - 1) + delta;
+    let year = total.div_euclid(12);
+    let month0 = total.rem_euclid(12);
+    // Day 1 is always valid; we only navigate by month and don't care
+    // about preserving the day-of-month since the grid is regenerated.
+    NaiveDate::from_ymd_opt(year, (month0 + 1) as u32, 1).unwrap_or(date)
+}
+
+/// Return 35 cells (5 rows × 7 cols) covering the calendar grid for
+/// the given month, starting on the Sunday before (or on) the 1st.
+/// Each cell is (date, is_in_active_month).
+fn calendar_cells(active: NaiveDate) -> Vec<(NaiveDate, bool)> {
+    let first_of_month =
+        NaiveDate::from_ymd_opt(active.year(), active.month(), 1).unwrap_or(active);
+    let weekday = first_of_month.weekday();
+    // Sunday = 0, Saturday = 6 in our header order.
+    let lead = match weekday {
+        Weekday::Sun => 0,
+        Weekday::Mon => 1,
+        Weekday::Tue => 2,
+        Weekday::Wed => 3,
+        Weekday::Thu => 4,
+        Weekday::Fri => 5,
+        Weekday::Sat => 6,
+    };
+    let grid_start = first_of_month - Duration::days(lead);
+    // 5 weeks is enough for any month layout when started on the
+    // preceding Sunday; six only matters for months where the 1st is
+    // Friday/Saturday AND the month has 31 days. Use 6 rows to be safe.
+    (0..42)
+        .map(|i| {
+            let d = grid_start + Duration::days(i as i64);
+            (d, d.month() == active.month())
+        })
+        .collect()
+}
+
 /// Calendar page
 #[component]
 pub fn CalendarPage() -> Element {
+    // Default to Jan 2025 so the existing demo data shows up. Real
+    // calendar would default to Local::now() once we have a backend.
+    let initial =
+        NaiveDate::from_ymd_opt(2025, 1, 1).unwrap_or_else(|| Local::now().naive_local().date());
+    let mut active_month = use_signal(|| initial);
+    let today_real = Local::now().naive_local().date();
+
+    let title = {
+        let m = active_month();
+        format!("{} {}", month_name(m.month()), m.year())
+    };
+
     rsx! {
         AppLayout { title: "Calendar",
             PageHeader {
                 title: "Calendar",
                 actions: rsx! {
-                    Button { variant: ButtonVariant::Primary,
+                    // Disabled stub: creating appointments requires the
+                    // calendar API on mokosh-server, which isn't wired
+                    // yet. Surface as "Coming soon" rather than a
+                    // silent no-op.
+                    // TODO(calendar-api): wire up once /v1/calendar
+                    // endpoints exist on mokosh-server.
+                    button {
+                        r#type: "button",
+                        disabled: true,
+                        title: "Coming soon - calendar API not wired yet",
+                        class: "inline-flex items-center justify-center font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-blue-600 text-white px-4 py-2 text-sm",
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Appointment"
                     }
@@ -28,22 +135,63 @@ pub fn CalendarPage() -> Element {
                         // Calendar header
                         div { class: "flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700",
                             div { class: "flex items-center space-x-4",
-                                button { class: "p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded",
+                                button {
+                                    r#type: "button",
+                                    class: "p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded",
+                                    title: "Previous month",
+                                    onclick: move |_| {
+                                        let prev = shift_months(active_month(), -1);
+                                        active_month.set(prev);
+                                    },
                                     ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
                                 }
                                 h2 { class: "text-lg font-semibold text-gray-900 dark:text-white",
-                                    "January 2025"
+                                    "{title}"
                                 }
-                                button { class: "p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded",
+                                button {
+                                    r#type: "button",
+                                    class: "p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded",
+                                    title: "Next month",
+                                    onclick: move |_| {
+                                        let next = shift_months(active_month(), 1);
+                                        active_month.set(next);
+                                    },
                                     ChevronRightIcon { class: "h-5 w-5".to_string() }
                                 }
                             }
                             div { class: "flex space-x-2",
-                                Button { variant: ButtonVariant::Secondary, "Today" }
+                                Button {
+                                    variant: ButtonVariant::Secondary,
+                                    onclick: move |_| {
+                                        active_month.set(today_real);
+                                    },
+                                    "Today"
+                                }
                                 div { class: "flex border border-gray-300 dark:border-gray-600 rounded-md",
-                                    button { class: "px-3 py-1 text-sm bg-blue-600 text-white rounded-l-md", "Month" }
-                                    button { class: "px-3 py-1 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800", "Week" }
-                                    button { class: "px-3 py-1 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-r-md", "Day" }
+                                    // Month is the only implemented view today; Week/Day
+                                    // are placeholders. Keep all three visible as roadmap
+                                    // signal, but disable the unimplemented two.
+                                    button {
+                                        r#type: "button",
+                                        class: "px-3 py-1 text-sm bg-blue-600 text-white rounded-l-md cursor-default",
+                                        aria_pressed: true,
+                                        "Month"
+                                    }
+                                    // TODO(calendar-views): week / day layouts.
+                                    button {
+                                        r#type: "button",
+                                        disabled: true,
+                                        title: "Coming soon - week view not implemented",
+                                        class: "px-3 py-1 text-sm text-gray-700 dark:text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed",
+                                        "Week"
+                                    }
+                                    button {
+                                        r#type: "button",
+                                        disabled: true,
+                                        title: "Coming soon - day view not implemented",
+                                        class: "px-3 py-1 text-sm text-gray-700 dark:text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed rounded-r-md",
+                                        "Day"
+                                    }
                                 }
                             }
                         }
@@ -59,52 +207,15 @@ pub fn CalendarPage() -> Element {
                                 }
                             }
 
-                            // Calendar days (simplified - showing first two weeks)
                             div { class: "grid grid-cols-7 gap-px bg-gray-200 dark:bg-gray-700 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden",
-                                // Week 1 (Dec 29 - Jan 4)
-                                CalendarDay { day: 29, is_other_month: true, events: vec![] }
-                                CalendarDay { day: 30, is_other_month: true, events: vec![] }
-                                CalendarDay { day: 31, is_other_month: true, events: vec![] }
-                                CalendarDay { day: 1, is_other_month: false, events: vec!["New Year Holiday".to_string()] }
-                                CalendarDay { day: 2, is_other_month: false, events: vec![] }
-                                CalendarDay { day: 3, is_other_month: false, events: vec![] }
-                                CalendarDay { day: 4, is_other_month: false, events: vec![] }
-
-                                // Week 2
-                                CalendarDay { day: 5, is_other_month: false, events: vec![] }
-                                CalendarDay { day: 6, is_other_month: false, events: vec!["Acme Corp - Onsite".to_string()] }
-                                CalendarDay { day: 7, is_other_month: false, events: vec![] }
-                                CalendarDay { day: 8, is_other_month: false, events: vec!["TechStart Meeting".to_string()] }
-                                CalendarDay { day: 9, is_other_month: false, events: vec![] }
-                                CalendarDay { day: 10, is_other_month: false, events: vec!["Team Standup".to_string(), "Client Call".to_string()] }
-                                CalendarDay { day: 11, is_other_month: false, events: vec![] }
-
-                                // Week 3
-                                CalendarDay { day: 12, is_other_month: false, events: vec![] }
-                                CalendarDay { day: 13, is_other_month: false, events: vec!["Network Upgrade".to_string()] }
-                                CalendarDay { day: 14, is_other_month: false, events: vec![] }
-                                CalendarDay { day: 15, is_other_month: false, is_today: true, events: vec!["Acme Onsite".to_string(), "Quarterly Review".to_string()] }
-                                CalendarDay { day: 16, is_other_month: false, events: vec![] }
-                                CalendarDay { day: 17, is_other_month: false, events: vec![] }
-                                CalendarDay { day: 18, is_other_month: false, events: vec![] }
-
-                                // Week 4
-                                CalendarDay { day: 19, is_other_month: false, events: vec![] }
-                                CalendarDay { day: 20, is_other_month: false, events: vec![] }
-                                CalendarDay { day: 21, is_other_month: false, events: vec!["Server Migration".to_string()] }
-                                CalendarDay { day: 22, is_other_month: false, events: vec![] }
-                                CalendarDay { day: 23, is_other_month: false, events: vec![] }
-                                CalendarDay { day: 24, is_other_month: false, events: vec![] }
-                                CalendarDay { day: 25, is_other_month: false, events: vec![] }
-
-                                // Week 5
-                                CalendarDay { day: 26, is_other_month: false, events: vec![] }
-                                CalendarDay { day: 27, is_other_month: false, events: vec![] }
-                                CalendarDay { day: 28, is_other_month: false, events: vec![] }
-                                CalendarDay { day: 29, is_other_month: false, events: vec![] }
-                                CalendarDay { day: 30, is_other_month: false, events: vec![] }
-                                CalendarDay { day: 31, is_other_month: false, events: vec![] }
-                                CalendarDay { day: 1, is_other_month: true, events: vec![] }
+                                for (date, in_active) in calendar_cells(active_month()) {
+                                    CalendarDay {
+                                        day: date.day(),
+                                        is_other_month: !in_active,
+                                        is_today: date == today_real,
+                                        events: demo_events_for(date).into_iter().map(String::from).collect(),
+                                    }
+                                }
                             }
                         }
                     }
@@ -112,7 +223,7 @@ pub fn CalendarPage() -> Element {
 
                 // Sidebar
                 div { class: "space-y-6",
-                    // Today's schedule
+                    // Today's schedule (demo data; matches the Jan 15 2025 layout)
                     Card { title: "Today's Schedule",
                         div { class: "space-y-3",
                             ScheduleEvent {
@@ -138,7 +249,7 @@ pub fn CalendarPage() -> Element {
                         }
                     }
 
-                    // Mini calendar (placeholder)
+                    // Upcoming (demo data; static for now)
                     Card { title: "Upcoming",
                         div { class: "space-y-2 text-sm",
                             p { class: "text-gray-600 dark:text-gray-400",
@@ -229,16 +340,30 @@ fn ScheduleEvent(props: ScheduleEventProps) -> Element {
     }
 }
 
-/// Dispatch board page
+/// Dispatch board page. Day-by-day navigation works (prev/next/today);
+/// scheduling new appointments is stubbed because there's no backend yet.
 #[component]
 pub fn DispatchBoardPage() -> Element {
+    let today_real = Local::now().naive_local().date();
+    // Default to Jan 15 2025 so the demo data lines up with the page text.
+    let initial = NaiveDate::from_ymd_opt(2025, 1, 15).unwrap_or(today_real);
+    let mut active_day = use_signal(|| initial);
+
+    let title = active_day().format("%A, %B %-d, %Y").to_string();
+
     rsx! {
         AppLayout { title: "Dispatch Board",
             PageHeader {
                 title: "Dispatch Board",
                 subtitle: "Manage technician schedules and appointments",
                 actions: rsx! {
-                    Button { variant: ButtonVariant::Primary,
+                    // TODO(calendar-api): schedule new appointments via
+                    // mokosh-server once the endpoint exists.
+                    button {
+                        r#type: "button",
+                        disabled: true,
+                        title: "Coming soon - dispatch API not wired yet",
+                        class: "inline-flex items-center justify-center font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-blue-600 text-white px-4 py-2 text-sm",
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "Schedule Appointment"
                     }
@@ -249,17 +374,33 @@ pub fn DispatchBoardPage() -> Element {
                 // Header
                 div { class: "flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700",
                     div { class: "flex items-center space-x-4",
-                        button { class: "p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded",
+                        button {
+                            r#type: "button",
+                            class: "p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded",
+                            title: "Previous day",
+                            onclick: move |_| {
+                                active_day.set(active_day() - Duration::days(1));
+                            },
                             ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
                         }
                         h2 { class: "text-lg font-semibold text-gray-900 dark:text-white",
-                            "Wednesday, January 15, 2025"
+                            "{title}"
                         }
-                        button { class: "p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded",
+                        button {
+                            r#type: "button",
+                            class: "p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded",
+                            title: "Next day",
+                            onclick: move |_| {
+                                active_day.set(active_day() + Duration::days(1));
+                            },
                             ChevronRightIcon { class: "h-5 w-5".to_string() }
                         }
                     }
-                    Button { variant: ButtonVariant::Secondary, "Today" }
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| { active_day.set(today_real); },
+                        "Today"
+                    }
                 }
 
                 // Dispatch grid

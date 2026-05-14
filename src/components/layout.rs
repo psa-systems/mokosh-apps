@@ -304,9 +304,15 @@ pub fn TopBar(props: TopBarProps) -> Element {
                     }
                 }
 
-                // Notifications
+                // Notifications - stubbed pending the notifications API.
+                // Keep visible as a roadmap signal; disabled state +
+                // tooltip makes it clear this isn't a silent no-op.
+                // TODO(notifications-api): wire to /v1/notifications.
                 button {
-                    class: "p-2 rounded-full text-gray-400 hover:text-white hover:bg-gray-700 relative",
+                    r#type: "button",
+                    disabled: true,
+                    title: "Notifications coming soon",
+                    class: "p-2 rounded-full text-gray-400 hover:text-white hover:bg-gray-700 relative disabled:cursor-not-allowed",
                     BellIcon {}
                     span { class: "absolute top-1 right-1 block h-2 w-2 rounded-full bg-red-400" }
                 }
