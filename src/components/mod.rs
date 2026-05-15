@@ -9,6 +9,7 @@ mod icons;
 mod layout;
 mod modal;
 mod table;
+mod update_banner;
 
 pub use button::*;
 pub use card::*;
@@ -17,3 +18,4 @@ pub use icons::*;
 pub use layout::*;
 pub use modal::*;
 pub use table::*;
+pub use update_banner::*;

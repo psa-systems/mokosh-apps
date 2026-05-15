@@ -25,6 +25,12 @@ pub fn AppLayout(props: AppLayoutProps) -> Element {
         // surface (with the scrollbar visually hidden, see
         // input.css `.scrollbar-hide`).
         div { class: "h-screen flex flex-col bg-gray-100 dark:bg-gray-900 overflow-hidden",
+            // Admin-only update-available banner. Sits above the top
+            // bar (page-wide) and renders nothing for non-admins or
+            // when no update is published, so non-admin layouts are
+            // unaffected.
+            super::UpdateBanner {}
+
             // Persistent top bar: brand on the left (above the sidebar
             // column on lg+), page title in the middle, search +
             // notifications + user menu on the right.
