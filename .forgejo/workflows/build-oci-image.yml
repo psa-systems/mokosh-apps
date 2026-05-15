@@ -47,6 +47,11 @@ jobs:
           docker version
           docker buildx version
 
+      - name: Set up QEMU for arm64 emulation
+        uses: https://code.forgejo.org/docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
       - name: Set up buildx builder
         run: |
           docker buildx create --name container-builder --driver docker-container --use
@@ -87,9 +92,15 @@ jobs:
           let jobs = (sys cpu | length)
           print $"CARGO_BUILD_JOBS=($jobs)"
           print $"Building and pushing ($image) with tags: ($tags_str)"
+          # WASM bundle is arch-agnostic, so the builder stage is
+          # pinned to BUILDPLATFORM in the Dockerfile (compiles once
+          # on the runner's native arch). Only the Caddy-on-alpine
+          # runtime stage is rebuilt per target arch from a multi-arch
+          # base, so adding arm64 here is cheap.
           (
             ^docker buildx build
               --push
+              --platform linux/amd64,linux/arm64
               --cache-from $cache_from
               --cache-to $cache_to
               --build-arg $"GIT_SHA=($env.GITHUB_SHA)"
