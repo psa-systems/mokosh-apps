@@ -56,15 +56,33 @@ impl OidcConfig {
     /// One image works for both staging (`msp.a8n.systems`),
     /// production (`msp.psa.systems`), and arbitrary self-hosted
     /// hostnames.
+    ///
+    /// The result is memoized in a thread-local cache so the up-to-three
+    /// `Box::leak` allocations on first resolution stay bounded at one
+    /// set per session even though this is called from five different
+    /// call sites and re-runs each render. WASM is single-threaded so
+    /// the thread-local is effectively a process-global.
     pub fn for_current_origin() -> Self {
+        thread_local! {
+            static CACHED: std::cell::RefCell<Option<OidcConfig>> =
+                const { std::cell::RefCell::new(None) };
+        }
+        CACHED.with(|cell| {
+            if let Some(cfg) = cell.borrow().as_ref() {
+                return cfg.clone();
+            }
+            let cfg = Self::resolve();
+            *cell.borrow_mut() = Some(cfg.clone());
+            cfg
+        })
+    }
+
+    /// Field-by-field resolution. Split out so [`for_current_origin`]
+    /// can wrap it in a one-shot cache. Each leaked string corresponds
+    /// to one field; at most three leaks per session.
+    fn resolve() -> Self {
         let mut cfg = Self::from_env();
 
-        // Resolve each overridable field once. Runtime injection wins;
-        // otherwise the `msp.<tld>` host-prefix derivation; otherwise
-        // the compile-time default from `Self::from_env()` stands.
-        // Strings have to satisfy the existing `&'static str` shape, so
-        // each resolved value is leaked once. The leak is bounded:
-        // at most three short strings per session.
         let injected_issuer = crate::modules::runtime_config::get("oidc_issuer");
         let injected_client_id = crate::modules::runtime_config::get("oidc_client_id");
         let injected_hub = crate::modules::runtime_config::get("hub_base_url");

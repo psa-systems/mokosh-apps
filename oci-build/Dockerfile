@@ -58,18 +58,17 @@ COPY --from=caddy-bin /usr/bin/caddy /usr/bin/caddy
 # Copy static bundle
 COPY --from=builder /build/target/dx/mokosh-client/release/web/public /usr/share/caddy
 
-# Pre-create /etc/caddy with 0755 because `COPY --chmod=` propagates
-# the file mode to implicitly-created parent directories. The
-# Caddyfile COPY below intentionally does NOT pin --chmod (git tracks
-# the file at 100644 already); creating the parent dir here keeps
-# its mode independent of whatever the file's mode ends up at.
+# Pre-create /etc/caddy with the default 0755 mode. The Caddyfile
+# COPY below pins --chmod=0644 so the file is readable by appuser
+# regardless of what the host's umask did to the source file in the
+# build context. Creating the parent dir explicitly here is what
+# makes that --chmod safe: without this RUN, BuildKit would auto-
+# create /etc/caddy at the same mode as the COPY (0644 = no execute
+# bit on the directory, blocking appuser from traversing it).
 RUN mkdir --parents /etc/caddy
 
-# Default Caddyfile (override via volume mount). Mode comes from
-# git's 100644 tracked mode; if a dev's host umask drops the read bit
-# they need to `chmod 0644 oci-build/Caddyfile` once - the file is in
-# the source tree and would surface the issue at build time.
-COPY oci-build/Caddyfile /etc/caddy/Caddyfile
+# Default Caddyfile (override via volume mount).
+COPY --chmod=0644 oci-build/Caddyfile /etc/caddy/Caddyfile
 
 # Container entrypoint: renders /usr/share/caddy/_mokosh_config.js
 # from env vars at start so operators can point the SPA at their own

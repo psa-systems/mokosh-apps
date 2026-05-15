@@ -52,7 +52,16 @@ fn dismissal_key(v: &SystemVersion) -> String {
 
 #[component]
 pub fn UpdateBanner() -> Element {
+    // Hooks first, gating render afterwards. Dioxus requires the set
+    // of hooks called per render to stay stable across that component
+    // instance's lifetime; bailing on `!is_admin` before
+    // `use_resource` / `use_signal` would skip them on the non-admin
+    // render and then add them on the next render if the user becomes
+    // admin (tenant switch, late hydration), violating that invariant.
     let auth = use_auth();
+    let version_resource = use_resource(|| async { get_version().await });
+    let mut dismissed_local = use_signal(|| false);
+
     let is_admin = auth
         .read()
         .user
@@ -62,11 +71,10 @@ pub fn UpdateBanner() -> Element {
         return rsx! {};
     }
 
-    let version_resource = use_resource(|| async { get_version().await });
-    // Re-render on dismiss without refetching from the server.
-    let mut dismissed_local = use_signal(|| false);
-
-    let v: SystemVersion = match &*version_resource.read_unchecked() {
+    // `read()` rather than `read_unchecked()` so this component
+    // re-renders when the resource resolves. The unchecked variant
+    // would silently miss the transition from Loading -> Ready.
+    let v: SystemVersion = match &*version_resource.read() {
         Some(Ok(v)) => v.clone(),
         _ => return rsx! {},
     };
@@ -82,10 +90,22 @@ pub fn UpdateBanner() -> Element {
         return rsx! {};
     }
 
+    // `VersionPair::update_available()` only returns true when
+    // `latest` is `Some`, so the unwraps here are unreachable. They
+    // also avoid carrying owned `String`s into the rsx! closures
+    // just to please the lifetime checker.
     let client_running = v.client.running.clone();
-    let client_latest = v.client.latest.clone();
+    let client_latest = v
+        .client
+        .latest
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
     let server_running = v.server.running.clone();
-    let server_latest = v.server.latest.clone();
+    let server_latest = v
+        .server
+        .latest
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
 
     rsx! {
         div {
@@ -96,14 +116,10 @@ pub fn UpdateBanner() -> Element {
                     span { class: "font-medium", "Update available." }
                     " "
                     if client_update {
-                        if let Some(latest) = client_latest.as_ref() {
-                            span { "Client: {client_running} → {latest}. " }
-                        }
+                        span { "Client: {client_running} → {client_latest}. " }
                     }
                     if server_update {
-                        if let Some(latest) = server_latest.as_ref() {
-                            span { "Server: {server_running} → {latest}. " }
-                        }
+                        span { "Server: {server_running} → {server_latest}. " }
                     }
                     span { class: "text-amber-700 dark:text-amber-300",
                         "Bump the tag(s) in your compose.yml and run "
@@ -116,6 +132,7 @@ pub fn UpdateBanner() -> Element {
                 button {
                     class: "shrink-0 p-1 rounded hover:bg-amber-100 dark:hover:bg-amber-900/40",
                     title: "Dismiss until next update",
+                    aria_label: "Dismiss update notification",
                     onclick: {
                         let key = key.clone();
                         move |_| {

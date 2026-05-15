@@ -40,7 +40,7 @@ emit_field() {
     fi
 }
 
-{
+if ! {
     echo "// Generated at container start by oci-build/entrypoint.sh."
     echo "// Operators override these via env vars on the mokosh-www container."
     printf 'window.__MOKOSH_CONFIG__ = {'
@@ -50,13 +50,23 @@ emit_field() {
     emit_field oidc_client_id "${MOKOSH_OIDC_CLIENT_ID:-}"
     emit_field hub_base_url "${MOKOSH_HUB_BASE_URL:-}"
     echo '};'
-} > "$CONFIG_JS"
+} > "$CONFIG_JS" 2>/dev/null; then
+    echo "[entrypoint] WARN: could not write ${CONFIG_JS} (read-only fs?); SPA will fall back to compile-time config" >&2
+fi
 
 # Inject the script tag into <head> if not already present. Idempotent
 # across restarts (only injects once, even if the image layer's
 # index.html is the canonical artifact between runs).
+#
+# This is best-effort: if the rootfs is read-only (e.g. operator runs
+# the container with `read_only: true`) the sed -i write fails. We
+# explicitly do not let that abort startup - Caddy can still serve
+# the un-injected index.html, and the SPA falls through to its
+# compile-time defaults. Log a warning so operators see the cause.
 if ! grep -q -F "$INCLUDE_TAG" "$INDEX"; then
-    sed -i "s|</head>|    ${INCLUDE_TAG}\\n</head>|" "$INDEX"
+    if ! sed -i "s|</head>|    ${INCLUDE_TAG}\\n</head>|" "$INDEX" 2>/dev/null; then
+        echo "[entrypoint] WARN: could not patch ${INDEX} (read-only fs?); SPA will fall back to compile-time config" >&2
+    fi
 fi
 
 exec "$@"
