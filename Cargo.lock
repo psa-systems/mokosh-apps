@@ -1975,6 +1975,7 @@ dependencies = [
 name = "mokosh-client"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "chrono",
  "dioxus",
  "futures-util",
@@ -1983,8 +1984,10 @@ dependencies = [
  "gloo-timers",
  "js-sys",
  "pulldown-cmark",
+ "rand",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tracing",
  "uuid",

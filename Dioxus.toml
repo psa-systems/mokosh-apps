@@ -13,9 +13,13 @@ asset_dir = "assets"
 
 # Asset configuration
 [web.app]
-# HTML title is set in index.html (<title>Mokosh Platform</title>);
-# specifying it here too caused the doubled "Mokosh PlatformMokosh
-# Platform" tab title flagged by the audit (P1-09).
+# dx 0.7.7 APPENDS this string to whatever already lives inside the
+# `<title>` element in index.html. When the field is unset, dx
+# defaults to "dioxus | ⛺", producing tab titles like
+# "Mokosh Platformdioxus | ⛺". Setting it to an empty string makes
+# the append a no-op so index.html's literal <title>Mokosh Platform</title>
+# is the entire tab title.
+title = ""
 
 # CSS is included via asset!() macro in Rust code
 [web.resource]

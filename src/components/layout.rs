@@ -147,9 +147,6 @@ fn SidebarContent() -> Element {
                 NavItem { to: Route::Reports {}, icon: rsx!(ChartIcon {}), label: "Reports" }
             }
 
-            NavSection { title: "Configuration",
-                NavItem { to: Route::Settings {}, icon: rsx!(CogIcon {}), label: "Settings" }
-            }
             }
             VersionFooter {}
         }
@@ -272,6 +269,8 @@ pub struct TopBarProps {
 
 #[component]
 pub fn TopBar(props: TopBarProps) -> Element {
+    let auth = crate::hooks::use_auth();
+    let active_org = auth.read().active_org_name().map(str::to_string);
     rsx! {
         header { class: "h-16 flex items-center bg-gray-800 border-b border-gray-700 shrink-0 z-20",
             // Brand block - same width as the sidebar below it.
@@ -286,8 +285,16 @@ pub fn TopBar(props: TopBarProps) -> Element {
                 }
                 Link {
                     to: Route::Dashboard {},
-                    class: "text-xl font-bold text-white truncate",
-                    "Mokosh Platform"
+                    class: "flex flex-col leading-tight min-w-0",
+                    span { class: "text-base font-bold text-white truncate",
+                        "Mokosh Platform"
+                    }
+                    // Active-org indicator. Hidden until auth resolves an
+                    // active tenant - we don't show a "no org" state in
+                    // the brand slot to avoid a confusing flash on load.
+                    if let Some(name) = active_org.as_deref() {
+                        span { class: "text-xs text-gray-400 truncate", "{name}" }
+                    }
                 }
             }
 
@@ -307,9 +314,15 @@ pub fn TopBar(props: TopBarProps) -> Element {
                     }
                 }
 
-                // Notifications
+                // Notifications - stubbed pending the notifications API.
+                // Keep visible as a roadmap signal; disabled state +
+                // tooltip makes it clear this isn't a silent no-op.
+                // TODO(notifications-api): wire to /v1/notifications.
                 button {
-                    class: "p-2 rounded-full text-gray-400 hover:text-white hover:bg-gray-700 relative",
+                    r#type: "button",
+                    disabled: true,
+                    title: "Notifications coming soon",
+                    class: "p-2 rounded-full text-gray-400 hover:text-white hover:bg-gray-700 relative disabled:cursor-not-allowed",
                     BellIcon {}
                     span { class: "absolute top-1 right-1 block h-2 w-2 rounded-full bg-red-400" }
                 }
@@ -328,7 +341,28 @@ pub fn TopBar(props: TopBarProps) -> Element {
 fn UserMenu() -> Element {
     let mut open = use_signal(|| false);
     let mut auth = crate::hooks::use_auth();
-    let navigator = use_navigator();
+    let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
+    let hub_profile = cfg.hub_url("/settings/profile");
+    let hub_dashboard = cfg.hub_url("/dashboard");
+    let hub_logout = cfg.hub_url("/logout");
+
+    let logout = move |_| {
+        open.set(false);
+        // Tear down THIS SPA's local state, then redirect to the
+        // hub's canonical /logout page. Bunyip's /logout POSTs
+        // /v1/auth/logout (clears the .a8n.run-scoped OP session
+        // cookie via Set-Cookie), drops bunyip's localStorage
+        // tokens, and lands the user on /login. Without that
+        // round-trip, the OP cookie would still be live and a
+        // subsequent visit here would silently sign the user back
+        // in via the SSO bridge.
+        crate::modules::oidc::storage::clear_auth();
+        crate::hooks::fetch::api::set_access_token(None);
+        auth.write().user = None;
+        if let Some(win) = web_sys::window() {
+            let _ = win.location().replace(&hub_logout);
+        }
+    };
 
     rsx! {
         div { class: "relative",
@@ -342,38 +376,27 @@ fn UserMenu() -> Element {
                 UserCircleIcon { size: IconSize::Large, class: "text-gray-400".to_string() }
             }
             if *open.read() {
-                // Inset items by 1 unit so each hover bg can be rounded
-                // independently inside the rounded shell - keeps the
-                // corners visually rounded even when hovering the
-                // first/last items. Avoids overflow-hidden, which would
-                // clip the menu's shadow.
                 div {
                     class: "absolute right-0 mt-2 w-44 rounded-md shadow-lg bg-white dark:bg-gray-800 ring-1 ring-black ring-opacity-5 z-20 p-1",
                     role: "menu",
-                    button {
+                    // Profile + Apps live on the bunyip hub; cross-origin
+                    // top-level <a> rather than the router Link so the
+                    // browser actually navigates instead of trying to
+                    // resolve the URL against this SPA's Route enum.
+                    a {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
-                        onclick: move |_| {
-                            open.set(false);
-                            navigator.push(Route::Settings {});
-                        },
+                        href: "{hub_profile}",
                         "Profile"
                     }
-                    button {
+                    a {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
-                        onclick: move |_| {
-                            open.set(false);
-                            navigator.push(Route::Settings {});
-                        },
-                        "Settings"
+                        href: "{hub_dashboard}",
+                        "Apps"
                     }
                     div { class: "border-t border-gray-200 dark:border-gray-700 my-1" }
                     button {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-700",
-                        onclick: move |_| {
-                            open.set(false);
-                            auth.write().user = None;
-                            navigator.push(Route::Login {});
-                        },
+                        onclick: logout,
                         "Logout"
                     }
                 }

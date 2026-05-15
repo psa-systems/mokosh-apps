@@ -149,13 +149,56 @@ pub mod api {
     #[cfg(feature = "web")]
     use serde::{de::DeserializeOwned, Serialize};
 
+    /// Derive the Mokosh API base URL from the current browser origin.
+    ///
+    /// Mokosh is deployed with the SPA at `msp.<tld>` and the API at
+    /// `msp-api.<tld>` (e.g. `msp.a8n.systems` SPA → `msp-api.a8n.systems` API).
+    /// When the SPA loads from one of those origins we point API calls at the
+    /// sibling subdomain.
+    ///
+    /// In dev (`localhost`, IP address, or any host that doesn't start with
+    /// `msp.`) we fall back to the same-origin `/api/v1` path so the Dioxus
+    /// dev server can proxy through to the local backend.
     #[cfg(feature = "web")]
-    const API_BASE: &str = "/api/v1";
+    fn api_base() -> String {
+        if let Some(win) = web_sys::window() {
+            if let Ok(host) = win.location().host() {
+                if let Some(rest) = host.strip_prefix("msp.") {
+                    return format!("https://msp-api.{rest}/api/v1");
+                }
+            }
+        }
+        "/api/v1".to_string()
+    }
+
+    // Single-threaded global access-token holder. WASM is strictly
+    // single-threaded so a `RefCell` is safe; we don't need a mutex.
+    // The token lives only in memory: it is wiped on logout and never
+    // written to localStorage.
+    #[cfg(feature = "web")]
+    thread_local! {
+        static ACCESS_TOKEN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// Set the current access token. Called from the OIDC callback
+    /// handler once `complete_login` returns successfully.
+    #[cfg(feature = "web")]
+    pub fn set_access_token(token: Option<String>) {
+        ACCESS_TOKEN.with(|t| *t.borrow_mut() = token);
+    }
+
+    /// Read the current access token. Returns `None` before sign-in.
+    #[cfg(feature = "web")]
+    pub fn current_access_token() -> Option<String> {
+        ACCESS_TOKEN.with(|t| t.borrow().clone())
+    }
+
+    fn _doc_anchor_keep_module_grouping() {}
 
     /// Get request
     #[cfg(feature = "web")]
     pub async fn get<T: DeserializeOwned>(path: &str) -> Result<T, String> {
-        let url = format!("{}{}", API_BASE, path);
+        let url = format!("{}{}", api_base(), path);
 
         let response = Request::get(&url)
             .header("Content-Type", "application/json")
@@ -173,7 +216,7 @@ pub mod api {
     /// Get request with auth token
     #[cfg(feature = "web")]
     pub async fn get_with_auth<T: DeserializeOwned>(path: &str, token: &str) -> Result<T, String> {
-        let url = format!("{}{}", API_BASE, path);
+        let url = format!("{}{}", api_base(), path);
 
         let response = Request::get(&url)
             .header("Content-Type", "application/json")
@@ -195,7 +238,7 @@ pub mod api {
         path: &str,
         body: &B,
     ) -> Result<T, String> {
-        let url = format!("{}{}", API_BASE, path);
+        let url = format!("{}{}", api_base(), path);
 
         let response = Request::post(&url)
             .header("Content-Type", "application/json")
@@ -219,7 +262,7 @@ pub mod api {
         body: &B,
         token: &str,
     ) -> Result<T, String> {
-        let url = format!("{}{}", API_BASE, path);
+        let url = format!("{}{}", api_base(), path);
 
         let response = Request::post(&url)
             .header("Content-Type", "application/json")
@@ -244,7 +287,7 @@ pub mod api {
         body: &B,
         token: &str,
     ) -> Result<T, String> {
-        let url = format!("{}{}", API_BASE, path);
+        let url = format!("{}{}", api_base(), path);
 
         let response = Request::put(&url)
             .header("Content-Type", "application/json")
@@ -265,7 +308,7 @@ pub mod api {
     /// Delete request with auth token
     #[cfg(feature = "web")]
     pub async fn delete_with_auth(path: &str, token: &str) -> Result<(), String> {
-        let url = format!("{}{}", API_BASE, path);
+        let url = format!("{}{}", api_base(), path);
 
         let response = Request::delete(&url)
             .header("Content-Type", "application/json")
@@ -279,5 +322,47 @@ pub mod api {
         } else {
             Err(format!("Request failed with status: {}", response.status()))
         }
+    }
+
+    // --- Auto-authed wrappers --------------------------------------------
+    //
+    // These read the current access token from the thread-local holder so
+    // page code does not have to thread it through. If the user is not
+    // signed in (`ACCESS_TOKEN` is None) we send the request without an
+    // Authorization header and let the server's 401 surface naturally;
+    // the OIDC SPA pattern then redirects to the login page.
+
+    #[cfg(feature = "web")]
+    pub async fn get_authed<T: DeserializeOwned>(path: &str) -> Result<T, String> {
+        match current_access_token() {
+            Some(t) => get_with_auth(path, &t).await,
+            None => get(path).await,
+        }
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn post_authed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, String> {
+        match current_access_token() {
+            Some(t) => post_with_auth(path, body, &t).await,
+            None => post(path, body).await,
+        }
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn put_authed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, String> {
+        let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
+        put_with_auth(path, body, &t).await
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn delete_authed(path: &str) -> Result<(), String> {
+        let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
+        delete_with_auth(path, &t).await
     }
 }

@@ -128,7 +128,6 @@ fn ContractRow(props: ContractRowProps) -> Element {
 
     let id = props.id.clone();
 
-
     rsx! {
         TableRow {
             clickable: true,

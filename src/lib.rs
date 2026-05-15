@@ -13,6 +13,57 @@ pub mod utils;
 pub use modules::auth::{AuthState, CurrentUser};
 pub use utils::error::{AppError, AppResult};
 
+/// Layout component that gates all authenticated routes (declared
+/// here, before the `Route` enum, because the `Routable` derive
+/// expands the `#[layout(AuthGuard)]` reference at the enum site
+/// and needs the component already in scope).
+///
+/// Renders nothing when the user is not signed in and asks the
+/// navigator to replace the current entry with `/login` during
+/// render. The render-time guard is what defeats the back-button
+/// bypass: a popstate-driven re-render of a protected route never
+/// commits any of its content to the DOM, so there is no flash of
+/// authenticated UI before redirect.
+#[component]
+pub fn AuthGuard() -> Element {
+    let auth = hooks::use_auth();
+    let auth_state = auth.read();
+    if auth_state.is_loading {
+        // Still hydrating tokens from sessionStorage. Render a
+        // placeholder so we do not kick off the OIDC dance just to
+        // find we already have a session.
+        return rsx! {
+            div { class: "min-h-screen flex items-center justify-center text-sm text-gray-500",
+                "Loading..."
+            }
+        };
+    }
+    if !auth_state.is_authenticated() {
+        // No local session. Kick off the OIDC code+PKCE flow ON THIS
+        // ORIGIN so the PendingFlow (code_verifier + state + nonce)
+        // lands in *this* SPA's sessionStorage and /auth/callback can
+        // complete the code exchange. start_login replaces the page
+        // with /oauth2/authorize. From there:
+        //   - if the user has an OP session cookie (e.g. they signed
+        //     in on the Bunyip hub and clicked a launcher tile),
+        //     authorize 302s straight back to /auth/callback?code=...
+        //   - otherwise authorize 302s to bunyip's /login?return_to=
+        //     and the SSO bridge closes the loop after they sign in.
+        //
+        // The legacy `/login` redirect stub stays in place for users
+        // who hit that URL directly via a bookmark; it sends them to
+        // bunyip's /login, which then bounces them back here.
+        let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
+        let _ = crate::modules::oidc::start_login(&cfg, "");
+        return rsx! {
+            div { class: "min-h-screen flex items-center justify-center text-sm text-gray-500",
+                "Signing you in..."
+            }
+        };
+    }
+    rsx! { Outlet::<Route> {} }
+}
+
 /// Application routes
 #[derive(Clone, Routable, Debug, PartialEq)]
 #[rustfmt::skip]
@@ -24,15 +75,39 @@ pub enum Route {
     #[route("/login")]
     Login {},
 
+    #[route("/auth/callback")]
+    AuthCallback {},
+
     #[route("/forgot-password")]
     ForgotPassword {},
 
     #[route("/reset-password/:token")]
     ResetPassword { token: String },
 
-    // Dashboard
-    #[route("/dashboard")]
-    Dashboard {},
+    #[route("/invite/:token")]
+    InviteAccept { token: String },
+
+    #[route("/signup")]
+    Signup {},
+
+    #[route("/signup/:token")]
+    SignupComplete { token: String },
+
+    // ======================================================================
+    // Authenticated routes. The `AuthGuard` layout below renders nothing
+    // (and synchronously navigates to /login) whenever the in-memory
+    // auth signal reports the user as unauthenticated. This is what
+    // stops the back-button from flashing /dashboard after logout: a
+    // popstate-driven re-render of a protected route is gated *during*
+    // render, not after, so the dashboard component never gets a frame
+    // to display its content. `use_require_auth` inside individual
+    // pages still runs but is now a redundant safety net.
+    // ======================================================================
+    #[layout(AuthGuard)]
+
+      // Dashboard
+      #[route("/dashboard")]
+      Dashboard {},
 
     // Tickets
     #[route("/tickets")]
@@ -147,28 +222,25 @@ pub enum Route {
     ReportDetail { report_type: String },
 
     // Settings
-    #[route("/settings")]
-    Settings {},
-
-    #[route("/settings/users")]
-    UserManagement {},
-
-    #[route("/settings/teams")]
-    TeamManagement {},
-
-    #[route("/settings/notifications")]
-    NotificationSettings {},
-
-    #[route("/settings/integrations")]
-    IntegrationSettings {},
-
-    #[route("/settings/billing")]
-    BillingSettings {},
+    //
+    // Account-management surfaces (profile, security, sessions, audit
+    // logs, user management, invites) moved to the Bunyip hub in
+    // docs/bunyip/08-mokosh-clients-cleanup.md. The per-PSA-feature
+    // settings (teams, notifications, integrations, billing-config)
+    // belong here but their pages are not implemented yet; bring them
+    // back as `/operations/*` routes when the work is scheduled.
+    #[route("/settings/active-tenant")]
+    ActiveTenant {},
 
     // Admin (multi-tenant only)
     #[cfg(feature = "multi-tenant")]
     #[route("/admin/tenants")]
     TenantManagement {},
+
+    // End of AuthGuard scope. Portal routes have their own layout and
+    // auth model (client portal vs internal tools); the catch-all 404
+    // is intentionally public so logged-out users see a real 404 page.
+    #[end_layout]
 
     // Client Portal Routes (separate layout)
     #[route("/portal")]
@@ -200,6 +272,34 @@ pub enum Route {
 // Route component wrappers - these import the actual page components
 use pages::*;
 
+/// Top-level navigate to the Bunyip hub. Used by the legacy
+/// account-surface routes (`/login`, `/forgot-password`, etc.) so that
+/// existing bookmarks keep working instead of 404ing. `replace()`
+/// rather than `assign()` so the hub's URL takes over the history
+/// entry; the back button skips the dead mokosh-clients URL.
+fn redirect_to_hub(path: &str) {
+    if let Some(win) = web_sys::window() {
+        let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
+        let url = cfg.hub_url(path);
+        let _ = win.location().replace(&url);
+    }
+}
+
+#[component]
+fn HubRedirect(target: String, label: &'static str) -> Element {
+    use_effect({
+        let target = target.clone();
+        move || {
+            redirect_to_hub(&target);
+        }
+    });
+    rsx! {
+        div { class: "min-h-screen flex items-center justify-center p-8 text-sm text-gray-500 dark:text-gray-400",
+            "Redirecting to {label}..."
+        }
+    }
+}
+
 #[component]
 fn Home() -> Element {
     rsx! { home::HomePage {} }
@@ -207,17 +307,37 @@ fn Home() -> Element {
 
 #[component]
 fn Login() -> Element {
-    rsx! { auth::LoginPage {} }
+    rsx! { HubRedirect { target: "/login".to_string(), label: "sign in" } }
+}
+
+#[component]
+fn AuthCallback() -> Element {
+    rsx! { auth_callback::AuthCallbackPage {} }
 }
 
 #[component]
 fn ForgotPassword() -> Element {
-    rsx! { auth::ForgotPasswordPage {} }
+    rsx! { HubRedirect { target: "/forgot-password".to_string(), label: "password reset" } }
 }
 
 #[component]
 fn ResetPassword(token: String) -> Element {
-    rsx! { auth::ResetPasswordPage { token } }
+    rsx! { HubRedirect { target: format!("/reset-password/{token}"), label: "password reset" } }
+}
+
+#[component]
+fn InviteAccept(token: String) -> Element {
+    rsx! { HubRedirect { target: format!("/invitations/accept?token={token}"), label: "invite accept" } }
+}
+
+#[component]
+fn Signup() -> Element {
+    rsx! { HubRedirect { target: "/signup".to_string(), label: "sign up" } }
+}
+
+#[component]
+fn SignupComplete(token: String) -> Element {
+    rsx! { HubRedirect { target: format!("/signup/{token}"), label: "sign up" } }
 }
 
 #[component]
@@ -396,33 +516,11 @@ fn ReportDetail(report_type: String) -> Element {
 }
 
 #[component]
-fn Settings() -> Element {
-    rsx! { settings::SettingsPage {} }
-}
-
-#[component]
-fn UserManagement() -> Element {
-    rsx! { settings::UserManagementPage {} }
-}
-
-#[component]
-fn TeamManagement() -> Element {
-    rsx! { settings::TeamManagementPage {} }
-}
-
-#[component]
-fn NotificationSettings() -> Element {
-    rsx! { settings::NotificationSettingsPage {} }
-}
-
-#[component]
-fn IntegrationSettings() -> Element {
-    rsx! { settings::IntegrationSettingsPage {} }
-}
-
-#[component]
-fn BillingSettings() -> Element {
-    rsx! { settings::BillingSettingsPage {} }
+fn ActiveTenant() -> Element {
+    // Tenant switching moved to the bunyip hub per
+    // docs/migration/settings-split.md. Bookmarks at the legacy URL
+    // bounce there instead of 404ing.
+    rsx! { HubRedirect { target: "/settings/active-tenant".to_string(), label: "tenant switcher" } }
 }
 
 #[cfg(feature = "multi-tenant")]
