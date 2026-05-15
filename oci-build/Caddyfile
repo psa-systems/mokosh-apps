@@ -17,7 +17,11 @@
         ?Cache-Control "public, max-age=31536000, immutable"
     }
     # index.html and the runtime-config shim are regenerated per
-    # container start, so they must never be cached.
-    @no-cache path *.html /_mokosh_config.js
+    # container start, so they must never be cached. The bare `/`
+    # match is needed because Caddy's path matcher evaluates the
+    # request URI before `try_files` rewrites it, so a request to `/`
+    # would otherwise miss the `*.html` glob and pick up the
+    # immutable header from the block above.
+    @no-cache path / *.html /_mokosh_config.js
     header @no-cache Cache-Control "no-cache, no-store, must-revalidate"
 }

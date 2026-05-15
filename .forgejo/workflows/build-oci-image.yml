@@ -40,8 +40,16 @@ jobs:
       # so self-hosters can pull without registry credentials. Leave
       # the var unset to skip the mirror step (e.g. before ops has
       # created the public package owner).
+      #
+      # The mirror uses the same PSA_SYSTEMS_PRIVATE_PACKAGE_PAT for
+      # both ends because Forgejo's docker login keys auth by host
+      # (`dev.a8n.run`), so two logins to the same host clobber each
+      # other's entries in ~/.docker/config.json. The PAT therefore
+      # must be granted write access to *both* the private and the
+      # public package owners. If a future Forgejo extension makes
+      # per-package-scoped auth possible we can split this back into
+      # two creds and use DOCKER_CONFIG to keep them separate.
       PUBLIC_REGISTRY_OWNER: ${{ vars.PSA_SYSTEMS_PUBLIC_PACKAGE_OWNER }}
-      PUBLIC_REGISTRY_PASSWORD: ${{ secrets.PSA_SYSTEMS_PUBLIC_PACKAGE_PAT }}
 
     steps:
       - name: Clone the repository
@@ -54,10 +62,15 @@ jobs:
           docker version
           docker buildx version
 
-      - name: Set up QEMU for arm64 emulation
+      - name: Set up QEMU for cross-arch emulation
+        # Register both amd64 and arm64 binfmt handlers. The list is
+        # deliberately symmetric so this works on either host arch
+        # without follow-up edits: today's amd64 runners get the
+        # arm64 emulator, and a future arm64 runner would get the
+        # amd64 emulator (no-op on whichever arch is already native).
         uses: https://code.forgejo.org/docker/setup-qemu-action@v3
         with:
-          platforms: arm64
+          platforms: amd64,arm64
 
       - name: Set up buildx builder
         run: |
@@ -126,8 +139,14 @@ jobs:
           # create` rewrites the manifest reference without rebuilding
           # the underlying layers, so this step is fast and cannot
           # drift from the source image.
+          #
+          # Auth: the docker login from the earlier "Log in to
+          # container registry" step is still in effect (this step
+          # does NOT re-login, which would clobber it for the SAME
+          # registry host). The same PAT must hold read on the
+          # private package and write on the public package - see
+          # the comment on PUBLIC_REGISTRY_OWNER in env: above.
           let public_reg = $"($env.REGISTRY_PROVIDER)/($env.PUBLIC_REGISTRY_OWNER)"
-          ^docker login --username $env.PUBLIC_REGISTRY_OWNER --password $env.PUBLIC_REGISTRY_PASSWORD $env.REGISTRY_PROVIDER
           let tags_str = "${{ steps.get-tags.outputs.tags }}"
           let tags = ($tags_str | split row ",")
           let image = "mokosh-www"
@@ -147,7 +166,7 @@ jobs:
           for tag in $tags {
             print $"Image pushed to ($registry)/($image):($tag)"
           }
-          if ($env.PUBLIC_REGISTRY_OWNER? | default "" | is-not-empty) {
+          if ($env.PUBLIC_REGISTRY_OWNER | is-not-empty) {
             let public_reg = $"($env.REGISTRY_PROVIDER)/($env.PUBLIC_REGISTRY_OWNER)"
             for tag in $tags {
               print $"Image mirrored to ($public_reg)/($image):($tag)"

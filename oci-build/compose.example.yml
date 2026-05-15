@@ -15,7 +15,11 @@
 
 services:
   mokosh-www:
-    image: dev.a8n.run/psa-systems-public/mokosh-www:v0.2.0
+    # `:latest` rolls forward on every release. For predictable
+    # rollouts in production pin to a specific `:vX.Y.Z` tag and bump
+    # it when you want to apply an update; see the release notes
+    # before each bump.
+    image: dev.a8n.run/psa-systems-public/mokosh-www:latest
     container_name: mokosh-www
     restart: unless-stopped
     environment:
@@ -36,10 +40,6 @@ services:
       # your apex (e.g. https://example.com). Optional: leave unset
       # to fall through to compile-time defaults.
       MOKOSH_HUB_BASE_URL: https://example.com
-
-      # Internal Caddy bind port. Map this to whatever you want the
-      # container to expose externally via the `ports:` block below.
-      PORT: 8080
     ports:
       # Loopback bind by default. Front the container with your own
       # TLS reverse proxy (Caddy / Traefik / nginx) so cookies set by
