@@ -58,8 +58,25 @@ COPY --from=caddy-bin /usr/bin/caddy /usr/bin/caddy
 # Copy static bundle
 COPY --from=builder /build/target/dx/mokosh-client/release/web/public /usr/share/caddy
 
-# Default Caddyfile (override via volume mount)
+# Pre-create /etc/caddy with 0755 because `COPY --chmod=` propagates
+# the file mode to implicitly-created parent directories. The
+# Caddyfile COPY below intentionally does NOT pin --chmod (git tracks
+# the file at 100644 already); creating the parent dir here keeps
+# its mode independent of whatever the file's mode ends up at.
+RUN mkdir --parents /etc/caddy
+
+# Default Caddyfile (override via volume mount). Mode comes from
+# git's 100644 tracked mode; if a dev's host umask drops the read bit
+# they need to `chmod 0644 oci-build/Caddyfile` once - the file is in
+# the source tree and would surface the issue at build time.
 COPY oci-build/Caddyfile /etc/caddy/Caddyfile
+
+# Container entrypoint: renders /usr/share/caddy/_mokosh_config.js
+# from env vars at start so operators can point the SPA at their own
+# API/OIDC endpoints without rebuilding. Injects a <script> tag into
+# index.html on first run. /usr/local/bin already exists in alpine so
+# --chmod=0755 here is safe (no implicit parent dir creation).
+COPY --chmod=0755 oci-build/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 RUN adduser --disabled-password --uid 1001 appuser \
     && chown --recursive appuser:appuser /usr/share/caddy
@@ -73,4 +90,5 @@ LABEL org.opencontainers.image.source=https://dev.a8n.run/psa-systems/mokosh-cli
 LABEL org.opencontainers.image.description="Mokosh Platform Dioxus client"
 LABEL org.opencontainers.image.revision="${GIT_SHA}"
 
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile"]
