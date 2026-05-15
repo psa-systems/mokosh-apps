@@ -42,31 +42,53 @@ impl OidcConfig {
         }
     }
 
-    /// Build a config with `issuer` and `hub_base_url` derived from the
-    /// current browser origin when running on the production hostname pattern
-    /// (`msp.<tld>`). One image works for both staging (`msp.a8n.systems`) and
-    /// production (`msp.psa.systems`); compile-time `option_env!` defaults still
-    /// apply for dev (`localhost`) and any unrecognised host.
+    /// Build a config by resolving each field in priority order:
+    ///   1. `window.__MOKOSH_CONFIG__` keys injected by the prod
+    ///      container's entrypoint (`oidc_issuer`, `oidc_client_id`,
+    ///      `hub_base_url`). Self-hosters override here without
+    ///      rebuilding the image.
+    ///   2. Host-prefix derivation for the canonical `msp.<tld>`
+    ///      deploys: issuer `msp.<tld>` → `https://msp-api.<tld>`,
+    ///      hub `msp.<tld>` → `https://<tld>` (Bunyip apex).
+    ///   3. Compile-time `option_env!` defaults baked into the binary
+    ///      (the `Self::from_env()` baseline).
     ///
-    /// Issuer mapping: `msp.<tld>` → `https://msp-api.<tld>`
-    /// Hub mapping:    `msp.<tld>` → `https://<tld>` (Bunyip apex)
+    /// One image works for both staging (`msp.a8n.systems`),
+    /// production (`msp.psa.systems`), and arbitrary self-hosted
+    /// hostnames.
     pub fn for_current_origin() -> Self {
         let mut cfg = Self::from_env();
-        let Some(win) = web_sys::window() else {
-            return cfg;
-        };
-        let Ok(host) = win.location().host() else {
-            return cfg;
-        };
-        let Some(rest) = host.strip_prefix("msp.") else {
-            return cfg;
-        };
-        // Leak once at startup so the existing `&'static str` shape holds.
-        // Bounded leak: at most two short strings per session.
-        let issuer: &'static str = Box::leak(format!("https://msp-api.{rest}").into_boxed_str());
-        let hub: &'static str = Box::leak(format!("https://{rest}").into_boxed_str());
-        cfg.issuer = issuer;
-        cfg.hub_base_url = hub;
+
+        // Resolve each overridable field once. Runtime injection wins;
+        // otherwise the `msp.<tld>` host-prefix derivation; otherwise
+        // the compile-time default from `Self::from_env()` stands.
+        // Strings have to satisfy the existing `&'static str` shape, so
+        // each resolved value is leaked once. The leak is bounded:
+        // at most three short strings per session.
+        let injected_issuer = crate::modules::runtime_config::get("oidc_issuer");
+        let injected_client_id = crate::modules::runtime_config::get("oidc_client_id");
+        let injected_hub = crate::modules::runtime_config::get("hub_base_url");
+
+        let host_rest = web_sys::window()
+            .and_then(|w| w.location().host().ok())
+            .and_then(|h| h.strip_prefix("msp.").map(str::to_string));
+
+        if let Some(issuer) = injected_issuer {
+            cfg.issuer = Box::leak(issuer.into_boxed_str());
+        } else if let Some(rest) = host_rest.as_deref() {
+            cfg.issuer = Box::leak(format!("https://msp-api.{rest}").into_boxed_str());
+        }
+
+        if let Some(client_id) = injected_client_id {
+            cfg.client_id = Box::leak(client_id.into_boxed_str());
+        }
+
+        if let Some(hub) = injected_hub {
+            cfg.hub_base_url = Box::leak(hub.into_boxed_str());
+        } else if let Some(rest) = host_rest.as_deref() {
+            cfg.hub_base_url = Box::leak(format!("https://{rest}").into_boxed_str());
+        }
+
         cfg
     }
 

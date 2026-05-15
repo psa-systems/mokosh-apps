@@ -149,18 +149,23 @@ pub mod api {
     #[cfg(feature = "web")]
     use serde::{de::DeserializeOwned, Serialize};
 
-    /// Derive the Mokosh API base URL from the current browser origin.
+    /// Derive the Mokosh API base URL.
     ///
-    /// Mokosh is deployed with the SPA at `msp.<tld>` and the API at
-    /// `msp-api.<tld>` (e.g. `msp.a8n.systems` SPA → `msp-api.a8n.systems` API).
-    /// When the SPA loads from one of those origins we point API calls at the
-    /// sibling subdomain.
-    ///
-    /// In dev (`localhost`, IP address, or any host that doesn't start with
-    /// `msp.`) we fall back to the same-origin `/api/v1` path so the Dioxus
-    /// dev server can proxy through to the local backend.
+    /// Resolution order:
+    ///   1. `window.__MOKOSH_CONFIG__.api_base` if set by the prod
+    ///      container's entrypoint. Self-hosters on a custom hostname
+    ///      override here without rebuilding the image.
+    ///   2. Host-prefix derivation for the canonical `msp.<tld>`
+    ///      deploys (e.g. `msp.a8n.systems` SPA → `msp-api.a8n.systems`
+    ///      API).
+    ///   3. Same-origin `/api/v1` for dev (localhost, IP address, or
+    ///      any host that doesn't start with `msp.`) so the Dioxus dev
+    ///      server can proxy to a local backend.
     #[cfg(feature = "web")]
     fn api_base() -> String {
+        if let Some(injected) = crate::modules::runtime_config::get("api_base") {
+            return injected;
+        }
         if let Some(win) = web_sys::window() {
             if let Ok(host) = win.location().host() {
                 if let Some(rest) = host.strip_prefix("msp.") {

@@ -1,0 +1,80 @@
+# Reference compose file for self-hosting the Mokosh SPA.
+#
+# Quick start:
+#   1. Copy this file to compose.yml in a fresh directory.
+#   2. Edit the four MOKOSH_* env vars below to point at your own
+#      mokosh-server API and OIDC issuer.
+#   3. docker compose up --detach
+#   4. Browse to http://localhost:8080 (or front with your own TLS
+#      reverse proxy on port 443 - see "Production notes" below).
+#
+# Image: dev.a8n.run/psa-systems-public/mokosh-www
+# Tags:  :vX.Y.Z to pin a specific release, :latest to roll forward.
+# Multi-arch: amd64 and arm64. Compose pulls the variant matching the
+# host kernel automatically.
+
+services:
+  mokosh-www:
+    image: dev.a8n.run/psa-systems-public/mokosh-www:v0.2.0
+    container_name: mokosh-www
+    restart: unless-stopped
+    environment:
+      # API base URL the SPA calls. Required. The mokosh-server
+      # instance you point at must allow this SPA's origin via its
+      # CORS_ORIGIN env var.
+      MOKOSH_API_BASE: https://api.example.com/api/v1
+
+      # OIDC issuer the SPA authenticates against. Usually the same
+      # host as the API.
+      MOKOSH_OIDC_ISSUER: https://api.example.com
+
+      # OAuth public-client ID registered with mokosh-server. Run
+      # `just register-client` in mokosh-server to mint one.
+      MOKOSH_OIDC_CLIENT_ID: 00000000-0000-0000-0000-000000000000
+
+      # Origin of the Bunyip hub for legacy login bookmarks. Set to
+      # your apex (e.g. https://example.com). Optional: leave unset
+      # to fall through to compile-time defaults.
+      MOKOSH_HUB_BASE_URL: https://example.com
+
+      # Internal Caddy bind port. Map this to whatever you want the
+      # container to expose externally via the `ports:` block below.
+      PORT: 8080
+    ports:
+      # Loopback bind by default. Front the container with your own
+      # TLS reverse proxy (Caddy / Traefik / nginx) so cookies set by
+      # mokosh-server can use `Secure` and browsers stop rejecting
+      # mixed-scheme redirects. For local dev only, change to
+      # "0.0.0.0:8080:8080".
+      - "127.0.0.1:8080:8080"
+    networks:
+      - mokosh-private
+
+    # Optional: override the bundled Caddyfile. Uncomment, edit the
+    # source file, then bind-mount it in. The default works for the
+    # SPA-only case behind an upstream reverse proxy.
+    # volumes:
+    #   - ./Caddyfile:/etc/caddy/Caddyfile:ro
+
+networks:
+  mokosh-private:
+    name: mokosh-private
+
+# Production notes
+# ----------------
+#
+# - This stack is the SPA only. You must also run mokosh-server (the
+#   API + OIDC issuer this SPA calls). See its repo for the matching
+#   compose file.
+#
+# - Cookie domain: the SPA and the API must share a parent domain
+#   (e.g. msp.example.com SPA + api.example.com API both under
+#   .example.com) for the OIDC session cookie to be sent on
+#   cross-origin API calls. mokosh-server sets `COOKIE_DOMAIN`;
+#   align it with the deployment.
+#
+# - Updates: pin to :vX.Y.Z for predictable rollouts. To apply an
+#   available update, bump the tag here and run
+#   `docker compose pull && docker compose up --detach`. The SPA is
+#   stateless so no migrations or downtime windows are needed beyond
+#   container restart.
