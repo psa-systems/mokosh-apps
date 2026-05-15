@@ -63,14 +63,19 @@ jobs:
           docker buildx version
 
       - name: Set up QEMU for cross-arch emulation
-        # Register both amd64 and arm64 binfmt handlers. The list is
-        # deliberately symmetric so this works on either host arch
-        # without follow-up edits: today's amd64 runners get the
-        # arm64 emulator, and a future arm64 runner would get the
-        # amd64 emulator (no-op on whichever arch is already native).
-        uses: https://code.forgejo.org/docker/setup-qemu-action@v3
-        with:
-          platforms: amd64,arm64
+        # Register both amd64 and arm64 binfmt handlers via the
+        # privileged tonistiigi/binfmt container directly, rather
+        # than via setup-qemu-action@v3. The action wants to cache
+        # the binfmt image at the GitHub-Actions tool cache path
+        # ($RUNNER_TOOL_CACHE, default /opt/hostedtoolcache); on the
+        # Forgejo runner that path is not writable and the step dies
+        # with `EACCES: permission denied, mkdir '/opt/hostedtoolcache'`.
+        # The direct privileged docker run is what the action does
+        # under the hood, minus the broken cache step.
+        # The list is deliberately symmetric so this works on either
+        # host arch without follow-up edits.
+        run: |
+          docker run --privileged --rm tonistiigi/binfmt:latest --install amd64,arm64
 
       - name: Set up buildx builder
         run: |
