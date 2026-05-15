@@ -135,7 +135,7 @@ pub fn CompanyListPage() -> Element {
 
             // Companies table
             DataTable {
-                total_items: if source == CompanySource::Backend { remote_companies.len() as u32 } else { 5 },
+                total_items: if source == CompanySource::Backend { remote_companies.len() } else { 5 },
                 current_page: 1,
                 per_page: 25,
                 columns: 5,
