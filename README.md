@@ -139,6 +139,37 @@ just check-docker        # tags as mokosh-client:check (smoke build)
 
 The image is built from `oci-build/Dockerfile` and serves the bundle with `oci-build/Caddyfile`.
 
+## Self-host deployment
+
+Self-hosters can pull the pre-built multi-arch image from the public registry and run it with the reference compose file. No build, no registry login required.
+
+```nu
+cp oci-build/compose.example.yml compose.yml
+# Edit the four MOKOSH_* env vars in compose.yml to point at your own
+# mokosh-server API + OIDC issuer.
+docker compose up --detach
+```
+
+The image is `dev.a8n.run/psa-systems-public/mokosh-www`. Tags:
+
+- `:vX.Y.Z` - pin to a specific release.
+- `:latest` - rolling, advanced on every push to `main`.
+
+The image supports `linux/amd64` and `linux/arm64`; compose pulls the variant matching the host kernel automatically.
+
+Runtime config is supplied via env vars on the container, so a single image works across staging, production, and self-host:
+
+| Env var                | Purpose                                                 |
+|------------------------|---------------------------------------------------------|
+| `MOKOSH_API_BASE`      | API base URL the SPA calls (`https://api.example.com/api/v1`). |
+| `MOKOSH_OIDC_ISSUER`   | OIDC issuer the SPA authenticates against.              |
+| `MOKOSH_OIDC_CLIENT_ID`| Public-client ID registered with mokosh-server.         |
+| `MOKOSH_HUB_BASE_URL`  | Origin of the Bunyip hub for legacy login bookmarks.    |
+
+The container's entrypoint writes a tiny `/_mokosh_config.js` from these on each start; the SPA reads it before falling through to its compile-time defaults. Restart the container to pick up changed values.
+
+To apply an available update, bump the tag in `compose.yml` and run `docker compose pull && docker compose up --detach`. The SPA is stateless so there's no migration step.
+
 ## Releases
 
 `create-release` bumps the version in both `Cargo.toml` and `package.json`, commits to a `release/vX.Y.Z` branch, pushes, and prints the PR URL:
