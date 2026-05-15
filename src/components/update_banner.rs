@@ -58,9 +58,28 @@ pub fn UpdateBanner() -> Element {
     // `use_resource` / `use_signal` would skip them on the non-admin
     // render and then add them on the next render if the user becomes
     // admin (tenant switch, late hydration), violating that invariant.
+    //
+    // The resource's outer closure reads `auth` so the reactivity
+    // tracker re-runs the fetch when auth flips, AND skips the
+    // network call entirely while the user is not an admin - that
+    // keeps the hook order stable without burning a
+    // `GET /api/v1/system/version` round-trip on every non-admin
+    // layout mount.
     let auth = use_auth();
-    let version_resource = use_resource(|| async { get_version().await });
     let mut dismissed_local = use_signal(|| false);
+    let version_resource = use_resource(move || {
+        let admin = auth
+            .read()
+            .user
+            .as_ref()
+            .is_some_and(|u| u.role.is_admin());
+        async move {
+            if !admin {
+                return Err("not admin".to_string());
+            }
+            get_version().await
+        }
+    });
 
     let is_admin = auth
         .read()
