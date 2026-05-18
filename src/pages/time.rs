@@ -201,13 +201,32 @@ struct TimeEntryRowProps {
 
 #[component]
 fn TimeEntryRow(props: TimeEntryRowProps) -> Element {
+    // TKT-#### / PRJ-#### / etc. work_item codes should jump to the
+    // matching record so the time entry list doubles as a "what was I
+    // working on" navigation surface. Strip the prefix to get the id.
+    let work_link: Option<Route> = if let Some(id) = props.work_item.strip_prefix("TKT-") {
+        Some(Route::TicketDetail { id: id.to_string() })
+    } else if let Some(id) = props.work_item.strip_prefix("PRJ-") {
+        Some(Route::ProjectDetail { id: id.to_string() })
+    } else {
+        None
+    };
+
     rsx! {
         TableRow {
             TableCell { class: "text-gray-500", "{props.date}" }
             TableCell { "{props.user}" }
             TableCell {
                 div {
-                    span { class: "font-medium text-blue-600", "{props.work_item}" }
+                    if let Some(route) = work_link.clone() {
+                        Link {
+                            to: route,
+                            class: "font-medium text-blue-600 hover:text-blue-500",
+                            "{props.work_item}"
+                        }
+                    } else {
+                        span { class: "font-medium text-gray-700 dark:text-gray-300", "{props.work_item}" }
+                    }
                     if !props.work_item_title.is_empty() {
                         p { class: "text-gray-500 text-xs", "{props.work_item_title}" }
                     }
