@@ -177,6 +177,45 @@ fn InvoiceRow(props: InvoiceRowProps) -> Element {
 /// New invoice page
 #[component]
 pub fn InvoiceNewPage() -> Element {
+    let mut company = use_signal(String::new);
+    let mut contract = use_signal(String::new);
+    let mut issue_date = use_signal(String::new);
+    let mut due_date = use_signal(String::new);
+    let mut line_description = use_signal(String::new);
+    let mut line_quantity = use_signal(|| "1".to_string());
+    let mut line_unit_price = use_signal(String::new);
+    let mut notes = use_signal(String::new);
+    let mut is_submitting = use_signal(|| false);
+
+    let company_options = vec![
+        crate::components::SelectOption::new("1", "Acme Corp"),
+        crate::components::SelectOption::new("2", "TechStart Inc"),
+        crate::components::SelectOption::new("3", "Global Widgets"),
+    ];
+    let contract_options = vec![
+        crate::components::SelectOption::new("", "None"),
+        crate::components::SelectOption::new("1", "Managed Services Agreement"),
+        crate::components::SelectOption::new("2", "Block Hours - 40 Hours"),
+    ];
+
+    let navigator = use_navigator();
+    let handle_submit = move |e: FormEvent| {
+        e.prevent_default();
+        is_submitting.set(true);
+        spawn(async move {
+            // Server billing module is still 501; stub the submit and
+            // navigate to the list. POST goes live with the billing
+            // module landing.
+            #[cfg(feature = "web")]
+            {
+                use gloo_timers::future::TimeoutFuture;
+                TimeoutFuture::new(1000).await;
+            }
+            is_submitting.set(false);
+            navigator.push(Route::InvoiceList {});
+        });
+    };
+
     rsx! {
         AppLayout { title: "New Invoice",
             PageHeader {
@@ -185,18 +224,95 @@ pub fn InvoiceNewPage() -> Element {
             }
 
             Card {
-                form { class: "space-y-6",
-                    p { class: "text-gray-500", "Invoice creation form would go here." }
+                form {
+                    class: "space-y-6",
+                    onsubmit: handle_submit,
+
+                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                        crate::components::Select {
+                            name: "company",
+                            label: "Bill To",
+                            options: company_options,
+                            value: company.read().clone(),
+                            placeholder: "Select a company",
+                            required: true,
+                            onchange: move |e: FormEvent| company.set(e.value()),
+                        }
+                        crate::components::Select {
+                            name: "contract",
+                            label: "Contract",
+                            options: contract_options,
+                            value: contract.read().clone(),
+                            onchange: move |e: FormEvent| contract.set(e.value()),
+                        }
+                    }
+
+                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                        crate::components::Input {
+                            name: "issue_date",
+                            label: "Issue Date",
+                            r#type: "date",
+                            required: true,
+                            value: issue_date.read().clone(),
+                            oninput: move |e: FormEvent| issue_date.set(e.value()),
+                        }
+                        crate::components::Input {
+                            name: "due_date",
+                            label: "Due Date",
+                            r#type: "date",
+                            required: true,
+                            value: due_date.read().clone(),
+                            oninput: move |e: FormEvent| due_date.set(e.value()),
+                        }
+                    }
+
+                    div {
+                        h3 { class: "text-sm font-medium text-gray-700 dark:text-gray-300 mb-3", "Line Items" }
+                        div { class: "grid grid-cols-1 gap-3 sm:grid-cols-[1fr_100px_140px]",
+                            crate::components::Input {
+                                name: "line_description",
+                                placeholder: "Description",
+                                value: line_description.read().clone(),
+                                oninput: move |e: FormEvent| line_description.set(e.value()),
+                            }
+                            crate::components::Input {
+                                name: "line_quantity",
+                                r#type: "number",
+                                placeholder: "Qty",
+                                value: line_quantity.read().clone(),
+                                oninput: move |e: FormEvent| line_quantity.set(e.value()),
+                            }
+                            crate::components::Input {
+                                name: "line_unit_price",
+                                r#type: "number",
+                                placeholder: "Unit price",
+                                value: line_unit_price.read().clone(),
+                                oninput: move |e: FormEvent| line_unit_price.set(e.value()),
+                            }
+                        }
+                        p { class: "mt-2 text-xs text-gray-500",
+                            "Multi-line invoices land with the billing module."
+                        }
+                    }
+
+                    crate::components::Textarea {
+                        name: "notes",
+                        label: "Notes",
+                        placeholder: "Internal notes (not shown to the customer)",
+                        rows: 3,
+                        value: notes.read().clone(),
+                        oninput: move |e: FormEvent| notes.set(e.value()),
+                    }
 
                     div { class: "flex justify-end space-x-3",
                         Link {
                             to: Route::InvoiceList {},
                             Button { variant: ButtonVariant::Secondary, "Cancel" }
                         }
-                        Button { variant: ButtonVariant::Secondary, "Save as Draft" }
                         Button {
                             r#type: "submit",
                             variant: ButtonVariant::Primary,
+                            loading: *is_submitting.read(),
                             "Create & Send"
                         }
                     }
