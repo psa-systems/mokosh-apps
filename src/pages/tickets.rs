@@ -346,11 +346,12 @@ pub struct TicketDetailPageProps {
 #[allow(unused_variables)]
 pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let mut show_note_modal = use_signal(|| false);
+    let header_title = format!("Ticket {}", props.id);
 
     rsx! {
-        AppLayout { title: "Ticket Detail",
+        AppLayout { title: "{header_title}",
             PageHeader {
-                title: "TKT-1234: Email server not responding",
+                title: "{header_title}",
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Secondary,
