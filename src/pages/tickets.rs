@@ -359,10 +359,13 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "Add Note"
                     }
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        ClockIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "Log Time"
+                    Link {
+                        to: Route::TimeEntryNew {},
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            ClockIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                            "Log Time"
+                        }
                     }
                 },
             }
