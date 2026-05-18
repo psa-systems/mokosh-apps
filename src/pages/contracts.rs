@@ -188,11 +188,11 @@ pub struct ContractDetailPageProps {
 #[component]
 #[allow(unused_variables)]
 pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
+    let header_title = format!("Contract {}", props.id);
     rsx! {
-        AppLayout { title: "Contract Detail",
+        AppLayout { title: "{header_title}",
             PageHeader {
-                title: "Managed Services Agreement",
-                subtitle: "Acme Corp",
+                title: "{header_title}",
                 // Audit P1-07: Edit / Renew buttons were decorative (no
                 // onclick, no contract-edit endpoint). Hidden until the
                 // contracts module ships those flows.
