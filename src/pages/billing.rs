@@ -346,6 +346,35 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     }
 }
 
+#[derive(Props, Clone, PartialEq)]
+struct PaymentRowProps {
+    date: String,
+    company: String,
+    invoice_id: String,
+    invoice_label: String,
+    method: String,
+    amount: String,
+}
+
+#[component]
+fn PaymentRow(props: PaymentRowProps) -> Element {
+    rsx! {
+        TableRow {
+            TableCell { "{props.date}" }
+            TableCell { "{props.company}" }
+            TableCell {
+                Link {
+                    to: Route::InvoiceDetail { id: props.invoice_id.clone() },
+                    class: "font-medium text-blue-600 hover:text-blue-500",
+                    "{props.invoice_label}"
+                }
+            }
+            TableCell { "{props.method}" }
+            TableCell { class: "font-medium text-green-600", "{props.amount}" }
+        }
+    }
+}
+
 /// Payment list page
 #[component]
 pub fn PaymentListPage() -> Element {
@@ -372,26 +401,29 @@ pub fn PaymentListPage() -> Element {
                         }
                     }
                     TableBody {
-                        TableRow {
-                            TableCell { "Jan 10, 2025" }
-                            TableCell { "Acme Corp" }
-                            TableCell { class: "text-blue-600", "INV-2024-097" }
-                            TableCell { "Credit Card" }
-                            TableCell { class: "font-medium text-green-600", "$2,500.00" }
+                        PaymentRow {
+                            date: "Jan 10, 2025",
+                            company: "Acme Corp",
+                            invoice_id: "97",
+                            invoice_label: "INV-2024-097",
+                            method: "Credit Card",
+                            amount: "$2,500.00",
                         }
-                        TableRow {
-                            TableCell { "Jan 8, 2025" }
-                            TableCell { "TechStart Inc" }
-                            TableCell { class: "text-blue-600", "INV-2024-095" }
-                            TableCell { "ACH Transfer" }
-                            TableCell { class: "font-medium text-green-600", "$6,000.00" }
+                        PaymentRow {
+                            date: "Jan 8, 2025",
+                            company: "TechStart Inc",
+                            invoice_id: "95",
+                            invoice_label: "INV-2024-095",
+                            method: "ACH Transfer",
+                            amount: "$6,000.00",
                         }
-                        TableRow {
-                            TableCell { "Jan 5, 2025" }
-                            TableCell { "Global Widgets" }
-                            TableCell { class: "text-blue-600", "INV-2024-090" }
-                            TableCell { "Check" }
-                            TableCell { class: "font-medium text-green-600", "$4,250.00" }
+                        PaymentRow {
+                            date: "Jan 5, 2025",
+                            company: "Global Widgets",
+                            invoice_id: "90",
+                            invoice_label: "INV-2024-090",
+                            method: "Check",
+                            amount: "$4,250.00",
                         }
                     }
                 }
