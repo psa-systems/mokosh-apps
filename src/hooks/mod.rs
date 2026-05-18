@@ -14,8 +14,10 @@ pub mod auth;
 pub mod fetch;
 mod google_oauth;
 mod sidebar;
+pub mod toast;
 
 pub use auth::*;
 pub use fetch::*;
 pub use google_oauth::*;
 pub use sidebar::*;
+pub use toast::*;
