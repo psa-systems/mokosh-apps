@@ -267,7 +267,11 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 TableRow {
                                     TableCell {
                                         div {
-                                            span { class: "font-medium text-blue-600", "TKT-1234" }
+                                            Link {
+                                                to: Route::TicketDetail { id: "1234".to_string() },
+                                                class: "font-medium text-blue-600 hover:text-blue-500",
+                                                "TKT-1234"
+                                            }
                                             p { class: "text-sm text-gray-500", "Email server not responding" }
                                         }
                                     }
@@ -277,7 +281,11 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 TableRow {
                                     TableCell {
                                         div {
-                                            span { class: "font-medium text-blue-600", "TKT-1150" }
+                                            Link {
+                                                to: Route::TicketDetail { id: "1150".to_string() },
+                                                class: "font-medium text-blue-600 hover:text-blue-500",
+                                                "TKT-1150"
+                                            }
                                             p { class: "text-sm text-gray-500", "Exchange update installation" }
                                         }
                                     }
