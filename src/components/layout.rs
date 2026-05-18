@@ -22,8 +22,9 @@ pub fn AppLayout(props: AppLayoutProps) -> Element {
         // (brand + page title + user menu live together), and the
         // sidebar + main content sit side-by-side beneath it. Only the
         // main panel scrolls; the sidebar gets its own internal scroll
-        // surface (with the scrollbar visually hidden, see
-        // input.css `.scrollbar-hide`).
+        // surface with a thin scrollbar (input.css `.scrollbar-thin`)
+        // so users see the affordance when nav overflows on short
+        // viewports.
         div { class: "h-screen flex flex-col bg-gray-100 dark:bg-gray-900 overflow-hidden",
             // Admin-only update-available banner. Sits above the top
             // bar (page-wide) and renders nothing for non-admins or
@@ -101,8 +102,11 @@ pub fn Sidebar(props: SidebarProps) -> Element {
 
         // Desktop sidebar - sits below the top bar in the flex column
         // (no fixed positioning needed). Border-r separates it from
-        // the main content. Scrollbar hidden via .scrollbar-hide.
-        aside { class: "hidden lg:flex lg:w-64 lg:flex-col bg-gray-900 border-r border-gray-700 overflow-y-auto overscroll-contain scrollbar-hide",
+        // the main content. Uses `scrollbar-thin` (not `scrollbar-hide`)
+        // so when the viewport is short enough that the nav list must
+        // scroll, the user sees the affordance instead of silently
+        // clipping behind the main panel's own scrollbar (PMC-22).
+        aside { class: "hidden lg:flex lg:w-64 lg:flex-col bg-gray-900 border-r border-gray-700 overflow-y-auto overscroll-contain scrollbar-thin",
             SidebarContent {}
         }
     }
