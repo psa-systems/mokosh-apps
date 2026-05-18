@@ -379,7 +379,11 @@ pub struct TicketDetailPageProps {
 #[allow(unused_variables)]
 pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let mut show_note_modal = use_signal(|| false);
+    let mut note_type = use_signal(|| "internal".to_string());
+    let mut note_content = use_signal(String::new);
+    let mut note_submitting = use_signal(|| false);
     let header_title = format!("Ticket {}", props.id);
+    let ticket_id_for_note = props.id.clone();
 
     rsx! {
         AppLayout { title: "{header_title}",
@@ -520,6 +524,40 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     }
                     Button {
                         variant: ButtonVariant::Primary,
+                        loading: *note_submitting.read(),
+                        onclick: move |_| {
+                            note_submitting.set(true);
+                            let id = ticket_id_for_note.clone();
+                            let type_v = note_type.read().clone();
+                            let content_v = note_content.read().clone();
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    if content_v.trim().is_empty() {
+                                        web_sys::console::warn_1(&"Note content empty; not posting.".into());
+                                        note_submitting.set(false);
+                                        return;
+                                    }
+                                    let body = serde_json::json!({
+                                        "note_type": type_v,
+                                        "content": content_v,
+                                    });
+                                    let path = format!("/tickets/{id}/notes");
+                                    match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(&path, &body).await {
+                                        Ok(_) => {
+                                            note_content.set(String::new());
+                                            show_note_modal.set(false);
+                                        }
+                                        Err(err) => {
+                                            web_sys::console::error_1(
+                                                &format!("Could not add note: {err}").into(),
+                                            );
+                                        }
+                                    }
+                                }
+                                note_submitting.set(false);
+                            });
+                        },
                         "Add Note"
                     }
                 },
@@ -531,15 +569,16 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                             SelectOption::new("internal", "Internal Note"),
                             SelectOption::new("public", "Public Note (visible to customer)"),
                         ],
-                        value: "internal".to_string(),
-                        onchange: |_| {},
+                        value: note_type.read().clone(),
+                        onchange: move |e: FormEvent| note_type.set(e.value()),
                     }
                     Textarea {
                         name: "content",
                         label: "Content",
                         placeholder: "Enter your note...",
                         rows: 4,
-                        oninput: |_| {},
+                        value: note_content.read().clone(),
+                        oninput: move |e: FormEvent| note_content.set(e.value()),
                     }
                 }
             }
