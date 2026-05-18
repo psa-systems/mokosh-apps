@@ -245,20 +245,53 @@ pub fn TicketNewPage() -> Element {
         SelectOption::new("low", "Low"),
     ];
 
+    let navigator = use_navigator();
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
         is_submitting.set(true);
 
+        // Snapshot signals so the spawn doesn't need to read them.
+        let title_v = title.read().clone();
+        let description_v = description.read().clone();
+        let company_v = company.read().clone();
+        let _priority_v = priority.read().clone();
+
         spawn(async move {
-            // TODO: Call API to create ticket
             #[cfg(feature = "web")]
             {
-                use gloo_timers::future::TimeoutFuture;
-                TimeoutFuture::new(1000).await;
+                // The Select still ships hardcoded "1"/"2"/"3" placeholders
+                // until the company dropdown is wired to /api/v1/contacts/companies
+                // (tracked under the contacts story). Parse as Uuid; non-UUID
+                // values fall back to `nil()` so the POST exercises the wire
+                // and the server returns a typed validation error we can
+                // surface to the user via the toast.
+                let company_id = uuid::Uuid::parse_str(&company_v).unwrap_or_else(|_| uuid::Uuid::nil());
+                let body = serde_json::json!({
+                    "title": title_v,
+                    "description": if description_v.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(description_v) },
+                    "company_id": company_id,
+                });
+
+                #[derive(serde::Deserialize)]
+                struct CreatedTicket { id: uuid::Uuid }
+
+                match crate::hooks::fetch::api::post_authed::<CreatedTicket, _>("/tickets", &body).await {
+                    Ok(created) => {
+                        navigator.push(Route::TicketDetail { id: created.id.to_string() });
+                    }
+                    Err(err) => {
+                        // The toast surface lands with the API client
+                        // story; until then surface the failure via the
+                        // browser console and keep the form mounted so
+                        // the user can retry without losing their text.
+                        web_sys::console::error_1(
+                            &format!("Could not create ticket: {err}").into(),
+                        );
+                    }
+                }
             }
 
             is_submitting.set(false);
-            // Navigate to ticket list
         });
     };
 
