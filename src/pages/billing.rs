@@ -215,10 +215,11 @@ pub struct InvoiceDetailPageProps {
 #[component]
 #[allow(unused_variables)]
 pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
+    let header_title = format!("Invoice {}", props.id);
     rsx! {
-        AppLayout { title: "Invoice Detail",
+        AppLayout { title: "{header_title}",
             PageHeader {
-                title: "Invoice INV-2025-001",
+                title: "{header_title}",
                 // Audit P1-07: Download PDF / Send / Record Payment buttons
                 // were decorative (no onclick, no backing endpoint). Hidden
                 // until the billing module ships the corresponding actions.
