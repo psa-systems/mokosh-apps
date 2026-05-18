@@ -3,8 +3,8 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
-    PlusIcon, Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+    AppLayout, Badge, BadgeVariant, Card, DataTable, PageHeader, Table, TableBody, TableCell,
+    TableHead, TableHeader, TableRow,
 };
 
 /// Tenant management page (multi-tenant mode only)
@@ -16,13 +16,11 @@ pub fn TenantManagementPage() -> Element {
             PageHeader {
                 title: "Tenant Management",
                 subtitle: "Manage tenants and subscriptions",
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "Add Tenant"
-                    }
-                },
+                // F5: Add Tenant was decorative (no onclick, no
+                // canonical add-tenant flow on this client). Tenant
+                // provisioning lives in the Bunyip hub now; this
+                // admin page is a read-only roster for super_admins.
+                // Hidden until/unless a client-side add flow lands.
             }
 
             // Stats
