@@ -310,11 +310,11 @@ pub struct ProjectDetailPageProps {
 
 #[component]
 pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
+    let header_title = format!("Project {}", props.id);
     rsx! {
-        AppLayout { title: "Project Detail",
+        AppLayout { title: "{header_title}",
             PageHeader {
-                title: "Network Infrastructure Upgrade",
-                subtitle: "Acme Corp",
+                title: "{header_title}",
                 actions: rsx! {
                     Link {
                         to: Route::ProjectTasks { id: props.id.clone() },
@@ -323,11 +323,9 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                             "View Tasks"
                         }
                     }
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "Add Task"
-                    }
+                    // F5: Add Task here was decorative (no onclick, no
+                    // server projects module yet). Hidden until the
+                    // server lands; live wiring tracked under PMC-39.
                 },
             }
 
