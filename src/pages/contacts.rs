@@ -5,8 +5,8 @@ use serde::Deserialize;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
-    PlusIcon, SearchInput, Select, SelectOption, Table, TableBody, TableCell, TableHead,
-    TableHeader, TableRow,
+    PlusIcon, SearchInput, Select, SelectOption, Table, TableBody, TableCell, TableEmpty,
+    TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::Route;
 
@@ -85,7 +85,12 @@ pub fn CompanyListPage() -> Element {
         }
     });
 
-    let (remote_companies, source) = match &*companies_resource.read_unchecked() {
+    // `None` here means the use_resource future is still in-flight on
+    // the first paint. We use that signal to render TableLoading
+    // skeletons rather than briefly flashing the demo rows.
+    let resource_snapshot = companies_resource.read_unchecked();
+    let is_loading = resource_snapshot.is_none();
+    let (remote_companies, source) = match &*resource_snapshot {
         Some((rows, source)) => (rows.clone(), *source),
         None => (Vec::new(), CompanySource::Demo),
     };
@@ -135,6 +140,7 @@ pub fn CompanyListPage() -> Element {
 
             // Companies table
             DataTable {
+                loading: is_loading,
                 total_items: if source == CompanySource::Backend { remote_companies.len() } else { 5 },
                 current_page: 1,
                 per_page: 25,
@@ -149,21 +155,26 @@ pub fn CompanyListPage() -> Element {
                             TableHeader { "Contract" }
                         }
                     }
-                    TableBody {
-                        if source == CompanySource::Backend {
-                            for company in remote_companies.iter().cloned() {
-                                CompanyRow {
-                                    key: "{company.id}",
-                                    id: company.id.to_string(),
-                                    name: company.name,
-                                    company_type: humanize_company_type(&company.company_type),
-                                    primary_contact: company.account_manager_name.unwrap_or_default(),
-                                    open_tickets: company.open_ticket_count.unwrap_or(0).max(0) as u32,
-                                    contract: String::new(),
+                    if is_loading {
+                        TableLoading { columns: 5, rows: 5 }
+                    } else if source == CompanySource::Backend && remote_companies.is_empty() {
+                        TableEmpty { columns: 5, message: "No companies yet.".to_string() }
+                    } else {
+                        TableBody {
+                            if source == CompanySource::Backend {
+                                for company in remote_companies.iter().cloned() {
+                                    CompanyRow {
+                                        key: "{company.id}",
+                                        id: company.id.to_string(),
+                                        name: company.name,
+                                        company_type: humanize_company_type(&company.company_type),
+                                        primary_contact: company.account_manager_name.unwrap_or_default(),
+                                        open_tickets: company.open_ticket_count.unwrap_or(0).max(0) as u32,
+                                        contract: String::new(),
+                                    }
                                 }
-                            }
-                        } else {
-                            CompanyRow {
+                            } else {
+                                CompanyRow {
                                 id: "1",
                                 name: "Acme Corp",
                                 company_type: "Customer",
@@ -203,6 +214,7 @@ pub fn CompanyListPage() -> Element {
                                 open_tickets: 0,
                                 contract: "Partner",
                             }
+                        }
                         }
                     }
                 }
