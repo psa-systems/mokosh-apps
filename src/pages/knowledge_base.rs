@@ -254,6 +254,44 @@ pub fn KBArticleListPage() -> Element {
 /// New article page
 #[component]
 pub fn KBArticleNewPage() -> Element {
+    let mut title = use_signal(String::new);
+    let mut category = use_signal(|| "how-to".to_string());
+    let mut visibility = use_signal(|| "internal".to_string());
+    let mut body = use_signal(String::new);
+    let mut is_submitting = use_signal(|| false);
+
+    let category_options = vec![
+        crate::components::SelectOption::new("how-to", "How-To Guides"),
+        crate::components::SelectOption::new("troubleshooting", "Troubleshooting"),
+        crate::components::SelectOption::new("policies", "Policies & Procedures"),
+        crate::components::SelectOption::new("software", "Software"),
+        crate::components::SelectOption::new("hardware", "Hardware"),
+        crate::components::SelectOption::new("security", "Security"),
+    ];
+    let visibility_options = vec![
+        crate::components::SelectOption::new("internal", "Internal"),
+        crate::components::SelectOption::new("customer", "Customer-facing"),
+        crate::components::SelectOption::new("public", "Public"),
+    ];
+
+    let navigator = use_navigator();
+    let handle_submit = move |e: FormEvent| {
+        e.prevent_default();
+        is_submitting.set(true);
+        spawn(async move {
+            // Server KB module is still 501; stub the submit and
+            // navigate to the article list. POST goes live once the
+            // module ships.
+            #[cfg(feature = "web")]
+            {
+                use gloo_timers::future::TimeoutFuture;
+                TimeoutFuture::new(1000).await;
+            }
+            is_submitting.set(false);
+            navigator.push(Route::KBArticleList {});
+        });
+    };
+
     rsx! {
         AppLayout { title: "New Article",
             PageHeader {
@@ -262,18 +300,58 @@ pub fn KBArticleNewPage() -> Element {
             }
 
             Card {
-                form { class: "space-y-6",
-                    p { class: "text-gray-500", "Article editor would go here (Markdown/WYSIWYG)." }
+                form {
+                    class: "space-y-6",
+                    onsubmit: handle_submit,
+
+                    crate::components::Input {
+                        name: "title",
+                        label: "Title",
+                        placeholder: "How to ...",
+                        required: true,
+                        value: title.read().clone(),
+                        oninput: move |e: FormEvent| title.set(e.value()),
+                    }
+
+                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                        crate::components::Select {
+                            name: "category",
+                            label: "Category",
+                            options: category_options,
+                            value: category.read().clone(),
+                            onchange: move |e: FormEvent| category.set(e.value()),
+                        }
+                        crate::components::Select {
+                            name: "visibility",
+                            label: "Visibility",
+                            options: visibility_options,
+                            value: visibility.read().clone(),
+                            onchange: move |e: FormEvent| visibility.set(e.value()),
+                        }
+                    }
+
+                    crate::components::Textarea {
+                        name: "body",
+                        label: "Body (Markdown)",
+                        placeholder: "## Overview\n\nWrite the article in Markdown...",
+                        rows: 16,
+                        required: true,
+                        value: body.read().clone(),
+                        oninput: move |e: FormEvent| body.set(e.value()),
+                    }
+                    p { class: "text-xs text-gray-500",
+                        "WYSIWYG editor lands with the KB module; for now this is a plain Markdown textarea."
+                    }
 
                     div { class: "flex justify-end space-x-3",
                         Link {
                             to: Route::KBHome {},
                             Button { variant: ButtonVariant::Secondary, "Cancel" }
                         }
-                        Button { variant: ButtonVariant::Secondary, "Save Draft" }
                         Button {
                             r#type: "submit",
                             variant: ButtonVariant::Primary,
+                            loading: *is_submitting.read(),
                             "Publish"
                         }
                     }
@@ -292,13 +370,13 @@ pub struct KBArticleDetailPageProps {
 #[component]
 #[allow(unused_variables)]
 pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
+    let header_title = format!("Article {}", props.id);
     rsx! {
-        AppLayout { title: "Article",
+        AppLayout { title: "{header_title}",
             PageHeader {
-                title: "How to Reset a User's Password in Active Directory",
-                actions: rsx! {
-                    Button { variant: ButtonVariant::Secondary, "Edit" }
-                },
+                title: "{header_title}",
+                // F5: Edit was decorative (no onclick). Hidden until
+                // the KB edit flow ships.
             }
 
             div { class: "grid grid-cols-1 lg:grid-cols-4 gap-6",
@@ -379,13 +457,19 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
 
                     Card { title: "Related Articles",
                         div { class: "space-y-2 text-sm",
-                            a { class: "block text-blue-600 hover:text-blue-500",
+                            Link {
+                                to: Route::KBArticleDetail { id: "ad-best-practices".to_string() },
+                                class: "block text-blue-600 hover:text-blue-500",
                                 "Active Directory Best Practices"
                             }
-                            a { class: "block text-blue-600 hover:text-blue-500",
+                            Link {
+                                to: Route::KBArticleDetail { id: "ad-password-policies".to_string() },
+                                class: "block text-blue-600 hover:text-blue-500",
                                 "Setting Up AD Password Policies"
                             }
-                            a { class: "block text-blue-600 hover:text-blue-500",
+                            Link {
+                                to: Route::KBArticleDetail { id: "ad-unlock-accounts".to_string() },
+                                class: "block text-blue-600 hover:text-blue-500",
                                 "Unlocking User Accounts"
                             }
                         }
