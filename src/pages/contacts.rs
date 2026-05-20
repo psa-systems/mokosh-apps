@@ -390,12 +390,12 @@ pub struct CompanyDetailPageProps {
 #[component]
 #[allow(unused_variables)]
 pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
+    let header_title = format!("Company {}", props.id);
     rsx! {
-        AppLayout { title: "Company Detail",
+        AppLayout { title: "{header_title}",
             PageHeader {
-                title: "Acme Corp",
+                title: "{header_title}",
                 actions: rsx! {
-                    Button { variant: ButtonVariant::Secondary, "Edit" }
                     Link {
                         to: Route::TicketNew {},
                         Button {
@@ -566,7 +566,12 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                         div { class: "space-y-3",
                             div { class: "flex justify-between",
                                 span { class: "text-sm text-gray-500", "Open Tickets" }
-                                span { class: "font-medium text-blue-600", "5" }
+                                // Was rendered link-blue but is a bare
+                                // span. There is no /tickets?company=:id
+                                // filter yet, so drop the blue styling
+                                // so the affordance matches the wiring
+                                // (PMC-46).
+                                span { class: "font-medium text-gray-900 dark:text-white", "5" }
                             }
                             div { class: "flex justify-between",
                                 span { class: "text-sm text-gray-500", "This Month" }
@@ -869,14 +874,13 @@ pub struct ContactDetailPageProps {
 #[component]
 #[allow(unused_variables)]
 pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
+    let header_title = format!("Contact {}", props.id);
     rsx! {
-        AppLayout { title: "Contact Detail",
+        AppLayout { title: "{header_title}",
             PageHeader {
-                title: "Bob Johnson",
-                subtitle: "Acme Corp",
-                actions: rsx! {
-                    Button { variant: ButtonVariant::Secondary, "Edit" }
-                },
+                title: "{header_title}",
+                // F5: Edit was decorative (no onclick). Hidden until
+                // the contacts mutation surface ships.
             }
 
             div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
