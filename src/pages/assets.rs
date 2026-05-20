@@ -152,6 +152,46 @@ fn AssetRow(props: AssetRowProps) -> Element {
 /// New asset page
 #[component]
 pub fn AssetNewPage() -> Element {
+    let mut name = use_signal(String::new);
+    let mut asset_type = use_signal(|| "server".to_string());
+    let mut company = use_signal(String::new);
+    let mut serial = use_signal(String::new);
+    let mut location = use_signal(String::new);
+    let mut warranty = use_signal(String::new);
+    let mut notes = use_signal(String::new);
+    let mut is_submitting = use_signal(|| false);
+
+    let type_options = vec![
+        crate::components::SelectOption::new("server", "Server"),
+        crate::components::SelectOption::new("workstation", "Workstation"),
+        crate::components::SelectOption::new("laptop", "Laptop"),
+        crate::components::SelectOption::new("network", "Network device"),
+        crate::components::SelectOption::new("printer", "Printer"),
+        crate::components::SelectOption::new("other", "Other"),
+    ];
+    let company_options = vec![
+        crate::components::SelectOption::new("1", "Acme Corp"),
+        crate::components::SelectOption::new("2", "TechStart Inc"),
+        crate::components::SelectOption::new("3", "Global Widgets"),
+    ];
+
+    let navigator = use_navigator();
+    let handle_submit = move |e: FormEvent| {
+        e.prevent_default();
+        is_submitting.set(true);
+        spawn(async move {
+            // Server assets module is still 501; stub the submit and
+            // navigate to the list. POST goes live with that module.
+            #[cfg(feature = "web")]
+            {
+                use gloo_timers::future::TimeoutFuture;
+                TimeoutFuture::new(1000).await;
+            }
+            is_submitting.set(false);
+            navigator.push(Route::AssetList {});
+        });
+    };
+
     rsx! {
         AppLayout { title: "New Asset",
             PageHeader {
@@ -160,8 +200,70 @@ pub fn AssetNewPage() -> Element {
             }
 
             Card {
-                form { class: "space-y-6",
-                    p { class: "text-gray-500", "Asset creation form would go here." }
+                form {
+                    class: "space-y-6",
+                    onsubmit: handle_submit,
+
+                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                        crate::components::Input {
+                            name: "name",
+                            label: "Name",
+                            placeholder: "e.g. Exchange Server 01",
+                            required: true,
+                            value: name.read().clone(),
+                            oninput: move |e: FormEvent| name.set(e.value()),
+                        }
+                        crate::components::Select {
+                            name: "type",
+                            label: "Type",
+                            options: type_options,
+                            value: asset_type.read().clone(),
+                            onchange: move |e: FormEvent| asset_type.set(e.value()),
+                        }
+                    }
+
+                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                        crate::components::Select {
+                            name: "company",
+                            label: "Company",
+                            options: company_options,
+                            value: company.read().clone(),
+                            placeholder: "Select a company",
+                            required: true,
+                            onchange: move |e: FormEvent| company.set(e.value()),
+                        }
+                        crate::components::Input {
+                            name: "serial",
+                            label: "Serial Number",
+                            value: serial.read().clone(),
+                            oninput: move |e: FormEvent| serial.set(e.value()),
+                        }
+                    }
+
+                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                        crate::components::Input {
+                            name: "location",
+                            label: "Location",
+                            placeholder: "e.g. Server Room - Rack 3",
+                            value: location.read().clone(),
+                            oninput: move |e: FormEvent| location.set(e.value()),
+                        }
+                        crate::components::Input {
+                            name: "warranty",
+                            label: "Warranty Expires",
+                            r#type: "date",
+                            value: warranty.read().clone(),
+                            oninput: move |e: FormEvent| warranty.set(e.value()),
+                        }
+                    }
+
+                    crate::components::Textarea {
+                        name: "notes",
+                        label: "Notes",
+                        rows: 3,
+                        value: notes.read().clone(),
+                        oninput: move |e: FormEvent| notes.set(e.value()),
+                    }
 
                     div { class: "flex justify-end space-x-3",
                         Link {
@@ -171,6 +273,7 @@ pub fn AssetNewPage() -> Element {
                         Button {
                             r#type: "submit",
                             variant: ButtonVariant::Primary,
+                            loading: *is_submitting.read(),
                             "Create Asset"
                         }
                     }
@@ -267,7 +370,11 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 TableRow {
                                     TableCell {
                                         div {
-                                            span { class: "font-medium text-blue-600", "TKT-1234" }
+                                            Link {
+                                                to: Route::TicketDetail { id: "1234".to_string() },
+                                                class: "font-medium text-blue-600 hover:text-blue-500",
+                                                "TKT-1234"
+                                            }
                                             p { class: "text-sm text-gray-500", "Email server not responding" }
                                         }
                                     }
@@ -277,7 +384,11 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 TableRow {
                                     TableCell {
                                         div {
-                                            span { class: "font-medium text-blue-600", "TKT-1150" }
+                                            Link {
+                                                to: Route::TicketDetail { id: "1150".to_string() },
+                                                class: "font-medium text-blue-600 hover:text-blue-500",
+                                                "TKT-1150"
+                                            }
                                             p { class: "text-sm text-gray-500", "Exchange update installation" }
                                         }
                                     }
