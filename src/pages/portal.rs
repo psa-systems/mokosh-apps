@@ -222,39 +222,73 @@ pub fn PortalTicketListPage() -> Element {
                         }
                     }
                     TableBody {
-                        TableRow {
-                            TableCell {
-                                div {
-                                    span { class: "font-medium text-blue-600", "TKT-1234" }
-                                    p { class: "text-sm text-gray-500", "Email server not responding" }
-                                }
-                            }
-                            TableCell { Badge { variant: BadgeVariant::Yellow, "In Progress" } }
-                            TableCell { class: "text-gray-500", "5 min ago" }
+                        PortalTicketRow {
+                            id: "1234",
+                            number: "TKT-1234",
+                            subject: "Email server not responding",
+                            status: "In Progress",
+                            updated: "5 min ago",
                         }
-                        TableRow {
-                            TableCell {
-                                div {
-                                    span { class: "font-medium text-blue-600", "TKT-1231" }
-                                    p { class: "text-sm text-gray-500", "VPN connection issues" }
-                                }
-                            }
-                            TableCell { Badge { variant: BadgeVariant::Blue, "Open" } }
-                            TableCell { class: "text-gray-500", "3 hours ago" }
+                        PortalTicketRow {
+                            id: "1231",
+                            number: "TKT-1231",
+                            subject: "VPN connection issues",
+                            status: "Open",
+                            updated: "3 hours ago",
                         }
-                        TableRow {
-                            TableCell {
-                                div {
-                                    span { class: "font-medium text-blue-600", "TKT-1228" }
-                                    p { class: "text-sm text-gray-500", "New user setup request" }
-                                }
-                            }
-                            TableCell { Badge { variant: BadgeVariant::Gray, "Pending" } }
-                            TableCell { class: "text-gray-500", "1 day ago" }
+                        PortalTicketRow {
+                            id: "1228",
+                            number: "TKT-1228",
+                            subject: "New user setup request",
+                            status: "Pending",
+                            updated: "1 day ago",
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct PortalTicketRowProps {
+    id: String,
+    number: String,
+    subject: String,
+    status: String,
+    updated: String,
+}
+
+#[component]
+fn PortalTicketRow(props: PortalTicketRowProps) -> Element {
+    let status_variant = match props.status.as_str() {
+        "Open" => BadgeVariant::Blue,
+        "In Progress" => BadgeVariant::Yellow,
+        "Pending" => BadgeVariant::Gray,
+        "Resolved" => BadgeVariant::Green,
+        "Closed" => BadgeVariant::Gray,
+        _ => BadgeVariant::Gray,
+    };
+    let navigator = use_navigator();
+    let id_for_click = props.id.clone();
+    rsx! {
+        TableRow {
+            clickable: true,
+            onclick: move |_| {
+                navigator.push(Route::PortalTicketDetail { id: id_for_click.clone() });
+            },
+            TableCell {
+                div {
+                    Link {
+                        to: Route::PortalTicketDetail { id: props.id.clone() },
+                        class: "font-medium text-blue-600 hover:text-blue-500",
+                        "{props.number}"
+                    }
+                    p { class: "text-sm text-gray-500", "{props.subject}" }
+                }
+            }
+            TableCell { Badge { variant: status_variant, "{props.status}" } }
+            TableCell { class: "text-gray-500", "{props.updated}" }
         }
     }
 }
@@ -306,19 +340,27 @@ pub fn PortalTicketNewPage() -> Element {
                         onchange: |_| {},
                     }
 
-                    // File upload placeholder
+                    // Real file input (PMC-98). The previous drop-zone
+                    // was decorative - no <input type=file> meant the
+                    // click target did nothing and dropping a file did
+                    // nothing. A native multi-file input is the cheapest
+                    // honest thing here; styled drag-and-drop with
+                    // upload progress can land alongside the portal
+                    // attachments endpoint.
                     div {
-                        label { class: "block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1",
+                        label {
+                            r#for: "attachments",
+                            class: "block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1",
                             "Attachments"
                         }
-                        div { class: "mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-gray-300 dark:border-gray-600 border-dashed rounded-md",
-                            div { class: "space-y-1 text-center",
-                                p { class: "text-sm text-gray-600 dark:text-gray-400",
-                                    "Drag and drop files here, or click to select"
-                                }
-                                p { class: "text-xs text-gray-500", "Up to 10MB per file" }
-                            }
+                        input {
+                            id: "attachments",
+                            name: "attachments",
+                            r#type: "file",
+                            multiple: true,
+                            class: "block w-full text-sm text-gray-700 dark:text-gray-300 file:mr-3 file:py-2 file:px-3 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 dark:file:bg-blue-900 dark:file:text-blue-200 hover:file:bg-blue-100",
                         }
+                        p { class: "mt-1 text-xs text-gray-500", "Up to 10MB per file. Uploads activate once the portal attachments endpoint ships." }
                     }
 
                     div { class: "flex justify-end space-x-3",
@@ -347,8 +389,9 @@ pub struct PortalTicketDetailPageProps {
 #[component]
 #[allow(unused_variables)]
 pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
+    let header_title = format!("Ticket {}", props.id);
     rsx! {
-        PortalLayout { title: "Ticket Detail",
+        PortalLayout { title: "{header_title}",
             div { class: "mb-6",
                 Link {
                     to: Route::PortalTicketList {},
@@ -361,7 +404,7 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
                 div { class: "flex items-start justify-between mb-6",
                     div {
                         h1 { class: "text-xl font-bold text-gray-900 dark:text-white",
-                            "TKT-1234: Email server not responding"
+                            "{header_title}"
                         }
                         div { class: "flex items-center mt-2 space-x-4",
                             Badge { variant: BadgeVariant::Yellow, "In Progress" }
@@ -508,8 +551,9 @@ pub struct PortalInvoiceDetailPageProps {
 #[component]
 #[allow(unused_variables)]
 pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
+    let header_title = format!("Invoice {}", props.id);
     rsx! {
-        PortalLayout { title: "Invoice Detail",
+        PortalLayout { title: "{header_title}",
             div { class: "mb-6",
                 Link {
                     to: Route::PortalInvoiceList {},
@@ -518,9 +562,67 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                 }
             }
 
+            // Minimum-viable read-only invoice view (PMC-96). Once the
+            // portal billing endpoint ships, replace the placeholder
+            // bill-to / line items / payment status with real fetched
+            // data. The shape mirrors InvoiceDetailPage for consistency.
             Card {
-                // Invoice content would go here - similar to main invoice detail
-                p { class: "text-gray-500", "Invoice details would be displayed here." }
+                div { class: "flex justify-between items-start mb-6",
+                    div {
+                        h2 { class: "text-2xl font-bold text-gray-900 dark:text-white",
+                            "{header_title}"
+                        }
+                        p { class: "text-sm text-gray-500", "Issued Jan 5, 2025 - Due Feb 4, 2025" }
+                    }
+                    Badge { variant: BadgeVariant::Yellow, "Pending" }
+                }
+
+                div { class: "grid grid-cols-2 gap-6 mb-6",
+                    div {
+                        h3 { class: "text-xs font-medium text-gray-500 uppercase mb-1", "Bill To" }
+                        p { class: "font-medium", "Acme Corp" }
+                        p { class: "text-sm text-gray-600 dark:text-gray-400", "Bob Johnson" }
+                        p { class: "text-sm text-gray-600 dark:text-gray-400", "bob@acme.com" }
+                    }
+                    div {
+                        h3 { class: "text-xs font-medium text-gray-500 uppercase mb-1", "Amount Due" }
+                        p { class: "text-3xl font-bold text-gray-900 dark:text-white", "$1,850.00" }
+                    }
+                }
+
+                table { class: "min-w-full text-sm mb-6",
+                    thead { class: "border-b border-gray-200 dark:border-gray-700",
+                        tr {
+                            th { class: "text-left py-2 text-gray-500", "Description" }
+                            th { class: "text-right py-2 text-gray-500", "Qty" }
+                            th { class: "text-right py-2 text-gray-500", "Unit Price" }
+                            th { class: "text-right py-2 text-gray-500", "Total" }
+                        }
+                    }
+                    tbody {
+                        tr {
+                            td { class: "py-3", "Managed Services - January 2025" }
+                            td { class: "py-3 text-right", "1" }
+                            td { class: "py-3 text-right", "$1,500.00" }
+                            td { class: "py-3 text-right", "$1,500.00" }
+                        }
+                        tr {
+                            td { class: "py-3", "Additional support hours" }
+                            td { class: "py-3 text-right", "3.5" }
+                            td { class: "py-3 text-right", "$100.00" }
+                            td { class: "py-3 text-right", "$350.00" }
+                        }
+                    }
+                }
+
+                div { class: "border-t border-gray-200 dark:border-gray-700 pt-4 text-right",
+                    p { class: "text-sm text-gray-500", "Total Due" }
+                    p { class: "text-2xl font-bold text-gray-900 dark:text-white", "$1,850.00" }
+                }
+
+                p { class: "mt-6 text-xs text-gray-500",
+                    "Online payment activates once the portal billing endpoint ships."
+                }
             }
         }
     }
@@ -548,22 +650,27 @@ pub fn PortalKBPage() -> Element {
             Card { title: "Popular Articles",
                 div { class: "space-y-3",
                     PortalArticleItem {
+                        id: "portal-reset-password",
                         title: "How to Reset Your Password",
                         category: "Getting Started",
                     }
                     PortalArticleItem {
+                        id: "portal-vpn-troubleshooting",
                         title: "Troubleshooting VPN Connection Issues",
                         category: "Troubleshooting",
                     }
                     PortalArticleItem {
+                        id: "portal-mfa-setup",
                         title: "Setting Up Multi-Factor Authentication",
                         category: "Security",
                     }
                     PortalArticleItem {
+                        id: "portal-email-mobile",
                         title: "Email Setup Guide for Mobile Devices",
                         category: "How-To Guides",
                     }
                     PortalArticleItem {
+                        id: "portal-support-best-practices",
                         title: "Requesting IT Support - Best Practices",
                         category: "Getting Started",
                     }
@@ -575,6 +682,7 @@ pub fn PortalKBPage() -> Element {
 
 #[derive(Props, Clone, PartialEq)]
 struct PortalArticleItemProps {
+    id: String,
     title: String,
     category: String,
 }
@@ -582,7 +690,8 @@ struct PortalArticleItemProps {
 #[component]
 fn PortalArticleItem(props: PortalArticleItemProps) -> Element {
     rsx! {
-        a {
+        Link {
+            to: Route::KBArticleDetail { id: props.id.clone() },
             class: "block p-3 -mx-3 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg transition-colors",
             h4 { class: "font-medium text-gray-900 dark:text-white", "{props.title}" }
             p { class: "text-sm text-gray-500 mt-1", "{props.category}" }
