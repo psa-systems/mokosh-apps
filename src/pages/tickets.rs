@@ -399,20 +399,53 @@ pub fn TicketNewPage() -> Element {
         SelectOption::new("low", "Low"),
     ];
 
+    let navigator = use_navigator();
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
         is_submitting.set(true);
 
+        // Snapshot signals so the spawn doesn't need to read them.
+        let title_v = title.read().clone();
+        let description_v = description.read().clone();
+        let company_v = company.read().clone();
+        let _priority_v = priority.read().clone();
+
         spawn(async move {
-            // TODO: Call API to create ticket
             #[cfg(feature = "web")]
             {
-                use gloo_timers::future::TimeoutFuture;
-                TimeoutFuture::new(1000).await;
+                // The Select still ships hardcoded "1"/"2"/"3" placeholders
+                // until the company dropdown is wired to /api/v1/contacts/companies
+                // (tracked under the contacts story). Parse as Uuid; non-UUID
+                // values fall back to `nil()` so the POST exercises the wire
+                // and the server returns a typed validation error we can
+                // surface to the user via the toast.
+                let company_id = uuid::Uuid::parse_str(&company_v).unwrap_or_else(|_| uuid::Uuid::nil());
+                let body = serde_json::json!({
+                    "title": title_v,
+                    "description": if description_v.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(description_v) },
+                    "company_id": company_id,
+                });
+
+                #[derive(serde::Deserialize)]
+                struct CreatedTicket { id: uuid::Uuid }
+
+                match crate::hooks::fetch::api::post_authed::<CreatedTicket, _>("/tickets", &body).await {
+                    Ok(created) => {
+                        navigator.push(Route::TicketDetail { id: created.id.to_string() });
+                    }
+                    Err(err) => {
+                        // The toast surface lands with the API client
+                        // story; until then surface the failure via the
+                        // browser console and keep the form mounted so
+                        // the user can retry without losing their text.
+                        web_sys::console::error_1(
+                            &format!("Could not create ticket: {err}").into(),
+                        );
+                    }
+                }
             }
 
             is_submitting.set(false);
-            // Navigate to ticket list
         });
     };
 
@@ -500,11 +533,16 @@ pub struct TicketDetailPageProps {
 #[allow(unused_variables)]
 pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let mut show_note_modal = use_signal(|| false);
+    let mut note_type = use_signal(|| "internal".to_string());
+    let mut note_content = use_signal(String::new);
+    let mut note_submitting = use_signal(|| false);
+    let header_title = format!("Ticket {}", props.id);
+    let ticket_id_for_note = props.id.clone();
 
     rsx! {
-        AppLayout { title: "Ticket Detail",
+        AppLayout { title: "{header_title}",
             PageHeader {
-                title: "TKT-1234: Email server not responding",
+                title: "{header_title}",
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Secondary,
@@ -512,10 +550,13 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "Add Note"
                     }
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        ClockIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "Log Time"
+                    Link {
+                        to: Route::TimeEntryNew {},
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            ClockIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                            "Log Time"
+                        }
                     }
                 },
             }
@@ -637,6 +678,40 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     }
                     Button {
                         variant: ButtonVariant::Primary,
+                        loading: *note_submitting.read(),
+                        onclick: move |_| {
+                            note_submitting.set(true);
+                            let id = ticket_id_for_note.clone();
+                            let type_v = note_type.read().clone();
+                            let content_v = note_content.read().clone();
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    if content_v.trim().is_empty() {
+                                        web_sys::console::warn_1(&"Note content empty; not posting.".into());
+                                        note_submitting.set(false);
+                                        return;
+                                    }
+                                    let body = serde_json::json!({
+                                        "note_type": type_v,
+                                        "content": content_v,
+                                    });
+                                    let path = format!("/tickets/{id}/notes");
+                                    match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(&path, &body).await {
+                                        Ok(_) => {
+                                            note_content.set(String::new());
+                                            show_note_modal.set(false);
+                                        }
+                                        Err(err) => {
+                                            web_sys::console::error_1(
+                                                &format!("Could not add note: {err}").into(),
+                                            );
+                                        }
+                                    }
+                                }
+                                note_submitting.set(false);
+                            });
+                        },
                         "Add Note"
                     }
                 },
@@ -648,15 +723,16 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                             SelectOption::new("internal", "Internal Note"),
                             SelectOption::new("public", "Public Note (visible to customer)"),
                         ],
-                        value: "internal".to_string(),
-                        onchange: |_| {},
+                        value: note_type.read().clone(),
+                        onchange: move |e: FormEvent| note_type.set(e.value()),
                     }
                     Textarea {
                         name: "content",
                         label: "Content",
                         placeholder: "Enter your note...",
                         rows: 4,
-                        oninput: |_| {},
+                        value: note_content.read().clone(),
+                        oninput: move |e: FormEvent| note_content.set(e.value()),
                     }
                 }
             }
