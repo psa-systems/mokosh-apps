@@ -292,11 +292,11 @@ pub struct AssetDetailPageProps {
 #[component]
 #[allow(unused_variables)]
 pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
+    let header_title = format!("Asset {}", props.id);
     rsx! {
-        AppLayout { title: "Asset Detail",
+        AppLayout { title: "{header_title}",
             PageHeader {
-                title: "Exchange Server 01",
-                subtitle: "Acme Corp",
+                title: "{header_title}",
                 // Audit P1-07: Edit / Remote Connect buttons were
                 // decorative (no onclick, no RMM integration). Hidden
                 // until asset edit + RMM connection flows ship.

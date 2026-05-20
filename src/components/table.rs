@@ -67,6 +67,9 @@ pub struct TableRowProps {
     clickable: bool,
     #[props(default)]
     onclick: EventHandler<MouseEvent>,
+    /// Stable selector for browser-automation tests (PMC-111).
+    #[props(default)]
+    data_testid: Option<String>,
 }
 
 #[component]
@@ -80,6 +83,7 @@ pub fn TableRow(props: TableRowProps) -> Element {
     rsx! {
         tr {
             class: "{class}",
+            "data-testid": props.data_testid.as_deref(),
             onclick: move |e| props.onclick.call(e),
             {props.children}
         }

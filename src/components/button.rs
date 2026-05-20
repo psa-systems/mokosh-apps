@@ -70,6 +70,10 @@ pub struct ButtonProps {
     /// Click handler
     #[props(default)]
     onclick: EventHandler<MouseEvent>,
+    /// Stable selector for browser-automation tests (PMC-111). When
+    /// set, emitted as `data-testid="..."` on the rendered <button>.
+    #[props(default)]
+    data_testid: Option<String>,
 }
 
 /// Reusable button component
@@ -90,6 +94,7 @@ pub fn Button(props: ButtonProps) -> Element {
             class: "{class}",
             r#type: "{props.r#type}",
             disabled: props.disabled || props.loading,
+            "data-testid": props.data_testid.as_deref(),
             onclick: move |e| props.onclick.call(e),
             if props.loading {
                 span { class: "mr-2",
