@@ -68,11 +68,7 @@ pub fn UpdateBanner() -> Element {
     let auth = use_auth();
     let mut dismissed_local = use_signal(|| false);
     let version_resource = use_resource(move || {
-        let admin = auth
-            .read()
-            .user
-            .as_ref()
-            .is_some_and(|u| u.role.is_admin());
+        let admin = auth.read().user.as_ref().is_some_and(|u| u.role.is_admin());
         async move {
             if !admin {
                 return Err("not admin".to_string());
@@ -81,11 +77,7 @@ pub fn UpdateBanner() -> Element {
         }
     });
 
-    let is_admin = auth
-        .read()
-        .user
-        .as_ref()
-        .is_some_and(|u| u.role.is_admin());
+    let is_admin = auth.read().user.as_ref().is_some_and(|u| u.role.is_admin());
     if !is_admin {
         return rsx! {};
     }

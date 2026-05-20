@@ -403,9 +403,7 @@ pub mod api {
         /// User-facing message suitable for a toast.
         pub fn user_message(&self) -> String {
             match self {
-                Self::Network(_) => {
-                    "Network error. Check your connection and try again.".into()
-                }
+                Self::Network(_) => "Network error. Check your connection and try again.".into(),
                 Self::Status { code, message } => match *code {
                     401 => "Your session has expired. Please sign in again.".into(),
                     403 => "You do not have permission to do that.".into(),
@@ -418,8 +416,7 @@ pub mod api {
                     _ => format!("Request failed ({}).", code),
                 },
                 Self::Decode(_) => {
-                    "The server's response could not be read. Please refresh and retry."
-                        .into()
+                    "The server's response could not be read. Please refresh and retry.".into()
                 }
             }
         }
@@ -456,7 +453,10 @@ pub mod api {
     ) -> Result<T, ApiError> {
         let status = response.status();
         if (200..300).contains(&status) {
-            return response.json::<T>().await.map_err(|e| ApiError::Decode(e.to_string()));
+            return response
+                .json::<T>()
+                .await
+                .map_err(|e| ApiError::Decode(e.to_string()));
         }
         let body = response.text().await.unwrap_or_default();
         let message = serde_json::from_str::<crate::utils::error::ErrorResponse>(&body)
@@ -466,7 +466,10 @@ pub mod api {
                 // 500 page doesn't end up in a toast.
                 body.chars().take(200).collect()
             });
-        Err(ApiError::Status { code: status, message })
+        Err(ApiError::Status {
+            code: status,
+            message,
+        })
     }
 
     #[cfg(feature = "web")]
@@ -476,7 +479,10 @@ pub mod api {
         if let Some(t) = current_access_token() {
             req = req.header("Authorization", &format!("Bearer {t}"));
         }
-        let resp = req.send().await.map_err(|e| ApiError::Network(e.to_string()))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))?;
         handle_response(resp).await
     }
 
@@ -504,8 +510,10 @@ pub mod api {
         path: &str,
         body: &B,
     ) -> Result<T, ApiError> {
-        let t = current_access_token()
-            .ok_or_else(|| ApiError::Status { code: 401, message: String::new() })?;
+        let t = current_access_token().ok_or_else(|| ApiError::Status {
+            code: 401,
+            message: String::new(),
+        })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::put(&url)
             .header("Content-Type", "application/json")
@@ -520,8 +528,10 @@ pub mod api {
 
     #[cfg(feature = "web")]
     pub async fn delete_authed_typed(path: &str) -> Result<(), ApiError> {
-        let t = current_access_token()
-            .ok_or_else(|| ApiError::Status { code: 401, message: String::new() })?;
+        let t = current_access_token().ok_or_else(|| ApiError::Status {
+            code: 401,
+            message: String::new(),
+        })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::delete(&url)
             .header("Content-Type", "application/json")
@@ -537,7 +547,10 @@ pub mod api {
             let message = serde_json::from_str::<crate::utils::error::ErrorResponse>(&body)
                 .map(|env| env.error.message)
                 .unwrap_or_else(|_| body.chars().take(200).collect());
-            Err(ApiError::Status { code: status, message })
+            Err(ApiError::Status {
+                code: status,
+                message,
+            })
         }
     }
 }

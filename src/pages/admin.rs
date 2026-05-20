@@ -88,11 +88,7 @@ pub fn TenantManagementPage() -> Element {
             Some(t) => t,
             None => return (Vec::<RemoteTenant>::new(), TenantSource::Demo),
         };
-        match crate::hooks::fetch::api::get_with_auth::<PaginatedTenants>(
-            "/tenants",
-            &token,
-        )
-        .await
+        match crate::hooks::fetch::api::get_with_auth::<PaginatedTenants>("/tenants", &token).await
         {
             Ok(page) => (page.data, TenantSource::Backend),
             Err(_) => (Vec::new(), TenantSource::Demo),

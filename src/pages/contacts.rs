@@ -109,11 +109,8 @@ pub fn CompanyListPage() -> Element {
             Some(t) => t,
             None => return (Vec::<RemoteCompany>::new(), CompanySource::Demo),
         };
-        match crate::hooks::fetch::api::get_with_auth::<PaginatedCompanies>(
-            "/companies",
-            &token,
-        )
-        .await
+        match crate::hooks::fetch::api::get_with_auth::<PaginatedCompanies>("/companies", &token)
+            .await
         {
             Ok(page) => (page.data, CompanySource::Backend),
             Err(_) => (Vec::new(), CompanySource::Demo),
@@ -605,11 +602,8 @@ pub fn ContactListPage() -> Element {
             Some(t) => t,
             None => return (Vec::<RemoteContact>::new(), ContactSource::Demo),
         };
-        match crate::hooks::fetch::api::get_with_auth::<PaginatedContacts>(
-            "/contacts",
-            &token,
-        )
-        .await
+        match crate::hooks::fetch::api::get_with_auth::<PaginatedContacts>("/contacts", &token)
+            .await
         {
             Ok(page) => (page.data, ContactSource::Backend),
             Err(_) => (Vec::new(), ContactSource::Demo),

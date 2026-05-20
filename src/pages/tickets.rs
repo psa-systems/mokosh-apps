@@ -61,10 +61,18 @@ fn relative_time(when: DateTime<Utc>) -> String {
         format!("{} min ago", secs / 60)
     } else if secs < 86_400 {
         let hours = secs / 3600;
-        if hours == 1 { "1 hour ago".into() } else { format!("{hours} hours ago") }
+        if hours == 1 {
+            "1 hour ago".into()
+        } else {
+            format!("{hours} hours ago")
+        }
     } else {
         let days = secs / 86_400;
-        if days == 1 { "1 day ago".into() } else { format!("{days} days ago") }
+        if days == 1 {
+            "1 day ago".into()
+        } else {
+            format!("{days} days ago")
+        }
     }
 }
 
@@ -122,11 +130,7 @@ pub fn TicketListPage() -> Element {
             Some(t) => t,
             None => return (Vec::<RemoteTicket>::new(), TicketSource::Demo),
         };
-        match crate::hooks::fetch::api::get_with_auth::<PaginatedTickets>(
-            "/tickets",
-            &token,
-        )
-        .await
+        match crate::hooks::fetch::api::get_with_auth::<PaginatedTickets>("/tickets", &token).await
         {
             Ok(page) => (page.data, TicketSource::Backend),
             Err(_) => (Vec::new(), TicketSource::Demo),
@@ -419,7 +423,8 @@ pub fn TicketNewPage() -> Element {
                 // values fall back to `nil()` so the POST exercises the wire
                 // and the server returns a typed validation error we can
                 // surface to the user via the toast.
-                let company_id = uuid::Uuid::parse_str(&company_v).unwrap_or_else(|_| uuid::Uuid::nil());
+                let company_id =
+                    uuid::Uuid::parse_str(&company_v).unwrap_or_else(|_| uuid::Uuid::nil());
                 let body = serde_json::json!({
                     "title": title_v,
                     "description": if description_v.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(description_v) },
@@ -427,11 +432,17 @@ pub fn TicketNewPage() -> Element {
                 });
 
                 #[derive(serde::Deserialize)]
-                struct CreatedTicket { id: uuid::Uuid }
+                struct CreatedTicket {
+                    id: uuid::Uuid,
+                }
 
-                match crate::hooks::fetch::api::post_authed::<CreatedTicket, _>("/tickets", &body).await {
+                match crate::hooks::fetch::api::post_authed::<CreatedTicket, _>("/tickets", &body)
+                    .await
+                {
                     Ok(created) => {
-                        navigator.push(Route::TicketDetail { id: created.id.to_string() });
+                        navigator.push(Route::TicketDetail {
+                            id: created.id.to_string(),
+                        });
                     }
                     Err(err) => {
                         // The toast surface lands with the API client

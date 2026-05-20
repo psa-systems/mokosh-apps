@@ -73,9 +73,7 @@ impl AuthContext {
     pub fn active_membership(&self) -> Option<&MembershipView> {
         let active = self.active_tenant_id?;
         let active_str = active.to_string();
-        self.memberships
-            .iter()
-            .find(|m| m.tenant_id == active_str)
+        self.memberships.iter().find(|m| m.tenant_id == active_str)
     }
 
     /// Display name for the active org, or `None` when there isn't one

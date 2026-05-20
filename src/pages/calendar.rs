@@ -141,9 +141,7 @@ pub fn CalendarPage() -> Element {
     // backend has no events. Once a tenant has real events, the page
     // defaults to today.
     let today_real = Local::now().naive_local().date();
-    let mut active_month = use_signal(|| {
-        NaiveDate::from_ymd_opt(2025, 1, 1).unwrap_or(today_real)
-    });
+    let mut active_month = use_signal(|| NaiveDate::from_ymd_opt(2025, 1, 1).unwrap_or(today_real));
 
     // Fetch the live event list. If the backend isn't wired yet (404),
     // returns errors, or the user isn't authed, we fall back to the
