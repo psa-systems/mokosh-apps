@@ -1,13 +1,110 @@
 //! Ticket pages
 
+use chrono::{DateTime, Utc};
 use dioxus::prelude::*;
+use serde::Deserialize;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ClockIcon, DataTable, IconSize,
     Modal, PageHeader, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody, TableCell,
-    TableHead, TableHeader, TableRow, Textarea, UserCircleIcon,
+    TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea, UserCircleIcon,
 };
 use crate::Route;
+
+/// Subset of mokosh-server's `TicketResponse` we render in the list. The
+/// server returns more fields; serde silently drops the ones we don't
+/// ask for, so adding columns later just means extending this struct.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteTicket {
+    id: uuid::Uuid,
+    ticket_number: String,
+    title: String,
+    #[serde(default)]
+    company_name: String,
+    #[serde(default)]
+    status: RemoteSummary,
+    #[serde(default)]
+    priority: RemoteSummary,
+    #[serde(default)]
+    assigned_to_name: Option<String>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct RemoteSummary {
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct PaginatedTickets {
+    data: Vec<RemoteTicket>,
+}
+
+/// Source of the rows currently on screen. Mirrors the companies-page
+/// pattern: backend if the fetch returned rows, demo otherwise.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TicketSource {
+    Backend,
+    Demo,
+}
+
+/// Render a `DateTime<Utc>` as a coarse "X ago" string. Good enough
+/// for a list view where exact times live on the detail page.
+fn relative_time(when: DateTime<Utc>) -> String {
+    let now = Utc::now();
+    let delta = now.signed_duration_since(when);
+    let secs = delta.num_seconds();
+    if secs < 60 {
+        "just now".into()
+    } else if secs < 3600 {
+        format!("{} min ago", secs / 60)
+    } else if secs < 86_400 {
+        let hours = secs / 3600;
+        if hours == 1 { "1 hour ago".into() } else { format!("{hours} hours ago") }
+    } else {
+        let days = secs / 86_400;
+        if days == 1 { "1 day ago".into() } else { format!("{days} days ago") }
+    }
+}
+
+/// Convert the lowercase status name the server returns into the
+/// title-case label `TicketRow` keys its badge color on. Unknown
+/// values pass through so future statuses don't disappear.
+fn humanize_status(raw: &str) -> String {
+    match raw {
+        "" => "Open".into(),
+        "open" => "Open".into(),
+        "in_progress" | "in progress" => "In Progress".into(),
+        "pending" => "Pending".into(),
+        "resolved" => "Resolved".into(),
+        "closed" => "Closed".into(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        }
+    }
+}
+
+fn humanize_priority(raw: &str) -> String {
+    match raw {
+        "" => "Medium".into(),
+        "critical" => "Critical".into(),
+        "high" => "High".into(),
+        "medium" => "Medium".into(),
+        "low" => "Low".into(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        }
+    }
+}
 
 /// Ticket list page
 #[component]
@@ -15,6 +112,33 @@ pub fn TicketListPage() -> Element {
     let mut search = use_signal(String::new);
     let mut status_filter = use_signal(String::new);
     let mut priority_filter = use_signal(String::new);
+
+    // Same progressive-enablement pattern as the companies page: try
+    // the live backend first, fall back to the seeded demo rows so the
+    // page stays demoable when the route isn't deployed yet or the
+    // user is signed out.
+    let tickets_resource = use_resource(|| async {
+        let token = match crate::hooks::fetch::api::current_access_token() {
+            Some(t) => t,
+            None => return (Vec::<RemoteTicket>::new(), TicketSource::Demo),
+        };
+        match crate::hooks::fetch::api::get_with_auth::<PaginatedTickets>(
+            "/tickets",
+            &token,
+        )
+        .await
+        {
+            Ok(page) => (page.data, TicketSource::Backend),
+            Err(_) => (Vec::new(), TicketSource::Demo),
+        }
+    });
+
+    let resource_snapshot = tickets_resource.read_unchecked();
+    let is_loading = resource_snapshot.is_none();
+    let (remote_tickets, source) = match &*resource_snapshot {
+        Some((rows, source)) => (rows.clone(), *source),
+        None => (Vec::new(), TicketSource::Demo),
+    };
 
     let status_options = vec![
         SelectOption::new("", "All Statuses"),
@@ -79,9 +203,17 @@ pub fn TicketListPage() -> Element {
                 }
             }
 
+            if source == TicketSource::Demo && !is_loading {
+                div {
+                    class: "mb-3 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
+                    "Backend tickets API not reachable - showing demo rows."
+                }
+            }
+
             // Ticket table
             DataTable {
-                total_items: 50,
+                loading: is_loading,
+                total_items: if source == TicketSource::Backend { remote_tickets.len() } else { 5 },
                 current_page: 1,
                 per_page: 25,
                 columns: 6,
@@ -96,56 +228,78 @@ pub fn TicketListPage() -> Element {
                             TableHeader { sortable: true, "Updated" }
                         }
                     }
-                    TableBody {
-                        TicketRow {
-                            id: "1",
-                            number: "TKT-1234",
-                            title: "Email server not responding",
-                            company: "Acme Corp",
-                            status: "Open",
-                            priority: "High",
-                            assigned_to: "John Smith",
-                            updated: "5 min ago",
-                        }
-                        TicketRow {
-                            id: "2",
-                            number: "TKT-1233",
-                            title: "New user setup request",
-                            company: "TechStart Inc",
-                            status: "In Progress",
-                            priority: "Medium",
-                            assigned_to: "Jane Doe",
-                            updated: "1 hour ago",
-                        }
-                        TicketRow {
-                            id: "3",
-                            number: "TKT-1232",
-                            title: "Printer configuration for new office",
-                            company: "Global Widgets",
-                            status: "Pending",
-                            priority: "Low",
-                            assigned_to: "Unassigned",
-                            updated: "2 hours ago",
-                        }
-                        TicketRow {
-                            id: "4",
-                            number: "TKT-1231",
-                            title: "VPN connection issues for remote workers",
-                            company: "Acme Corp",
-                            status: "Open",
-                            priority: "Critical",
-                            assigned_to: "John Smith",
-                            updated: "3 hours ago",
-                        }
-                        TicketRow {
-                            id: "5",
-                            number: "TKT-1230",
-                            title: "Software license renewal required",
-                            company: "TechStart Inc",
-                            status: "Resolved",
-                            priority: "Medium",
-                            assigned_to: "Jane Doe",
-                            updated: "1 day ago",
+                    if is_loading {
+                        TableLoading { columns: 6, rows: 5 }
+                    } else if source == TicketSource::Backend && remote_tickets.is_empty() {
+                        TableEmpty { columns: 6, message: "No tickets yet.".to_string() }
+                    } else {
+                        TableBody {
+                            if source == TicketSource::Backend {
+                                for ticket in remote_tickets.iter().cloned() {
+                                    TicketRow {
+                                        key: "{ticket.id}",
+                                        id: ticket.id.to_string(),
+                                        number: ticket.ticket_number,
+                                        title: ticket.title,
+                                        company: ticket.company_name,
+                                        status: humanize_status(&ticket.status.name),
+                                        priority: humanize_priority(&ticket.priority.name),
+                                        assigned_to: ticket.assigned_to_name.unwrap_or_else(|| "Unassigned".to_string()),
+                                        updated: relative_time(ticket.updated_at),
+                                    }
+                                }
+                            } else {
+                                TicketRow {
+                                    id: "1",
+                                    number: "TKT-1234",
+                                    title: "Email server not responding",
+                                    company: "Acme Corp",
+                                    status: "Open",
+                                    priority: "High",
+                                    assigned_to: "John Smith",
+                                    updated: "5 min ago",
+                                }
+                                TicketRow {
+                                    id: "2",
+                                    number: "TKT-1233",
+                                    title: "New user setup request",
+                                    company: "TechStart Inc",
+                                    status: "In Progress",
+                                    priority: "Medium",
+                                    assigned_to: "Jane Doe",
+                                    updated: "1 hour ago",
+                                }
+                                TicketRow {
+                                    id: "3",
+                                    number: "TKT-1232",
+                                    title: "Printer configuration for new office",
+                                    company: "Global Widgets",
+                                    status: "Pending",
+                                    priority: "Low",
+                                    assigned_to: "Unassigned",
+                                    updated: "2 hours ago",
+                                }
+                                TicketRow {
+                                    id: "4",
+                                    number: "TKT-1231",
+                                    title: "VPN connection issues for remote workers",
+                                    company: "Acme Corp",
+                                    status: "Open",
+                                    priority: "Critical",
+                                    assigned_to: "John Smith",
+                                    updated: "3 hours ago",
+                                }
+                                TicketRow {
+                                    id: "5",
+                                    number: "TKT-1230",
+                                    title: "Software license renewal required",
+                                    company: "TechStart Inc",
+                                    status: "Resolved",
+                                    priority: "Medium",
+                                    assigned_to: "Jane Doe",
+                                    updated: "1 day ago",
+                                }
+                            }
                         }
                     }
                 }

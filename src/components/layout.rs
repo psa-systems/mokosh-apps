@@ -62,6 +62,11 @@ pub fn AppLayout(props: AppLayoutProps) -> Element {
                     }
                 }
             }
+
+            // Mount the global toast surface once at the layout level
+            // so any page or hook can push notifications without
+            // wiring its own container.
+            crate::hooks::toast::ToastRoot {}
         }
     }
 }
