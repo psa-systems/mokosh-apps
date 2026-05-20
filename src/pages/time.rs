@@ -206,10 +206,11 @@ fn TimeEntryRow(props: TimeEntryRowProps) -> Element {
     // working on" navigation surface. Strip the prefix to get the id.
     let work_link: Option<Route> = if let Some(id) = props.work_item.strip_prefix("TKT-") {
         Some(Route::TicketDetail { id: id.to_string() })
-    } else if let Some(id) = props.work_item.strip_prefix("PRJ-") {
-        Some(Route::ProjectDetail { id: id.to_string() })
     } else {
-        None
+        props
+            .work_item
+            .strip_prefix("PRJ-")
+            .map(|id| Route::ProjectDetail { id: id.to_string() })
     };
 
     rsx! {

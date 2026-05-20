@@ -1,5 +1,10 @@
 //! Authentication models and types
 
+// These model enums expose `from_str(&str) -> Option<Self>` as a deliberate
+// infallible-style parser API; they intentionally do not implement
+// `std::str::FromStr` (which requires a `Result`).
+#![allow(clippy::should_implement_trait)]
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -114,7 +119,7 @@ impl UserStatus {
 }
 
 /// Current authenticated user state
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AuthState {
     /// Whether the user is authenticated
     pub is_authenticated: bool,
@@ -122,16 +127,6 @@ pub struct AuthState {
     pub user: Option<CurrentUser>,
     /// The current tenant ID
     pub tenant_id: Option<Uuid>,
-}
-
-impl Default for AuthState {
-    fn default() -> Self {
-        Self {
-            is_authenticated: false,
-            user: None,
-            tenant_id: None,
-        }
-    }
 }
 
 impl AuthState {

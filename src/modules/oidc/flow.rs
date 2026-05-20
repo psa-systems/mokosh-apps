@@ -77,15 +77,15 @@ pub fn start_login(cfg: &OidcConfig, return_to: impl Into<String>) -> Result<(),
         .map_err(|_| FlowError::Redirect("set_href failed".into()))
 }
 
-/// Snapshot of `?code=...&state=...` taken before the Dioxus router
-/// mounts. Some routers (Dioxus 0.7 included) call
-/// `history.replaceState()` during initialization to normalize the URL
-/// to its declared route shape (no query params), which would erase
-/// the OAuth response before `AuthCallbackPage` ever reads it. We
-/// freeze the original `window.location.search` in a thread-local at
-/// program entry; `complete_login` reads from here.
-///
-/// WASM is single-threaded, so the `RefCell` is safe.
+// Snapshot of `?code=...&state=...` taken before the Dioxus router
+// mounts. Some routers (Dioxus 0.7 included) call
+// `history.replaceState()` during initialization to normalize the URL
+// to its declared route shape (no query params), which would erase
+// the OAuth response before `AuthCallbackPage` ever reads it. We
+// freeze the original `window.location.search` in a thread-local at
+// program entry; `complete_login` reads from here.
+//
+// WASM is single-threaded, so the `RefCell` is safe.
 thread_local! {
     static INITIAL_SEARCH: std::cell::RefCell<Option<String>> =
         const { std::cell::RefCell::new(None) };

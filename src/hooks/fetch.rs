@@ -44,6 +44,10 @@ impl<T> FetchState<T> {
     }
 }
 
+// Not derived: `#[derive(Default)]` on a generic enum adds a `T: Default`
+// bound, but `FetchState::<PaginatedData<T>>::default()` is called where
+// `T` is not `Default`. The manual impl stays unbounded.
+#[allow(clippy::derivable_impls)]
 impl<T> Default for FetchState<T> {
     fn default() -> Self {
         FetchState::Idle
@@ -61,7 +65,7 @@ pub struct PaginatedData<T> {
 
 impl<T> PaginatedData<T> {
     pub fn total_pages(&self) -> usize {
-        (self.total + self.per_page - 1) / self.per_page
+        self.total.div_ceil(self.per_page)
     }
 }
 
@@ -104,6 +108,7 @@ where
 }
 
 /// Hook for paginated data fetching
+#[allow(clippy::type_complexity)]
 pub fn use_paginated_fetch<T, F, Fut>(
     fetch_fn: F,
     initial_page: usize,
