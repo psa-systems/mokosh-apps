@@ -37,6 +37,9 @@ pub struct InputProps {
     /// Change handler
     #[props(default)]
     oninput: EventHandler<FormEvent>,
+    /// Stable selector for browser-automation tests (PMC-111).
+    #[props(default)]
+    data_testid: Option<String>,
 }
 
 /// Text input component
@@ -71,6 +74,7 @@ pub fn Input(props: InputProps) -> Element {
                 value: "{props.value}",
                 required: props.required,
                 disabled: props.disabled,
+                "data-testid": props.data_testid.as_deref(),
                 oninput: move |e| props.oninput.call(e),
             }
             if !props.error.is_empty() {

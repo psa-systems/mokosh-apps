@@ -4,7 +4,8 @@ use dioxus::prelude::*;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, DocumentIcon, IconSize,
-    PageHeader, PlusIcon, Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+    PageHeader, PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableHead,
+    TableHeader, TableRow,
 };
 use crate::Route;
 
@@ -151,6 +152,45 @@ fn ContractRow(props: ContractRowProps) -> Element {
 /// New contract page
 #[component]
 pub fn ContractNewPage() -> Element {
+    let mut name = use_signal(String::new);
+    let mut company = use_signal(String::new);
+    let mut contract_type = use_signal(|| "managed".to_string());
+    let mut value = use_signal(String::new);
+    let mut start_date = use_signal(String::new);
+    let mut end_date = use_signal(String::new);
+    let mut is_submitting = use_signal(|| false);
+
+    let company_options = vec![
+        SelectOption::new("1", "Acme Corp"),
+        SelectOption::new("2", "TechStart Inc"),
+        SelectOption::new("3", "Global Widgets"),
+    ];
+    let type_options = vec![
+        SelectOption::new("managed", "Managed Services"),
+        SelectOption::new("block_hours", "Block Hours"),
+        SelectOption::new("time_materials", "Time & Materials"),
+        SelectOption::new("fixed_price", "Fixed Price"),
+    ];
+
+    let navigator = use_navigator();
+    let handle_submit = move |e: FormEvent| {
+        e.prevent_default();
+        is_submitting.set(true);
+        spawn(async move {
+            // Server contracts module is still stubbed (501); ride the
+            // same 1s timeout pattern other unwired forms use so the UX
+            // doesn't lie. When the server lands, replace with a real
+            // POST to /api/v1/contracts.
+            #[cfg(feature = "web")]
+            {
+                use gloo_timers::future::TimeoutFuture;
+                TimeoutFuture::new(1000).await;
+            }
+            is_submitting.set(false);
+            navigator.push(Route::ContractList {});
+        });
+    };
+
     rsx! {
         AppLayout { title: "New Contract",
             PageHeader {
@@ -159,8 +199,64 @@ pub fn ContractNewPage() -> Element {
             }
 
             Card {
-                form { class: "space-y-6",
-                    p { class: "text-gray-500", "Contract creation form would go here." }
+                form {
+                    class: "space-y-6",
+                    onsubmit: handle_submit,
+
+                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                        crate::components::Input {
+                            name: "name",
+                            label: "Name",
+                            placeholder: "e.g. Managed Services Agreement",
+                            required: true,
+                            value: name.read().clone(),
+                            oninput: move |e: FormEvent| name.set(e.value()),
+                        }
+                        Select {
+                            name: "company",
+                            label: "Company",
+                            options: company_options,
+                            value: company.read().clone(),
+                            placeholder: "Select a company",
+                            required: true,
+                            onchange: move |e: FormEvent| company.set(e.value()),
+                        }
+                    }
+
+                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                        Select {
+                            name: "type",
+                            label: "Type",
+                            options: type_options,
+                            value: contract_type.read().clone(),
+                            onchange: move |e: FormEvent| contract_type.set(e.value()),
+                        }
+                        crate::components::Input {
+                            name: "value",
+                            label: "Value (USD)",
+                            r#type: "number",
+                            placeholder: "0",
+                            value: value.read().clone(),
+                            oninput: move |e: FormEvent| value.set(e.value()),
+                        }
+                    }
+
+                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                        crate::components::Input {
+                            name: "start_date",
+                            label: "Start Date",
+                            r#type: "date",
+                            value: start_date.read().clone(),
+                            oninput: move |e: FormEvent| start_date.set(e.value()),
+                        }
+                        crate::components::Input {
+                            name: "end_date",
+                            label: "End Date",
+                            r#type: "date",
+                            value: end_date.read().clone(),
+                            oninput: move |e: FormEvent| end_date.set(e.value()),
+                        }
+                    }
 
                     div { class: "flex justify-end space-x-3",
                         Link {
@@ -170,6 +266,7 @@ pub fn ContractNewPage() -> Element {
                         Button {
                             r#type: "submit",
                             variant: ButtonVariant::Primary,
+                            loading: *is_submitting.read(),
                             "Create Contract"
                         }
                     }
@@ -188,11 +285,11 @@ pub struct ContractDetailPageProps {
 #[component]
 #[allow(unused_variables)]
 pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
+    let header_title = format!("Contract {}", props.id);
     rsx! {
-        AppLayout { title: "Contract Detail",
+        AppLayout { title: "{header_title}",
             PageHeader {
-                title: "Managed Services Agreement",
-                subtitle: "Acme Corp",
+                title: "{header_title}",
                 // Audit P1-07: Edit / Renew buttons were decorative (no
                 // onclick, no contract-edit endpoint). Hidden until the
                 // contracts module ships those flows.

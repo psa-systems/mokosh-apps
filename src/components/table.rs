@@ -67,6 +67,9 @@ pub struct TableRowProps {
     clickable: bool,
     #[props(default)]
     onclick: EventHandler<MouseEvent>,
+    /// Stable selector for browser-automation tests (PMC-111).
+    #[props(default)]
+    data_testid: Option<String>,
 }
 
 #[component]
@@ -80,6 +83,7 @@ pub fn TableRow(props: TableRowProps) -> Element {
     rsx! {
         tr {
             class: "{class}",
+            "data-testid": props.data_testid.as_deref(),
             onclick: move |e| props.onclick.call(e),
             {props.children}
         }
@@ -263,7 +267,7 @@ pub struct PaginationProps {
 
 #[component]
 pub fn Pagination(props: PaginationProps) -> Element {
-    let total_pages = (props.total_items + props.per_page - 1) / props.per_page;
+    let total_pages = props.total_items.div_ceil(props.per_page);
     let start_item = (props.current_page - 1) * props.per_page + 1;
     let end_item = std::cmp::min(props.current_page * props.per_page, props.total_items);
 

@@ -5,8 +5,8 @@ use serde::Deserialize;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
-    PlusIcon, SearchInput, Select, SelectOption, Table, TableBody, TableCell, TableHead,
-    TableHeader, TableRow,
+    PlusIcon, SearchInput, Select, SelectOption, Table, TableBody, TableCell, TableEmpty,
+    TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::Route;
 
@@ -45,10 +45,45 @@ struct PaginatedCompanies {
     data: Vec<RemoteCompany>,
 }
 
+/// Subset of mokosh-server's `ContactResponse` we render in the contacts
+/// list. As with companies, serde drops unknown fields so this can grow
+/// without breaking decoding.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteContact {
+    id: uuid::Uuid,
+    #[serde(default)]
+    first_name: String,
+    #[serde(default)]
+    last_name: String,
+    #[serde(default)]
+    company_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    company_name: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    phone_primary: Option<String>,
+    #[serde(default)]
+    job_title: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct PaginatedContacts {
+    data: Vec<RemoteContact>,
+}
+
 /// Source of the rows currently on screen. Same progressive-enablement
 /// pattern as the calendar page.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum CompanySource {
+    Backend,
+    Demo,
+}
+
+/// Mirror of CompanySource for the contacts list; kept separate to
+/// avoid coupling the two pages' fallbacks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ContactSource {
     Backend,
     Demo,
 }
@@ -74,18 +109,20 @@ pub fn CompanyListPage() -> Element {
             Some(t) => t,
             None => return (Vec::<RemoteCompany>::new(), CompanySource::Demo),
         };
-        match crate::hooks::fetch::api::get_with_auth::<PaginatedCompanies>(
-            "/companies",
-            &token,
-        )
-        .await
+        match crate::hooks::fetch::api::get_with_auth::<PaginatedCompanies>("/companies", &token)
+            .await
         {
             Ok(page) => (page.data, CompanySource::Backend),
             Err(_) => (Vec::new(), CompanySource::Demo),
         }
     });
 
-    let (remote_companies, source) = match &*companies_resource.read_unchecked() {
+    // `None` here means the use_resource future is still in-flight on
+    // the first paint. We use that signal to render TableLoading
+    // skeletons rather than briefly flashing the demo rows.
+    let resource_snapshot = companies_resource.read_unchecked();
+    let is_loading = resource_snapshot.is_none();
+    let (remote_companies, source) = match &*resource_snapshot {
         Some((rows, source)) => (rows.clone(), *source),
         None => (Vec::new(), CompanySource::Demo),
     };
@@ -135,6 +172,7 @@ pub fn CompanyListPage() -> Element {
 
             // Companies table
             DataTable {
+                loading: is_loading,
                 total_items: if source == CompanySource::Backend { remote_companies.len() } else { 5 },
                 current_page: 1,
                 per_page: 25,
@@ -149,21 +187,26 @@ pub fn CompanyListPage() -> Element {
                             TableHeader { "Contract" }
                         }
                     }
-                    TableBody {
-                        if source == CompanySource::Backend {
-                            for company in remote_companies.iter().cloned() {
-                                CompanyRow {
-                                    key: "{company.id}",
-                                    id: company.id.to_string(),
-                                    name: company.name,
-                                    company_type: humanize_company_type(&company.company_type),
-                                    primary_contact: company.account_manager_name.unwrap_or_default(),
-                                    open_tickets: company.open_ticket_count.unwrap_or(0).max(0) as u32,
-                                    contract: String::new(),
+                    if is_loading {
+                        TableLoading { columns: 5, rows: 5 }
+                    } else if source == CompanySource::Backend && remote_companies.is_empty() {
+                        TableEmpty { columns: 5, message: "No companies yet.".to_string() }
+                    } else {
+                        TableBody {
+                            if source == CompanySource::Backend {
+                                for company in remote_companies.iter().cloned() {
+                                    CompanyRow {
+                                        key: "{company.id}",
+                                        id: company.id.to_string(),
+                                        name: company.name,
+                                        company_type: humanize_company_type(&company.company_type),
+                                        primary_contact: company.account_manager_name.unwrap_or_default(),
+                                        open_tickets: company.open_ticket_count.unwrap_or(0).max(0) as u32,
+                                        contract: String::new(),
+                                    }
                                 }
-                            }
-                        } else {
-                            CompanyRow {
+                            } else {
+                                CompanyRow {
                                 id: "1",
                                 name: "Acme Corp",
                                 company_type: "Customer",
@@ -203,6 +246,7 @@ pub fn CompanyListPage() -> Element {
                                 open_tickets: 0,
                                 contract: "Partner",
                             }
+                        }
                         }
                     }
                 }
@@ -343,12 +387,12 @@ pub struct CompanyDetailPageProps {
 #[component]
 #[allow(unused_variables)]
 pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
+    let header_title = format!("Company {}", props.id);
     rsx! {
-        AppLayout { title: "Company Detail",
+        AppLayout { title: "{header_title}",
             PageHeader {
-                title: "Acme Corp",
+                title: "{header_title}",
                 actions: rsx! {
-                    Button { variant: ButtonVariant::Secondary, "Edit" }
                     Link {
                         to: Route::TicketNew {},
                         Button {
@@ -519,7 +563,12 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                         div { class: "space-y-3",
                             div { class: "flex justify-between",
                                 span { class: "text-sm text-gray-500", "Open Tickets" }
-                                span { class: "font-medium text-blue-600", "5" }
+                                // Was rendered link-blue but is a bare
+                                // span. There is no /tickets?company=:id
+                                // filter yet, so drop the blue styling
+                                // so the affordance matches the wiring
+                                // (PMC-46).
+                                span { class: "font-medium text-gray-900 dark:text-white", "5" }
                             }
                             div { class: "flex justify-between",
                                 span { class: "text-sm text-gray-500", "This Month" }
@@ -545,6 +594,28 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
 #[component]
 pub fn ContactListPage() -> Element {
     let mut search = use_signal(String::new);
+
+    // Try the live backend; fall back to seeded demo rows if the
+    // route isn't deployed or we have no token.
+    let contacts_resource = use_resource(|| async {
+        let token = match crate::hooks::fetch::api::current_access_token() {
+            Some(t) => t,
+            None => return (Vec::<RemoteContact>::new(), ContactSource::Demo),
+        };
+        match crate::hooks::fetch::api::get_with_auth::<PaginatedContacts>("/contacts", &token)
+            .await
+        {
+            Ok(page) => (page.data, ContactSource::Backend),
+            Err(_) => (Vec::new(), ContactSource::Demo),
+        }
+    });
+
+    let resource_snapshot = contacts_resource.read_unchecked();
+    let is_loading = resource_snapshot.is_none();
+    let (remote_contacts, source) = match &*resource_snapshot {
+        Some((rows, source)) => (rows.clone(), *source),
+        None => (Vec::new(), ContactSource::Demo),
+    };
 
     rsx! {
         AppLayout { title: "Contacts",
@@ -572,9 +643,17 @@ pub fn ContactListPage() -> Element {
                 }
             }
 
+            if source == ContactSource::Demo && !is_loading {
+                div {
+                    class: "mb-3 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
+                    "Backend contacts API not reachable - showing demo rows."
+                }
+            }
+
             // Contacts table
             DataTable {
-                total_items: 50,
+                loading: is_loading,
+                total_items: if source == ContactSource::Backend { remote_contacts.len() } else { 3 },
                 current_page: 1,
                 per_page: 25,
                 columns: 5,
@@ -588,33 +667,54 @@ pub fn ContactListPage() -> Element {
                             TableHeader { "Role" }
                         }
                     }
-                    TableBody {
-                        ContactRow {
-                            id: "1",
-                            name: "Bob Johnson",
-                            company: "Acme Corp",
-                            company_id: "1",
-                            email: "bob@acme.com",
-                            phone: "(555) 123-4567",
-                            role: "Primary Contact",
-                        }
-                        ContactRow {
-                            id: "2",
-                            name: "Alice Williams",
-                            company: "TechStart Inc",
-                            company_id: "2",
-                            email: "alice@techstart.com",
-                            phone: "(555) 234-5678",
-                            role: "CTO",
-                        }
-                        ContactRow {
-                            id: "3",
-                            name: "Charlie Brown",
-                            company: "Global Widgets",
-                            company_id: "3",
-                            email: "charlie@widgets.com",
-                            phone: "(555) 345-6789",
-                            role: "IT Director",
+                    if is_loading {
+                        TableLoading { columns: 5, rows: 5 }
+                    } else if source == ContactSource::Backend && remote_contacts.is_empty() {
+                        TableEmpty { columns: 5, message: "No contacts yet.".to_string() }
+                    } else {
+                        TableBody {
+                            if source == ContactSource::Backend {
+                                for contact in remote_contacts.iter().cloned() {
+                                    ContactRow {
+                                        key: "{contact.id}",
+                                        id: contact.id.to_string(),
+                                        name: format!("{} {}", contact.first_name, contact.last_name).trim().to_string(),
+                                        company: contact.company_name.clone().unwrap_or_default(),
+                                        company_id: contact.company_id.map(|id| id.to_string()).unwrap_or_default(),
+                                        email: contact.email.clone().unwrap_or_default(),
+                                        phone: contact.phone_primary.clone().unwrap_or_default(),
+                                        role: contact.job_title.clone().unwrap_or_default(),
+                                    }
+                                }
+                            } else {
+                                ContactRow {
+                                    id: "1",
+                                    name: "Bob Johnson",
+                                    company: "Acme Corp",
+                                    company_id: "1",
+                                    email: "bob@acme.com",
+                                    phone: "(555) 123-4567",
+                                    role: "Primary Contact",
+                                }
+                                ContactRow {
+                                    id: "2",
+                                    name: "Alice Williams",
+                                    company: "TechStart Inc",
+                                    company_id: "2",
+                                    email: "alice@techstart.com",
+                                    phone: "(555) 234-5678",
+                                    role: "CTO",
+                                }
+                                ContactRow {
+                                    id: "3",
+                                    name: "Charlie Brown",
+                                    company: "Global Widgets",
+                                    company_id: "3",
+                                    email: "charlie@widgets.com",
+                                    phone: "(555) 345-6789",
+                                    role: "IT Director",
+                                }
+                            }
                         }
                     }
                 }
@@ -768,14 +868,13 @@ pub struct ContactDetailPageProps {
 #[component]
 #[allow(unused_variables)]
 pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
+    let header_title = format!("Contact {}", props.id);
     rsx! {
-        AppLayout { title: "Contact Detail",
+        AppLayout { title: "{header_title}",
             PageHeader {
-                title: "Bob Johnson",
-                subtitle: "Acme Corp",
-                actions: rsx! {
-                    Button { variant: ButtonVariant::Secondary, "Edit" }
-                },
+                title: "{header_title}",
+                // F5: Edit was decorative (no onclick). Hidden until
+                // the contacts mutation surface ships.
             }
 
             div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
