@@ -79,7 +79,7 @@ pub fn start_login(cfg: &OidcConfig, return_to: impl Into<String>) -> Result<(),
 
 /// Snapshot of `?code=...&state=...` taken before the Dioxus router
 /// mounts. Some routers (Dioxus 0.7 included) call
-/// `history.replaceState()` during initialisation to normalise the URL
+/// `history.replaceState()` during initialization to normalize the URL
 /// to its declared route shape (no query params), which would erase
 /// the OAuth response before `AuthCallbackPage` ever reads it. We
 /// freeze the original `window.location.search` in a thread-local at

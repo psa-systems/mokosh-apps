@@ -53,7 +53,7 @@ pub fn AuthGuard() -> Element {
         // The legacy `/login` redirect stub stays in place for users
         // who hit that URL directly via a bookmark; it sends them to
         // bunyip's /login, which then bounces them back here.
-        let cfg = crate::modules::oidc::OidcConfig::from_env();
+        let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
         let _ = crate::modules::oidc::start_login(&cfg, "");
         return rsx! {
             div { class: "min-h-screen flex items-center justify-center text-sm text-gray-500",
@@ -279,7 +279,7 @@ use pages::*;
 /// entry; the back button skips the dead mokosh-clients URL.
 fn redirect_to_hub(path: &str) {
     if let Some(win) = web_sys::window() {
-        let cfg = crate::modules::oidc::OidcConfig::from_env();
+        let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
         let url = cfg.hub_url(path);
         let _ = win.location().replace(&url);
     }

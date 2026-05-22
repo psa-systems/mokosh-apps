@@ -65,6 +65,25 @@ impl AuthContext {
             .map(|u| roles.contains(&u.role.as_str()))
             .unwrap_or(false)
     }
+
+    /// Return the membership matching `active_tenant_id` so callers can
+    /// pull a display-ready tenant name or role for the current scope
+    /// without re-walking the membership list. None before sign-in or
+    /// while memberships are still loading.
+    pub fn active_membership(&self) -> Option<&MembershipView> {
+        let active = self.active_tenant_id?;
+        let active_str = active.to_string();
+        self.memberships
+            .iter()
+            .find(|m| m.tenant_id == active_str)
+    }
+
+    /// Display name for the active org, or `None` when there isn't one
+    /// to show (pre-login, mid-bootstrap, or active tenant somehow
+    /// missing from memberships).
+    pub fn active_org_name(&self) -> Option<&str> {
+        self.active_membership().map(|m| m.tenant_name.as_str())
+    }
 }
 
 /// Hook to access authentication state
@@ -231,7 +250,7 @@ pub fn use_memberships_loader() {
             return;
         }
         spawn(async move {
-            let cfg = crate::modules::oidc::OidcConfig::from_env();
+            let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
             #[derive(serde::Deserialize)]
             struct Body {
                 memberships: Vec<MembershipView>,
@@ -308,7 +327,7 @@ pub fn use_token_refresh() {
                 continue;
             }
 
-            let cfg = crate::modules::oidc::OidcConfig::from_env();
+            let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
             match crate::modules::oidc::refresh_tokens(&cfg, &refresh, &id_token).await {
                 Ok(new_tokens) => {
                     crate::hooks::fetch::api::set_access_token(Some(
@@ -474,7 +493,7 @@ pub fn use_logout() -> impl FnMut() {
             .and_then(|t| t.refresh_token.clone());
 
         if let Some(rt) = refresh {
-            let cfg = crate::modules::oidc::OidcConfig::from_env();
+            let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
             spawn(async move {
                 let _ = crate::modules::oidc::revoke_refresh_token(&cfg, &rt).await;
             });

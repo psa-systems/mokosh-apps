@@ -269,6 +269,8 @@ pub struct TopBarProps {
 
 #[component]
 pub fn TopBar(props: TopBarProps) -> Element {
+    let auth = crate::hooks::use_auth();
+    let active_org = auth.read().active_org_name().map(str::to_string);
     rsx! {
         header { class: "h-16 flex items-center bg-gray-800 border-b border-gray-700 shrink-0 z-20",
             // Brand block - same width as the sidebar below it.
@@ -283,8 +285,16 @@ pub fn TopBar(props: TopBarProps) -> Element {
                 }
                 Link {
                     to: Route::Dashboard {},
-                    class: "text-xl font-bold text-white truncate",
-                    "Mokosh Platform"
+                    class: "flex flex-col leading-tight min-w-0",
+                    span { class: "text-base font-bold text-white truncate",
+                        "Mokosh Platform"
+                    }
+                    // Active-org indicator. Hidden until auth resolves an
+                    // active tenant - we don't show a "no org" state in
+                    // the brand slot to avoid a confusing flash on load.
+                    if let Some(name) = active_org.as_deref() {
+                        span { class: "text-xs text-gray-400 truncate", "{name}" }
+                    }
                 }
             }
 
@@ -304,9 +314,15 @@ pub fn TopBar(props: TopBarProps) -> Element {
                     }
                 }
 
-                // Notifications
+                // Notifications - stubbed pending the notifications API.
+                // Keep visible as a roadmap signal; disabled state +
+                // tooltip makes it clear this isn't a silent no-op.
+                // TODO(notifications-api): wire to /v1/notifications.
                 button {
-                    class: "p-2 rounded-full text-gray-400 hover:text-white hover:bg-gray-700 relative",
+                    r#type: "button",
+                    disabled: true,
+                    title: "Notifications coming soon",
+                    class: "p-2 rounded-full text-gray-400 hover:text-white hover:bg-gray-700 relative disabled:cursor-not-allowed",
                     BellIcon {}
                     span { class: "absolute top-1 right-1 block h-2 w-2 rounded-full bg-red-400" }
                 }
@@ -325,7 +341,7 @@ pub fn TopBar(props: TopBarProps) -> Element {
 fn UserMenu() -> Element {
     let mut open = use_signal(|| false);
     let mut auth = crate::hooks::use_auth();
-    let cfg = crate::modules::oidc::OidcConfig::from_env();
+    let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
     let hub_profile = cfg.hub_url("/settings/profile");
     let hub_dashboard = cfg.hub_url("/dashboard");
     let hub_logout = cfg.hub_url("/logout");

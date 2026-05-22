@@ -1,6 +1,7 @@
 //! Contact and company pages
 
 use dioxus::prelude::*;
+use serde::Deserialize;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
@@ -8,6 +9,49 @@ use crate::components::{
     TableHeader, TableRow,
 };
 use crate::Route;
+
+/// Map the server's lowercased `CompanyType` enum tag (`"customer"`,
+/// `"prospect"`, `"vendor"`, `"partner"`) to the title-case label that
+/// `CompanyRow` keys its badge variant on. Unknown values fall through
+/// unchanged so future variants don't disappear.
+fn humanize_company_type(raw: &str) -> String {
+    match raw {
+        "customer" => "Customer".to_string(),
+        "prospect" => "Prospect".to_string(),
+        "vendor" => "Vendor".to_string(),
+        "partner" => "Partner".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Subset of mokosh-server's `CompanyResponse` we render in the list. The
+/// server returns more fields; serde silently drops the ones we don't ask
+/// for, so adding columns later just means extending this struct.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteCompany {
+    id: uuid::Uuid,
+    name: String,
+    #[serde(default)]
+    company_type: String,
+    #[serde(default)]
+    account_manager_name: Option<String>,
+    #[serde(default)]
+    open_ticket_count: Option<i64>,
+}
+
+/// Server-side paginated envelope (`PaginatedResponse<CompanyResponse>`).
+#[derive(Clone, Debug, Deserialize)]
+struct PaginatedCompanies {
+    data: Vec<RemoteCompany>,
+}
+
+/// Source of the rows currently on screen. Same progressive-enablement
+/// pattern as the calendar page.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CompanySource {
+    Backend,
+    Demo,
+}
 
 /// Company list page
 #[component]
@@ -21,6 +65,30 @@ pub fn CompanyListPage() -> Element {
         SelectOption::new("prospect", "Prospect"),
         SelectOption::new("vendor", "Vendor"),
     ];
+
+    // Try to pull live companies from mokosh-server. If we don't have
+    // a token yet, or the API errors, or the route isn't deployed yet,
+    // fall back to the seeded demo rows below so the page stays demoable.
+    let companies_resource = use_resource(|| async {
+        let token = match crate::hooks::fetch::api::current_access_token() {
+            Some(t) => t,
+            None => return (Vec::<RemoteCompany>::new(), CompanySource::Demo),
+        };
+        match crate::hooks::fetch::api::get_with_auth::<PaginatedCompanies>(
+            "/companies",
+            &token,
+        )
+        .await
+        {
+            Ok(page) => (page.data, CompanySource::Backend),
+            Err(_) => (Vec::new(), CompanySource::Demo),
+        }
+    });
+
+    let (remote_companies, source) = match &*companies_resource.read_unchecked() {
+        Some((rows, source)) => (rows.clone(), *source),
+        None => (Vec::new(), CompanySource::Demo),
+    };
 
     rsx! {
         AppLayout { title: "Companies",
@@ -58,9 +126,16 @@ pub fn CompanyListPage() -> Element {
                 }
             }
 
+            if source == CompanySource::Demo {
+                div {
+                    class: "mb-3 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
+                    "Backend companies API not reachable - showing demo rows. Create/edit operations are disabled until the API is live."
+                }
+            }
+
             // Companies table
             DataTable {
-                total_items: 25,
+                total_items: if source == CompanySource::Backend { remote_companies.len() } else { 5 },
                 current_page: 1,
                 per_page: 25,
                 columns: 5,
@@ -75,45 +150,59 @@ pub fn CompanyListPage() -> Element {
                         }
                     }
                     TableBody {
-                        CompanyRow {
-                            id: "1",
-                            name: "Acme Corp",
-                            company_type: "Customer",
-                            primary_contact: "Bob Johnson",
-                            open_tickets: 5,
-                            contract: "Managed Services",
-                        }
-                        CompanyRow {
-                            id: "2",
-                            name: "TechStart Inc",
-                            company_type: "Customer",
-                            primary_contact: "Alice Williams",
-                            open_tickets: 2,
-                            contract: "Block Hours",
-                        }
-                        CompanyRow {
-                            id: "3",
-                            name: "Global Widgets",
-                            company_type: "Customer",
-                            primary_contact: "Charlie Brown",
-                            open_tickets: 8,
-                            contract: "Time & Materials",
-                        }
-                        CompanyRow {
-                            id: "4",
-                            name: "New Venture LLC",
-                            company_type: "Prospect",
-                            primary_contact: "Diana Ross",
-                            open_tickets: 0,
-                            contract: "None",
-                        }
-                        CompanyRow {
-                            id: "5",
-                            name: "Dell Technologies",
-                            company_type: "Vendor",
-                            primary_contact: "Sales Rep",
-                            open_tickets: 0,
-                            contract: "Partner",
+                        if source == CompanySource::Backend {
+                            for company in remote_companies.iter().cloned() {
+                                CompanyRow {
+                                    key: "{company.id}",
+                                    id: company.id.to_string(),
+                                    name: company.name,
+                                    company_type: humanize_company_type(&company.company_type),
+                                    primary_contact: company.account_manager_name.unwrap_or_default(),
+                                    open_tickets: company.open_ticket_count.unwrap_or(0).max(0) as u32,
+                                    contract: String::new(),
+                                }
+                            }
+                        } else {
+                            CompanyRow {
+                                id: "1",
+                                name: "Acme Corp",
+                                company_type: "Customer",
+                                primary_contact: "Bob Johnson",
+                                open_tickets: 5,
+                                contract: "Managed Services",
+                            }
+                            CompanyRow {
+                                id: "2",
+                                name: "TechStart Inc",
+                                company_type: "Customer",
+                                primary_contact: "Alice Williams",
+                                open_tickets: 2,
+                                contract: "Block Hours",
+                            }
+                            CompanyRow {
+                                id: "3",
+                                name: "Global Widgets",
+                                company_type: "Customer",
+                                primary_contact: "Charlie Brown",
+                                open_tickets: 8,
+                                contract: "Time & Materials",
+                            }
+                            CompanyRow {
+                                id: "4",
+                                name: "New Venture LLC",
+                                company_type: "Prospect",
+                                primary_contact: "Diana Ross",
+                                open_tickets: 0,
+                                contract: "None",
+                            }
+                            CompanyRow {
+                                id: "5",
+                                name: "Dell Technologies",
+                                company_type: "Vendor",
+                                primary_contact: "Sales Rep",
+                                open_tickets: 0,
+                                contract: "Partner",
+                            }
                         }
                     }
                 }
