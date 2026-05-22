@@ -341,6 +341,18 @@ pub fn use_token_refresh() {
                         },
                     );
                     auth.write().tokens = Some(new_tokens);
+
+                    // Refresh the cached CurrentUser from /v1/auth/me so
+                    // any server-side change since the original id_token
+                    // was minted (role demotion, name update, active-
+                    // tenant switch from another tab) propagates within
+                    // one refresh window. Mokosh is RFC-compliant and
+                    // typically omits id_token on refresh-grant responses,
+                    // so the cached id_token's claims will be stale for
+                    // the life of the session if we don't actively
+                    // re-fetch. Memberships are also cleared so the
+                    // membership-loader effect re-runs.
+                    refresh_user_from_me(&cfg, &mut auth).await;
                 }
                 Err(e) => {
                     tracing::warn!("token refresh failed; signing out: {e}");
@@ -363,6 +375,55 @@ pub fn use_token_refresh() {
             }
         }
     });
+}
+
+/// Pull `/v1/auth/me` and merge fresh fields onto `auth.user`. Used by
+/// the background refresh loop so role/name/active-tenant updates from
+/// the OP land in the SPA without a full re-login. Best-effort: on
+/// error we leave the cached user as-is.
+async fn refresh_user_from_me(
+    cfg: &crate::modules::oidc::OidcConfig,
+    auth: &mut Signal<AuthContext>,
+) {
+    #[derive(serde::Deserialize)]
+    struct MeBody {
+        id: String,
+        email: String,
+        first_name: Option<String>,
+        last_name: Option<String>,
+        timezone: String,
+        avatar_url: Option<String>,
+        role: String,
+    }
+    let me = match crate::modules::oidc::issuer_get_authed::<MeBody>(cfg, "/v1/auth/me").await {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("post-refresh /v1/auth/me failed; keeping cached user: {e}");
+            return;
+        }
+    };
+    let new_role = match me.role.as_str() {
+        "admin" => crate::modules::auth::UserRole::Admin,
+        "manager" => crate::modules::auth::UserRole::Manager,
+        "finance" => crate::modules::auth::UserRole::Finance,
+        _ => crate::modules::auth::UserRole::default(),
+    };
+    let mut a = auth.write();
+    if let Some(u) = a.user.as_mut() {
+        if let Ok(id) = me.id.parse::<uuid::Uuid>() {
+            u.id = id;
+        }
+        u.email = me.email;
+        u.first_name = me.first_name.unwrap_or_default();
+        u.last_name = me.last_name.unwrap_or_default();
+        u.timezone = me.timezone;
+        u.avatar_url = me.avatar_url;
+        u.role = new_role;
+    }
+    // Force the memberships loader to re-fetch by clearing the cached
+    // list; the use_memberships_loader effect re-runs when
+    // `memberships.is_empty()` and the user is authenticated.
+    a.memberships.clear();
 }
 
 /// Defeat back-forward-cache (bfcache) restoration of authenticated
