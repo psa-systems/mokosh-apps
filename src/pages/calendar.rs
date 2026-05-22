@@ -141,9 +141,7 @@ pub fn CalendarPage() -> Element {
     // backend has no events. Once a tenant has real events, the page
     // defaults to today.
     let today_real = Local::now().naive_local().date();
-    let mut active_month = use_signal(|| {
-        NaiveDate::from_ymd_opt(2025, 1, 1).unwrap_or(today_real)
-    });
+    let mut active_month = use_signal(|| NaiveDate::from_ymd_opt(2025, 1, 1).unwrap_or(today_real));
 
     // Fetch the live event list. If the backend isn't wired yet (404),
     // returns errors, or the user isn't authed, we fall back to the
@@ -537,8 +535,40 @@ struct TechnicianRowProps {
     appointments: Vec<(&'static str, &'static str, &'static str, &'static str)>,
 }
 
+/// Parse a label like "10:30 AM" into a 24h hour-of-day float (e.g.
+/// 10.5). Returns `None` if the input doesn't match the dispatch
+/// board's `H:MM AM/PM` shape so a typo doesn't crash the page.
+fn parse_dispatch_time(s: &str) -> Option<f64> {
+    let s = s.trim();
+    let (clock, ampm) = s.rsplit_once(' ')?;
+    let (h_str, m_str) = clock.split_once(':')?;
+    let h: f64 = h_str.parse().ok()?;
+    let m: f64 = m_str.parse().ok()?;
+    let mut hour = (h % 12.0) + m / 60.0;
+    if ampm.eq_ignore_ascii_case("PM") {
+        hour += 12.0;
+    }
+    Some(hour)
+}
+
+fn dispatch_color(kind: &str) -> &'static str {
+    match kind {
+        "onsite" => "bg-blue-500",
+        "remote" => "bg-green-500",
+        "meeting" => "bg-purple-500",
+        "internal" => "bg-gray-500",
+        _ => "bg-slate-500",
+    }
+}
+
 #[component]
 fn TechnicianRow(props: TechnicianRowProps) -> Element {
+    // The dispatch board covers 8am-5pm (9 hour slots). Each appointment
+    // gets an absolutely-positioned colored block within the time-grid
+    // area whose left/width are percentages of those 9 hours.
+    const FIRST_HOUR: f64 = 8.0;
+    const TOTAL_HOURS: f64 = 9.0;
+
     rsx! {
         div { class: "grid grid-cols-[200px_repeat(9,1fr)] border-b border-gray-200 dark:border-gray-700 min-h-16",
             // Technician name
@@ -553,9 +583,37 @@ fn TechnicianRow(props: TechnicianRowProps) -> Element {
                 }
             }
 
-            // Time slots (simplified visual representation)
-            for _ in 0..9 {
-                div { class: "border-l border-gray-200 dark:border-gray-700 relative" }
+            // Time-grid area: a single container spanning columns 2..=10
+            // so we can absolutely-position blocks across hour boundaries
+            // without fighting the underlying column track.
+            div {
+                class: "relative border-l border-gray-200 dark:border-gray-700",
+                style: "grid-column: 2 / -1; min-height: 4rem;",
+                // Hour divider lines (visual parity with the previous
+                // 9 empty divs).
+                div { class: "absolute inset-0 grid grid-cols-9",
+                    for _ in 0..9 {
+                        div { class: "border-l border-gray-100 dark:border-gray-800 first:border-l-0" }
+                    }
+                }
+                // Appointment blocks (PMC-53).
+                for (start, end, label, kind) in props.appointments.iter() {
+                    {
+                        let start_h = parse_dispatch_time(start).unwrap_or(FIRST_HOUR);
+                        let end_h = parse_dispatch_time(end).unwrap_or(start_h + 1.0);
+                        let left = ((start_h - FIRST_HOUR) / TOTAL_HOURS * 100.0).max(0.0);
+                        let width = ((end_h - start_h) / TOTAL_HOURS * 100.0).max(0.0);
+                        let color = dispatch_color(kind);
+                        rsx! {
+                            div {
+                                class: "absolute top-1 bottom-1 rounded-md px-2 py-1 text-xs text-white shadow-sm overflow-hidden {color}",
+                                style: "left: {left:.4}%; width: {width:.4}%;",
+                                title: "{start} - {end}: {label}",
+                                "{label}"
+                            }
+                        }
+                    }
+                }
             }
         }
     }

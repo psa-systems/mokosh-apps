@@ -35,6 +35,21 @@ jobs:
       REGISTRY_OWNER: ${{ vars.PSA_SYSTEMS_PRIVATE_PACKAGE_OWNER }}
       REGISTRY_USER: ""
       REGISTRY_PASSWORD: ${{ secrets.PSA_SYSTEMS_PRIVATE_PACKAGE_PAT }}
+      # Self-host mirror: when the public owner var is set, every
+      # private push is mirrored to dev.a8n.run/<public-owner>/mokosh-www
+      # so self-hosters can pull without registry credentials. Leave
+      # the var unset to skip the mirror step (e.g. before ops has
+      # created the public package owner).
+      #
+      # The mirror uses the same PSA_SYSTEMS_PRIVATE_PACKAGE_PAT for
+      # both ends because Forgejo's docker login keys auth by host
+      # (`dev.a8n.run`), so two logins to the same host clobber each
+      # other's entries in ~/.docker/config.json. The PAT therefore
+      # must be granted write access to *both* the private and the
+      # public package owners. If a future Forgejo extension makes
+      # per-package-scoped auth possible we can split this back into
+      # two creds and use DOCKER_CONFIG to keep them separate.
+      PUBLIC_REGISTRY_OWNER: ${{ vars.PSA_SYSTEMS_PUBLIC_PACKAGE_OWNER }}
 
     steps:
       - name: Clone the repository
@@ -46,6 +61,21 @@ jobs:
         run: |
           docker version
           docker buildx version
+
+      - name: Set up QEMU for cross-arch emulation
+        # Register both amd64 and arm64 binfmt handlers via the
+        # privileged tonistiigi/binfmt container directly, rather
+        # than via setup-qemu-action@v3. The action wants to cache
+        # the binfmt image at the GitHub-Actions tool cache path
+        # ($RUNNER_TOOL_CACHE, default /opt/hostedtoolcache); on the
+        # Forgejo runner that path is not writable and the step dies
+        # with `EACCES: permission denied, mkdir '/opt/hostedtoolcache'`.
+        # The direct privileged docker run is what the action does
+        # under the hood, minus the broken cache step.
+        # The list is deliberately symmetric so this works on either
+        # host arch without follow-up edits.
+        run: |
+          docker run --privileged --rm tonistiigi/binfmt:latest --install amd64,arm64
 
       - name: Set up buildx builder
         run: |
@@ -87,9 +117,15 @@ jobs:
           let jobs = (sys cpu | length)
           print $"CARGO_BUILD_JOBS=($jobs)"
           print $"Building and pushing ($image) with tags: ($tags_str)"
+          # WASM bundle is arch-agnostic, so the builder stage is
+          # pinned to BUILDPLATFORM in the Dockerfile (compiles once
+          # on the runner's native arch). Only the Caddy-on-alpine
+          # runtime stage is rebuilt per target arch from a multi-arch
+          # base, so adding arm64 here is cheap.
           (
             ^docker buildx build
               --push
+              --platform linux/amd64,linux/arm64
               --cache-from $cache_from
               --cache-to $cache_to
               --build-arg $"GIT_SHA=($env.GITHUB_SHA)"
@@ -98,6 +134,32 @@ jobs:
               -f oci-build/Dockerfile
               .
           )
+
+      - name: Mirror image to public registry
+        if: vars.PSA_SYSTEMS_PUBLIC_PACKAGE_OWNER != ''
+        shell: nu {0}
+        run: |
+          # Copy each tag's manifest list (multi-arch preserved) from
+          # the private package to the public one. `buildx imagetools
+          # create` rewrites the manifest reference without rebuilding
+          # the underlying layers, so this step is fast and cannot
+          # drift from the source image.
+          #
+          # Auth: the docker login from the earlier "Log in to
+          # container registry" step is still in effect (this step
+          # does NOT re-login, which would clobber it for the SAME
+          # registry host). The same PAT must hold read on the
+          # private package and write on the public package - see
+          # the comment on PUBLIC_REGISTRY_OWNER in env: above.
+          let public_reg = $"($env.REGISTRY_PROVIDER)/($env.PUBLIC_REGISTRY_OWNER)"
+          let tags_str = "${{ steps.get-tags.outputs.tags }}"
+          let tags = ($tags_str | split row ",")
+          let image = "mokosh-www"
+          let private_reg = $env.IMAGE_REGISTRY
+          for tag in $tags {
+            print $"Mirroring ($image):($tag) -> ($public_reg)/($image):($tag)"
+            ^docker buildx imagetools create --tag $"($public_reg)/($image):($tag)" $"($private_reg)/($image):($tag)"
+          }
 
       - name: Print image URLs
         shell: nu {0}
@@ -108,4 +170,10 @@ jobs:
           let registry = $env.IMAGE_REGISTRY
           for tag in $tags {
             print $"Image pushed to ($registry)/($image):($tag)"
+          }
+          if ($env.PUBLIC_REGISTRY_OWNER | is-not-empty) {
+            let public_reg = $"($env.REGISTRY_PROVIDER)/($env.PUBLIC_REGISTRY_OWNER)"
+            for tag in $tags {
+              print $"Image mirrored to ($public_reg)/($image):($tag)"
+            }
           }

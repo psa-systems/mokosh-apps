@@ -44,6 +44,10 @@ impl<T> FetchState<T> {
     }
 }
 
+// Not derived: `#[derive(Default)]` on a generic enum adds a `T: Default`
+// bound, but `FetchState::<PaginatedData<T>>::default()` is called where
+// `T` is not `Default`. The manual impl stays unbounded.
+#[allow(clippy::derivable_impls)]
 impl<T> Default for FetchState<T> {
     fn default() -> Self {
         FetchState::Idle
@@ -61,7 +65,7 @@ pub struct PaginatedData<T> {
 
 impl<T> PaginatedData<T> {
     pub fn total_pages(&self) -> usize {
-        (self.total + self.per_page - 1) / self.per_page
+        self.total.div_ceil(self.per_page)
     }
 }
 
@@ -104,6 +108,7 @@ where
 }
 
 /// Hook for paginated data fetching
+#[allow(clippy::type_complexity)]
 pub fn use_paginated_fetch<T, F, Fut>(
     fetch_fn: F,
     initial_page: usize,
@@ -149,18 +154,23 @@ pub mod api {
     #[cfg(feature = "web")]
     use serde::{de::DeserializeOwned, Serialize};
 
-    /// Derive the Mokosh API base URL from the current browser origin.
+    /// Derive the Mokosh API base URL.
     ///
-    /// Mokosh is deployed with the SPA at `msp.<tld>` and the API at
-    /// `msp-api.<tld>` (e.g. `msp.a8n.systems` SPA → `msp-api.a8n.systems` API).
-    /// When the SPA loads from one of those origins we point API calls at the
-    /// sibling subdomain.
-    ///
-    /// In dev (`localhost`, IP address, or any host that doesn't start with
-    /// `msp.`) we fall back to the same-origin `/api/v1` path so the Dioxus
-    /// dev server can proxy through to the local backend.
+    /// Resolution order:
+    ///   1. `window.__MOKOSH_CONFIG__.api_base` if set by the prod
+    ///      container's entrypoint. Self-hosters on a custom hostname
+    ///      override here without rebuilding the image.
+    ///   2. Host-prefix derivation for the canonical `msp.<tld>`
+    ///      deploys (e.g. `msp.a8n.systems` SPA → `msp-api.a8n.systems`
+    ///      API).
+    ///   3. Same-origin `/api/v1` for dev (localhost, IP address, or
+    ///      any host that doesn't start with `msp.`) so the Dioxus dev
+    ///      server can proxy to a local backend.
     #[cfg(feature = "web")]
     fn api_base() -> String {
+        if let Some(injected) = crate::modules::runtime_config::get("api_base") {
+            return injected;
+        }
         if let Some(win) = web_sys::window() {
             if let Ok(host) = win.location().host() {
                 if let Some(rest) = host.strip_prefix("msp.") {
@@ -364,5 +374,188 @@ pub mod api {
     pub async fn delete_authed(path: &str) -> Result<(), String> {
         let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
         delete_with_auth(path, &t).await
+    }
+
+    // --- Typed error layer ----------------------------------------------
+    //
+    // The string-returning helpers above are kept so existing callers
+    // (companies/calendar/system_version) compile unchanged. New call
+    // sites should prefer the `_typed` variants, which return an
+    // `ApiError` enum that pages can map into a user-facing toast via
+    // `ApiError::user_message()`.
+
+    /// Typed HTTP error returned from the `_typed` API helpers.
+    ///
+    /// Variants are deliberately coarse - the goal is to give callers
+    /// enough signal to render an actionable toast without forcing them
+    /// to match on every possible status code.
+    #[cfg(feature = "web")]
+    #[derive(Debug, Clone)]
+    pub enum ApiError {
+        /// Transport failed before a response was received.
+        Network(String),
+        /// Server returned a non-2xx status. `message` is the server's
+        /// `error.message` field when it parsed, otherwise the raw body
+        /// truncated to a sensible length.
+        Status { code: u16, message: String },
+        /// Response was 2xx but the body could not be decoded into the
+        /// target type.
+        Decode(String),
+    }
+
+    #[cfg(feature = "web")]
+    impl ApiError {
+        /// User-facing message suitable for a toast.
+        pub fn user_message(&self) -> String {
+            match self {
+                Self::Network(_) => "Network error. Check your connection and try again.".into(),
+                Self::Status { code, message } => match *code {
+                    401 => "Your session has expired. Please sign in again.".into(),
+                    403 => "You do not have permission to do that.".into(),
+                    404 => "The requested resource was not found.".into(),
+                    409 if !message.is_empty() => message.clone(),
+                    422 if !message.is_empty() => message.clone(),
+                    429 => "Too many requests. Please try again shortly.".into(),
+                    500..=599 => "The server hit an error. Please try again.".into(),
+                    _ if !message.is_empty() => message.clone(),
+                    _ => format!("Request failed ({}).", code),
+                },
+                Self::Decode(_) => {
+                    "The server's response could not be read. Please refresh and retry.".into()
+                }
+            }
+        }
+
+        /// Status code if the error was a non-2xx HTTP response.
+        pub fn status_code(&self) -> Option<u16> {
+            match self {
+                Self::Status { code, .. } => Some(*code),
+                _ => None,
+            }
+        }
+    }
+
+    #[cfg(feature = "web")]
+    impl std::fmt::Display for ApiError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Network(e) => write!(f, "network error: {e}"),
+                Self::Status { code, message } => {
+                    if message.is_empty() {
+                        write!(f, "http {code}")
+                    } else {
+                        write!(f, "http {code}: {message}")
+                    }
+                }
+                Self::Decode(e) => write!(f, "decode error: {e}"),
+            }
+        }
+    }
+
+    #[cfg(feature = "web")]
+    async fn handle_response<T: DeserializeOwned>(
+        response: gloo_net::http::Response,
+    ) -> Result<T, ApiError> {
+        let status = response.status();
+        if (200..300).contains(&status) {
+            return response
+                .json::<T>()
+                .await
+                .map_err(|e| ApiError::Decode(e.to_string()));
+        }
+        let body = response.text().await.unwrap_or_default();
+        let message = serde_json::from_str::<crate::utils::error::ErrorResponse>(&body)
+            .map(|env| env.error.message)
+            .unwrap_or_else(|_| {
+                // Fall back to the raw body, capped so a runaway HTML
+                // 500 page doesn't end up in a toast.
+                body.chars().take(200).collect()
+            });
+        Err(ApiError::Status {
+            code: status,
+            message,
+        })
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn get_authed_typed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
+        let url = format!("{}{}", api_base(), path);
+        let mut req = Request::get(&url).header("Content-Type", "application/json");
+        if let Some(t) = current_access_token() {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))?;
+        handle_response(resp).await
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn post_authed_typed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let url = format!("{}{}", api_base(), path);
+        let mut req = Request::post(&url).header("Content-Type", "application/json");
+        if let Some(t) = current_access_token() {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let resp = req
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))?;
+        handle_response(resp).await
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn put_authed_typed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let t = current_access_token().ok_or_else(|| ApiError::Status {
+            code: 401,
+            message: String::new(),
+        })?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::put(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))?;
+        handle_response(resp).await
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn delete_authed_typed(path: &str) -> Result<(), ApiError> {
+        let t = current_access_token().ok_or_else(|| ApiError::Status {
+            code: 401,
+            message: String::new(),
+        })?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::delete(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .send()
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))?;
+        let status = resp.status();
+        if (200..300).contains(&status) {
+            Ok(())
+        } else {
+            let body = resp.text().await.unwrap_or_default();
+            let message = serde_json::from_str::<crate::utils::error::ErrorResponse>(&body)
+                .map(|env| env.error.message)
+                .unwrap_or_else(|_| body.chars().take(200).collect());
+            Err(ApiError::Status {
+                code: status,
+                message,
+            })
+        }
     }
 }
