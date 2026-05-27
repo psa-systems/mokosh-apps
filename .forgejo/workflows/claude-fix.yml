@@ -102,7 +102,13 @@ jobs:
         id: logs
         run: |
           set -e
-          mkdir -p /tmp/claude-context
+          # Use the runner-provided temp dir ($RUNNER_TEMP) instead of a
+          # hardcoded /tmp path: it is guaranteed writable, scoped to this
+          # job, and cleaned up automatically, so it cannot collide with a
+          # concurrent run or trip over a noexec/read-only /tmp mount.
+          CONTEXT_DIR="$RUNNER_TEMP/claude-context"
+          CONTEXT_FILE="$CONTEXT_DIR/CONTEXT.md"
+          mkdir -p "$CONTEXT_DIR"
           {
             echo "# Failed CI Run Context"
             echo ""
@@ -115,7 +121,8 @@ jobs:
             echo "The CI workflow in .forgejo/workflows/ failed on this branch."
             echo "Read the workflow files to understand what checks run, then"
             echo "investigate the repository to find what's causing the failure."
-          } > /tmp/claude-context/CONTEXT.md
+          } > "$CONTEXT_FILE"
+          echo "context_file=$CONTEXT_FILE" >> "$GITHUB_OUTPUT"
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
       # ---------------------------------------------------------------------
@@ -147,7 +154,7 @@ jobs:
           PROMPT=$(cat <<'EOF'
           You are fixing a failing CI build on a pull request.
 
-          The failure logs are in /tmp/claude-context/CONTEXT.md — read that first.
+          The failure logs are in __CONTEXT_FILE__ - read that first.
           The repository is checked out in the current working directory.
 
           Your job:
@@ -162,6 +169,11 @@ jobs:
           EOF
           )
 
+          # The prompt heredoc is single-quoted (no shell expansion), so swap
+          # the placeholder for the real $RUNNER_TEMP context path produced by
+          # the previous step.
+          PROMPT="${PROMPT//__CONTEXT_FILE__/${{ steps.logs.outputs.context_file }}}"
+
           # Append any extra instructions from the dispatcher
           if [ -n "${{ inputs.extra_instructions }}" ]; then
             PROMPT="$PROMPT
@@ -169,13 +181,14 @@ jobs:
           Additional instructions: ${{ inputs.extra_instructions }}"
           fi
 
+          RESULT_FILE="$RUNNER_TEMP/claude-result.json"
           claude --bare -p "$PROMPT" \
             --allowedTools "Read,Edit,Write,Bash,Glob,Grep" \
             --output-format json \
-            > /tmp/claude-result.json
+            > "$RESULT_FILE"
 
           # Pull the summary out for the PR comment
-          SUMMARY=$(jq -r '.result // .text // "(no summary returned)"' /tmp/claude-result.json)
+          SUMMARY=$(jq -r '.result // .text // "(no summary returned)"' "$RESULT_FILE")
           # Multi-line output for GITHUB_OUTPUT
           {
             echo "summary<<CLAUDE_EOF"
@@ -207,15 +220,16 @@ jobs:
 
           git add -A
           # Write the commit message to a file to avoid shell quoting issues
+          COMMIT_MSG_FILE="$RUNNER_TEMP/commit-message.txt"
           {
             echo "fix: Claude auto-fix for PR #${PR_NUMBER}"
             echo ""
             echo "${CLAUDE_SUMMARY}"
             echo ""
             echo "[skip claude]"
-          } > /tmp/commit-message.txt
+          } > "$COMMIT_MSG_FILE"
 
-          git commit --file=/tmp/commit-message.txt
+          git commit --file="$COMMIT_MSG_FILE"
           git push origin "${{ steps.pr.outputs.branch }}"
           echo "pushed=true" >> "$GITHUB_OUTPUT"
 
