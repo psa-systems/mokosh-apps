@@ -110,7 +110,19 @@ jobs:
           let tag_args = ($tags | each {|tag| [-t $"($registry)/($image):($tag)"]} | flatten)
           let cache_ref = $"($registry)/($image):buildcache"
           let cache_from = $"type=registry,ref=($cache_ref)"
-          let cache_to = $"type=registry,ref=($cache_ref),mode=max,ignore-error=true"
+          # Skip cache-to on tag builds. The same commit was already
+          # built on main, so the registry cache is populated and a
+          # second mode=max export only re-uploads identical blobs.
+          # That redundant export is what triggered the 499 (reverse-
+          # proxy timeout) PUTs on dev.a8n.run seen in MAPPS-121.
+          # cache-from stays so tag builds still benefit from reuse.
+          let is_tag_build = ($env.GITHUB_REF | str starts-with "refs/tags/")
+          let cache_to_args = if $is_tag_build {
+            print "Tag build: skipping cache-to (cache already populated by main build)"
+            []
+          } else {
+            ["--cache-to" $"type=registry,ref=($cache_ref),mode=max,ignore-error=true"]
+          }
           # CARGO_BUILD_JOBS caps cargo's parallel rustc + build-script
           # workers. This is the only build on the runner, so use the
           # full host nproc.
@@ -127,7 +139,7 @@ jobs:
               --push
               --platform linux/amd64,linux/arm64
               --cache-from $cache_from
-              --cache-to $cache_to
+              ...$cache_to_args
               --build-arg $"GIT_SHA=($env.GITHUB_SHA)"
               --build-arg $"CARGO_BUILD_JOBS=($jobs)"
               ...$tag_args
