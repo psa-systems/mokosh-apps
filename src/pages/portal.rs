@@ -296,77 +296,6 @@ fn PortalTicketRow(props: PortalTicketRowProps) -> Element {
 /// Portal new ticket page
 #[component]
 pub fn PortalTicketNewPage() -> Element {
-    let mut subject = use_signal(String::new);
-    let mut description = use_signal(String::new);
-    let mut priority = use_signal(|| "medium".to_string());
-    let mut is_submitting = use_signal(|| false);
-
-    let navigator = use_navigator();
-    let handle_submit = move |e: FormEvent| {
-        e.prevent_default();
-        is_submitting.set(true);
-
-        // Snapshot signals so the spawn doesn't borrow them across await.
-        let subject_v = subject.read().clone();
-        let description_v = description.read().clone();
-        let priority_v = priority.read().clone();
-
-        spawn(async move {
-            #[cfg(feature = "web")]
-            {
-                if subject_v.trim().is_empty() {
-                    web_sys::console::warn_1(&"Subject empty; not submitting.".into());
-                    is_submitting.set(false);
-                    return;
-                }
-                // Wire to the expected portal-scoped ticket-create path.
-                // TODO(portal-api): the server-side portal tickets
-                // endpoint (server F6) may not be deployed yet. Until it
-                // is, this POST exercises the wire and surfaces the
-                // server's response; we intentionally do NOT fake a
-                // success. The contact/company are resolved server-side
-                // from the portal session, so the body carries only the
-                // fields the portal user controls.
-                let body = serde_json::json!({
-                    "subject": subject_v,
-                    "description": if description_v.is_empty() {
-                        serde_json::Value::Null
-                    } else {
-                        serde_json::Value::String(description_v)
-                    },
-                    "priority": priority_v,
-                });
-
-                #[derive(serde::Deserialize)]
-                struct CreatedPortalTicket {
-                    id: String,
-                }
-
-                match crate::hooks::fetch::api::post_authed::<CreatedPortalTicket, _>(
-                    "/portal/tickets",
-                    &body,
-                )
-                .await
-                {
-                    Ok(created) => {
-                        navigator.push(Route::PortalTicketDetail { id: created.id });
-                    }
-                    Err(err) => {
-                        // Keep the form mounted so the user can retry
-                        // without losing their text; surface the failure
-                        // via the console until the portal toast surface
-                        // lands.
-                        web_sys::console::error_1(
-                            &format!("Could not submit ticket: {err}").into(),
-                        );
-                    }
-                }
-            }
-
-            is_submitting.set(false);
-        });
-    };
-
     rsx! {
         // P1-10 dedup: title rendered once below.
         PortalLayout {
@@ -375,18 +304,18 @@ pub fn PortalTicketNewPage() -> Element {
             Card {
                 form {
                     class: "space-y-6",
-                    // F2: real submit handler. POSTs to the portal tickets
-                    // endpoint; prevent_default stops the browser's GET
-                    // default-submit from leaking fields into the URL.
-                    onsubmit: handle_submit,
+                    // Without an explicit handler the browser default-submits
+                    // as GET, leaking subject/description/priority into the
+                    // URL and blanking the SPA. Stop that until a real
+                    // /portal/tickets POST endpoint exists (server F6).
+                    onsubmit: move |e: FormEvent| { e.prevent_default(); },
 
                     crate::components::Input {
                         name: "subject",
                         label: "Subject",
                         placeholder: "Brief description of your issue",
                         required: true,
-                        value: subject.read().clone(),
-                        oninput: move |e: FormEvent| subject.set(e.value()),
+                        oninput: |_| {},
                     }
 
                     crate::components::Textarea {
@@ -395,8 +324,7 @@ pub fn PortalTicketNewPage() -> Element {
                         placeholder: "Please provide as much detail as possible...",
                         rows: 6,
                         required: true,
-                        value: description.read().clone(),
-                        oninput: move |e: FormEvent| description.set(e.value()),
+                        oninput: |_| {},
                     }
 
                     crate::components::Select {
@@ -408,8 +336,8 @@ pub fn PortalTicketNewPage() -> Element {
                             crate::components::SelectOption::new("high", "High - Significant impact, no workaround"),
                             crate::components::SelectOption::new("critical", "Critical - Complete outage or data loss"),
                         ],
-                        value: priority.read().clone(),
-                        onchange: move |e: FormEvent| priority.set(e.value()),
+                        value: "medium".to_string(),
+                        onchange: |_| {},
                     }
 
                     // Real file input (PMC-98). The previous drop-zone
@@ -443,7 +371,6 @@ pub fn PortalTicketNewPage() -> Element {
                         Button {
                             r#type: "submit",
                             variant: ButtonVariant::Primary,
-                            loading: *is_submitting.read(),
                             "Submit Ticket"
                         }
                     }
@@ -463,45 +390,6 @@ pub struct PortalTicketDetailPageProps {
 #[allow(unused_variables)]
 pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
     let header_title = format!("Ticket {}", props.id);
-
-    let mut reply = use_signal(String::new);
-    let mut reply_submitting = use_signal(|| false);
-    let ticket_id_for_reply = props.id.clone();
-
-    let send_reply = move |_| {
-        reply_submitting.set(true);
-        let id = ticket_id_for_reply.clone();
-        let reply_v = reply.read().clone();
-        spawn(async move {
-            #[cfg(feature = "web")]
-            {
-                if reply_v.trim().is_empty() {
-                    web_sys::console::warn_1(&"Reply empty; not sending.".into());
-                    reply_submitting.set(false);
-                    return;
-                }
-                // Wire to the expected portal-scoped reply path.
-                // TODO(portal-api): the portal ticket-reply endpoint
-                // (server F6) may not be live yet. We POST to the
-                // expected path and surface any failure rather than
-                // faking a success or silently dropping the reply.
-                let body = serde_json::json!({ "content": reply_v });
-                let path = format!("/portal/tickets/{id}/replies");
-                match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(&path, &body)
-                    .await
-                {
-                    Ok(_) => {
-                        reply.set(String::new());
-                    }
-                    Err(err) => {
-                        web_sys::console::error_1(&format!("Could not send reply: {err}").into());
-                    }
-                }
-            }
-            reply_submitting.set(false);
-        });
-    };
-
     rsx! {
         PortalLayout { title: "{header_title}",
             div { class: "mb-6",
@@ -549,23 +437,17 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
                     }
                 }
 
-                // Reply form (F2: real signal-bound textarea + POST).
+                // Reply form
                 div { class: "mt-6 pt-6 border-t border-gray-200 dark:border-gray-700",
                     h4 { class: "font-medium text-gray-900 dark:text-white mb-3", "Add Reply" }
                     crate::components::Textarea {
                         name: "reply",
                         placeholder: "Type your reply...",
                         rows: 3,
-                        value: reply.read().clone(),
-                        oninput: move |e: FormEvent| reply.set(e.value()),
+                        oninput: |_| {},
                     }
                     div { class: "mt-3 flex justify-end",
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            loading: *reply_submitting.read(),
-                            onclick: send_reply,
-                            "Send Reply"
-                        }
+                        Button { variant: ButtonVariant::Primary, "Send Reply" }
                     }
                 }
             }
@@ -608,11 +490,6 @@ fn UpdateItem(props: UpdateItemProps) -> Element {
 /// Portal invoice list page
 #[component]
 pub fn PortalInvoiceListPage() -> Element {
-    // F2: the "View" buttons navigate to the invoice detail route.
-    // `navigator` is Copy, so each onclick closure captures its own
-    // copy and pushes the route for that row's invoice number.
-    let navigator = use_navigator();
-
     rsx! {
         // P1-10 dedup: title rendered once below.
         PortalLayout {
@@ -638,13 +515,7 @@ pub fn PortalInvoiceListPage() -> Element {
                             // Audit P1-07: "Pay Now" button was decorative
                             // (no onclick, no payment integration). Hidden
                             // until the portal payments flow ships.
-                            TableCell {
-                                Button {
-                                    variant: ButtonVariant::Secondary,
-                                    onclick: move |_| { navigator.push(Route::PortalInvoiceDetail { id: "INV-2025-001".to_string() }); },
-                                    "View"
-                                }
-                            }
+                            TableCell { "" }
                         }
                         TableRow {
                             TableCell { class: "font-medium", "INV-2024-012" }
@@ -652,11 +523,7 @@ pub fn PortalInvoiceListPage() -> Element {
                             TableCell { class: "font-medium", "$2,500.00" }
                             TableCell { Badge { variant: BadgeVariant::Green, "Paid" } }
                             TableCell {
-                                Button {
-                                    variant: ButtonVariant::Secondary,
-                                    onclick: move |_| { navigator.push(Route::PortalInvoiceDetail { id: "INV-2024-012".to_string() }); },
-                                    "View"
-                                }
+                                Button { variant: ButtonVariant::Secondary, "View" }
                             }
                         }
                         TableRow {
@@ -665,11 +532,7 @@ pub fn PortalInvoiceListPage() -> Element {
                             TableCell { class: "font-medium", "$2,500.00" }
                             TableCell { Badge { variant: BadgeVariant::Green, "Paid" } }
                             TableCell {
-                                Button {
-                                    variant: ButtonVariant::Secondary,
-                                    onclick: move |_| { navigator.push(Route::PortalInvoiceDetail { id: "INV-2024-011".to_string() }); },
-                                    "View"
-                                }
+                                Button { variant: ButtonVariant::Secondary, "View" }
                             }
                         }
                     }
