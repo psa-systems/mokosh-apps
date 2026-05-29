@@ -6,10 +6,56 @@ use serde::Deserialize;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ClockIcon, DataTable, IconSize,
-    Modal, PageHeader, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody, TableCell,
-    TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea, UserCircleIcon,
+    Modal, PageHeader, PlusIcon, SearchInput, Select, SelectOption, SortDirection, Table,
+    TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea,
+    UserCircleIcon,
 };
 use crate::Route;
+
+/// Rows per page for the client-side paginated list views. Matches the
+/// `per_page` passed to [`DataTable`].
+const PER_PAGE: usize = 25;
+
+/// Sortable columns on the ticket list (F3). Kept page-local; the demo
+/// rows are not sorted (they are a static fallback), only the live
+/// backend rows.
+#[derive(Clone, Copy, PartialEq)]
+enum TicketSortKey {
+    Ticket,
+    Company,
+    Status,
+    Priority,
+    AssignedTo,
+    Updated,
+}
+
+/// Apply a click on a sortable header to the current sort state:
+/// first click sorts ascending, clicking the active column again
+/// toggles direction. Shared by every list page's `onsort` handler.
+fn toggle_sort<K: Copy + PartialEq + 'static>(
+    current: &mut Signal<Option<(K, SortDirection)>>,
+    key: K,
+    page: &mut Signal<usize>,
+) {
+    let next = match *current.read() {
+        Some((k, SortDirection::Ascending)) if k == key => Some((key, SortDirection::Descending)),
+        Some((k, SortDirection::Descending)) if k == key => Some((key, SortDirection::Ascending)),
+        _ => Some((key, SortDirection::Ascending)),
+    };
+    current.set(next);
+    // Re-sorting changes which rows land on page 1; reset so the user
+    // isn't stranded on an out-of-range page.
+    page.set(1);
+}
+
+/// Direction indicator for a header, or `None` when this column is not
+/// the active sort column.
+fn sort_dir_for<K: Copy + PartialEq>(
+    current: &Option<(K, SortDirection)>,
+    key: K,
+) -> Option<SortDirection> {
+    current.and_then(|(k, dir)| if k == key { Some(dir) } else { None })
+}
 
 /// Subset of mokosh-server's `TicketResponse` we render in the list. The
 /// server returns more fields; serde silently drops the ones we don't
@@ -120,19 +166,26 @@ pub fn TicketListPage() -> Element {
     let mut search = use_signal(String::new);
     let mut status_filter = use_signal(String::new);
     let mut priority_filter = use_signal(String::new);
+    // F3: real sort + pagination state. `sort` is the active column +
+    // direction (None = server/default order); `page` is 1-indexed.
+    let mut sort = use_signal(|| None::<(TicketSortKey, SortDirection)>);
+    let mut page = use_signal(|| 1usize);
 
     // Same progressive-enablement pattern as the companies page: try
     // the live backend first, fall back to the seeded demo rows so the
     // page stays demoable when the route isn't deployed yet or the
     // user is signed out.
     let tickets_resource = use_resource(|| async {
+        // F1: re-fetch on org switch so we don't render the prior
+        // tenant's tickets after the active tenant changes.
+        let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = match crate::hooks::fetch::api::current_access_token() {
             Some(t) => t,
             None => return (Vec::<RemoteTicket>::new(), TicketSource::Demo),
         };
         match crate::hooks::fetch::api::get_with_auth::<PaginatedTickets>("/tickets", &token).await
         {
-            Ok(page) => (page.data, TicketSource::Backend),
+            Ok(resp) => (resp.data, TicketSource::Backend),
             Err(_) => (Vec::new(), TicketSource::Demo),
         }
     });
@@ -143,6 +196,73 @@ pub fn TicketListPage() -> Element {
         Some((rows, source)) => (rows.clone(), *source),
         None => (Vec::new(), TicketSource::Demo),
     };
+
+    // F3: client-side filter (search + status + priority), sort, and
+    // pagination over the live backend rows. The demo rows below are a
+    // static fallback and remain unfiltered.
+    let search_q = search.read().trim().to_lowercase();
+    let status_q = status_filter.read().clone();
+    let priority_q = priority_filter.read().clone();
+    let mut filtered: Vec<RemoteTicket> = remote_tickets
+        .iter()
+        .filter(|t| {
+            if !search_q.is_empty() {
+                let hay =
+                    format!("{} {} {}", t.ticket_number, t.title, t.company_name).to_lowercase();
+                if !hay.contains(&search_q) {
+                    return false;
+                }
+            }
+            if !status_q.is_empty() && t.status.name != status_q {
+                return false;
+            }
+            if !priority_q.is_empty() && t.priority.name != priority_q {
+                return false;
+            }
+            true
+        })
+        .cloned()
+        .collect();
+
+    if let Some((key, dir)) = *sort.read() {
+        filtered.sort_by(|a, b| {
+            let ord = match key {
+                TicketSortKey::Ticket => a.ticket_number.cmp(&b.ticket_number),
+                TicketSortKey::Company => a
+                    .company_name
+                    .to_lowercase()
+                    .cmp(&b.company_name.to_lowercase()),
+                TicketSortKey::Status => a.status.name.cmp(&b.status.name),
+                TicketSortKey::Priority => a.priority.name.cmp(&b.priority.name),
+                TicketSortKey::AssignedTo => a
+                    .assigned_to_name
+                    .clone()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .cmp(
+                        &b.assigned_to_name
+                            .clone()
+                            .unwrap_or_default()
+                            .to_lowercase(),
+                    ),
+                TicketSortKey::Updated => a.updated_at.cmp(&b.updated_at),
+            };
+            match dir {
+                SortDirection::Ascending => ord,
+                SortDirection::Descending => ord.reverse(),
+            }
+        });
+    }
+
+    let filtered_total = filtered.len();
+    let current_page = (*page.read()).max(1);
+    let page_start = (current_page - 1) * PER_PAGE;
+    let page_rows: Vec<RemoteTicket> = filtered
+        .into_iter()
+        .skip(page_start)
+        .take(PER_PAGE)
+        .collect();
+    let sort_snapshot = *sort.read();
 
     let status_options = vec![
         SelectOption::new("", "All Statuses"),
@@ -217,29 +337,60 @@ pub fn TicketListPage() -> Element {
             // Ticket table
             DataTable {
                 loading: is_loading,
-                total_items: if source == TicketSource::Backend { remote_tickets.len() } else { 5 },
-                current_page: 1,
-                per_page: 25,
+                total_items: if source == TicketSource::Backend { filtered_total } else { 5 },
+                current_page,
+                per_page: PER_PAGE,
                 columns: 6,
+                onpagechange: move |p| page.set(p),
                 Table {
                     TableHead {
                         TableRow {
-                            TableHeader { sortable: true, "Ticket" }
-                            TableHeader { sortable: true, "Company" }
-                            TableHeader { sortable: true, "Status" }
-                            TableHeader { sortable: true, "Priority" }
-                            TableHeader { sortable: true, "Assigned To" }
-                            TableHeader { sortable: true, "Updated" }
+                            TableHeader {
+                                sortable: true,
+                                sort_direction: sort_dir_for(&sort_snapshot, TicketSortKey::Ticket),
+                                onsort: move |_| toggle_sort(&mut sort, TicketSortKey::Ticket, &mut page),
+                                "Ticket"
+                            }
+                            TableHeader {
+                                sortable: true,
+                                sort_direction: sort_dir_for(&sort_snapshot, TicketSortKey::Company),
+                                onsort: move |_| toggle_sort(&mut sort, TicketSortKey::Company, &mut page),
+                                "Company"
+                            }
+                            TableHeader {
+                                sortable: true,
+                                sort_direction: sort_dir_for(&sort_snapshot, TicketSortKey::Status),
+                                onsort: move |_| toggle_sort(&mut sort, TicketSortKey::Status, &mut page),
+                                "Status"
+                            }
+                            TableHeader {
+                                sortable: true,
+                                sort_direction: sort_dir_for(&sort_snapshot, TicketSortKey::Priority),
+                                onsort: move |_| toggle_sort(&mut sort, TicketSortKey::Priority, &mut page),
+                                "Priority"
+                            }
+                            TableHeader {
+                                sortable: true,
+                                sort_direction: sort_dir_for(&sort_snapshot, TicketSortKey::AssignedTo),
+                                onsort: move |_| toggle_sort(&mut sort, TicketSortKey::AssignedTo, &mut page),
+                                "Assigned To"
+                            }
+                            TableHeader {
+                                sortable: true,
+                                sort_direction: sort_dir_for(&sort_snapshot, TicketSortKey::Updated),
+                                onsort: move |_| toggle_sort(&mut sort, TicketSortKey::Updated, &mut page),
+                                "Updated"
+                            }
                         }
                     }
                     if is_loading {
                         TableLoading { columns: 6, rows: 5 }
-                    } else if source == TicketSource::Backend && remote_tickets.is_empty() {
-                        TableEmpty { columns: 6, message: "No tickets yet.".to_string() }
+                    } else if source == TicketSource::Backend && page_rows.is_empty() {
+                        TableEmpty { columns: 6, message: "No tickets match your filters.".to_string() }
                     } else {
                         TableBody {
                             if source == TicketSource::Backend {
-                                for ticket in remote_tickets.iter().cloned() {
+                                for ticket in page_rows.iter().cloned() {
                                     TicketRow {
                                         key: "{ticket.id}",
                                         id: ticket.id.to_string(),

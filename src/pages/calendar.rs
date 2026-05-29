@@ -148,6 +148,9 @@ pub fn CalendarPage() -> Element {
     // demo data so the page never renders empty. `EventSource` tells
     // the UI which mode it's in so users see the difference.
     let events_resource = use_resource(|| async {
+        // F1: re-fetch on org switch so the calendar reflects the newly
+        // active tenant's events rather than the prior tenant's cache.
+        let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = match crate::hooks::fetch::api::current_access_token() {
             Some(t) => t,
             None => return (Vec::new(), EventSource::Demo),
