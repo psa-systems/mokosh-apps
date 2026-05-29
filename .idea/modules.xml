@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/mokosh-clients.iml" filepath="$PROJECT_DIR$/.idea/mokosh-clients.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/mokosh-apps.iml" filepath="$PROJECT_DIR$/.idea/mokosh-apps.iml" />
     </modules>
   </component>
 </project>

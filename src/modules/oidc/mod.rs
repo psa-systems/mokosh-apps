@@ -1,6 +1,6 @@
 //! OIDC public-client (SPA) flow against mokosh-server.
 //!
-//! mokosh-clients is a pure WASM single-page app, so we use the
+//! mokosh-apps is a pure WASM single-page app, so we use the
 //! authorization-code flow with PKCE as a public client (no
 //! `client_secret`). The flow:
 //!

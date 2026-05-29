@@ -56,7 +56,7 @@ FROM alpine:3.21
 COPY --from=caddy-bin /usr/bin/caddy /usr/bin/caddy
 
 # Copy static bundle
-COPY --from=builder /build/target/dx/mokosh-client/release/web/public /usr/share/caddy
+COPY --from=builder /build/target/dx/mokosh-apps/release/web/public /usr/share/caddy
 
 # Pre-create /etc/caddy with the default 0755 mode. The Caddyfile
 # COPY below pins --chmod=0644 so the file is readable by appuser
@@ -85,7 +85,7 @@ ENV PORT=8080
 EXPOSE 8080
 
 ARG GIT_SHA=""
-LABEL org.opencontainers.image.source=https://dev.a8n.run/psa-systems/mokosh-clients
+LABEL org.opencontainers.image.source=https://dev.a8n.run/psa-systems/mokosh-apps
 LABEL org.opencontainers.image.description="Mokosh Platform Dioxus client"
 LABEL org.opencontainers.image.revision="${GIT_SHA}"
 

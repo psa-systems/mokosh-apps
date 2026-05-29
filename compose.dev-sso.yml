@@ -16,7 +16,7 @@
 #     the same hostname Traefik terminates TLS on.
 #
 # The project name is intentionally NOT redefined: the base compose.yml
-# inherits the directory name (`mokosh-clients`), and per-developer
+# inherits the directory name (`mokosh-apps`), and per-developer
 # isolation already lives in container_name + Traefik label keys.
 # Overriding here would make compose treat the existing network from
 # the base file as foreign.
@@ -26,7 +26,7 @@ services:
   # Service key MUST match the base file's key (`client`); otherwise
   # compose treats the overlay as defining a new service instead of
   # extending the existing one. The base file owns
-  # `container_name: dev-mokosh-client-${USER}`, so we don't need to
+  # `container_name: dev-mokosh-apps-${USER}`, so we don't need to
   # restate it here.
   client:
     networks:
@@ -55,7 +55,7 @@ services:
       # in mokosh-server prints the UUID; we don't bake a placeholder
       # here so a misconfiguration fails loud rather than silently
       # using a wrong client_id.
-      MOKOSH_OIDC_CLIENT_ID: ${MOKOSH_OIDC_CLIENT_ID:?run `just register-client` in mokosh-server, then set MOKOSH_OIDC_CLIENT_ID in mokosh-clients/.env}
+      MOKOSH_OIDC_CLIENT_ID: ${MOKOSH_OIDC_CLIENT_ID:?run `just register-client` in mokosh-server, then set MOKOSH_OIDC_CLIENT_ID in mokosh-apps/.env}
       # Where account-management surfaces live. Bookmarks at the legacy
       # /login, /forgot-password, /reset-password/:token, /invite/:token,
       # /signup pages now redirect to the hub; the avatar dropdown links

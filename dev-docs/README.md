@@ -1,6 +1,6 @@
-# Mokosh-clients developer docs
+# Mokosh-apps developer docs
 
-Internal reference for developers working on `mokosh-clients`. The
+Internal reference for developers working on `mokosh-apps`. The
 content here is derived from a 2026-05-06 UI/UX audit (every route in
 the router was clicked through in Chrome via MCP browser automation,
 combined with static analysis); treat it as a living snapshot and
@@ -13,7 +13,7 @@ claims. The same audit produced matching documentation in
 | Document | Purpose |
 | --- | --- |
 | [`codebase-state.md`](codebase-state.md) | What this client looks like to a user today: cross-cutting bugs, the 27 ranked UI/UX issues, the per-page status, and the proposed fixes (`F1..F19`). |
-| [`client-server-integration.md`](client-server-integration.md) | How `mokosh-clients` and `mokosh-server` fit together. Section-by-section gap table, shared-DTO pattern, and the recommended order in which to wire UI to backend. |
+| [`client-server-integration.md`](client-server-integration.md) | How `mokosh-apps` and `mokosh-server` fit together. Section-by-section gap table, shared-DTO pattern, and the recommended order in which to wire UI to backend. |
 
 ## Recommended reading order
 

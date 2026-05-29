@@ -1,6 +1,6 @@
 # Client / server integration - client perspective
 
-How `mokosh-clients` and `mokosh-server` fit together. Read this when
+How `mokosh-apps` and `mokosh-server` fit together. Read this when
 wiring a UI surface to backend, or when wondering "is there an
 endpoint I can call yet?"
 
@@ -82,7 +82,7 @@ are listed in the router order
 | 17 | Notifications (bell + `/settings/notifications`) | rich UI, stub | 501 | n/a | decorative; bell can stay hidden | server `notifications` module | P2 |
 
 The "Wire-now action" column for sections 1, 3, 6, 14 is what the
-next mokosh-clients implementation pass should target. Everything
+next mokosh-apps implementation pass should target. Everything
 else should stay decorative until the corresponding server module
 exists.
 

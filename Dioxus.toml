@@ -3,7 +3,7 @@
 
 [application]
 # App name
-name = "mokosh-client"
+name = "mokosh-apps"
 
 # Dioxus App Default Platform
 default_platform = "web"

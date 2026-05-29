@@ -1,11 +1,11 @@
 //! Mokosh Platform - Cross-platform Dioxus client
 
 use dioxus::prelude::*;
-use mokosh_client::hooks::{
+use mokosh_apps::hooks::{
     use_auth_provider, use_bfcache_invalidator, use_memberships_loader, use_sidebar_provider,
     use_token_refresh,
 };
-use mokosh_client::Route;
+use mokosh_apps::Route;
 
 fn main() {
     // Snapshot ?code=...&state=... BEFORE the Dioxus Router mounts.
@@ -14,7 +14,7 @@ fn main() {
     // route definition), which would erase the OAuth response before
     // AuthCallbackPage ever reads it. By capturing here, the OIDC flow
     // sees what the OP actually sent.
-    mokosh_client::modules::oidc::snapshot_initial_search();
+    mokosh_apps::modules::oidc::snapshot_initial_search();
 
     dioxus::launch(App);
 }
