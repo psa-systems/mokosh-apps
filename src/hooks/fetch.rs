@@ -147,6 +147,40 @@ where
     (state, page, change_page)
 }
 
+/// Monotonic "active tenant / token generation" counter.
+///
+/// The access token itself lives in a thread-local (`ACCESS_TOKEN`),
+/// which Dioxus cannot track as a reactive dependency: a `use_resource`
+/// closure that only reads `current_access_token()` never re-runs when
+/// the token is swapped on an org switch, so the page keeps rendering
+/// the previous tenant's cached data (Phase-4 F1).
+///
+/// This `GlobalSignal` is bumped every time the token is set (login,
+/// refresh, org switch, logout). List/detail pages read it inside their
+/// `use_resource` closure (see [`active_tenant_generation`]) so Dioxus
+/// records it as a dependency and re-fetches whenever the active tenant
+/// changes. WASM is single-threaded, so a `GlobalSignal` is the right
+/// primitive here (same rationale as the toast surface).
+#[cfg(feature = "web")]
+pub static TENANT_GENERATION: GlobalSignal<u64> = Signal::global(|| 0);
+
+/// Read the active-tenant generation counter. Call this INSIDE a
+/// `use_resource` closure (before any early return) so Dioxus subscribes
+/// the resource to it and re-fetches on the next org switch / token swap.
+/// The returned value is otherwise unused; it exists purely to register
+/// the reactive dependency.
+#[cfg(feature = "web")]
+pub fn active_tenant_generation() -> u64 {
+    *TENANT_GENERATION.read()
+}
+
+/// Non-web stub so the same call site compiles under `cargo check`
+/// without the `web` feature.
+#[cfg(not(feature = "web"))]
+pub fn active_tenant_generation() -> u64 {
+    0
+}
+
 /// API client for making HTTP requests
 pub mod api {
     #[cfg(feature = "web")]
@@ -161,7 +195,7 @@ pub mod api {
     ///      container's entrypoint. Self-hosters on a custom hostname
     ///      override here without rebuilding the image.
     ///   2. Host-prefix derivation for the canonical `msp.<tld>`
-    ///      deploys (e.g. `msp.a8n.systems` SPA → `msp-api.a8n.systems`
+    ///      deploys (e.g. `msp.a8n.systems` SPA → `api.msp.a8n.systems`
     ///      API).
     ///   3. Same-origin `/api/v1` for dev (localhost, IP address, or
     ///      any host that doesn't start with `msp.`) so the Dioxus dev
@@ -174,7 +208,7 @@ pub mod api {
         if let Some(win) = web_sys::window() {
             if let Ok(host) = win.location().host() {
                 if let Some(rest) = host.strip_prefix("msp.") {
-                    return format!("https://msp-api.{rest}/api/v1");
+                    return format!("https://api.msp.{rest}/api/v1");
                 }
             }
         }
@@ -191,10 +225,19 @@ pub mod api {
     }
 
     /// Set the current access token. Called from the OIDC callback
-    /// handler once `complete_login` returns successfully.
+    /// handler once `complete_login` returns successfully, and again on
+    /// every token refresh / org switch / logout.
+    ///
+    /// Bumps the reactive [`super::TENANT_GENERATION`] counter so any
+    /// `use_resource` that read [`super::active_tenant_generation`] in
+    /// its closure re-fetches against the new tenant (Phase-4 F1). The
+    /// bump is unconditional: a refresh that returns the same tenant's
+    /// token is cheap to re-fetch, and on an org switch the token
+    /// (and the tenant scope it encodes) actually changes.
     #[cfg(feature = "web")]
     pub fn set_access_token(token: Option<String>) {
         ACCESS_TOKEN.with(|t| *t.borrow_mut() = token);
+        *super::TENANT_GENERATION.write() += 1;
     }
 
     /// Read the current access token. Returns `None` before sign-in.

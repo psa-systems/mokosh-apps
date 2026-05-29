@@ -5,10 +5,50 @@ use serde::Deserialize;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
-    PlusIcon, SearchInput, Select, SelectOption, Table, TableBody, TableCell, TableEmpty,
-    TableHead, TableHeader, TableLoading, TableRow,
+    PlusIcon, SearchInput, Select, SelectOption, SortDirection, Table, TableBody, TableCell,
+    TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::Route;
+
+/// Rows per page for the client-side paginated list views (F3).
+const PER_PAGE: usize = 25;
+
+/// Sortable columns on the company list (F3).
+#[derive(Clone, Copy, PartialEq)]
+enum CompanySortKey {
+    Company,
+    Type,
+}
+
+/// Sortable columns on the contact list (F3).
+#[derive(Clone, Copy, PartialEq)]
+enum ContactSortKey {
+    Name,
+    Company,
+}
+
+/// First click sorts ascending; clicking the active column toggles
+/// direction. Resets to page 1 since re-sorting changes the first page.
+fn toggle_sort<K: Copy + PartialEq + 'static>(
+    current: &mut Signal<Option<(K, SortDirection)>>,
+    key: K,
+    page: &mut Signal<usize>,
+) {
+    let next = match *current.read() {
+        Some((k, SortDirection::Ascending)) if k == key => Some((key, SortDirection::Descending)),
+        Some((k, SortDirection::Descending)) if k == key => Some((key, SortDirection::Ascending)),
+        _ => Some((key, SortDirection::Ascending)),
+    };
+    current.set(next);
+    page.set(1);
+}
+
+fn sort_dir_for<K: Copy + PartialEq>(
+    current: &Option<(K, SortDirection)>,
+    key: K,
+) -> Option<SortDirection> {
+    current.and_then(|(k, dir)| if k == key { Some(dir) } else { None })
+}
 
 /// Map the server's lowercased `CompanyType` enum tag (`"customer"`,
 /// `"prospect"`, `"vendor"`, `"partner"`) to the title-case label that
@@ -93,6 +133,9 @@ enum ContactSource {
 pub fn CompanyListPage() -> Element {
     let mut search = use_signal(String::new);
     let mut type_filter = use_signal(String::new);
+    // F3: sort + pagination state.
+    let mut sort = use_signal(|| None::<(CompanySortKey, SortDirection)>);
+    let mut page = use_signal(|| 1usize);
 
     let type_options = vec![
         SelectOption::new("", "All Types"),
@@ -105,6 +148,10 @@ pub fn CompanyListPage() -> Element {
     // a token yet, or the API errors, or the route isn't deployed yet,
     // fall back to the seeded demo rows below so the page stays demoable.
     let companies_resource = use_resource(|| async {
+        // F1: read the active-tenant generation so Dioxus re-runs this
+        // resource on an org switch / token swap and re-fetches the new
+        // tenant's rows instead of leaving the prior tenant's cached.
+        let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = match crate::hooks::fetch::api::current_access_token() {
             Some(t) => t,
             None => return (Vec::<RemoteCompany>::new(), CompanySource::Demo),
@@ -112,7 +159,7 @@ pub fn CompanyListPage() -> Element {
         match crate::hooks::fetch::api::get_with_auth::<PaginatedCompanies>("/companies", &token)
             .await
         {
-            Ok(page) => (page.data, CompanySource::Backend),
+            Ok(resp) => (resp.data, CompanySource::Backend),
             Err(_) => (Vec::new(), CompanySource::Demo),
         }
     });
@@ -126,6 +173,55 @@ pub fn CompanyListPage() -> Element {
         Some((rows, source)) => (rows.clone(), *source),
         None => (Vec::new(), CompanySource::Demo),
     };
+
+    // F3: client-side filter (search + type), sort, and pagination over
+    // the live backend rows. Demo rows below are an unfiltered fallback.
+    let search_q = search.read().trim().to_lowercase();
+    let type_q = type_filter.read().clone();
+    let mut filtered: Vec<RemoteCompany> = remote_companies
+        .iter()
+        .filter(|c| {
+            if !search_q.is_empty()
+                && !c.name.to_lowercase().contains(&search_q)
+                && !c
+                    .account_manager_name
+                    .as_deref()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .contains(&search_q)
+            {
+                return false;
+            }
+            if !type_q.is_empty() && c.company_type != type_q {
+                return false;
+            }
+            true
+        })
+        .cloned()
+        .collect();
+
+    if let Some((key, dir)) = *sort.read() {
+        filtered.sort_by(|a, b| {
+            let ord = match key {
+                CompanySortKey::Company => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                CompanySortKey::Type => a.company_type.cmp(&b.company_type),
+            };
+            match dir {
+                SortDirection::Ascending => ord,
+                SortDirection::Descending => ord.reverse(),
+            }
+        });
+    }
+
+    let filtered_total = filtered.len();
+    let current_page = (*page.read()).max(1);
+    let page_start = (current_page - 1) * PER_PAGE;
+    let page_rows: Vec<RemoteCompany> = filtered
+        .into_iter()
+        .skip(page_start)
+        .take(PER_PAGE)
+        .collect();
+    let sort_snapshot = *sort.read();
 
     rsx! {
         AppLayout { title: "Companies",
@@ -173,15 +269,26 @@ pub fn CompanyListPage() -> Element {
             // Companies table
             DataTable {
                 loading: is_loading,
-                total_items: if source == CompanySource::Backend { remote_companies.len() } else { 5 },
-                current_page: 1,
-                per_page: 25,
+                total_items: if source == CompanySource::Backend { filtered_total } else { 5 },
+                current_page,
+                per_page: PER_PAGE,
                 columns: 5,
+                onpagechange: move |p| page.set(p),
                 Table {
                     TableHead {
                         TableRow {
-                            TableHeader { sortable: true, "Company" }
-                            TableHeader { sortable: true, "Type" }
+                            TableHeader {
+                                sortable: true,
+                                sort_direction: sort_dir_for(&sort_snapshot, CompanySortKey::Company),
+                                onsort: move |_| toggle_sort(&mut sort, CompanySortKey::Company, &mut page),
+                                "Company"
+                            }
+                            TableHeader {
+                                sortable: true,
+                                sort_direction: sort_dir_for(&sort_snapshot, CompanySortKey::Type),
+                                onsort: move |_| toggle_sort(&mut sort, CompanySortKey::Type, &mut page),
+                                "Type"
+                            }
                             TableHeader { "Primary Contact" }
                             TableHeader { "Open Tickets" }
                             TableHeader { "Contract" }
@@ -189,12 +296,12 @@ pub fn CompanyListPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 5, rows: 5 }
-                    } else if source == CompanySource::Backend && remote_companies.is_empty() {
-                        TableEmpty { columns: 5, message: "No companies yet.".to_string() }
+                    } else if source == CompanySource::Backend && page_rows.is_empty() {
+                        TableEmpty { columns: 5, message: "No companies match your filters.".to_string() }
                     } else {
                         TableBody {
                             if source == CompanySource::Backend {
-                                for company in remote_companies.iter().cloned() {
+                                for company in page_rows.iter().cloned() {
                                     CompanyRow {
                                         key: "{company.id}",
                                         id: company.id.to_string(),
@@ -317,6 +424,56 @@ pub fn CompanyNewPage() -> Element {
         SelectOption::new("vendor", "Vendor"),
     ];
 
+    let navigator = use_navigator();
+    let handle_submit = move |e: FormEvent| {
+        e.prevent_default();
+        is_submitting.set(true);
+
+        // Snapshot signals so the spawn doesn't borrow them across await.
+        let name_v = name.read().clone();
+        let company_type_v = company_type.read().clone();
+
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                // F5: real POST to /companies (the list page already
+                // GETs from this route). Reuses the TicketNewPage
+                // pattern: on success navigate to the new detail page,
+                // on failure keep the form mounted and log so the user
+                // can retry without losing input.
+                let body = serde_json::json!({
+                    "name": name_v,
+                    "company_type": company_type_v,
+                });
+
+                #[derive(serde::Deserialize)]
+                struct CreatedCompany {
+                    id: uuid::Uuid,
+                }
+
+                match crate::hooks::fetch::api::post_authed::<CreatedCompany, _>(
+                    "/companies",
+                    &body,
+                )
+                .await
+                {
+                    Ok(created) => {
+                        navigator.push(Route::CompanyDetail {
+                            id: created.id.to_string(),
+                        });
+                    }
+                    Err(err) => {
+                        web_sys::console::error_1(
+                            &format!("Could not create company: {err}").into(),
+                        );
+                    }
+                }
+            }
+
+            is_submitting.set(false);
+        });
+    };
+
     rsx! {
         AppLayout { title: "New Company",
             PageHeader {
@@ -327,21 +484,7 @@ pub fn CompanyNewPage() -> Element {
             Card {
                 form {
                     class: "space-y-6",
-                    onsubmit: move |e: FormEvent| {
-                        e.prevent_default();
-                        is_submitting.set(true);
-                        // P1-04: mock submit until create_company endpoint
-                        // is wired through the client.
-                        spawn(async move {
-                            #[cfg(feature = "web")]
-                            {
-                                use gloo_timers::future::TimeoutFuture;
-                                TimeoutFuture::new(1000).await;
-                            }
-                            is_submitting.set(false);
-                            dioxus::prelude::navigator().push(Route::CompanyList {});
-                        });
-                    },
+                    onsubmit: handle_submit,
 
                     crate::components::Input {
                         name: "name",
@@ -594,10 +737,15 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
 #[component]
 pub fn ContactListPage() -> Element {
     let mut search = use_signal(String::new);
+    // F3: sort + pagination state.
+    let mut sort = use_signal(|| None::<(ContactSortKey, SortDirection)>);
+    let mut page = use_signal(|| 1usize);
 
     // Try the live backend; fall back to seeded demo rows if the
     // route isn't deployed or we have no token.
     let contacts_resource = use_resource(|| async {
+        // F1: re-fetch on org switch (see CompanyListPage for rationale).
+        let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = match crate::hooks::fetch::api::current_access_token() {
             Some(t) => t,
             None => return (Vec::<RemoteContact>::new(), ContactSource::Demo),
@@ -605,7 +753,7 @@ pub fn ContactListPage() -> Element {
         match crate::hooks::fetch::api::get_with_auth::<PaginatedContacts>("/contacts", &token)
             .await
         {
-            Ok(page) => (page.data, ContactSource::Backend),
+            Ok(resp) => (resp.data, ContactSource::Backend),
             Err(_) => (Vec::new(), ContactSource::Demo),
         }
     });
@@ -616,6 +764,60 @@ pub fn ContactListPage() -> Element {
         Some((rows, source)) => (rows.clone(), *source),
         None => (Vec::new(), ContactSource::Demo),
     };
+
+    // F3: client-side filter (search), sort, and pagination over the
+    // live backend rows. Demo rows below are an unfiltered fallback.
+    let search_q = search.read().trim().to_lowercase();
+    let mut filtered: Vec<RemoteContact> = remote_contacts
+        .iter()
+        .filter(|c| {
+            if search_q.is_empty() {
+                return true;
+            }
+            let hay = format!(
+                "{} {} {} {}",
+                c.first_name,
+                c.last_name,
+                c.company_name.as_deref().unwrap_or_default(),
+                c.email.as_deref().unwrap_or_default()
+            )
+            .to_lowercase();
+            hay.contains(&search_q)
+        })
+        .cloned()
+        .collect();
+
+    if let Some((key, dir)) = *sort.read() {
+        filtered.sort_by(|a, b| {
+            let ord = match key {
+                ContactSortKey::Name => {
+                    let an = format!("{} {}", a.first_name, a.last_name).to_lowercase();
+                    let bn = format!("{} {}", b.first_name, b.last_name).to_lowercase();
+                    an.cmp(&bn)
+                }
+                ContactSortKey::Company => a
+                    .company_name
+                    .as_deref()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .cmp(&b.company_name.as_deref().unwrap_or_default().to_lowercase()),
+            };
+            match dir {
+                SortDirection::Ascending => ord,
+                SortDirection::Descending => ord.reverse(),
+            }
+        });
+    }
+
+    let filtered_total = filtered.len();
+    let current_page = (*page.read()).max(1);
+    let page_start = (current_page - 1) * PER_PAGE;
+    let page_rows: Vec<RemoteContact> = filtered
+        .into_iter()
+        .skip(page_start)
+        .take(PER_PAGE)
+        .collect();
+    let sort_snapshot = *sort.read();
 
     rsx! {
         AppLayout { title: "Contacts",
@@ -653,15 +855,26 @@ pub fn ContactListPage() -> Element {
             // Contacts table
             DataTable {
                 loading: is_loading,
-                total_items: if source == ContactSource::Backend { remote_contacts.len() } else { 3 },
-                current_page: 1,
-                per_page: 25,
+                total_items: if source == ContactSource::Backend { filtered_total } else { 3 },
+                current_page,
+                per_page: PER_PAGE,
                 columns: 5,
+                onpagechange: move |p| page.set(p),
                 Table {
                     TableHead {
                         TableRow {
-                            TableHeader { sortable: true, "Name" }
-                            TableHeader { sortable: true, "Company" }
+                            TableHeader {
+                                sortable: true,
+                                sort_direction: sort_dir_for(&sort_snapshot, ContactSortKey::Name),
+                                onsort: move |_| toggle_sort(&mut sort, ContactSortKey::Name, &mut page),
+                                "Name"
+                            }
+                            TableHeader {
+                                sortable: true,
+                                sort_direction: sort_dir_for(&sort_snapshot, ContactSortKey::Company),
+                                onsort: move |_| toggle_sort(&mut sort, ContactSortKey::Company, &mut page),
+                                "Company"
+                            }
                             TableHeader { "Email" }
                             TableHeader { "Phone" }
                             TableHeader { "Role" }
@@ -669,12 +882,12 @@ pub fn ContactListPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 5, rows: 5 }
-                    } else if source == ContactSource::Backend && remote_contacts.is_empty() {
-                        TableEmpty { columns: 5, message: "No contacts yet.".to_string() }
+                    } else if source == ContactSource::Backend && page_rows.is_empty() {
+                        TableEmpty { columns: 5, message: "No contacts match your search.".to_string() }
                     } else {
                         TableBody {
                             if source == ContactSource::Backend {
-                                for contact in remote_contacts.iter().cloned() {
+                                for contact in page_rows.iter().cloned() {
                                     ContactRow {
                                         key: "{contact.id}",
                                         id: contact.id.to_string(),
@@ -779,6 +992,65 @@ pub fn ContactNewPage() -> Element {
         SelectOption::new("3", "Global Widgets"),
     ];
 
+    let navigator = use_navigator();
+    let handle_submit = move |e: FormEvent| {
+        e.prevent_default();
+        is_submitting.set(true);
+
+        // Snapshot signals so the spawn doesn't borrow them across await.
+        let first_name_v = first_name.read().clone();
+        let last_name_v = last_name.read().clone();
+        let email_v = email.read().clone();
+        let company_v = company.read().clone();
+
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                // F5: real POST to /contacts (the list page already GETs
+                // from this route). The company Select still ships the
+                // hardcoded "1"/"2"/"3" placeholders until it is wired to
+                // the companies list (tracked under the contacts story);
+                // parse as Uuid with a nil() fallback so the POST
+                // exercises the wire and the server returns a typed
+                // validation error rather than us faking success.
+                let company_id =
+                    uuid::Uuid::parse_str(&company_v).unwrap_or_else(|_| uuid::Uuid::nil());
+                let body = serde_json::json!({
+                    "first_name": first_name_v,
+                    "last_name": last_name_v,
+                    "email": if email_v.is_empty() {
+                        serde_json::Value::Null
+                    } else {
+                        serde_json::Value::String(email_v)
+                    },
+                    "company_id": company_id,
+                });
+
+                #[derive(serde::Deserialize)]
+                struct CreatedContact {
+                    id: uuid::Uuid,
+                }
+
+                match crate::hooks::fetch::api::post_authed::<CreatedContact, _>("/contacts", &body)
+                    .await
+                {
+                    Ok(created) => {
+                        navigator.push(Route::ContactDetail {
+                            id: created.id.to_string(),
+                        });
+                    }
+                    Err(err) => {
+                        web_sys::console::error_1(
+                            &format!("Could not create contact: {err}").into(),
+                        );
+                    }
+                }
+            }
+
+            is_submitting.set(false);
+        });
+    };
+
     rsx! {
         AppLayout { title: "New Contact",
             PageHeader {
@@ -789,21 +1061,7 @@ pub fn ContactNewPage() -> Element {
             Card {
                 form {
                     class: "space-y-6",
-                    onsubmit: move |e: FormEvent| {
-                        e.prevent_default();
-                        is_submitting.set(true);
-                        // P1-04: mock submit until create_contact endpoint
-                        // is wired through the client.
-                        spawn(async move {
-                            #[cfg(feature = "web")]
-                            {
-                                use gloo_timers::future::TimeoutFuture;
-                                TimeoutFuture::new(1000).await;
-                            }
-                            is_submitting.set(false);
-                            dioxus::prelude::navigator().push(Route::ContactList {});
-                        });
-                    },
+                    onsubmit: handle_submit,
 
                     div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
                         crate::components::Input {

@@ -34,6 +34,13 @@ pub struct IdTokenClaims {
     pub active_tenant_id: Option<String>,
     #[serde(default, rename = "mokosh_role")]
     pub role: Option<String>,
+    /// OIDC `nonce` echoed back from the authorize request. Compared
+    /// against the stored `PendingFlow.nonce` in `complete_login` to
+    /// bind the id_token to this browser's login attempt (replay
+    /// defense). Optional in the struct so refresh-grant / rehydrate
+    /// claim parsing (where no nonce is expected) still decodes.
+    #[serde(default)]
+    pub nonce: Option<String>,
     pub exp: i64,
     pub iat: i64,
 }

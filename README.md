@@ -34,7 +34,7 @@ This recipe:
 
 1. Detects the host LAN IP from `br0` or `eth0` via `sys net`.
 2. Exports it as `HOST_IP`.
-3. Runs `docker compose up --build`, which starts `dev-mokosh-client` and binds port `4301` to `${HOST_IP}:4301`.
+3. Runs `docker compose up --build`, which starts `dev-mokosh-apps` and binds port `4301` to `${HOST_IP}:4301`.
 
 Open the printed URL (e.g. `http://172.16.100.120:4301`). Hot reload is enabled.
 
@@ -45,7 +45,7 @@ Binding to the LAN IP rather than `0.0.0.0` keeps the dev server off the public 
 Either:
 
 - Use the host LAN IP: `http://${HOST_IP}:4301`.
-- Or join the `dev-mokosh-private` Docker network and use `http://dev-mokosh-client:4301`.
+- Or join the `dev-mokosh-private` Docker network and use `http://dev-mokosh-apps:4301`.
 
 ## Justfile recipes
 
@@ -133,8 +133,8 @@ Output lands under `target/dx/`.
 **Production OCI image (Caddy + WASM bundle):**
 
 ```nu
-just build-docker        # tags as mokosh-client:local
-just check-docker        # tags as mokosh-client:check (smoke build)
+just build-docker        # tags as mokosh-apps:local
+just check-docker        # tags as mokosh-apps:check (smoke build)
 ```
 
 The image is built from `oci-build/Dockerfile` and serves the bundle with `oci-build/Caddyfile`.

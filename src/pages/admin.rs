@@ -84,6 +84,9 @@ pub fn TenantManagementPage() -> Element {
     // Try the live tenants endpoint first; fall back to seeded demo
     // rows so the page stays demoable for envs without a live backend.
     let tenants_resource = use_resource(|| async {
+        // F1: re-fetch on org switch / token swap so the roster reflects
+        // the active scope instead of the prior tenant's cached rows.
+        let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = match crate::hooks::fetch::api::current_access_token() {
             Some(t) => t,
             None => return (Vec::<RemoteTenant>::new(), TenantSource::Demo),

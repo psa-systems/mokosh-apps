@@ -1,6 +1,6 @@
 services:
   client:
-    container_name: dev-mokosh-client-${USER:?USER missing - run via just dev}
+    container_name: dev-mokosh-apps-${USER:?USER missing - run via just dev}
     build:
       context: .
       dockerfile: Dockerfile
@@ -27,9 +27,9 @@ services:
 
 volumes:
   client-target:
-    name: dev-mokosh-client-target-${USER:?USER missing - run via just dev}
+    name: dev-mokosh-apps-target-${USER:?USER missing - run via just dev}
   client-node-modules:
-    name: dev-mokosh-client-node-modules-${USER:?USER missing - run via just dev}
+    name: dev-mokosh-apps-node-modules-${USER:?USER missing - run via just dev}
 
 networks:
   private:

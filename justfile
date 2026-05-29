@@ -25,13 +25,13 @@ pre-commit:
     #!/usr/bin/env nu
     let img = "{{ dev_image }}"
     print "\n[pre-commit] cargo fmt --all --check"
-    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume dev-mokosh-clients-cargo-target:/build/target --volume dev-mokosh-clients-cargo-registry:/usr/local/cargo/registry $img cargo fmt --all --check
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume dev-mokosh-apps-cargo-target:/build/target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo fmt --all --check
     print "\n[pre-commit] cargo clippy --all-targets -- -D warnings"
-    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume dev-mokosh-clients-cargo-target:/build/target --volume dev-mokosh-clients-cargo-registry:/usr/local/cargo/registry $img cargo clippy --all-targets -- -D warnings
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume dev-mokosh-apps-cargo-target:/build/target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo clippy --all-targets -- -D warnings
     print "\n[pre-commit] cargo check --target wasm32-unknown-unknown"
-    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume dev-mokosh-clients-cargo-target:/build/target --volume dev-mokosh-clients-cargo-registry:/usr/local/cargo/registry $img cargo check --target wasm32-unknown-unknown
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume dev-mokosh-apps-cargo-target:/build/target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo check --target wasm32-unknown-unknown
     print "\n[pre-commit] cargo test --lib"
-    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume dev-mokosh-clients-cargo-target:/build/target --volume dev-mokosh-clients-cargo-registry:/usr/local/cargo/registry $img cargo test --lib
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume dev-mokosh-apps-cargo-target:/build/target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo test --lib
     print "\n[pre-commit] all checks passed"
 
 # Install JS dependencies
@@ -165,12 +165,12 @@ build: css-build
 # Build OCI image for validation
 [group: 'check']
 check-docker:
-    docker buildx build --tag mokosh-client:check --file oci-build/Dockerfile .
+    docker buildx build --tag mokosh-apps:check --file oci-build/Dockerfile .
 
 # Build OCI image
 [group: 'build']
 build-docker:
-    docker buildx build --tag mokosh-client:local --file oci-build/Dockerfile .
+    docker buildx build --tag mokosh-apps:local --file oci-build/Dockerfile .
 
 # Create a release: bump version, push branch, print PR link
 [group: 'release']

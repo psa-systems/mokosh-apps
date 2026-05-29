@@ -1,7 +1,7 @@
 [workspace]
 
 [package]
-name = "mokosh-client"
+name = "mokosh-apps"
 version = "0.1.0"
 edition = "2021"
 authors = ["Mokosh Platform Team"]
@@ -10,7 +10,7 @@ license = "Proprietary"
 repository = "https://github.com/your-org/mokosh-platform"
 
 [[bin]]
-name = "mokosh-client"
+name = "mokosh-apps"
 path = "src/main.rs"
 
 [features]
@@ -27,7 +27,7 @@ single-tenant = []
 server = []
 
 [lib]
-name = "mokosh_client"
+name = "mokosh_apps"
 path = "src/lib.rs"
 
 [dependencies]

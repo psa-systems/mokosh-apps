@@ -1,4 +1,4 @@
-# Codebase state - mokosh-clients
+# Codebase state - mokosh-apps
 
 A practical reference for what the client UI looks like to a real
 user today. Derived from a 2026-05-06 audit that walked every route

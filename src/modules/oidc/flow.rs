@@ -22,6 +22,8 @@ pub enum FlowError {
     TokenEndpoint { error: String, description: String },
     #[error("state mismatch (possible CSRF)")]
     StateMismatch,
+    #[error("nonce mismatch (possible token replay)")]
+    NonceMismatch,
     #[error("redirect failed: {0}")]
     Redirect(String),
 }
@@ -187,6 +189,21 @@ pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowEr
         error: "invalid_response".into(),
         description: "id_token missing from authorization_code response".into(),
     })?;
+
+    // OIDC Core 3.1.3.7 step 11: the id_token's `nonce` claim MUST
+    // equal the nonce we sent on the authorize request. State already
+    // guards the redirect against CSRF; the nonce binds the *id_token*
+    // itself to this browser's login attempt, defeating replay of an
+    // id_token captured from another session. We decode the claims
+    // unverified (signature verification is an intentional WASM
+    // tradeoff, see `IdTokenClaims::parse_unverified`) purely to read
+    // the nonce; a mismatch or a missing nonce is a hard failure.
+    let claims =
+        super::tokens::IdTokenClaims::parse_unverified(&id_token).map_err(FlowError::Network)?;
+    match claims.nonce.as_deref() {
+        Some(n) if n == pending.nonce => {}
+        _ => return Err(FlowError::NonceMismatch),
+    }
 
     let tokens = Tokens {
         access_token: body.access_token,

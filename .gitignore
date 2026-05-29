@@ -29,6 +29,9 @@ tmp/
 *.bak
 *.backup
 
+# AI working context - local-only, gitignored by convention across ~/projects/ repos
+For AI/
+
 
 ################################################################################
 # Generated
