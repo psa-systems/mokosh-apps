@@ -48,7 +48,7 @@ impl OidcConfig {
     ///      `hub_base_url`). Self-hosters override here without
     ///      rebuilding the image.
     ///   2. Host-prefix derivation for the canonical `msp.<tld>`
-    ///      deploys: issuer `msp.<tld>` → `https://msp-api.<tld>`,
+    ///      deploys: issuer `msp.<tld>` → `https://api.msp.<tld>`,
     ///      hub `msp.<tld>` → `https://<tld>` (Bunyip apex).
     ///   3. Compile-time `option_env!` defaults baked into the binary
     ///      (the `Self::from_env()` baseline).
@@ -94,7 +94,7 @@ impl OidcConfig {
         if let Some(issuer) = injected_issuer {
             cfg.issuer = Box::leak(issuer.into_boxed_str());
         } else if let Some(rest) = host_rest.as_deref() {
-            cfg.issuer = Box::leak(format!("https://msp-api.{rest}").into_boxed_str());
+            cfg.issuer = Box::leak(format!("https://api.msp.{rest}").into_boxed_str());
         }
 
         if let Some(client_id) = injected_client_id {

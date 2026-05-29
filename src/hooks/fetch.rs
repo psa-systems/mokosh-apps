@@ -195,7 +195,7 @@ pub mod api {
     ///      container's entrypoint. Self-hosters on a custom hostname
     ///      override here without rebuilding the image.
     ///   2. Host-prefix derivation for the canonical `msp.<tld>`
-    ///      deploys (e.g. `msp.a8n.systems` SPA → `msp-api.a8n.systems`
+    ///      deploys (e.g. `msp.a8n.systems` SPA → `api.msp.a8n.systems`
     ///      API).
     ///   3. Same-origin `/api/v1` for dev (localhost, IP address, or
     ///      any host that doesn't start with `msp.`) so the Dioxus dev
@@ -208,7 +208,7 @@ pub mod api {
         if let Some(win) = web_sys::window() {
             if let Ok(host) = win.location().host() {
                 if let Some(rest) = host.strip_prefix("msp.") {
-                    return format!("https://msp-api.{rest}/api/v1");
+                    return format!("https://api.msp.{rest}/api/v1");
                 }
             }
         }
