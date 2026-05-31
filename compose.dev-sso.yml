@@ -37,13 +37,21 @@ services:
     # Drop both host port bindings from compose.yml (LAN-IP + 127.0.0.1
     # for Google OAuth); Traefik is sole ingress for this profile.
     ports: !reset []
+    # List (sequence) syntax is REQUIRED here, not the usual map syntax.
+    # Docker Compose interpolates ${USER} inside string VALUES but NOT inside
+    # map KEYS (Compose v2.40). The router name lives in the label key, so map
+    # syntax leaves a literal `${USER}` in the router name and the host fails to
+    # route (default cert + 404). List form makes the whole "key=value" one
+    # string value, so ${USER} interpolates. Mirrors mokosh-server's overlay.
+    # `nebula-secure` is the Nebula-published Traefik entrypoint (asDefault), so
+    # ${USER}-mokosh.a8n.run is reachable over the mesh like the other dev apps.
     labels:
-      traefik.enable: true
-      traefik.docker.network: network-traefik-public
-      traefik.http.routers.mokosh-${USER}.rule: Host(`${USER}-mokosh.a8n.run`)
-      traefik.http.routers.mokosh-${USER}.entrypoints: web-secure
-      traefik.http.routers.mokosh-${USER}.tls.certresolver: cert-cloudflare
-      traefik.http.services.mokosh-${USER}.loadbalancer.server.port: 4301
+      - traefik.enable=true
+      - traefik.docker.network=network-traefik-public
+      - traefik.http.routers.mokosh-${USER}.rule=Host(`${USER}-mokosh.a8n.run`)
+      - traefik.http.routers.mokosh-${USER}.entrypoints=nebula-secure
+      - traefik.http.routers.mokosh-${USER}.tls.certresolver=cert-cloudflare
+      - traefik.http.services.mokosh-${USER}.loadbalancer.server.port=4301
     environment:
       # Compile-time defaults baked into the WASM bundle. Override in
       # .env if you need to point at a different IdP for one-off
