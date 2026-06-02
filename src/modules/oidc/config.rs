@@ -80,6 +80,11 @@ impl OidcConfig {
     /// Field-by-field resolution. Split out so [`for_current_origin`]
     /// can wrap it in a one-shot cache. Each leaked string corresponds
     /// to one field; at most three leaks per session.
+    ///
+    /// After the bunyip-as-OP cutover (docs/new-auth/mokosh) the issuer is
+    /// bunyip-api itself, NOT mokosh-server. A `msp.<tld>` deploy resolves to
+    /// issuer `https://api.<tld>` (bunyip-api) and hub `https://<tld>`
+    /// (bunyip-web), so one SPA image targets staging and prod identically.
     fn resolve() -> Self {
         let mut cfg = Self::from_env();
 
@@ -94,7 +99,9 @@ impl OidcConfig {
         if let Some(issuer) = injected_issuer {
             cfg.issuer = Box::leak(issuer.into_boxed_str());
         } else if let Some(rest) = host_rest.as_deref() {
-            cfg.issuer = Box::leak(format!("https://api.msp.{rest}").into_boxed_str());
+            // Issuer = bunyip-api on the apex's `api.` subdomain. Pre-cutover
+            // this was `https://api.msp.{rest}` (the mokosh-server host).
+            cfg.issuer = Box::leak(format!("https://api.{rest}").into_boxed_str());
         }
 
         if let Some(client_id) = injected_client_id {
