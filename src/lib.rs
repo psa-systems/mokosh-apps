@@ -50,9 +50,10 @@ pub fn AuthGuard() -> Element {
         //   - otherwise authorize 302s to bunyip's /login?return_to=
         //     and the SSO bridge closes the loop after they sign in.
         //
-        // The legacy `/login` redirect stub stays in place for users
-        // who hit that URL directly via a bookmark; it sends them to
-        // bunyip's /login, which then bounces them back here.
+        // The `/login` route is the explicit user-facing entry point and
+        // runs the same start_login kickoff (see the Login component below).
+        // Hitting `/login` directly or hitting a protected route both lead
+        // through bunyip's /oauth2/authorize on this origin.
         let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
         let _ = crate::modules::oidc::start_login(&cfg, "");
         return rsx! {
@@ -305,9 +306,27 @@ fn Home() -> Element {
     rsx! { home::HomePage {} }
 }
 
+/// `/login` is the explicit sign-in entry point. Bookmarks, the homepage CTA,
+/// and the navbar "Sign in" link all land here. Kick off the OIDC code+PKCE
+/// flow against the configured issuer (bunyip-api post-cutover) and show a
+/// "Signing in..." placeholder while the browser navigates to
+/// `/oauth2/authorize`.
+///
+/// This is the same kickoff `AuthGuard` does when an unauthenticated user
+/// hits a protected route. The pre-cutover behaviour (HubRedirect to bunyip's
+/// `/login` directly) skipped the OIDC handshake entirely, which is why the
+/// user landed on bunyip's dashboard with no way back to msp.
 #[component]
 fn Login() -> Element {
-    rsx! { HubRedirect { target: "/login".to_string(), label: "sign in" } }
+    use_effect(move || {
+        let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
+        let _ = crate::modules::oidc::start_login(&cfg, "/dashboard");
+    });
+    rsx! {
+        div { class: "min-h-screen flex items-center justify-center text-sm text-gray-500",
+            "Signing you in..."
+        }
+    }
 }
 
 #[component]
