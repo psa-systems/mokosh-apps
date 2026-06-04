@@ -4,9 +4,9 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
-    PlusIcon, SearchInput, Select, SelectOption, SortDirection, Table, TableBody, TableCell,
-    TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, Modal,
+    PageHeader, PlusIcon, SearchInput, Select, SelectOption, SortDirection, Table, TableBody,
+    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::Route;
 
@@ -844,7 +844,10 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                 // Contacts
                                 CompanyContactsCard { contacts_resource }
                                 // Sites
-                                CompanySitesCard { sites_resource }
+                                CompanySitesCard {
+                                    company_id: company_id_str.clone(),
+                                    sites_resource,
+                                }
                                 // Recent tickets
                                 CompanyTicketsCard { tickets_resource }
                             }
@@ -981,6 +984,10 @@ struct SiteSummary {
     address: CompanyAddress,
     #[serde(default)]
     is_primary: bool,
+    #[serde(default)]
+    phone: Option<String>,
+    #[serde(default)]
+    timezone: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1073,11 +1080,29 @@ fn CompanyContactsCard(contacts_resource: Resource<Option<Vec<RemoteContact>>>) 
 }
 
 #[component]
-fn CompanySitesCard(sites_resource: Resource<Option<Vec<SiteSummary>>>) -> Element {
+fn CompanySitesCard(
+    company_id: String,
+    mut sites_resource: Resource<Option<Vec<SiteSummary>>>,
+) -> Element {
     let snap = sites_resource.read_unchecked();
+    let mut editing = use_signal(|| None::<SiteFormState>);
+
     rsx! {
         Card {
             title: "Sites",
+            actions: rsx! {
+                button {
+                    r#type: "button",
+                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    onclick: {
+                        let company_id = company_id.clone();
+                        move |_| {
+                            editing.set(Some(SiteFormState::new_for_company(&company_id)));
+                        }
+                    },
+                    "New Site"
+                }
+            },
             padding: false,
             Table {
                 TableHead {
@@ -1095,6 +1120,7 @@ fn CompanySitesCard(sites_resource: Resource<Option<Vec<SiteSummary>>>) -> Eleme
                     },
                     Some(Some(rows)) => {
                         let rows = rows.clone();
+                        let company_id = company_id.clone();
                         rsx! {
                             TableBody {
                                 for site in rows.into_iter() {
@@ -1111,9 +1137,23 @@ fn CompanySitesCard(sites_resource: Resource<Option<Vec<SiteSummary>>>) -> Eleme
                                         .collect();
                                         let addr = parts.join(", ");
                                         let is_primary = site.is_primary;
+                                        let site_for_edit = site.clone();
+                                        let company_id_for_edit = company_id.clone();
                                         rsx! {
                                             TableRow { key: "{key}",
-                                                TableCell { "{site.name}" }
+                                                TableCell {
+                                                    button {
+                                                        r#type: "button",
+                                                        class: "text-left font-medium text-blue-600 hover:text-blue-500",
+                                                        onclick: move |_| {
+                                                            editing.set(Some(SiteFormState::from_existing(
+                                                                &company_id_for_edit,
+                                                                &site_for_edit,
+                                                            )));
+                                                        },
+                                                        "{site.name}"
+                                                    }
+                                                }
                                                 TableCell { class: "text-gray-500", "{addr}" }
                                                 TableCell {
                                                     if is_primary {
@@ -1126,6 +1166,293 @@ fn CompanySitesCard(sites_resource: Resource<Option<Vec<SiteSummary>>>) -> Eleme
                                 }
                             }
                         }
+                    },
+                }
+            }
+        }
+
+        if let Some(state) = editing.read().clone() {
+            SiteFormModal {
+                state,
+                onclose: move |_| { editing.set(None); },
+                onsaved: move |_| {
+                    editing.set(None);
+                    sites_resource.restart();
+                },
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct SiteFormState {
+    company_id: String,
+    /// Some => edit existing site
+    site_id: Option<String>,
+    name: String,
+    line1: String,
+    line2: String,
+    city: String,
+    state: String,
+    postal_code: String,
+    country: String,
+    phone: String,
+    is_primary: bool,
+    timezone: String,
+}
+
+impl SiteFormState {
+    fn new_for_company(company_id: &str) -> Self {
+        Self {
+            company_id: company_id.to_string(),
+            site_id: None,
+            name: String::new(),
+            line1: String::new(),
+            line2: String::new(),
+            city: String::new(),
+            state: String::new(),
+            postal_code: String::new(),
+            country: String::new(),
+            phone: String::new(),
+            is_primary: false,
+            timezone: String::new(),
+        }
+    }
+
+    fn from_existing(company_id: &str, site: &SiteSummary) -> Self {
+        Self {
+            company_id: company_id.to_string(),
+            site_id: Some(site.id.to_string()),
+            name: site.name.clone(),
+            line1: site.address.line1.clone().unwrap_or_default(),
+            line2: site.address.line2.clone().unwrap_or_default(),
+            city: site.address.city.clone().unwrap_or_default(),
+            state: site.address.state.clone().unwrap_or_default(),
+            postal_code: site.address.postal_code.clone().unwrap_or_default(),
+            country: site.address.country.clone().unwrap_or_default(),
+            phone: site.phone.clone().unwrap_or_default(),
+            is_primary: site.is_primary,
+            timezone: site.timezone.clone().unwrap_or_default(),
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct SiteFormModalProps {
+    state: SiteFormState,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn SiteFormModal(props: SiteFormModalProps) -> Element {
+    let initial = props.state.clone();
+    let is_edit = initial.site_id.is_some();
+    let modal_title = if is_edit { "Edit Site" } else { "New Site" };
+
+    let mut name = use_signal(|| initial.name.clone());
+    let mut line1 = use_signal(|| initial.line1.clone());
+    let mut line2 = use_signal(|| initial.line2.clone());
+    let mut city = use_signal(|| initial.city.clone());
+    let mut state = use_signal(|| initial.state.clone());
+    let mut postal = use_signal(|| initial.postal_code.clone());
+    let mut country = use_signal(|| initial.country.clone());
+    let mut phone = use_signal(|| initial.phone.clone());
+    let mut timezone = use_signal(|| initial.timezone.clone());
+    let mut is_primary = use_signal(|| initial.is_primary);
+    let mut saving = use_signal(|| false);
+    let mut deleting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+
+    let save_state = initial.clone();
+    let handle_save = move |_| {
+        if saving() || deleting() {
+            return;
+        }
+        if name.read().trim().is_empty() {
+            error.set("Site name is required.".to_string());
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        let body = serde_json::json!({
+            "company_id": save_state.company_id,
+            "name": name.read().trim(),
+            "address": {
+                "line1": optional_string(&line1.read()),
+                "line2": optional_string(&line2.read()),
+                "city": optional_string(&city.read()),
+                "state": optional_string(&state.read()),
+                "postal_code": optional_string(&postal.read()),
+                "country": optional_string(&country.read()),
+            },
+            "phone": optional_string(&phone.read()),
+            "is_primary": *is_primary.read(),
+            "timezone": optional_string(&timezone.read()),
+        });
+        let site_id = save_state.site_id.clone();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let result: Result<(), String> = match site_id {
+                    None => crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
+                        "/contacts/sites",
+                        &body,
+                    )
+                    .await
+                    .map(|_| ()),
+                    Some(id) => {
+                        let path = format!("/contacts/sites/{id}");
+                        crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
+                            .await
+                            .map(|_| ())
+                    }
+                };
+                match result {
+                    Ok(()) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not save site: {err}")),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    let delete_id = initial.site_id.clone();
+    let handle_delete = move |_| {
+        let Some(id) = delete_id.clone() else { return };
+        if saving() || deleting() {
+            return;
+        }
+        deleting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let confirmed = web_sys::window()
+                    .and_then(|w| {
+                        w.confirm_with_message("Delete this site? This cannot be undone.")
+                            .ok()
+                    })
+                    .unwrap_or(false);
+                if confirmed {
+                    let path = format!("/contacts/sites/{id}");
+                    match crate::hooks::fetch::api::delete_authed(&path).await {
+                        Ok(()) => onsaved.call(()),
+                        Err(err) => error.set(format!("Could not delete site: {err}")),
+                    }
+                }
+            }
+            deleting.set(false);
+        });
+    };
+
+    let footer = rsx! {
+        if is_edit {
+            Button {
+                variant: ButtonVariant::Danger,
+                loading: *deleting.read(),
+                onclick: handle_delete,
+                "Delete"
+            }
+        }
+        div { class: "flex-1" }
+        Button {
+            variant: ButtonVariant::Secondary,
+            onclick: move |_| onclose.call(()),
+            "Cancel"
+        }
+        Button {
+            variant: ButtonVariant::Primary,
+            loading: *saving.read(),
+            onclick: handle_save,
+            if is_edit { "Save Changes" } else { "Create Site" }
+        }
+    };
+
+    rsx! {
+        Modal {
+            open: true,
+            title: modal_title,
+            size: crate::components::ModalSize::Large,
+            onclose: move |_| onclose.call(()),
+            footer,
+            div { class: "space-y-4",
+                if !error.read().is_empty() {
+                    div {
+                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                        "{error.read()}"
+                    }
+                }
+                crate::components::Input {
+                    name: "site_name",
+                    label: "Name",
+                    placeholder: "e.g. Main Office",
+                    required: true,
+                    value: name.read().clone(),
+                    oninput: move |e: FormEvent| name.set(e.value()),
+                }
+                div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
+                    crate::components::Input {
+                        name: "site_line1",
+                        label: "Street",
+                        value: line1.read().clone(),
+                        oninput: move |e: FormEvent| line1.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "site_line2",
+                        label: "Street (line 2)",
+                        value: line2.read().clone(),
+                        oninput: move |e: FormEvent| line2.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "site_city",
+                        label: "City",
+                        value: city.read().clone(),
+                        oninput: move |e: FormEvent| city.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "site_state",
+                        label: "State / Region",
+                        value: state.read().clone(),
+                        oninput: move |e: FormEvent| state.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "site_postal",
+                        label: "Postal Code",
+                        value: postal.read().clone(),
+                        oninput: move |e: FormEvent| postal.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "site_country",
+                        label: "Country",
+                        value: country.read().clone(),
+                        oninput: move |e: FormEvent| country.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "site_phone",
+                        label: "Phone",
+                        value: phone.read().clone(),
+                        oninput: move |e: FormEvent| phone.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "site_timezone",
+                        label: "Timezone",
+                        placeholder: "e.g. America/New_York",
+                        value: timezone.read().clone(),
+                        oninput: move |e: FormEvent| timezone.set(e.value()),
+                    }
+                }
+                crate::components::Checkbox {
+                    name: "site_is_primary",
+                    label: "Primary site",
+                    checked: *is_primary.read(),
+                    help: "Marks this as the main location for the company.",
+                    onchange: move |_| {
+                        let next = !*is_primary.read();
+                        is_primary.set(next);
                     },
                 }
             }
