@@ -45,6 +45,10 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 # Date/Time
 chrono = { version = "0.4", features = ["serde", "wasmbind"] }
 
+# Decimal (time-tracking money/rate DTO fields). `db-postgres` is the
+# server-only feature and is intentionally omitted on the WASM client.
+rust_decimal = { version = "1", features = ["serde"] }
+
 # Validation
 validator = { version = "0.19", features = ["derive"] }
 

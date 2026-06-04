@@ -7,3 +7,4 @@ pub mod runtime_config;
 pub mod system;
 pub mod tenants;
 pub mod tickets;
+pub mod time_tracking;
