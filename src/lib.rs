@@ -153,6 +153,9 @@ pub enum Route {
     #[route("/companies/:id")]
     CompanyDetail { id: String },
 
+    #[route("/companies/:id/edit")]
+    CompanyEdit { id: String },
+
     #[route("/contacts")]
     ContactList {},
 
@@ -427,6 +430,11 @@ fn CompanyNew() -> Element {
 #[component]
 fn CompanyDetail(id: String) -> Element {
     rsx! { contacts::CompanyDetailPage { id } }
+}
+
+#[component]
+fn CompanyEdit(id: String) -> Element {
+    rsx! { contacts::CompanyEditPage { id } }
 }
 
 #[component]

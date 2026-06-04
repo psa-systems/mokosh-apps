@@ -348,78 +348,228 @@ fn CompanyRow(props: CompanyRowProps) -> Element {
 /// New company page
 #[component]
 pub fn CompanyNewPage() -> Element {
-    let mut name = use_signal(String::new);
-    let mut company_type = use_signal(|| "customer".to_string());
+    rsx! {
+        AppLayout { title: "New Company",
+            PageHeader { title: "New Company", subtitle: "Add a new company account" }
+            CompanyForm {
+                initial: CompanyFormValues::default(),
+                mode: CompanyFormMode::Create,
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+pub struct CompanyEditPageProps {
+    pub id: String,
+}
+
+#[component]
+pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
+    let id_for_resource = props.id.clone();
+    let id_for_form = props.id.clone();
+    let detail_resource = use_resource(move || {
+        let id = id_for_resource.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<CompanyEditPayload>(&format!("/companies/{id}"))
+                .await
+                .ok()
+        }
+    });
+    let snap = detail_resource.read_unchecked();
+    rsx! {
+        AppLayout { title: "Edit Company",
+            PageHeader { title: "Edit Company" }
+            match &*snap {
+                None => rsx! {
+                    Card { div { class: "py-12 text-center text-sm text-gray-500", "Loading company..." } }
+                },
+                Some(None) => rsx! {
+                    Card {
+                        div { class: "py-8 text-center",
+                            p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load company." }
+                            Link {
+                                to: Route::CompanyList {},
+                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                "Back to companies"
+                            }
+                        }
+                    }
+                },
+                Some(Some(payload)) => {
+                    let initial = CompanyFormValues {
+                        name: payload.name.clone(),
+                        company_type: payload.company_type.clone(),
+                        industry: payload.industry.clone().unwrap_or_default(),
+                        website: payload.website.clone().unwrap_or_default(),
+                        phone: payload.phone.clone().unwrap_or_default(),
+                        address_line1: payload.address.line1.clone().unwrap_or_default(),
+                        address_line2: payload.address.line2.clone().unwrap_or_default(),
+                        address_city: payload.address.city.clone().unwrap_or_default(),
+                        address_state: payload.address.state.clone().unwrap_or_default(),
+                        address_postal_code: payload.address.postal_code.clone().unwrap_or_default(),
+                        address_country: payload.address.country.clone().unwrap_or_default(),
+                    };
+                    let id = id_for_form.clone();
+                    rsx! {
+                        CompanyForm {
+                            initial,
+                            mode: CompanyFormMode::Edit { id },
+                        }
+                    }
+                },
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CompanyEditPayload {
+    name: String,
+    #[serde(default)]
+    company_type: String,
+    #[serde(default)]
+    industry: Option<String>,
+    #[serde(default)]
+    website: Option<String>,
+    #[serde(default)]
+    phone: Option<String>,
+    #[serde(default)]
+    address: CompanyAddress,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct CompanyFormValues {
+    name: String,
+    company_type: String,
+    industry: String,
+    website: String,
+    phone: String,
+    address_line1: String,
+    address_line2: String,
+    address_city: String,
+    address_state: String,
+    address_postal_code: String,
+    address_country: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum CompanyFormMode {
+    Create,
+    Edit { id: String },
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct CompanyFormProps {
+    initial: CompanyFormValues,
+    mode: CompanyFormMode,
+}
+
+#[component]
+fn CompanyForm(props: CompanyFormProps) -> Element {
+    let initial = props.initial.clone();
+    let mode = props.mode.clone();
+    let initial_type = if initial.company_type.is_empty() {
+        "customer".to_string()
+    } else {
+        initial.company_type.clone()
+    };
+
+    let mut name = use_signal(|| initial.name.clone());
+    let mut company_type = use_signal(|| initial_type.clone());
+    let mut industry = use_signal(|| initial.industry.clone());
+    let mut website = use_signal(|| initial.website.clone());
+    let mut phone = use_signal(|| initial.phone.clone());
+    let mut line1 = use_signal(|| initial.address_line1.clone());
+    let mut line2 = use_signal(|| initial.address_line2.clone());
+    let mut city = use_signal(|| initial.address_city.clone());
+    let mut state = use_signal(|| initial.address_state.clone());
+    let mut postal = use_signal(|| initial.address_postal_code.clone());
+    let mut country = use_signal(|| initial.address_country.clone());
     let mut is_submitting = use_signal(|| false);
+    let mut error = use_signal(String::new);
 
     let type_options = vec![
         SelectOption::new("customer", "Customer"),
         SelectOption::new("prospect", "Prospect"),
         SelectOption::new("vendor", "Vendor"),
+        SelectOption::new("partner", "Partner"),
     ];
 
     let navigator = use_navigator();
+    let submit_label = match &mode {
+        CompanyFormMode::Create => "Create Company",
+        CompanyFormMode::Edit { .. } => "Save Changes",
+    };
+
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
         is_submitting.set(true);
-
-        // Snapshot signals so the spawn doesn't borrow them across await.
-        let name_v = name.read().clone();
-        let company_type_v = company_type.read().clone();
-
+        error.set(String::new());
+        let body = serde_json::json!({
+            "name": name.read().trim(),
+            "company_type": company_type.read().clone(),
+            "industry": optional_string(&industry.read()),
+            "website": optional_string(&website.read()),
+            "phone": optional_string(&phone.read()),
+            "address": {
+                "line1": optional_string(&line1.read()),
+                "line2": optional_string(&line2.read()),
+                "city": optional_string(&city.read()),
+                "state": optional_string(&state.read()),
+                "postal_code": optional_string(&postal.read()),
+                "country": optional_string(&country.read()),
+            },
+        });
+        let mode = mode.clone();
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                // F5: real POST to /companies (the list page already
-                // GETs from this route). Reuses the TicketNewPage
-                // pattern: on success navigate to the new detail page,
-                // on failure keep the form mounted and log so the user
-                // can retry without losing input.
-                let body = serde_json::json!({
-                    "name": name_v,
-                    "company_type": company_type_v,
-                });
-
                 #[derive(serde::Deserialize)]
-                struct CreatedCompany {
+                struct CompanyId {
                     id: uuid::Uuid,
                 }
-
-                match crate::hooks::fetch::api::post_authed::<CreatedCompany, _>(
-                    "/companies",
-                    &body,
-                )
-                .await
-                {
-                    Ok(created) => {
-                        navigator.push(Route::CompanyDetail {
-                            id: created.id.to_string(),
-                        });
+                let result = match &mode {
+                    CompanyFormMode::Create => {
+                        crate::hooks::fetch::api::post_authed::<CompanyId, _>("/companies", &body)
+                            .await
+                            .map(|c| c.id.to_string())
+                    }
+                    CompanyFormMode::Edit { id } => {
+                        let path = format!("/companies/{id}");
+                        crate::hooks::fetch::api::put_authed::<CompanyId, _>(&path, &body)
+                            .await
+                            .map(|_| id.clone())
+                    }
+                };
+                match result {
+                    Ok(id) => {
+                        navigator.push(Route::CompanyDetail { id });
                     }
                     Err(err) => {
-                        web_sys::console::error_1(
-                            &format!("Could not create company: {err}").into(),
-                        );
+                        error.set(format!("Could not save company: {err}"));
                     }
                 }
             }
-
             is_submitting.set(false);
         });
     };
 
     rsx! {
-        AppLayout { title: "New Company",
-            PageHeader {
-                title: "New Company",
-                subtitle: "Add a new company account",
-            }
+        Card {
+            form {
+                class: "space-y-6",
+                onsubmit: handle_submit,
 
-            Card {
-                form {
-                    class: "space-y-6",
-                    onsubmit: handle_submit,
+                if !error.read().is_empty() {
+                    div {
+                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                        "{error.read()}"
+                    }
+                }
 
+                div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
                     crate::components::Input {
                         name: "name",
                         label: "Company Name",
@@ -428,7 +578,6 @@ pub fn CompanyNewPage() -> Element {
                         value: name.read().clone(),
                         oninput: move |e: FormEvent| name.set(e.value()),
                     }
-
                     Select {
                         name: "type",
                         label: "Company Type",
@@ -436,22 +585,94 @@ pub fn CompanyNewPage() -> Element {
                         value: company_type.read().clone(),
                         onchange: move |e: FormEvent| company_type.set(e.value()),
                     }
+                    crate::components::Input {
+                        name: "industry",
+                        label: "Industry",
+                        placeholder: "e.g. Healthcare",
+                        value: industry.read().clone(),
+                        oninput: move |e: FormEvent| industry.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "website",
+                        label: "Website",
+                        placeholder: "https://example.com",
+                        value: website.read().clone(),
+                        oninput: move |e: FormEvent| website.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "phone",
+                        label: "Phone",
+                        placeholder: "(555) 555-5555",
+                        value: phone.read().clone(),
+                        oninput: move |e: FormEvent| phone.set(e.value()),
+                    }
+                }
 
-                    div { class: "flex justify-end space-x-3",
-                        Link {
-                            to: Route::CompanyList {},
-                            Button { variant: ButtonVariant::Secondary, "Cancel" }
-                        }
-                        Button {
-                            r#type: "submit",
-                            variant: ButtonVariant::Primary,
-                            loading: *is_submitting.read(),
-                            "Create Company"
-                        }
+                h3 { class: "text-sm font-medium text-gray-900 dark:text-gray-100 pt-2",
+                    "Address"
+                }
+                div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
+                    crate::components::Input {
+                        name: "address_line1",
+                        label: "Street",
+                        value: line1.read().clone(),
+                        oninput: move |e: FormEvent| line1.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "address_line2",
+                        label: "Street (line 2)",
+                        value: line2.read().clone(),
+                        oninput: move |e: FormEvent| line2.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "address_city",
+                        label: "City",
+                        value: city.read().clone(),
+                        oninput: move |e: FormEvent| city.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "address_state",
+                        label: "State / Region",
+                        value: state.read().clone(),
+                        oninput: move |e: FormEvent| state.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "address_postal_code",
+                        label: "Postal Code",
+                        value: postal.read().clone(),
+                        oninput: move |e: FormEvent| postal.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "address_country",
+                        label: "Country",
+                        value: country.read().clone(),
+                        oninput: move |e: FormEvent| country.set(e.value()),
+                    }
+                }
+
+                div { class: "flex justify-end space-x-3",
+                    Link {
+                        to: Route::CompanyList {},
+                        Button { variant: ButtonVariant::Secondary, "Cancel" }
+                    }
+                    Button {
+                        r#type: "submit",
+                        variant: ButtonVariant::Primary,
+                        loading: *is_submitting.read(),
+                        "{submit_label}"
                     }
                 }
             }
         }
+    }
+}
+
+fn optional_string(value: &str) -> serde_json::Value {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::String(trimmed.to_string())
     }
 }
 
@@ -464,203 +685,512 @@ pub struct CompanyDetailPageProps {
 #[component]
 #[allow(unused_variables)]
 pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
-    let header_title = format!("Company {}", props.id);
+    let company_id_str = props.id.clone();
+    let company_id_for_resource = company_id_str.clone();
+    let company_id_for_contacts = company_id_str.clone();
+    let company_id_for_sites = company_id_str.clone();
+    let company_id_for_tickets = company_id_str.clone();
+    let company_id_for_edit = company_id_str.clone();
+    let company_id_for_delete = company_id_str.clone();
+
+    let company_resource = use_resource(move || {
+        let id = company_id_for_resource.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<CompanyDetail>(&format!("/companies/{id}"))
+                .await
+                .ok()
+        }
+    });
+    let contacts_resource = use_resource(move || {
+        let id = company_id_for_contacts.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<Vec<RemoteContact>>(&format!(
+                "/companies/{id}/contacts"
+            ))
+            .await
+            .ok()
+        }
+    });
+    let sites_resource = use_resource(move || {
+        let id = company_id_for_sites.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<Vec<SiteSummary>>(&format!(
+                "/companies/{id}/sites"
+            ))
+            .await
+            .ok()
+        }
+    });
+    let tickets_resource = use_resource(move || {
+        let id = company_id_for_tickets.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<PaginatedTicketSummaries>(&format!(
+                "/tickets?company_id={id}&page_size=5&sort=-updated_at"
+            ))
+            .await
+            .ok()
+        }
+    });
+
+    let company_snapshot = company_resource.read_unchecked();
+    let header_title = match &*company_snapshot {
+        Some(Some(c)) => c.name.clone(),
+        _ => "Company".to_string(),
+    };
+
+    let navigator = use_navigator();
+    let mut deleting = use_signal(|| false);
+    let edit_id = company_id_for_edit.clone();
+    let delete_id = company_id_for_delete.clone();
+
     rsx! {
         AppLayout { title: "{header_title}",
             PageHeader {
                 title: "{header_title}",
                 actions: rsx! {
                     Link {
-                        to: Route::TicketNew {},
+                        to: Route::CompanyEdit { id: edit_id },
                         Button {
-                            variant: ButtonVariant::Primary,
-                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                            "New Ticket"
+                            variant: ButtonVariant::Secondary,
+                            "Edit"
                         }
+                    }
+                    Button {
+                        variant: ButtonVariant::Danger,
+                        loading: *deleting.read(),
+                        onclick: move |_| {
+                            let id = delete_id.clone();
+                            deleting.set(true);
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    let confirmed = web_sys::window()
+                                        .and_then(|w| {
+                                            w.confirm_with_message(
+                                                "Delete this company? This will also remove its sites and unlink its contacts/tickets.",
+                                            )
+                                            .ok()
+                                        })
+                                        .unwrap_or(false);
+                                    if confirmed {
+                                        let path = format!("/companies/{id}");
+                                        if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
+                                            navigator.push(Route::CompanyList {});
+                                        }
+                                    }
+                                }
+                                deleting.set(false);
+                            });
+                        },
+                        "Delete"
                     }
                 },
             }
 
-            div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
-                // Main content
-                div { class: "lg:col-span-2 space-y-6",
-                    // Contacts
+            match &*company_snapshot {
+                None => rsx! {
                     Card {
-                        title: "Contacts",
-                        actions: rsx! {
+                        div { class: "py-12 text-center text-sm text-gray-500", "Loading company..." }
+                    }
+                },
+                Some(None) => rsx! {
+                    Card {
+                        div {
+                            class: "py-8 text-center",
+                            p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load company." }
                             Link {
-                                to: Route::ContactNew {},
+                                to: Route::CompanyList {},
                                 class: "text-sm text-blue-600 hover:text-blue-500",
-                                "Add Contact"
+                                "Back to companies"
                             }
-                        },
-                        padding: false,
-                        Table {
-                            TableHead {
-                                TableRow {
-                                    TableHeader { "Name" }
-                                    TableHeader { "Email" }
-                                    TableHeader { "Phone" }
-                                    TableHeader { "Role" }
-                                }
+                        }
+                    }
+                },
+                Some(Some(company)) => {
+                    let address_parts: Vec<String> = [
+                        company.address.line1.clone(),
+                        company.address.line2.clone(),
+                        company.address.city.clone(),
+                        company.address.state.clone(),
+                        company.address.postal_code.clone(),
+                        company.address.country.clone(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                    let type_label = humanize_company_type(&company.company_type);
+                    let website = company.website.clone();
+                    let phone = company.phone.clone();
+                    let industry = company.industry.clone();
+                    let am_name = company.account_manager_name.clone();
+                    let open_tickets = company.open_ticket_count.unwrap_or(0).max(0);
+                    let contact_count = company.contact_count.unwrap_or(0).max(0);
+                    let site_count = company.site_count.unwrap_or(0).max(0);
+                    rsx! {
+                        div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
+                            div { class: "lg:col-span-2 space-y-6",
+                                // Contacts
+                                CompanyContactsCard { contacts_resource }
+                                // Sites
+                                CompanySitesCard { sites_resource }
+                                // Recent tickets
+                                CompanyTicketsCard { tickets_resource }
                             }
-                            TableBody {
-                                TableRow {
-                                    TableCell {
-                                        Link {
-                                            to: Route::ContactDetail { id: "1".to_string() },
-                                            class: "font-medium text-blue-600 hover:text-blue-500",
-                                            "Bob Johnson"
+                            // Sidebar
+                            div { class: "space-y-6",
+                                Card { title: "Details",
+                                    dl { class: "space-y-4",
+                                        div { class: "flex justify-between",
+                                            dt { class: "text-sm text-gray-500", "Type" }
+                                            dd { Badge { variant: BadgeVariant::Green, "{type_label}" } }
+                                        }
+                                        if let Some(industry) = industry {
+                                            if !industry.is_empty() {
+                                                div { class: "flex justify-between",
+                                                    dt { class: "text-sm text-gray-500", "Industry" }
+                                                    dd { class: "text-sm", "{industry}" }
+                                                }
+                                            }
+                                        }
+                                        if let Some(phone) = phone {
+                                            if !phone.is_empty() {
+                                                div { class: "flex justify-between",
+                                                    dt { class: "text-sm text-gray-500", "Phone" }
+                                                    dd { class: "text-sm", "{phone}" }
+                                                }
+                                            }
+                                        }
+                                        if let Some(website) = website {
+                                            if !website.is_empty() {
+                                                div { class: "flex justify-between",
+                                                    dt { class: "text-sm text-gray-500", "Website" }
+                                                    dd {
+                                                        a {
+                                                            href: "{website}",
+                                                            target: "_blank",
+                                                            class: "text-sm text-blue-600 hover:text-blue-500",
+                                                            "{website}"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if let Some(am) = am_name {
+                                            if !am.is_empty() {
+                                                div { class: "flex justify-between",
+                                                    dt { class: "text-sm text-gray-500", "Account Manager" }
+                                                    dd { class: "text-sm", "{am}" }
+                                                }
+                                            }
+                                        }
+                                        if !address_parts.is_empty() {
+                                            div {
+                                                dt { class: "text-sm text-gray-500 mb-1", "Address" }
+                                                dd { class: "text-sm space-y-0.5",
+                                                    for line in address_parts.iter() {
+                                                        p { "{line}" }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
-                                    TableCell { "bob@acme.com" }
-                                    TableCell { "(555) 123-4567" }
-                                    TableCell { Badge { variant: BadgeVariant::Blue, "Primary" } }
                                 }
-                                TableRow {
-                                    TableCell {
-                                        Link {
-                                            to: Route::ContactDetail { id: "2".to_string() },
-                                            class: "font-medium text-blue-600 hover:text-blue-500",
-                                            "Sarah Miller"
+                                Card { title: "Statistics",
+                                    div { class: "space-y-3",
+                                        div { class: "flex justify-between",
+                                            span { class: "text-sm text-gray-500", "Open Tickets" }
+                                            span { class: "font-medium text-gray-900 dark:text-white", "{open_tickets}" }
+                                        }
+                                        div { class: "flex justify-between",
+                                            span { class: "text-sm text-gray-500", "Contacts" }
+                                            span { class: "font-medium", "{contact_count}" }
+                                        }
+                                        div { class: "flex justify-between",
+                                            span { class: "text-sm text-gray-500", "Sites" }
+                                            span { class: "font-medium", "{site_count}" }
                                         }
                                     }
-                                    TableCell { "sarah@acme.com" }
-                                    TableCell { "(555) 123-4568" }
-                                    TableCell { "IT Manager" }
-                                }
-                                TableRow {
-                                    TableCell {
-                                        Link {
-                                            to: Route::ContactDetail { id: "3".to_string() },
-                                            class: "font-medium text-blue-600 hover:text-blue-500",
-                                            "Mike Davis"
-                                        }
-                                    }
-                                    TableCell { "mike@acme.com" }
-                                    TableCell { "(555) 123-4569" }
-                                    TableCell { "Finance" }
                                 }
                             }
                         }
                     }
+                },
+            }
+        }
+    }
+}
 
-                    // Recent tickets
-                    Card {
-                        title: "Recent Tickets",
-                        actions: rsx! {
-                            Link {
-                                to: Route::TicketList {},
-                                class: "text-sm text-blue-600 hover:text-blue-500",
-                                "View All"
-                            }
-                        },
-                        padding: false,
-                        Table {
-                            TableHead {
-                                TableRow {
-                                    TableHeader { "Ticket" }
-                                    TableHeader { "Status" }
-                                    TableHeader { "Updated" }
-                                }
-                            }
-                            TableBody {
-                                TableRow {
-                                    TableCell {
-                                        div {
-                                            span { class: "font-medium text-blue-600", "TKT-1234" }
-                                            p { class: "text-sm text-gray-500", "Email server not responding" }
-                                        }
-                                    }
-                                    TableCell { Badge { variant: BadgeVariant::Blue, "Open" } }
-                                    TableCell { class: "text-gray-500", "5 min ago" }
-                                }
-                                TableRow {
-                                    TableCell {
-                                        div {
-                                            span { class: "font-medium text-blue-600", "TKT-1231" }
-                                            p { class: "text-sm text-gray-500", "VPN connection issues" }
-                                        }
-                                    }
-                                    TableCell { Badge { variant: BadgeVariant::Blue, "Open" } }
-                                    TableCell { class: "text-gray-500", "3 hours ago" }
-                                }
-                            }
-                        }
+/// CompanyResponse subset for the detail page. Mirrors mokosh-server's
+/// shape; serde drops fields we don't read.
+#[derive(Clone, Debug, Deserialize)]
+struct CompanyDetail {
+    name: String,
+    #[serde(default)]
+    company_type: String,
+    #[serde(default)]
+    industry: Option<String>,
+    #[serde(default)]
+    website: Option<String>,
+    #[serde(default)]
+    phone: Option<String>,
+    #[serde(default)]
+    address: CompanyAddress,
+    #[serde(default)]
+    account_manager_name: Option<String>,
+    #[serde(default)]
+    contact_count: Option<i64>,
+    #[serde(default)]
+    site_count: Option<i64>,
+    #[serde(default)]
+    open_ticket_count: Option<i64>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct CompanyAddress {
+    #[serde(default)]
+    line1: Option<String>,
+    #[serde(default)]
+    line2: Option<String>,
+    #[serde(default)]
+    city: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    postal_code: Option<String>,
+    #[serde(default)]
+    country: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SiteSummary {
+    id: uuid::Uuid,
+    name: String,
+    #[serde(default)]
+    address: CompanyAddress,
+    #[serde(default)]
+    is_primary: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct PaginatedTicketSummaries {
+    data: Vec<TicketSummary>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct TicketSummary {
+    id: uuid::Uuid,
+    #[serde(default)]
+    ticket_number: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    status: TicketStatusBadge,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct TicketStatusBadge {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    is_closed: bool,
+}
+
+#[component]
+fn CompanyContactsCard(contacts_resource: Resource<Option<Vec<RemoteContact>>>) -> Element {
+    let snap = contacts_resource.read_unchecked();
+    rsx! {
+        Card {
+            title: "Contacts",
+            actions: rsx! {
+                Link {
+                    to: Route::ContactNew {},
+                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    "Add Contact"
+                }
+            },
+            padding: false,
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Name" }
+                        TableHeader { "Email" }
+                        TableHeader { "Phone" }
+                        TableHeader { "Role" }
                     }
                 }
-
-                // Sidebar
-                div { class: "space-y-6",
-                    // Company info
-                    Card { title: "Details",
-                        dl { class: "space-y-4",
-                            div { class: "flex justify-between",
-                                dt { class: "text-sm text-gray-500", "Type" }
-                                dd { Badge { variant: BadgeVariant::Green, "Customer" } }
-                            }
-                            div { class: "flex justify-between",
-                                dt { class: "text-sm text-gray-500", "Phone" }
-                                dd { class: "text-sm", "(555) 123-4500" }
-                            }
-                            div { class: "flex justify-between",
-                                dt { class: "text-sm text-gray-500", "Website" }
-                                dd {
-                                    a { href: "https://acme.com", class: "text-sm text-blue-600", "acme.com" }
+                match &*snap {
+                    None => rsx! { TableLoading { columns: 4, rows: 3 } },
+                    Some(None) => rsx! { TableEmpty { columns: 4, message: "Could not load contacts.".to_string() } },
+                    Some(Some(rows)) if rows.is_empty() => rsx! {
+                        TableEmpty { columns: 4, message: "No contacts at this company yet.".to_string() }
+                    },
+                    Some(Some(rows)) => {
+                        let rows = rows.clone();
+                        rsx! {
+                            TableBody {
+                                for contact in rows.into_iter() {
+                                    {
+                                        let id = contact.id.to_string();
+                                        let name = format!("{} {}", contact.first_name, contact.last_name).trim().to_string();
+                                        let email = contact.email.clone().unwrap_or_default();
+                                        let phone = contact.phone_primary.clone().unwrap_or_default();
+                                        let role = contact.job_title.clone().unwrap_or_default();
+                                        rsx! {
+                                            TableRow { key: "{id}",
+                                                TableCell {
+                                                    Link {
+                                                        to: Route::ContactDetail { id: id.clone() },
+                                                        class: "font-medium text-blue-600 hover:text-blue-500",
+                                                        "{name}"
+                                                    }
+                                                }
+                                                TableCell { "{email}" }
+                                                TableCell { "{phone}" }
+                                                TableCell { "{role}" }
+                                            }
+                                        }
+                                    }
                                 }
                             }
-                            div {
-                                dt { class: "text-sm text-gray-500 mb-1", "Address" }
-                                dd { class: "text-sm",
-                                    p { "123 Business Ave" }
-                                    p { "Suite 500" }
-                                    p { "New York, NY 10001" }
+                        }
+                    },
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn CompanySitesCard(sites_resource: Resource<Option<Vec<SiteSummary>>>) -> Element {
+    let snap = sites_resource.read_unchecked();
+    rsx! {
+        Card {
+            title: "Sites",
+            padding: false,
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Name" }
+                        TableHeader { "Address" }
+                        TableHeader { "Primary" }
+                    }
+                }
+                match &*snap {
+                    None => rsx! { TableLoading { columns: 3, rows: 2 } },
+                    Some(None) => rsx! { TableEmpty { columns: 3, message: "Could not load sites.".to_string() } },
+                    Some(Some(rows)) if rows.is_empty() => rsx! {
+                        TableEmpty { columns: 3, message: "No sites for this company yet.".to_string() }
+                    },
+                    Some(Some(rows)) => {
+                        let rows = rows.clone();
+                        rsx! {
+                            TableBody {
+                                for site in rows.into_iter() {
+                                    {
+                                        let key = site.id.to_string();
+                                        let parts: Vec<String> = [
+                                            site.address.line1.clone(),
+                                            site.address.city.clone(),
+                                            site.address.state.clone(),
+                                        ]
+                                        .into_iter()
+                                        .flatten()
+                                        .filter(|s| !s.is_empty())
+                                        .collect();
+                                        let addr = parts.join(", ");
+                                        let is_primary = site.is_primary;
+                                        rsx! {
+                                            TableRow { key: "{key}",
+                                                TableCell { "{site.name}" }
+                                                TableCell { class: "text-gray-500", "{addr}" }
+                                                TableCell {
+                                                    if is_primary {
+                                                        Badge { variant: BadgeVariant::Blue, "Primary" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
-                    }
+                    },
+                }
+            }
+        }
+    }
+}
 
-                    // Contract info
-                    Card { title: "Contract",
-                        div { class: "space-y-3",
-                            Link {
-                                to: Route::ContractDetail { id: "1".to_string() },
-                                class: "block text-blue-600 hover:text-blue-500 font-medium",
-                                "Managed Services Agreement"
-                            }
-                            div { class: "text-sm text-gray-500",
-                                p { "Monthly: $2,500" }
-                                p { "Expires: Dec 31, 2025" }
+#[component]
+fn CompanyTicketsCard(tickets_resource: Resource<Option<PaginatedTicketSummaries>>) -> Element {
+    let snap = tickets_resource.read_unchecked();
+    rsx! {
+        Card {
+            title: "Recent Tickets",
+            actions: rsx! {
+                Link {
+                    to: Route::TicketList {},
+                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    "View All"
+                }
+            },
+            padding: false,
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Ticket" }
+                        TableHeader { "Status" }
+                    }
+                }
+                match &*snap {
+                    None => rsx! { TableLoading { columns: 2, rows: 3 } },
+                    Some(None) => rsx! { TableEmpty { columns: 2, message: "Could not load tickets.".to_string() } },
+                    Some(Some(page)) if page.data.is_empty() => rsx! {
+                        TableEmpty { columns: 2, message: "No tickets for this company yet.".to_string() }
+                    },
+                    Some(Some(page)) => {
+                        let rows = page.data.clone();
+                        rsx! {
+                            TableBody {
+                                for ticket in rows.into_iter() {
+                                    {
+                                        let id = ticket.id.to_string();
+                                        let key = id.clone();
+                                        let number = ticket.ticket_number.clone();
+                                        let title = ticket.title.clone();
+                                        let status_name = ticket.status.name.clone();
+                                        let variant = if ticket.status.is_closed {
+                                            BadgeVariant::Gray
+                                        } else {
+                                            BadgeVariant::Blue
+                                        };
+                                        rsx! {
+                                            TableRow { key: "{key}",
+                                                TableCell {
+                                                    div {
+                                                        Link {
+                                                            to: Route::TicketDetail { id: id.clone() },
+                                                            class: "font-medium text-blue-600 hover:text-blue-500",
+                                                            "{number}"
+                                                        }
+                                                        p { class: "text-sm text-gray-500", "{title}" }
+                                                    }
+                                                }
+                                                TableCell {
+                                                    Badge { variant, "{status_name}" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
-                    }
-
-                    // Stats
-                    Card { title: "Statistics",
-                        div { class: "space-y-3",
-                            div { class: "flex justify-between",
-                                span { class: "text-sm text-gray-500", "Open Tickets" }
-                                // Was rendered link-blue but is a bare
-                                // span. There is no /tickets?company=:id
-                                // filter yet, so drop the blue styling
-                                // so the affordance matches the wiring
-                                // (PMC-46).
-                                span { class: "font-medium text-gray-900 dark:text-white", "5" }
-                            }
-                            div { class: "flex justify-between",
-                                span { class: "text-sm text-gray-500", "This Month" }
-                                span { class: "font-medium", "12 tickets" }
-                            }
-                            div { class: "flex justify-between",
-                                span { class: "text-sm text-gray-500", "Billable Hours" }
-                                span { class: "font-medium", "45.5h" }
-                            }
-                            div { class: "flex justify-between",
-                                span { class: "text-sm text-gray-500", "Revenue (YTD)" }
-                                span { class: "font-medium text-green-600", "$42,500" }
-                            }
-                        }
-                    }
+                    },
                 }
             }
         }
