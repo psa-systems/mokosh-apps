@@ -102,13 +102,13 @@ fn urlencoding_minimal(s: &str) -> String {
     out
 }
 
-/// Map the server's lowercased `CompanyType` enum tag (`"customer"`,
+/// Map the server's lowercased `CompanyType` enum tag (`"client"`,
 /// `"prospect"`, `"vendor"`, `"partner"`) to the title-case label that
 /// `CompanyRow` keys its badge variant on. Unknown values fall through
 /// unchanged so future variants don't disappear.
 fn humanize_company_type(raw: &str) -> String {
     match raw {
-        "customer" => "Customer".to_string(),
+        "client" => "Client".to_string(),
         "prospect" => "Prospect".to_string(),
         "vendor" => "Vendor".to_string(),
         "partner" => "Partner".to_string(),
@@ -184,7 +184,7 @@ pub fn CompanyListPage() -> Element {
 
     let type_options = vec![
         SelectOption::new("", "All Types"),
-        SelectOption::new("customer", "Customer"),
+        SelectOption::new("client", "Client"),
         SelectOption::new("prospect", "Prospect"),
         SelectOption::new("vendor", "Vendor"),
     ];
@@ -355,7 +355,7 @@ struct CompanyRowProps {
 #[component]
 fn CompanyRow(props: CompanyRowProps) -> Element {
     let type_variant = match props.company_type.as_str() {
-        "Customer" => BadgeVariant::Green,
+        "Client" => BadgeVariant::Green,
         "Prospect" => BadgeVariant::Blue,
         "Vendor" => BadgeVariant::Purple,
         _ => BadgeVariant::Gray,
@@ -518,7 +518,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let initial = props.initial.clone();
     let mode = props.mode.clone();
     let initial_type = if initial.company_type.is_empty() {
-        "customer".to_string()
+        "client".to_string()
     } else {
         initial.company_type.clone()
     };
@@ -538,7 +538,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let mut error = use_signal(String::new);
 
     let type_options = vec![
-        SelectOption::new("customer", "Customer"),
+        SelectOption::new("client", "Client"),
         SelectOption::new("prospect", "Prospect"),
         SelectOption::new("vendor", "Vendor"),
         SelectOption::new("partner", "Partner"),
