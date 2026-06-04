@@ -372,9 +372,11 @@ pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
         let id = id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<CompanyEditPayload>(&format!("/contacts/companies/{id}"))
-                .await
-                .ok()
+            crate::hooks::fetch::api::get_authed::<CompanyEditPayload>(&format!(
+                "/contacts/companies/{id}"
+            ))
+            .await
+            .ok()
         }
     });
     let snap = detail_resource.read_unchecked();
@@ -532,9 +534,12 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                 }
                 let result = match &mode {
                     CompanyFormMode::Create => {
-                        crate::hooks::fetch::api::post_authed::<CompanyId, _>("/contacts/companies", &body)
-                            .await
-                            .map(|c| c.id.to_string())
+                        crate::hooks::fetch::api::post_authed::<CompanyId, _>(
+                            "/contacts/companies",
+                            &body,
+                        )
+                        .await
+                        .map(|c| c.id.to_string())
                     }
                     CompanyFormMode::Edit { id } => {
                         let path = format!("/contacts/companies/{id}");
@@ -697,9 +702,11 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         let id = company_id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<CompanyDetail>(&format!("/contacts/companies/{id}"))
-                .await
-                .ok()
+            crate::hooks::fetch::api::get_authed::<CompanyDetail>(&format!(
+                "/contacts/companies/{id}"
+            ))
+            .await
+            .ok()
         }
     });
     let contacts_resource = use_resource(move || {
@@ -1439,9 +1446,11 @@ pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
         let id = id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<ContactEditPayload>(&format!("/contacts/contacts/{id}"))
-                .await
-                .ok()
+            crate::hooks::fetch::api::get_authed::<ContactEditPayload>(&format!(
+                "/contacts/contacts/{id}"
+            ))
+            .await
+            .ok()
         }
     });
     let snap = detail.read_unchecked();
@@ -1612,9 +1621,12 @@ fn ContactForm(props: ContactFormProps) -> Element {
                 }
                 let result = match &mode {
                     ContactFormMode::Create => {
-                        crate::hooks::fetch::api::post_authed::<ContactId, _>("/contacts/contacts", &body)
-                            .await
-                            .map(|c| c.id.to_string())
+                        crate::hooks::fetch::api::post_authed::<ContactId, _>(
+                            "/contacts/contacts",
+                            &body,
+                        )
+                        .await
+                        .map(|c| c.id.to_string())
                     }
                     ContactFormMode::Edit { id } => {
                         let path = format!("/contacts/contacts/{id}");
@@ -1762,9 +1774,11 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
         let id = id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<ContactDetail>(&format!("/contacts/contacts/{id}"))
-                .await
-                .ok()
+            crate::hooks::fetch::api::get_authed::<ContactDetail>(&format!(
+                "/contacts/contacts/{id}"
+            ))
+            .await
+            .ok()
         }
     });
     let tickets = use_resource(move || {
