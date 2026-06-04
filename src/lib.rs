@@ -165,6 +165,9 @@ pub enum Route {
     #[route("/contacts/:id")]
     ContactDetail { id: String },
 
+    #[route("/contacts/:id/edit")]
+    ContactEdit { id: String },
+
     // Calendar
     #[route("/calendar")]
     Calendar {},
@@ -450,6 +453,11 @@ fn ContactNew() -> Element {
 #[component]
 fn ContactDetail(id: String) -> Element {
     rsx! { contacts::ContactDetailPage { id } }
+}
+
+#[component]
+fn ContactEdit(id: String) -> Element {
+    rsx! { contacts::ContactEditPage { id } }
 }
 
 #[component]

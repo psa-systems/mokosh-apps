@@ -1415,136 +1415,326 @@ fn ContactRow(props: ContactRowProps) -> Element {
 /// New contact page
 #[component]
 pub fn ContactNewPage() -> Element {
-    let mut first_name = use_signal(String::new);
-    let mut last_name = use_signal(String::new);
-    let mut email = use_signal(String::new);
-    let mut company = use_signal(String::new);
-    let mut is_submitting = use_signal(|| false);
+    rsx! {
+        AppLayout { title: "New Contact",
+            PageHeader { title: "New Contact", subtitle: "Add a new contact" }
+            ContactForm {
+                initial: ContactFormValues::default(),
+                mode: ContactFormMode::Create,
+            }
+        }
+    }
+}
 
-    let company_options = vec![
-        SelectOption::new("1", "Acme Corp"),
-        SelectOption::new("2", "TechStart Inc"),
-        SelectOption::new("3", "Global Widgets"),
+#[derive(Props, Clone, PartialEq)]
+pub struct ContactEditPageProps {
+    pub id: String,
+}
+
+#[component]
+pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
+    let id_for_resource = props.id.clone();
+    let id_for_form = props.id.clone();
+    let detail = use_resource(move || {
+        let id = id_for_resource.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<ContactEditPayload>(&format!("/contacts/{id}"))
+                .await
+                .ok()
+        }
+    });
+    let snap = detail.read_unchecked();
+    rsx! {
+        AppLayout { title: "Edit Contact",
+            PageHeader { title: "Edit Contact" }
+            match &*snap {
+                None => rsx! {
+                    Card { div { class: "py-12 text-center text-sm text-gray-500", "Loading contact..." } }
+                },
+                Some(None) => rsx! {
+                    Card {
+                        div { class: "py-8 text-center",
+                            p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load contact." }
+                            Link {
+                                to: Route::ContactList {},
+                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                "Back to contacts"
+                            }
+                        }
+                    }
+                },
+                Some(Some(payload)) => {
+                    let initial = ContactFormValues {
+                        first_name: payload.first_name.clone(),
+                        last_name: payload.last_name.clone(),
+                        email: payload.email.clone().unwrap_or_default(),
+                        phone: payload.phone.clone().unwrap_or_default(),
+                        mobile: payload.mobile.clone().unwrap_or_default(),
+                        title: payload.title.clone().unwrap_or_default(),
+                        department: payload.department.clone().unwrap_or_default(),
+                        contact_type: if payload.contact_type.is_empty() {
+                            "other".to_string()
+                        } else {
+                            payload.contact_type.clone()
+                        },
+                        company_id: payload.company_id.to_string(),
+                        company_name: payload.company_name.clone().unwrap_or_default(),
+                    };
+                    let id = id_for_form.clone();
+                    rsx! {
+                        ContactForm {
+                            initial,
+                            mode: ContactFormMode::Edit { id },
+                        }
+                    }
+                },
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ContactEditPayload {
+    #[serde(default)]
+    first_name: String,
+    #[serde(default)]
+    last_name: String,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    phone: Option<String>,
+    #[serde(default)]
+    mobile: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    department: Option<String>,
+    #[serde(default)]
+    contact_type: String,
+    company_id: uuid::Uuid,
+    #[serde(default)]
+    company_name: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct ContactFormValues {
+    first_name: String,
+    last_name: String,
+    email: String,
+    phone: String,
+    mobile: String,
+    title: String,
+    department: String,
+    contact_type: String,
+    company_id: String,
+    company_name: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum ContactFormMode {
+    Create,
+    Edit { id: String },
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct ContactFormProps {
+    initial: ContactFormValues,
+    mode: ContactFormMode,
+}
+
+#[component]
+fn ContactForm(props: ContactFormProps) -> Element {
+    let initial = props.initial.clone();
+    let mode = props.mode.clone();
+    let mut first_name = use_signal(|| initial.first_name.clone());
+    let mut last_name = use_signal(|| initial.last_name.clone());
+    let mut email = use_signal(|| initial.email.clone());
+    let mut phone = use_signal(|| initial.phone.clone());
+    let mut mobile = use_signal(|| initial.mobile.clone());
+    let mut title = use_signal(|| initial.title.clone());
+    let mut department = use_signal(|| initial.department.clone());
+    let mut contact_type = use_signal(|| {
+        if initial.contact_type.is_empty() {
+            "other".to_string()
+        } else {
+            initial.contact_type.clone()
+        }
+    });
+    let mut company_id = use_signal(|| initial.company_id.clone());
+    let mut company_name = use_signal(|| initial.company_name.clone());
+    let mut is_submitting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let type_options = vec![
+        SelectOption::new("primary", "Primary"),
+        SelectOption::new("technical", "Technical"),
+        SelectOption::new("billing", "Billing"),
+        SelectOption::new("other", "Other"),
     ];
 
     let navigator = use_navigator();
+    let submit_label = match &mode {
+        ContactFormMode::Create => "Create Contact",
+        ContactFormMode::Edit { .. } => "Save Changes",
+    };
+
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
         is_submitting.set(true);
+        error.set(String::new());
 
-        // Snapshot signals so the spawn doesn't borrow them across await.
-        let first_name_v = first_name.read().clone();
-        let last_name_v = last_name.read().clone();
-        let email_v = email.read().clone();
-        let company_v = company.read().clone();
+        let parsed_company = uuid::Uuid::parse_str(company_id.read().as_str()).ok();
+        let Some(company_uuid) = parsed_company else {
+            error.set("Please pick a company first.".to_string());
+            is_submitting.set(false);
+            return;
+        };
 
+        let body = serde_json::json!({
+            "company_id": company_uuid,
+            "first_name": first_name.read().trim(),
+            "last_name": last_name.read().trim(),
+            "email": optional_string(&email.read()),
+            "phone": optional_string(&phone.read()),
+            "mobile": optional_string(&mobile.read()),
+            "title": optional_string(&title.read()),
+            "department": optional_string(&department.read()),
+            "contact_type": contact_type.read().clone(),
+        });
+        let mode = mode.clone();
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                // F5: real POST to /contacts (the list page already GETs
-                // from this route). The company Select still ships the
-                // hardcoded "1"/"2"/"3" placeholders until it is wired to
-                // the companies list (tracked under the contacts story);
-                // parse as Uuid with a nil() fallback so the POST
-                // exercises the wire and the server returns a typed
-                // validation error rather than us faking success.
-                let company_id =
-                    uuid::Uuid::parse_str(&company_v).unwrap_or_else(|_| uuid::Uuid::nil());
-                let body = serde_json::json!({
-                    "first_name": first_name_v,
-                    "last_name": last_name_v,
-                    "email": if email_v.is_empty() {
-                        serde_json::Value::Null
-                    } else {
-                        serde_json::Value::String(email_v)
-                    },
-                    "company_id": company_id,
-                });
-
                 #[derive(serde::Deserialize)]
-                struct CreatedContact {
+                struct ContactId {
                     id: uuid::Uuid,
                 }
-
-                match crate::hooks::fetch::api::post_authed::<CreatedContact, _>("/contacts", &body)
-                    .await
-                {
-                    Ok(created) => {
-                        navigator.push(Route::ContactDetail {
-                            id: created.id.to_string(),
-                        });
+                let result = match &mode {
+                    ContactFormMode::Create => {
+                        crate::hooks::fetch::api::post_authed::<ContactId, _>("/contacts", &body)
+                            .await
+                            .map(|c| c.id.to_string())
+                    }
+                    ContactFormMode::Edit { id } => {
+                        let path = format!("/contacts/{id}");
+                        crate::hooks::fetch::api::put_authed::<ContactId, _>(&path, &body)
+                            .await
+                            .map(|_| id.clone())
+                    }
+                };
+                match result {
+                    Ok(id) => {
+                        navigator.push(Route::ContactDetail { id });
                     }
                     Err(err) => {
-                        web_sys::console::error_1(
-                            &format!("Could not create contact: {err}").into(),
-                        );
+                        error.set(format!("Could not save contact: {err}"));
                     }
                 }
             }
-
             is_submitting.set(false);
         });
     };
 
+    let picker_selected_id: Option<String> =
+        if uuid::Uuid::parse_str(company_id.read().as_str()).is_ok() {
+            Some(company_id.read().clone())
+        } else {
+            None
+        };
+
     rsx! {
-        AppLayout { title: "New Contact",
-            PageHeader {
-                title: "New Contact",
-                subtitle: "Add a new contact",
-            }
+        Card {
+            form {
+                class: "space-y-6",
+                onsubmit: handle_submit,
 
-            Card {
-                form {
-                    class: "space-y-6",
-                    onsubmit: handle_submit,
-
-                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
-                        crate::components::Input {
-                            name: "first_name",
-                            label: "First Name",
-                            required: true,
-                            value: first_name.read().clone(),
-                            oninput: move |e: FormEvent| first_name.set(e.value()),
-                        }
-                        crate::components::Input {
-                            name: "last_name",
-                            label: "Last Name",
-                            required: true,
-                            value: last_name.read().clone(),
-                            oninput: move |e: FormEvent| last_name.set(e.value()),
-                        }
+                if !error.read().is_empty() {
+                    div {
+                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                        "{error.read()}"
                     }
+                }
 
+                div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                    crate::components::Input {
+                        name: "first_name",
+                        label: "First Name",
+                        required: true,
+                        value: first_name.read().clone(),
+                        oninput: move |e: FormEvent| first_name.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "last_name",
+                        label: "Last Name",
+                        required: true,
+                        value: last_name.read().clone(),
+                        oninput: move |e: FormEvent| last_name.set(e.value()),
+                    }
                     crate::components::Input {
                         name: "email",
                         label: "Email",
                         r#type: "email",
-                        required: true,
                         value: email.read().clone(),
                         oninput: move |e: FormEvent| email.set(e.value()),
                     }
-
-                    Select {
-                        name: "company",
-                        label: "Company",
-                        options: company_options,
-                        value: company.read().clone(),
-                        placeholder: "Select a company",
-                        required: true,
-                        onchange: move |e: FormEvent| company.set(e.value()),
+                    crate::components::Input {
+                        name: "title",
+                        label: "Title",
+                        value: title.read().clone(),
+                        oninput: move |e: FormEvent| title.set(e.value()),
                     }
+                    crate::components::Input {
+                        name: "phone",
+                        label: "Phone",
+                        value: phone.read().clone(),
+                        oninput: move |e: FormEvent| phone.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "mobile",
+                        label: "Mobile",
+                        value: mobile.read().clone(),
+                        oninput: move |e: FormEvent| mobile.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "department",
+                        label: "Department",
+                        value: department.read().clone(),
+                        oninput: move |e: FormEvent| department.set(e.value()),
+                    }
+                    Select {
+                        name: "contact_type",
+                        label: "Type",
+                        options: type_options,
+                        value: contact_type.read().clone(),
+                        onchange: move |e: FormEvent| contact_type.set(e.value()),
+                    }
+                }
 
-                    div { class: "flex justify-end space-x-3",
-                        Link {
-                            to: Route::ContactList {},
-                            Button { variant: ButtonVariant::Secondary, "Cancel" }
-                        }
-                        Button {
-                            r#type: "submit",
-                            variant: ButtonVariant::Primary,
-                            loading: *is_submitting.read(),
-                            "Create Contact"
-                        }
+                crate::components::CompanyPicker {
+                    value: company_name.read().clone(),
+                    selected_id: picker_selected_id,
+                    required: true,
+                    onselect: move |(id, name): (String, String)| {
+                        company_id.set(id);
+                        company_name.set(name);
+                    },
+                    onclear: move |_| {
+                        company_id.set(String::new());
+                        company_name.set(String::new());
+                    },
+                }
+
+                div { class: "flex justify-end space-x-3",
+                    Link {
+                        to: Route::ContactList {},
+                        Button { variant: ButtonVariant::Secondary, "Cancel" }
+                    }
+                    Button {
+                        r#type: "submit",
+                        variant: ButtonVariant::Primary,
+                        loading: *is_submitting.read(),
+                        "{submit_label}"
                     }
                 }
             }
@@ -1561,74 +1751,382 @@ pub struct ContactDetailPageProps {
 #[component]
 #[allow(unused_variables)]
 pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
-    let header_title = format!("Contact {}", props.id);
+    let contact_id_str = props.id.clone();
+    let id_for_resource = contact_id_str.clone();
+    let id_for_tickets = contact_id_str.clone();
+    let id_for_edit = contact_id_str.clone();
+    let id_for_delete = contact_id_str.clone();
+    let id_for_portal = contact_id_str.clone();
+
+    let mut contact = use_resource(move || {
+        let id = id_for_resource.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<ContactDetail>(&format!("/contacts/{id}"))
+                .await
+                .ok()
+        }
+    });
+    let tickets = use_resource(move || {
+        let id = id_for_tickets.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<PaginatedTicketSummaries>(&format!(
+                "/tickets?contact_id={id}&page_size=5&sort=-updated_at"
+            ))
+            .await
+            .ok()
+        }
+    });
+
+    let snap = contact.read_unchecked();
+    let header_title = match &*snap {
+        Some(Some(c)) => format!("{} {}", c.first_name, c.last_name)
+            .trim()
+            .to_string(),
+        _ => "Contact".to_string(),
+    };
+
+    let navigator = use_navigator();
+    let mut deleting = use_signal(|| false);
+    let portal_toggling = use_signal(|| false);
+    let edit_id = id_for_edit.clone();
+    let delete_id = id_for_delete.clone();
+
     rsx! {
         AppLayout { title: "{header_title}",
             PageHeader {
                 title: "{header_title}",
-                // F5: Edit was decorative (no onclick). Hidden until
-                // the contacts mutation surface ships.
+                actions: rsx! {
+                    Link {
+                        to: Route::ContactEdit { id: edit_id },
+                        Button { variant: ButtonVariant::Secondary, "Edit" }
+                    }
+                    Button {
+                        variant: ButtonVariant::Danger,
+                        loading: *deleting.read(),
+                        onclick: move |_| {
+                            let id = delete_id.clone();
+                            deleting.set(true);
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    let confirmed = web_sys::window()
+                                        .and_then(|w| {
+                                            w.confirm_with_message(
+                                                "Delete this contact? This cannot be undone.",
+                                            )
+                                            .ok()
+                                        })
+                                        .unwrap_or(false);
+                                    if confirmed {
+                                        let path = format!("/contacts/{id}");
+                                        if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
+                                            navigator.push(Route::ContactList {});
+                                        }
+                                    }
+                                }
+                                deleting.set(false);
+                            });
+                        },
+                        "Delete"
+                    }
+                },
             }
 
-            div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
-                // Main content
-                div { class: "lg:col-span-2 space-y-6",
-                    // Recent activity
-                    Card { title: "Recent Activity",
-                        div { class: "space-y-4",
-                            p { class: "text-sm text-gray-500", "Created ticket TKT-1234 - 2 hours ago" }
-                            p { class: "text-sm text-gray-500", "Received email notification - 1 day ago" }
-                            p { class: "text-sm text-gray-500", "Account created - Jan 1, 2024" }
+            match &*snap {
+                None => rsx! {
+                    Card { div { class: "py-12 text-center text-sm text-gray-500", "Loading contact..." } }
+                },
+                Some(None) => rsx! {
+                    Card {
+                        div { class: "py-8 text-center",
+                            p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load contact." }
+                            Link {
+                                to: Route::ContactList {},
+                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                "Back to contacts"
+                            }
                         }
                     }
-                }
+                },
+                Some(Some(c)) => {
+                    let company_id = c.company_id.to_string();
+                    let company_name = c.company_name.clone().unwrap_or_default();
+                    let email = c.email.clone();
+                    let phone = c.phone.clone();
+                    let mobile = c.mobile.clone();
+                    let title = c.title.clone();
+                    let department = c.department.clone();
+                    let contact_type = c.contact_type.clone();
+                    let is_portal_user = c.is_portal_user;
+                    let portal_id = id_for_portal.clone();
+                    rsx! {
+                        div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
+                            div { class: "lg:col-span-2 space-y-6",
+                                ContactTicketsCard { tickets_resource: tickets }
+                            }
+                            div { class: "space-y-6",
+                                Card { title: "Contact Information",
+                                    dl { class: "space-y-4",
+                                        if let Some(email) = email {
+                                            if !email.is_empty() {
+                                                div {
+                                                    dt { class: "text-sm text-gray-500", "Email" }
+                                                    dd { class: "mt-1",
+                                                        a {
+                                                            href: "mailto:{email}",
+                                                            class: "text-blue-600 hover:text-blue-500",
+                                                            "{email}"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if let Some(phone) = phone {
+                                            if !phone.is_empty() {
+                                                div {
+                                                    dt { class: "text-sm text-gray-500", "Phone" }
+                                                    dd { class: "mt-1", "{phone}" }
+                                                }
+                                            }
+                                        }
+                                        if let Some(mobile) = mobile {
+                                            if !mobile.is_empty() {
+                                                div {
+                                                    dt { class: "text-sm text-gray-500", "Mobile" }
+                                                    dd { class: "mt-1", "{mobile}" }
+                                                }
+                                            }
+                                        }
+                                        if let Some(title) = title {
+                                            if !title.is_empty() {
+                                                div {
+                                                    dt { class: "text-sm text-gray-500", "Title" }
+                                                    dd { class: "mt-1", "{title}" }
+                                                }
+                                            }
+                                        }
+                                        if let Some(dept) = department {
+                                            if !dept.is_empty() {
+                                                div {
+                                                    dt { class: "text-sm text-gray-500", "Department" }
+                                                    dd { class: "mt-1", "{dept}" }
+                                                }
+                                            }
+                                        }
+                                        if !contact_type.is_empty() {
+                                            div {
+                                                dt { class: "text-sm text-gray-500", "Type" }
+                                                dd { class: "mt-1",
+                                                    Badge { variant: BadgeVariant::Blue, "{humanize_contact_type(&contact_type)}" }
+                                                }
+                                            }
+                                        }
+                                        if !company_name.is_empty() {
+                                            div {
+                                                dt { class: "text-sm text-gray-500", "Company" }
+                                                dd { class: "mt-1",
+                                                    Link {
+                                                        to: Route::CompanyDetail { id: company_id.clone() },
+                                                        class: "text-blue-600 hover:text-blue-500",
+                                                        "{company_name}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
 
-                // Sidebar
-                div { class: "space-y-6",
-                    Card { title: "Contact Information",
-                        dl { class: "space-y-4",
-                            div {
-                                dt { class: "text-sm text-gray-500", "Email" }
-                                dd { class: "mt-1",
-                                    a { href: "mailto:bob@acme.com", class: "text-blue-600", "bob@acme.com" }
+                                ContactPortalCard {
+                                    contact_id: portal_id,
+                                    is_portal_user,
+                                    toggling: portal_toggling,
+                                    on_change: move |_| { contact.restart(); },
                                 }
                             }
-                            div {
-                                dt { class: "text-sm text-gray-500", "Phone" }
-                                dd { class: "mt-1", "(555) 123-4567" }
-                            }
-                            div {
-                                dt { class: "text-sm text-gray-500", "Mobile" }
-                                dd { class: "mt-1", "(555) 987-6543" }
-                            }
-                            div {
-                                dt { class: "text-sm text-gray-500", "Role" }
-                                dd { class: "mt-1", "Primary Contact" }
-                            }
-                            div {
-                                dt { class: "text-sm text-gray-500", "Company" }
-                                dd { class: "mt-1",
-                                    Link {
-                                        to: Route::CompanyDetail { id: "1".to_string() },
-                                        class: "text-blue-600 hover:text-blue-500",
-                                        "Acme Corp"
+                        }
+                    }
+                },
+            }
+        }
+    }
+}
+
+fn humanize_contact_type(raw: &str) -> String {
+    match raw {
+        "primary" => "Primary".to_string(),
+        "technical" => "Technical".to_string(),
+        "billing" => "Billing".to_string(),
+        "other" => "Other".to_string(),
+        s => s.to_string(),
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ContactDetail {
+    #[serde(default)]
+    first_name: String,
+    #[serde(default)]
+    last_name: String,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    phone: Option<String>,
+    #[serde(default)]
+    mobile: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    department: Option<String>,
+    #[serde(default)]
+    contact_type: String,
+    #[serde(default)]
+    is_portal_user: bool,
+    company_id: uuid::Uuid,
+    #[serde(default)]
+    company_name: Option<String>,
+}
+
+#[component]
+fn ContactTicketsCard(tickets_resource: Resource<Option<PaginatedTicketSummaries>>) -> Element {
+    let snap = tickets_resource.read_unchecked();
+    rsx! {
+        Card {
+            title: "Recent Tickets",
+            actions: rsx! {
+                Link {
+                    to: Route::TicketList {},
+                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    "View All"
+                }
+            },
+            padding: false,
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Ticket" }
+                        TableHeader { "Status" }
+                    }
+                }
+                match &*snap {
+                    None => rsx! { TableLoading { columns: 2, rows: 3 } },
+                    Some(None) => rsx! {
+                        TableEmpty { columns: 2, message: "Could not load tickets.".to_string() }
+                    },
+                    Some(Some(page)) if page.data.is_empty() => rsx! {
+                        TableEmpty { columns: 2, message: "No tickets from this contact yet.".to_string() }
+                    },
+                    Some(Some(page)) => {
+                        let rows = page.data.clone();
+                        rsx! {
+                            TableBody {
+                                for ticket in rows.into_iter() {
+                                    {
+                                        let id = ticket.id.to_string();
+                                        let key = id.clone();
+                                        let number = ticket.ticket_number.clone();
+                                        let title = ticket.title.clone();
+                                        let status_name = ticket.status.name.clone();
+                                        let variant = if ticket.status.is_closed {
+                                            BadgeVariant::Gray
+                                        } else {
+                                            BadgeVariant::Blue
+                                        };
+                                        rsx! {
+                                            TableRow { key: "{key}",
+                                                TableCell {
+                                                    div {
+                                                        Link {
+                                                            to: Route::TicketDetail { id: id.clone() },
+                                                            class: "font-medium text-blue-600 hover:text-blue-500",
+                                                            "{number}"
+                                                        }
+                                                        p { class: "text-sm text-gray-500", "{title}" }
+                                                    }
+                                                }
+                                                TableCell {
+                                                    Badge { variant, "{status_name}" }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
+                    },
+                }
+            }
+        }
+    }
+}
 
-                    Card { title: "Portal Access",
-                        div { class: "space-y-3",
-                            div { class: "flex items-center justify-between",
-                                span { class: "text-sm text-gray-500", "Status" }
-                                Badge { variant: BadgeVariant::Green, "Active" }
-                            }
-                            div { class: "flex items-center justify-between",
-                                span { class: "text-sm text-gray-500", "Last Login" }
-                                span { class: "text-sm", "Today, 9:15 AM" }
-                            }
-                        }
+#[derive(Props, Clone, PartialEq)]
+struct ContactPortalCardProps {
+    contact_id: String,
+    is_portal_user: bool,
+    toggling: Signal<bool>,
+    on_change: EventHandler<()>,
+}
+
+#[component]
+fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
+    let contact_id = props.contact_id.clone();
+    let is_portal_user = props.is_portal_user;
+    let mut toggling = props.toggling;
+    let on_change = props.on_change;
+    rsx! {
+        Card { title: "Portal Access",
+            if is_portal_user {
+                div { class: "space-y-3",
+                    div { class: "flex items-center justify-between",
+                        span { class: "text-sm text-gray-500", "Status" }
+                        Badge { variant: BadgeVariant::Green, "Granted" }
+                    }
+                    p { class: "text-xs text-gray-500",
+                        "This contact can sign in to the customer portal once a password has been issued from Settings > Portal Users."
+                    }
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        loading: *toggling.read(),
+                        onclick: move |_| {
+                            let id = contact_id.clone();
+                            toggling.set(true);
+                            spawn(async move {
+                                let path = format!("/contacts/{id}");
+                                let body = serde_json::json!({ "is_portal_user": false });
+                                let _ = crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await;
+                                on_change.call(());
+                                toggling.set(false);
+                            });
+                        },
+                        "Revoke portal access"
+                    }
+                }
+            } else {
+                div { class: "space-y-3",
+                    div { class: "flex items-center justify-between",
+                        span { class: "text-sm text-gray-500", "Status" }
+                        Badge { variant: BadgeVariant::Gray, "Not granted" }
+                    }
+                    p { class: "text-xs text-gray-500",
+                        "Granting access flips the portal flag. A password still has to be issued separately from Settings > Portal Users before the contact can sign in."
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        loading: *toggling.read(),
+                        onclick: move |_| {
+                            let id = contact_id.clone();
+                            toggling.set(true);
+                            spawn(async move {
+                                let path = format!("/contacts/{id}");
+                                let body = serde_json::json!({ "is_portal_user": true });
+                                let _ = crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await;
+                                on_change.call(());
+                                toggling.set(false);
+                            });
+                        },
+                        "Grant portal access"
                     }
                 }
             }
