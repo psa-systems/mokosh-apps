@@ -134,7 +134,7 @@ pub fn CompanyListPage() -> Element {
     let companies_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_with_auth::<PaginatedCompanies>("/companies", &token)
+        crate::hooks::fetch::api::get_with_auth::<PaginatedCompanies>("/contacts/companies", &token)
             .await
             .ok()
             .map(|resp| resp.data)
@@ -372,7 +372,7 @@ pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
         let id = id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<CompanyEditPayload>(&format!("/companies/{id}"))
+            crate::hooks::fetch::api::get_authed::<CompanyEditPayload>(&format!("/contacts/companies/{id}"))
                 .await
                 .ok()
         }
@@ -532,12 +532,12 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                 }
                 let result = match &mode {
                     CompanyFormMode::Create => {
-                        crate::hooks::fetch::api::post_authed::<CompanyId, _>("/companies", &body)
+                        crate::hooks::fetch::api::post_authed::<CompanyId, _>("/contacts/companies", &body)
                             .await
                             .map(|c| c.id.to_string())
                     }
                     CompanyFormMode::Edit { id } => {
-                        let path = format!("/companies/{id}");
+                        let path = format!("/contacts/companies/{id}");
                         crate::hooks::fetch::api::put_authed::<CompanyId, _>(&path, &body)
                             .await
                             .map(|_| id.clone())
@@ -697,7 +697,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         let id = company_id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<CompanyDetail>(&format!("/companies/{id}"))
+            crate::hooks::fetch::api::get_authed::<CompanyDetail>(&format!("/contacts/companies/{id}"))
                 .await
                 .ok()
         }
@@ -707,7 +707,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             crate::hooks::fetch::api::get_authed::<Vec<RemoteContact>>(&format!(
-                "/companies/{id}/contacts"
+                "/contacts/companies/{id}/contacts"
             ))
             .await
             .ok()
@@ -718,7 +718,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             crate::hooks::fetch::api::get_authed::<Vec<SiteSummary>>(&format!(
-                "/companies/{id}/sites"
+                "/contacts/companies/{id}/sites"
             ))
             .await
             .ok()
@@ -777,7 +777,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                         })
                                         .unwrap_or(false);
                                     if confirmed {
-                                        let path = format!("/companies/{id}");
+                                        let path = format!("/contacts/companies/{id}");
                                         if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
                                             navigator.push(Route::CompanyList {});
                                         }
@@ -1209,7 +1209,7 @@ pub fn ContactListPage() -> Element {
         // F1: re-fetch on org switch (see CompanyListPage for rationale).
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_with_auth::<PaginatedContacts>("/contacts", &token)
+        crate::hooks::fetch::api::get_with_auth::<PaginatedContacts>("/contacts/contacts", &token)
             .await
             .ok()
             .map(|resp| resp.data)
@@ -1439,7 +1439,7 @@ pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
         let id = id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<ContactEditPayload>(&format!("/contacts/{id}"))
+            crate::hooks::fetch::api::get_authed::<ContactEditPayload>(&format!("/contacts/contacts/{id}"))
                 .await
                 .ok()
         }
@@ -1612,12 +1612,12 @@ fn ContactForm(props: ContactFormProps) -> Element {
                 }
                 let result = match &mode {
                     ContactFormMode::Create => {
-                        crate::hooks::fetch::api::post_authed::<ContactId, _>("/contacts", &body)
+                        crate::hooks::fetch::api::post_authed::<ContactId, _>("/contacts/contacts", &body)
                             .await
                             .map(|c| c.id.to_string())
                     }
                     ContactFormMode::Edit { id } => {
-                        let path = format!("/contacts/{id}");
+                        let path = format!("/contacts/contacts/{id}");
                         crate::hooks::fetch::api::put_authed::<ContactId, _>(&path, &body)
                             .await
                             .map(|_| id.clone())
@@ -1762,7 +1762,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
         let id = id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<ContactDetail>(&format!("/contacts/{id}"))
+            crate::hooks::fetch::api::get_authed::<ContactDetail>(&format!("/contacts/contacts/{id}"))
                 .await
                 .ok()
         }
@@ -1820,7 +1820,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                         })
                                         .unwrap_or(false);
                                     if confirmed {
-                                        let path = format!("/contacts/{id}");
+                                        let path = format!("/contacts/contacts/{id}");
                                         if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
                                             navigator.push(Route::ContactList {});
                                         }
@@ -2093,7 +2093,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                             let id = contact_id.clone();
                             toggling.set(true);
                             spawn(async move {
-                                let path = format!("/contacts/{id}");
+                                let path = format!("/contacts/contacts/{id}");
                                 let body = serde_json::json!({ "is_portal_user": false });
                                 let _ = crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await;
                                 on_change.call(());
@@ -2119,7 +2119,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                             let id = contact_id.clone();
                             toggling.set(true);
                             spawn(async move {
-                                let path = format!("/contacts/{id}");
+                                let path = format!("/contacts/contacts/{id}");
                                 let body = serde_json::json!({ "is_portal_user": true });
                                 let _ = crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await;
                                 on_change.call(());
