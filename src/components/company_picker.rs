@@ -63,7 +63,10 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
             } else {
                 // The server stores names as-is and matches with ILIKE so
                 // we can pass the trimmed query straight through.
-                format!("/contacts/companies?q={}&page_size=20", urlencoding_minimal(&q))
+                format!(
+                    "/contacts/companies?q={}&page_size=20",
+                    urlencoding_minimal(&q)
+                )
             };
             crate::hooks::fetch::api::get_authed::<PickerPage>(&path)
                 .await
