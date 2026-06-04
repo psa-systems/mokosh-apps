@@ -1,6 +1,6 @@
 //! Reusable Company picker.
 //!
-//! Hits `GET /v1/companies?q=...&page_size=20` with a small debounce
+//! Hits `GET /v1/companies?q=...&per_page=20` with a small debounce
 //! and renders the matches in a click-to-select dropdown. The selected
 //! company's UUID is reported back via the `onselect` callback; the
 //! displayed name is reported via the `value` signal so the calling
@@ -59,12 +59,12 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let path = if q.is_empty() {
-                "/contacts/companies?page_size=20".to_string()
+                "/contacts/companies?per_page=20".to_string()
             } else {
                 // The server stores names as-is and matches with ILIKE so
                 // we can pass the trimmed query straight through.
                 format!(
-                    "/contacts/companies?q={}&page_size=20",
+                    "/contacts/companies?q={}&per_page=20",
                     urlencoding_minimal(&q)
                 )
             };

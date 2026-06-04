@@ -50,6 +50,58 @@ fn sort_dir_for<K: Copy + PartialEq>(
     current.and_then(|(k, dir)| if k == key { Some(dir) } else { None })
 }
 
+fn company_sort_query(
+    current: Option<(CompanySortKey, SortDirection)>,
+) -> Option<(&'static str, &'static str)> {
+    let (key, dir) = current?;
+    let field = match key {
+        CompanySortKey::Company => "name",
+        CompanySortKey::Type => "company_type",
+    };
+    let dir = match dir {
+        SortDirection::Ascending => "asc",
+        SortDirection::Descending => "desc",
+    };
+    Some((field, dir))
+}
+
+fn contact_sort_query(
+    current: Option<(ContactSortKey, SortDirection)>,
+) -> Option<(&'static str, &'static str)> {
+    let (key, dir) = current?;
+    let field = match key {
+        ContactSortKey::Name => "last_name",
+        ContactSortKey::Company => "company_name",
+    };
+    let dir = match dir {
+        SortDirection::Ascending => "asc",
+        SortDirection::Descending => "desc",
+    };
+    Some((field, dir))
+}
+
+/// Tiny percent-encoder for query-string values: spaces, `&`, `#`, `?`,
+/// `+`, `=`, and control bytes. Avoids pulling in the full `urlencoding`
+/// crate for the handful of places we build paths inline. The server's
+/// validators ILIKE / exact-match the result so non-ASCII passes
+/// straight through.
+fn urlencoding_minimal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            ' ' => out.push_str("%20"),
+            '&' => out.push_str("%26"),
+            '#' => out.push_str("%23"),
+            '?' => out.push_str("%3F"),
+            '+' => out.push_str("%2B"),
+            '=' => out.push_str("%3D"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("%{:02X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Map the server's lowercased `CompanyType` enum tag (`"customer"`,
 /// `"prospect"`, `"vendor"`, `"partner"`) to the title-case label that
 /// `CompanyRow` keys its badge variant on. Unknown values fall through
@@ -83,6 +135,14 @@ struct RemoteCompany {
 #[derive(Clone, Debug, Deserialize)]
 struct PaginatedCompanies {
     data: Vec<RemoteCompany>,
+    #[serde(default)]
+    meta: PaginationMeta,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct PaginationMeta {
+    #[serde(default)]
+    total: u64,
 }
 
 /// Subset of mokosh-server's `ContactResponse` we render in the contacts
@@ -110,6 +170,8 @@ struct RemoteContact {
 #[derive(Clone, Debug, Deserialize)]
 struct PaginatedContacts {
     data: Vec<RemoteContact>,
+    #[serde(default)]
+    meta: PaginationMeta,
 }
 
 /// Company list page
@@ -117,7 +179,6 @@ struct PaginatedContacts {
 pub fn CompanyListPage() -> Element {
     let mut search = use_signal(String::new);
     let mut type_filter = use_signal(String::new);
-    // F3: sort + pagination state.
     let mut sort = use_signal(|| None::<(CompanySortKey, SortDirection)>);
     let mut page = use_signal(|| 1usize);
 
@@ -128,74 +189,52 @@ pub fn CompanyListPage() -> Element {
         SelectOption::new("vendor", "Vendor"),
     ];
 
+    let search_text = search.read().trim().to_string();
+    let type_text = type_filter.read().clone();
+    let current_page = (*page.read()).max(1);
+    let sort_snapshot = *sort.read();
+    let sort_query = company_sort_query(sort_snapshot);
+
     // F1: read the active-tenant generation so Dioxus re-runs this
-    // resource on an org switch / token swap and re-fetches the new
-    // tenant's rows instead of leaving the prior tenant's cached.
-    let companies_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_with_auth::<PaginatedCompanies>("/contacts/companies", &token)
-            .await
-            .ok()
-            .map(|resp| resp.data)
+    // resource on an org switch / token swap. Filters + page + sort are
+    // captured by value so the resource also re-fetches on every change.
+    let q_for_resource = search_text.clone();
+    let type_for_resource = type_text.clone();
+    let sort_for_resource = sort_query;
+    let companies_resource = use_resource(move || {
+        let q = q_for_resource.clone();
+        let type_filter = type_for_resource.clone();
+        let sort = sort_for_resource;
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let token = crate::hooks::fetch::api::current_access_token()?;
+            let mut path = format!("/contacts/companies?page={current_page}&per_page={PER_PAGE}");
+            if !q.is_empty() {
+                path.push_str(&format!("&q={}", urlencoding_minimal(&q)));
+            }
+            if !type_filter.is_empty() {
+                path.push_str(&format!(
+                    "&company_type={}",
+                    urlencoding_minimal(&type_filter)
+                ));
+            }
+            if let Some((field, dir)) = sort {
+                path.push_str(&format!("&sort={field}&sort_dir={dir}"));
+            }
+            crate::hooks::fetch::api::get_with_auth::<PaginatedCompanies>(&path, &token)
+                .await
+                .ok()
+        }
     });
 
     let resource_snapshot = companies_resource.read_unchecked();
     let is_loading = resource_snapshot.is_none();
     let fetch_failed = matches!(*resource_snapshot, Some(None));
-    let remote_companies: Vec<RemoteCompany> = match &*resource_snapshot {
-        Some(Some(rows)) => rows.clone(),
-        _ => Vec::new(),
+    let (page_rows, total): (Vec<RemoteCompany>, u64) = match &*resource_snapshot {
+        Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
+        _ => (Vec::new(), 0),
     };
-
-    // F3: client-side filter (search + type), sort, and pagination over
-    // the live backend rows.
-    let search_q = search.read().trim().to_lowercase();
-    let type_q = type_filter.read().clone();
-    let mut filtered: Vec<RemoteCompany> = remote_companies
-        .iter()
-        .filter(|c| {
-            if !search_q.is_empty()
-                && !c.name.to_lowercase().contains(&search_q)
-                && !c
-                    .account_manager_name
-                    .as_deref()
-                    .unwrap_or_default()
-                    .to_lowercase()
-                    .contains(&search_q)
-            {
-                return false;
-            }
-            if !type_q.is_empty() && c.company_type != type_q {
-                return false;
-            }
-            true
-        })
-        .cloned()
-        .collect();
-
-    if let Some((key, dir)) = *sort.read() {
-        filtered.sort_by(|a, b| {
-            let ord = match key {
-                CompanySortKey::Company => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-                CompanySortKey::Type => a.company_type.cmp(&b.company_type),
-            };
-            match dir {
-                SortDirection::Ascending => ord,
-                SortDirection::Descending => ord.reverse(),
-            }
-        });
-    }
-
-    let filtered_total = filtered.len();
-    let current_page = (*page.read()).max(1);
-    let page_start = (current_page - 1) * PER_PAGE;
-    let page_rows: Vec<RemoteCompany> = filtered
-        .into_iter()
-        .skip(page_start)
-        .take(PER_PAGE)
-        .collect();
-    let sort_snapshot = *sort.read();
+    let has_filters = !search_text.is_empty() || !type_text.is_empty();
 
     rsx! {
         AppLayout { title: "Companies",
@@ -221,14 +260,20 @@ pub fn CompanyListPage() -> Element {
                         SearchInput {
                             value: search.read().clone(),
                             placeholder: "Search companies...",
-                            oninput: move |e: FormEvent| search.set(e.value()),
+                            oninput: move |e: FormEvent| {
+                                search.set(e.value());
+                                page.set(1);
+                            },
                         }
                     }
                     Select {
                         name: "type",
                         options: type_options,
                         value: type_filter.read().clone(),
-                        onchange: move |e: FormEvent| type_filter.set(e.value()),
+                        onchange: move |e: FormEvent| {
+                            type_filter.set(e.value());
+                            page.set(1);
+                        },
                     }
                 }
             }
@@ -243,7 +288,7 @@ pub fn CompanyListPage() -> Element {
             // Companies table
             DataTable {
                 loading: is_loading,
-                total_items: filtered_total,
+                total_items: total as usize,
                 current_page,
                 per_page: PER_PAGE,
                 columns: 4,
@@ -272,10 +317,10 @@ pub fn CompanyListPage() -> Element {
                     } else if page_rows.is_empty() {
                         TableEmpty {
                             columns: 4,
-                            message: if remote_companies.is_empty() {
-                                "No companies yet. Click New Company to create one.".to_string()
-                            } else {
+                            message: if has_filters {
                                 "No companies match your filters.".to_string()
+                            } else {
+                                "No companies yet. Click New Company to create one.".to_string()
                             },
                         }
                     } else {
@@ -736,7 +781,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             crate::hooks::fetch::api::get_authed::<PaginatedTicketSummaries>(&format!(
-                "/tickets?company_id={id}&page_size=5&sort=-updated_at"
+                "/tickets?company_id={id}&per_page=5&sort=-updated_at"
             ))
             .await
             .ok()
@@ -1535,81 +1580,73 @@ fn CompanyTicketsCard(tickets_resource: Resource<Option<PaginatedTicketSummaries
 #[component]
 pub fn ContactListPage() -> Element {
     let mut search = use_signal(String::new);
-    // F3: sort + pagination state.
+    let mut contact_type_filter = use_signal(String::new);
+    let mut portal_filter = use_signal(String::new);
     let mut sort = use_signal(|| None::<(ContactSortKey, SortDirection)>);
     let mut page = use_signal(|| 1usize);
 
-    let contacts_resource = use_resource(|| async {
-        // F1: re-fetch on org switch (see CompanyListPage for rationale).
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_with_auth::<PaginatedContacts>("/contacts/contacts", &token)
-            .await
-            .ok()
-            .map(|resp| resp.data)
+    let type_options = vec![
+        SelectOption::new("", "All Types"),
+        SelectOption::new("primary", "Primary"),
+        SelectOption::new("technical", "Technical"),
+        SelectOption::new("billing", "Billing"),
+        SelectOption::new("other", "Other"),
+    ];
+    let portal_options = vec![
+        SelectOption::new("", "All Contacts"),
+        SelectOption::new("true", "Portal users only"),
+        SelectOption::new("false", "Non-portal only"),
+    ];
+
+    let search_text = search.read().trim().to_string();
+    let type_text = contact_type_filter.read().clone();
+    let portal_text = portal_filter.read().clone();
+    let current_page = (*page.read()).max(1);
+    let sort_snapshot = *sort.read();
+    let sort_query = contact_sort_query(sort_snapshot);
+
+    let q_for_resource = search_text.clone();
+    let type_for_resource = type_text.clone();
+    let portal_for_resource = portal_text.clone();
+    let sort_for_resource = sort_query;
+    let contacts_resource = use_resource(move || {
+        let q = q_for_resource.clone();
+        let contact_type = type_for_resource.clone();
+        let portal = portal_for_resource.clone();
+        let sort = sort_for_resource;
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let token = crate::hooks::fetch::api::current_access_token()?;
+            let mut path = format!("/contacts/contacts?page={current_page}&per_page={PER_PAGE}");
+            if !q.is_empty() {
+                path.push_str(&format!("&q={}", urlencoding_minimal(&q)));
+            }
+            if !contact_type.is_empty() {
+                path.push_str(&format!(
+                    "&contact_type={}",
+                    urlencoding_minimal(&contact_type)
+                ));
+            }
+            if !portal.is_empty() {
+                path.push_str(&format!("&is_portal_user={portal}"));
+            }
+            if let Some((field, dir)) = sort {
+                path.push_str(&format!("&sort={field}&sort_dir={dir}"));
+            }
+            crate::hooks::fetch::api::get_with_auth::<PaginatedContacts>(&path, &token)
+                .await
+                .ok()
+        }
     });
 
     let resource_snapshot = contacts_resource.read_unchecked();
     let is_loading = resource_snapshot.is_none();
     let fetch_failed = matches!(*resource_snapshot, Some(None));
-    let remote_contacts: Vec<RemoteContact> = match &*resource_snapshot {
-        Some(Some(rows)) => rows.clone(),
-        _ => Vec::new(),
+    let (page_rows, total): (Vec<RemoteContact>, u64) = match &*resource_snapshot {
+        Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
+        _ => (Vec::new(), 0),
     };
-
-    // F3: client-side filter (search), sort, and pagination over the
-    // live backend rows. Demo rows below are an unfiltered fallback.
-    let search_q = search.read().trim().to_lowercase();
-    let mut filtered: Vec<RemoteContact> = remote_contacts
-        .iter()
-        .filter(|c| {
-            if search_q.is_empty() {
-                return true;
-            }
-            let hay = format!(
-                "{} {} {} {}",
-                c.first_name,
-                c.last_name,
-                c.company_name.as_deref().unwrap_or_default(),
-                c.email.as_deref().unwrap_or_default()
-            )
-            .to_lowercase();
-            hay.contains(&search_q)
-        })
-        .cloned()
-        .collect();
-
-    if let Some((key, dir)) = *sort.read() {
-        filtered.sort_by(|a, b| {
-            let ord = match key {
-                ContactSortKey::Name => {
-                    let an = format!("{} {}", a.first_name, a.last_name).to_lowercase();
-                    let bn = format!("{} {}", b.first_name, b.last_name).to_lowercase();
-                    an.cmp(&bn)
-                }
-                ContactSortKey::Company => a
-                    .company_name
-                    .as_deref()
-                    .unwrap_or_default()
-                    .to_lowercase()
-                    .cmp(&b.company_name.as_deref().unwrap_or_default().to_lowercase()),
-            };
-            match dir {
-                SortDirection::Ascending => ord,
-                SortDirection::Descending => ord.reverse(),
-            }
-        });
-    }
-
-    let filtered_total = filtered.len();
-    let current_page = (*page.read()).max(1);
-    let page_start = (current_page - 1) * PER_PAGE;
-    let page_rows: Vec<RemoteContact> = filtered
-        .into_iter()
-        .skip(page_start)
-        .take(PER_PAGE)
-        .collect();
-    let sort_snapshot = *sort.read();
+    let has_filters = !search_text.is_empty() || !type_text.is_empty() || !portal_text.is_empty();
 
     rsx! {
         AppLayout { title: "Contacts",
@@ -1630,10 +1667,35 @@ pub fn ContactListPage() -> Element {
 
             // Filters
             Card { class: "mb-6",
-                SearchInput {
-                    value: search.read().clone(),
-                    placeholder: "Search contacts...",
-                    oninput: move |e: FormEvent| search.set(e.value()),
+                div { class: "flex flex-col sm:flex-row gap-4",
+                    div { class: "flex-1",
+                        SearchInput {
+                            value: search.read().clone(),
+                            placeholder: "Search contacts...",
+                            oninput: move |e: FormEvent| {
+                                search.set(e.value());
+                                page.set(1);
+                            },
+                        }
+                    }
+                    Select {
+                        name: "contact_type",
+                        options: type_options,
+                        value: contact_type_filter.read().clone(),
+                        onchange: move |e: FormEvent| {
+                            contact_type_filter.set(e.value());
+                            page.set(1);
+                        },
+                    }
+                    Select {
+                        name: "portal",
+                        options: portal_options,
+                        value: portal_filter.read().clone(),
+                        onchange: move |e: FormEvent| {
+                            portal_filter.set(e.value());
+                            page.set(1);
+                        },
+                    }
                 }
             }
 
@@ -1647,7 +1709,7 @@ pub fn ContactListPage() -> Element {
             // Contacts table
             DataTable {
                 loading: is_loading,
-                total_items: filtered_total,
+                total_items: total as usize,
                 current_page,
                 per_page: PER_PAGE,
                 columns: 5,
@@ -1677,10 +1739,10 @@ pub fn ContactListPage() -> Element {
                     } else if page_rows.is_empty() {
                         TableEmpty {
                             columns: 5,
-                            message: if remote_contacts.is_empty() {
-                                "No contacts yet. Click New Contact to add one.".to_string()
+                            message: if has_filters {
+                                "No contacts match your filters.".to_string()
                             } else {
-                                "No contacts match your search.".to_string()
+                                "No contacts yet. Click New Contact to add one.".to_string()
                             },
                         }
                     } else {
@@ -2113,7 +2175,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             crate::hooks::fetch::api::get_authed::<PaginatedTicketSummaries>(&format!(
-                "/tickets?contact_id={id}&page_size=5&sort=-updated_at"
+                "/tickets?contact_id={id}&per_page=5&sort=-updated_at"
             ))
             .await
             .ok()
