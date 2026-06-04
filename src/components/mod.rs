@@ -4,6 +4,7 @@
 
 mod button;
 mod card;
+mod company_picker;
 mod form;
 mod icons;
 mod layout;
@@ -13,6 +14,7 @@ mod update_banner;
 
 pub use button::*;
 pub use card::*;
+pub use company_picker::*;
 pub use form::*;
 pub use icons::*;
 pub use layout::*;
