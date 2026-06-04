@@ -887,7 +887,11 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                         div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
                             div { class: "lg:col-span-2 space-y-6",
                                 // Contacts
-                                CompanyContactsCard { contacts_resource }
+                                CompanyContactsCard {
+                                    company_id: company_id_str.clone(),
+                                    company_name: company.name.clone(),
+                                    contacts_resource,
+                                }
                                 // Sites
                                 CompanySitesCard {
                                     company_id: company_id_str.clone(),
@@ -1060,14 +1064,23 @@ struct TicketStatusBadge {
 }
 
 #[component]
-fn CompanyContactsCard(contacts_resource: Resource<Option<Vec<RemoteContact>>>) -> Element {
+fn CompanyContactsCard(
+    company_id: String,
+    company_name: String,
+    contacts_resource: Resource<Option<Vec<RemoteContact>>>,
+) -> Element {
     let snap = contacts_resource.read_unchecked();
+    let new_href = format!(
+        "/contacts/new?company_id={}&company_name={}",
+        urlencoding_minimal(&company_id),
+        urlencoding_minimal(&company_name)
+    );
     rsx! {
         Card {
             title: "Contacts",
             actions: rsx! {
-                Link {
-                    to: Route::ContactNew {},
+                a {
+                    href: "{new_href}",
                     class: "text-sm text-blue-600 hover:text-blue-500",
                     "Add Contact"
                 }
@@ -1808,18 +1821,58 @@ fn ContactRow(props: ContactRowProps) -> Element {
     }
 }
 
-/// New contact page
+/// New contact page. When linked with `?company_id=<uuid>` (the
+/// "Add Contact" button on the company detail page does this) the
+/// CompanyPicker pre-fills with that company and the user only has
+/// to fill in the contact's own fields.
 #[component]
 pub fn ContactNewPage() -> Element {
+    // Resolve the prefill from window.location.search. We could
+    // route through Dioxus' Route enum but that would require turning
+    // the query into a typed param and refactoring every
+    // `Route::ContactNew {}` link site; for a single optional prefill
+    // a one-shot web-sys read keeps the change local.
+    let prefill = use_signal(read_company_prefill_from_url);
+    let prefill = prefill.read().clone();
+
+    let initial = ContactFormValues {
+        company_id: prefill.id.clone(),
+        company_name: prefill.name.clone(),
+        contact_type: "other".to_string(),
+        ..ContactFormValues::default()
+    };
+
     rsx! {
         AppLayout { title: "New Contact",
             PageHeader { title: "New Contact", subtitle: "Add a new contact" }
             ContactForm {
-                initial: ContactFormValues::default(),
+                initial,
                 mode: ContactFormMode::Create,
             }
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct CompanyPrefill {
+    id: String,
+    name: String,
+}
+
+fn read_company_prefill_from_url() -> CompanyPrefill {
+    #[cfg(feature = "web")]
+    {
+        if let Some(search) = web_sys::window().and_then(|w| w.location().search().ok()) {
+            if let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) {
+                let id = params.get("company_id").unwrap_or_default();
+                let name = params.get("company_name").unwrap_or_default();
+                if uuid::Uuid::parse_str(&id).is_ok() {
+                    return CompanyPrefill { id, name };
+                }
+            }
+        }
+    }
+    CompanyPrefill::default()
 }
 
 #[derive(Props, Clone, PartialEq)]
