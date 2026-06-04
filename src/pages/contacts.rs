@@ -4,9 +4,9 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
-    PlusIcon, SearchInput, Select, SelectOption, SortDirection, Table, TableBody, TableCell,
-    TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, Modal,
+    PageHeader, PlusIcon, SearchInput, Select, SelectOption, SortDirection, Table, TableBody,
+    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::Route;
 
@@ -50,6 +50,58 @@ fn sort_dir_for<K: Copy + PartialEq>(
     current.and_then(|(k, dir)| if k == key { Some(dir) } else { None })
 }
 
+fn company_sort_query(
+    current: Option<(CompanySortKey, SortDirection)>,
+) -> Option<(&'static str, &'static str)> {
+    let (key, dir) = current?;
+    let field = match key {
+        CompanySortKey::Company => "name",
+        CompanySortKey::Type => "company_type",
+    };
+    let dir = match dir {
+        SortDirection::Ascending => "asc",
+        SortDirection::Descending => "desc",
+    };
+    Some((field, dir))
+}
+
+fn contact_sort_query(
+    current: Option<(ContactSortKey, SortDirection)>,
+) -> Option<(&'static str, &'static str)> {
+    let (key, dir) = current?;
+    let field = match key {
+        ContactSortKey::Name => "last_name",
+        ContactSortKey::Company => "company_name",
+    };
+    let dir = match dir {
+        SortDirection::Ascending => "asc",
+        SortDirection::Descending => "desc",
+    };
+    Some((field, dir))
+}
+
+/// Tiny percent-encoder for query-string values: spaces, `&`, `#`, `?`,
+/// `+`, `=`, and control bytes. Avoids pulling in the full `urlencoding`
+/// crate for the handful of places we build paths inline. The server's
+/// validators ILIKE / exact-match the result so non-ASCII passes
+/// straight through.
+fn urlencoding_minimal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            ' ' => out.push_str("%20"),
+            '&' => out.push_str("%26"),
+            '#' => out.push_str("%23"),
+            '?' => out.push_str("%3F"),
+            '+' => out.push_str("%2B"),
+            '=' => out.push_str("%3D"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("%{:02X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Map the server's lowercased `CompanyType` enum tag (`"customer"`,
 /// `"prospect"`, `"vendor"`, `"partner"`) to the title-case label that
 /// `CompanyRow` keys its badge variant on. Unknown values fall through
@@ -83,6 +135,14 @@ struct RemoteCompany {
 #[derive(Clone, Debug, Deserialize)]
 struct PaginatedCompanies {
     data: Vec<RemoteCompany>,
+    #[serde(default)]
+    meta: PaginationMeta,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct PaginationMeta {
+    #[serde(default)]
+    total: u64,
 }
 
 /// Subset of mokosh-server's `ContactResponse` we render in the contacts
@@ -110,6 +170,8 @@ struct RemoteContact {
 #[derive(Clone, Debug, Deserialize)]
 struct PaginatedContacts {
     data: Vec<RemoteContact>,
+    #[serde(default)]
+    meta: PaginationMeta,
 }
 
 /// Company list page
@@ -117,7 +179,6 @@ struct PaginatedContacts {
 pub fn CompanyListPage() -> Element {
     let mut search = use_signal(String::new);
     let mut type_filter = use_signal(String::new);
-    // F3: sort + pagination state.
     let mut sort = use_signal(|| None::<(CompanySortKey, SortDirection)>);
     let mut page = use_signal(|| 1usize);
 
@@ -128,74 +189,52 @@ pub fn CompanyListPage() -> Element {
         SelectOption::new("vendor", "Vendor"),
     ];
 
+    let search_text = search.read().trim().to_string();
+    let type_text = type_filter.read().clone();
+    let current_page = (*page.read()).max(1);
+    let sort_snapshot = *sort.read();
+    let sort_query = company_sort_query(sort_snapshot);
+
     // F1: read the active-tenant generation so Dioxus re-runs this
-    // resource on an org switch / token swap and re-fetches the new
-    // tenant's rows instead of leaving the prior tenant's cached.
-    let companies_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_with_auth::<PaginatedCompanies>("/contacts/companies", &token)
-            .await
-            .ok()
-            .map(|resp| resp.data)
+    // resource on an org switch / token swap. Filters + page + sort are
+    // captured by value so the resource also re-fetches on every change.
+    let q_for_resource = search_text.clone();
+    let type_for_resource = type_text.clone();
+    let sort_for_resource = sort_query;
+    let companies_resource = use_resource(move || {
+        let q = q_for_resource.clone();
+        let type_filter = type_for_resource.clone();
+        let sort = sort_for_resource;
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let token = crate::hooks::fetch::api::current_access_token()?;
+            let mut path = format!("/contacts/companies?page={current_page}&per_page={PER_PAGE}");
+            if !q.is_empty() {
+                path.push_str(&format!("&q={}", urlencoding_minimal(&q)));
+            }
+            if !type_filter.is_empty() {
+                path.push_str(&format!(
+                    "&company_type={}",
+                    urlencoding_minimal(&type_filter)
+                ));
+            }
+            if let Some((field, dir)) = sort {
+                path.push_str(&format!("&sort={field}&sort_dir={dir}"));
+            }
+            crate::hooks::fetch::api::get_with_auth::<PaginatedCompanies>(&path, &token)
+                .await
+                .ok()
+        }
     });
 
     let resource_snapshot = companies_resource.read_unchecked();
     let is_loading = resource_snapshot.is_none();
     let fetch_failed = matches!(*resource_snapshot, Some(None));
-    let remote_companies: Vec<RemoteCompany> = match &*resource_snapshot {
-        Some(Some(rows)) => rows.clone(),
-        _ => Vec::new(),
+    let (page_rows, total): (Vec<RemoteCompany>, u64) = match &*resource_snapshot {
+        Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
+        _ => (Vec::new(), 0),
     };
-
-    // F3: client-side filter (search + type), sort, and pagination over
-    // the live backend rows.
-    let search_q = search.read().trim().to_lowercase();
-    let type_q = type_filter.read().clone();
-    let mut filtered: Vec<RemoteCompany> = remote_companies
-        .iter()
-        .filter(|c| {
-            if !search_q.is_empty()
-                && !c.name.to_lowercase().contains(&search_q)
-                && !c
-                    .account_manager_name
-                    .as_deref()
-                    .unwrap_or_default()
-                    .to_lowercase()
-                    .contains(&search_q)
-            {
-                return false;
-            }
-            if !type_q.is_empty() && c.company_type != type_q {
-                return false;
-            }
-            true
-        })
-        .cloned()
-        .collect();
-
-    if let Some((key, dir)) = *sort.read() {
-        filtered.sort_by(|a, b| {
-            let ord = match key {
-                CompanySortKey::Company => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-                CompanySortKey::Type => a.company_type.cmp(&b.company_type),
-            };
-            match dir {
-                SortDirection::Ascending => ord,
-                SortDirection::Descending => ord.reverse(),
-            }
-        });
-    }
-
-    let filtered_total = filtered.len();
-    let current_page = (*page.read()).max(1);
-    let page_start = (current_page - 1) * PER_PAGE;
-    let page_rows: Vec<RemoteCompany> = filtered
-        .into_iter()
-        .skip(page_start)
-        .take(PER_PAGE)
-        .collect();
-    let sort_snapshot = *sort.read();
+    let has_filters = !search_text.is_empty() || !type_text.is_empty();
 
     rsx! {
         AppLayout { title: "Companies",
@@ -221,14 +260,20 @@ pub fn CompanyListPage() -> Element {
                         SearchInput {
                             value: search.read().clone(),
                             placeholder: "Search companies...",
-                            oninput: move |e: FormEvent| search.set(e.value()),
+                            oninput: move |e: FormEvent| {
+                                search.set(e.value());
+                                page.set(1);
+                            },
                         }
                     }
                     Select {
                         name: "type",
                         options: type_options,
                         value: type_filter.read().clone(),
-                        onchange: move |e: FormEvent| type_filter.set(e.value()),
+                        onchange: move |e: FormEvent| {
+                            type_filter.set(e.value());
+                            page.set(1);
+                        },
                     }
                 }
             }
@@ -243,7 +288,7 @@ pub fn CompanyListPage() -> Element {
             // Companies table
             DataTable {
                 loading: is_loading,
-                total_items: filtered_total,
+                total_items: total as usize,
                 current_page,
                 per_page: PER_PAGE,
                 columns: 4,
@@ -272,10 +317,10 @@ pub fn CompanyListPage() -> Element {
                     } else if page_rows.is_empty() {
                         TableEmpty {
                             columns: 4,
-                            message: if remote_companies.is_empty() {
-                                "No companies yet. Click New Company to create one.".to_string()
-                            } else {
+                            message: if has_filters {
                                 "No companies match your filters.".to_string()
+                            } else {
+                                "No companies yet. Click New Company to create one.".to_string()
                             },
                         }
                     } else {
@@ -736,7 +781,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             crate::hooks::fetch::api::get_authed::<PaginatedTicketSummaries>(&format!(
-                "/tickets?company_id={id}&page_size=5&sort=-updated_at"
+                "/tickets?company_id={id}&per_page=5&sort=-updated_at"
             ))
             .await
             .ok()
@@ -842,9 +887,16 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                         div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
                             div { class: "lg:col-span-2 space-y-6",
                                 // Contacts
-                                CompanyContactsCard { contacts_resource }
+                                CompanyContactsCard {
+                                    company_id: company_id_str.clone(),
+                                    company_name: company.name.clone(),
+                                    contacts_resource,
+                                }
                                 // Sites
-                                CompanySitesCard { sites_resource }
+                                CompanySitesCard {
+                                    company_id: company_id_str.clone(),
+                                    sites_resource,
+                                }
                                 // Recent tickets
                                 CompanyTicketsCard { tickets_resource }
                             }
@@ -981,6 +1033,10 @@ struct SiteSummary {
     address: CompanyAddress,
     #[serde(default)]
     is_primary: bool,
+    #[serde(default)]
+    phone: Option<String>,
+    #[serde(default)]
+    timezone: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1008,14 +1064,23 @@ struct TicketStatusBadge {
 }
 
 #[component]
-fn CompanyContactsCard(contacts_resource: Resource<Option<Vec<RemoteContact>>>) -> Element {
+fn CompanyContactsCard(
+    company_id: String,
+    company_name: String,
+    contacts_resource: Resource<Option<Vec<RemoteContact>>>,
+) -> Element {
     let snap = contacts_resource.read_unchecked();
+    let new_href = format!(
+        "/contacts/new?company_id={}&company_name={}",
+        urlencoding_minimal(&company_id),
+        urlencoding_minimal(&company_name)
+    );
     rsx! {
         Card {
             title: "Contacts",
             actions: rsx! {
-                Link {
-                    to: Route::ContactNew {},
+                a {
+                    href: "{new_href}",
                     class: "text-sm text-blue-600 hover:text-blue-500",
                     "Add Contact"
                 }
@@ -1073,11 +1138,29 @@ fn CompanyContactsCard(contacts_resource: Resource<Option<Vec<RemoteContact>>>) 
 }
 
 #[component]
-fn CompanySitesCard(sites_resource: Resource<Option<Vec<SiteSummary>>>) -> Element {
+fn CompanySitesCard(
+    company_id: String,
+    mut sites_resource: Resource<Option<Vec<SiteSummary>>>,
+) -> Element {
     let snap = sites_resource.read_unchecked();
+    let mut editing = use_signal(|| None::<SiteFormState>);
+
     rsx! {
         Card {
             title: "Sites",
+            actions: rsx! {
+                button {
+                    r#type: "button",
+                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    onclick: {
+                        let company_id = company_id.clone();
+                        move |_| {
+                            editing.set(Some(SiteFormState::new_for_company(&company_id)));
+                        }
+                    },
+                    "New Site"
+                }
+            },
             padding: false,
             Table {
                 TableHead {
@@ -1095,6 +1178,7 @@ fn CompanySitesCard(sites_resource: Resource<Option<Vec<SiteSummary>>>) -> Eleme
                     },
                     Some(Some(rows)) => {
                         let rows = rows.clone();
+                        let company_id = company_id.clone();
                         rsx! {
                             TableBody {
                                 for site in rows.into_iter() {
@@ -1111,9 +1195,23 @@ fn CompanySitesCard(sites_resource: Resource<Option<Vec<SiteSummary>>>) -> Eleme
                                         .collect();
                                         let addr = parts.join(", ");
                                         let is_primary = site.is_primary;
+                                        let site_for_edit = site.clone();
+                                        let company_id_for_edit = company_id.clone();
                                         rsx! {
                                             TableRow { key: "{key}",
-                                                TableCell { "{site.name}" }
+                                                TableCell {
+                                                    button {
+                                                        r#type: "button",
+                                                        class: "text-left font-medium text-blue-600 hover:text-blue-500",
+                                                        onclick: move |_| {
+                                                            editing.set(Some(SiteFormState::from_existing(
+                                                                &company_id_for_edit,
+                                                                &site_for_edit,
+                                                            )));
+                                                        },
+                                                        "{site.name}"
+                                                    }
+                                                }
                                                 TableCell { class: "text-gray-500", "{addr}" }
                                                 TableCell {
                                                     if is_primary {
@@ -1126,6 +1224,293 @@ fn CompanySitesCard(sites_resource: Resource<Option<Vec<SiteSummary>>>) -> Eleme
                                 }
                             }
                         }
+                    },
+                }
+            }
+        }
+
+        if let Some(state) = editing.read().clone() {
+            SiteFormModal {
+                state,
+                onclose: move |_| { editing.set(None); },
+                onsaved: move |_| {
+                    editing.set(None);
+                    sites_resource.restart();
+                },
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct SiteFormState {
+    company_id: String,
+    /// Some => edit existing site
+    site_id: Option<String>,
+    name: String,
+    line1: String,
+    line2: String,
+    city: String,
+    state: String,
+    postal_code: String,
+    country: String,
+    phone: String,
+    is_primary: bool,
+    timezone: String,
+}
+
+impl SiteFormState {
+    fn new_for_company(company_id: &str) -> Self {
+        Self {
+            company_id: company_id.to_string(),
+            site_id: None,
+            name: String::new(),
+            line1: String::new(),
+            line2: String::new(),
+            city: String::new(),
+            state: String::new(),
+            postal_code: String::new(),
+            country: String::new(),
+            phone: String::new(),
+            is_primary: false,
+            timezone: String::new(),
+        }
+    }
+
+    fn from_existing(company_id: &str, site: &SiteSummary) -> Self {
+        Self {
+            company_id: company_id.to_string(),
+            site_id: Some(site.id.to_string()),
+            name: site.name.clone(),
+            line1: site.address.line1.clone().unwrap_or_default(),
+            line2: site.address.line2.clone().unwrap_or_default(),
+            city: site.address.city.clone().unwrap_or_default(),
+            state: site.address.state.clone().unwrap_or_default(),
+            postal_code: site.address.postal_code.clone().unwrap_or_default(),
+            country: site.address.country.clone().unwrap_or_default(),
+            phone: site.phone.clone().unwrap_or_default(),
+            is_primary: site.is_primary,
+            timezone: site.timezone.clone().unwrap_or_default(),
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct SiteFormModalProps {
+    state: SiteFormState,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn SiteFormModal(props: SiteFormModalProps) -> Element {
+    let initial = props.state.clone();
+    let is_edit = initial.site_id.is_some();
+    let modal_title = if is_edit { "Edit Site" } else { "New Site" };
+
+    let mut name = use_signal(|| initial.name.clone());
+    let mut line1 = use_signal(|| initial.line1.clone());
+    let mut line2 = use_signal(|| initial.line2.clone());
+    let mut city = use_signal(|| initial.city.clone());
+    let mut state = use_signal(|| initial.state.clone());
+    let mut postal = use_signal(|| initial.postal_code.clone());
+    let mut country = use_signal(|| initial.country.clone());
+    let mut phone = use_signal(|| initial.phone.clone());
+    let mut timezone = use_signal(|| initial.timezone.clone());
+    let mut is_primary = use_signal(|| initial.is_primary);
+    let mut saving = use_signal(|| false);
+    let mut deleting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+
+    let save_state = initial.clone();
+    let handle_save = move |_| {
+        if saving() || deleting() {
+            return;
+        }
+        if name.read().trim().is_empty() {
+            error.set("Site name is required.".to_string());
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        let body = serde_json::json!({
+            "company_id": save_state.company_id,
+            "name": name.read().trim(),
+            "address": {
+                "line1": optional_string(&line1.read()),
+                "line2": optional_string(&line2.read()),
+                "city": optional_string(&city.read()),
+                "state": optional_string(&state.read()),
+                "postal_code": optional_string(&postal.read()),
+                "country": optional_string(&country.read()),
+            },
+            "phone": optional_string(&phone.read()),
+            "is_primary": *is_primary.read(),
+            "timezone": optional_string(&timezone.read()),
+        });
+        let site_id = save_state.site_id.clone();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let result: Result<(), String> = match site_id {
+                    None => crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
+                        "/contacts/sites",
+                        &body,
+                    )
+                    .await
+                    .map(|_| ()),
+                    Some(id) => {
+                        let path = format!("/contacts/sites/{id}");
+                        crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
+                            .await
+                            .map(|_| ())
+                    }
+                };
+                match result {
+                    Ok(()) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not save site: {err}")),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    let delete_id = initial.site_id.clone();
+    let handle_delete = move |_| {
+        let Some(id) = delete_id.clone() else { return };
+        if saving() || deleting() {
+            return;
+        }
+        deleting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let confirmed = web_sys::window()
+                    .and_then(|w| {
+                        w.confirm_with_message("Delete this site? This cannot be undone.")
+                            .ok()
+                    })
+                    .unwrap_or(false);
+                if confirmed {
+                    let path = format!("/contacts/sites/{id}");
+                    match crate::hooks::fetch::api::delete_authed(&path).await {
+                        Ok(()) => onsaved.call(()),
+                        Err(err) => error.set(format!("Could not delete site: {err}")),
+                    }
+                }
+            }
+            deleting.set(false);
+        });
+    };
+
+    let footer = rsx! {
+        if is_edit {
+            Button {
+                variant: ButtonVariant::Danger,
+                loading: *deleting.read(),
+                onclick: handle_delete,
+                "Delete"
+            }
+        }
+        div { class: "flex-1" }
+        Button {
+            variant: ButtonVariant::Secondary,
+            onclick: move |_| onclose.call(()),
+            "Cancel"
+        }
+        Button {
+            variant: ButtonVariant::Primary,
+            loading: *saving.read(),
+            onclick: handle_save,
+            if is_edit { "Save Changes" } else { "Create Site" }
+        }
+    };
+
+    rsx! {
+        Modal {
+            open: true,
+            title: modal_title,
+            size: crate::components::ModalSize::Large,
+            onclose: move |_| onclose.call(()),
+            footer,
+            div { class: "space-y-4",
+                if !error.read().is_empty() {
+                    div {
+                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                        "{error.read()}"
+                    }
+                }
+                crate::components::Input {
+                    name: "site_name",
+                    label: "Name",
+                    placeholder: "e.g. Main Office",
+                    required: true,
+                    value: name.read().clone(),
+                    oninput: move |e: FormEvent| name.set(e.value()),
+                }
+                div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
+                    crate::components::Input {
+                        name: "site_line1",
+                        label: "Street",
+                        value: line1.read().clone(),
+                        oninput: move |e: FormEvent| line1.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "site_line2",
+                        label: "Street (line 2)",
+                        value: line2.read().clone(),
+                        oninput: move |e: FormEvent| line2.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "site_city",
+                        label: "City",
+                        value: city.read().clone(),
+                        oninput: move |e: FormEvent| city.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "site_state",
+                        label: "State / Region",
+                        value: state.read().clone(),
+                        oninput: move |e: FormEvent| state.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "site_postal",
+                        label: "Postal Code",
+                        value: postal.read().clone(),
+                        oninput: move |e: FormEvent| postal.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "site_country",
+                        label: "Country",
+                        value: country.read().clone(),
+                        oninput: move |e: FormEvent| country.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "site_phone",
+                        label: "Phone",
+                        value: phone.read().clone(),
+                        oninput: move |e: FormEvent| phone.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "site_timezone",
+                        label: "Timezone",
+                        placeholder: "e.g. America/New_York",
+                        value: timezone.read().clone(),
+                        oninput: move |e: FormEvent| timezone.set(e.value()),
+                    }
+                }
+                crate::components::Checkbox {
+                    name: "site_is_primary",
+                    label: "Primary site",
+                    checked: *is_primary.read(),
+                    help: "Marks this as the main location for the company.",
+                    onchange: move |_| {
+                        let next = !*is_primary.read();
+                        is_primary.set(next);
                     },
                 }
             }
@@ -1208,81 +1593,73 @@ fn CompanyTicketsCard(tickets_resource: Resource<Option<PaginatedTicketSummaries
 #[component]
 pub fn ContactListPage() -> Element {
     let mut search = use_signal(String::new);
-    // F3: sort + pagination state.
+    let mut contact_type_filter = use_signal(String::new);
+    let mut portal_filter = use_signal(String::new);
     let mut sort = use_signal(|| None::<(ContactSortKey, SortDirection)>);
     let mut page = use_signal(|| 1usize);
 
-    let contacts_resource = use_resource(|| async {
-        // F1: re-fetch on org switch (see CompanyListPage for rationale).
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_with_auth::<PaginatedContacts>("/contacts/contacts", &token)
-            .await
-            .ok()
-            .map(|resp| resp.data)
+    let type_options = vec![
+        SelectOption::new("", "All Types"),
+        SelectOption::new("primary", "Primary"),
+        SelectOption::new("technical", "Technical"),
+        SelectOption::new("billing", "Billing"),
+        SelectOption::new("other", "Other"),
+    ];
+    let portal_options = vec![
+        SelectOption::new("", "All Contacts"),
+        SelectOption::new("true", "Portal users only"),
+        SelectOption::new("false", "Non-portal only"),
+    ];
+
+    let search_text = search.read().trim().to_string();
+    let type_text = contact_type_filter.read().clone();
+    let portal_text = portal_filter.read().clone();
+    let current_page = (*page.read()).max(1);
+    let sort_snapshot = *sort.read();
+    let sort_query = contact_sort_query(sort_snapshot);
+
+    let q_for_resource = search_text.clone();
+    let type_for_resource = type_text.clone();
+    let portal_for_resource = portal_text.clone();
+    let sort_for_resource = sort_query;
+    let contacts_resource = use_resource(move || {
+        let q = q_for_resource.clone();
+        let contact_type = type_for_resource.clone();
+        let portal = portal_for_resource.clone();
+        let sort = sort_for_resource;
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let token = crate::hooks::fetch::api::current_access_token()?;
+            let mut path = format!("/contacts/contacts?page={current_page}&per_page={PER_PAGE}");
+            if !q.is_empty() {
+                path.push_str(&format!("&q={}", urlencoding_minimal(&q)));
+            }
+            if !contact_type.is_empty() {
+                path.push_str(&format!(
+                    "&contact_type={}",
+                    urlencoding_minimal(&contact_type)
+                ));
+            }
+            if !portal.is_empty() {
+                path.push_str(&format!("&is_portal_user={portal}"));
+            }
+            if let Some((field, dir)) = sort {
+                path.push_str(&format!("&sort={field}&sort_dir={dir}"));
+            }
+            crate::hooks::fetch::api::get_with_auth::<PaginatedContacts>(&path, &token)
+                .await
+                .ok()
+        }
     });
 
     let resource_snapshot = contacts_resource.read_unchecked();
     let is_loading = resource_snapshot.is_none();
     let fetch_failed = matches!(*resource_snapshot, Some(None));
-    let remote_contacts: Vec<RemoteContact> = match &*resource_snapshot {
-        Some(Some(rows)) => rows.clone(),
-        _ => Vec::new(),
+    let (page_rows, total): (Vec<RemoteContact>, u64) = match &*resource_snapshot {
+        Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
+        _ => (Vec::new(), 0),
     };
-
-    // F3: client-side filter (search), sort, and pagination over the
-    // live backend rows. Demo rows below are an unfiltered fallback.
-    let search_q = search.read().trim().to_lowercase();
-    let mut filtered: Vec<RemoteContact> = remote_contacts
-        .iter()
-        .filter(|c| {
-            if search_q.is_empty() {
-                return true;
-            }
-            let hay = format!(
-                "{} {} {} {}",
-                c.first_name,
-                c.last_name,
-                c.company_name.as_deref().unwrap_or_default(),
-                c.email.as_deref().unwrap_or_default()
-            )
-            .to_lowercase();
-            hay.contains(&search_q)
-        })
-        .cloned()
-        .collect();
-
-    if let Some((key, dir)) = *sort.read() {
-        filtered.sort_by(|a, b| {
-            let ord = match key {
-                ContactSortKey::Name => {
-                    let an = format!("{} {}", a.first_name, a.last_name).to_lowercase();
-                    let bn = format!("{} {}", b.first_name, b.last_name).to_lowercase();
-                    an.cmp(&bn)
-                }
-                ContactSortKey::Company => a
-                    .company_name
-                    .as_deref()
-                    .unwrap_or_default()
-                    .to_lowercase()
-                    .cmp(&b.company_name.as_deref().unwrap_or_default().to_lowercase()),
-            };
-            match dir {
-                SortDirection::Ascending => ord,
-                SortDirection::Descending => ord.reverse(),
-            }
-        });
-    }
-
-    let filtered_total = filtered.len();
-    let current_page = (*page.read()).max(1);
-    let page_start = (current_page - 1) * PER_PAGE;
-    let page_rows: Vec<RemoteContact> = filtered
-        .into_iter()
-        .skip(page_start)
-        .take(PER_PAGE)
-        .collect();
-    let sort_snapshot = *sort.read();
+    let has_filters = !search_text.is_empty() || !type_text.is_empty() || !portal_text.is_empty();
 
     rsx! {
         AppLayout { title: "Contacts",
@@ -1303,10 +1680,35 @@ pub fn ContactListPage() -> Element {
 
             // Filters
             Card { class: "mb-6",
-                SearchInput {
-                    value: search.read().clone(),
-                    placeholder: "Search contacts...",
-                    oninput: move |e: FormEvent| search.set(e.value()),
+                div { class: "flex flex-col sm:flex-row gap-4",
+                    div { class: "flex-1",
+                        SearchInput {
+                            value: search.read().clone(),
+                            placeholder: "Search contacts...",
+                            oninput: move |e: FormEvent| {
+                                search.set(e.value());
+                                page.set(1);
+                            },
+                        }
+                    }
+                    Select {
+                        name: "contact_type",
+                        options: type_options,
+                        value: contact_type_filter.read().clone(),
+                        onchange: move |e: FormEvent| {
+                            contact_type_filter.set(e.value());
+                            page.set(1);
+                        },
+                    }
+                    Select {
+                        name: "portal",
+                        options: portal_options,
+                        value: portal_filter.read().clone(),
+                        onchange: move |e: FormEvent| {
+                            portal_filter.set(e.value());
+                            page.set(1);
+                        },
+                    }
                 }
             }
 
@@ -1320,7 +1722,7 @@ pub fn ContactListPage() -> Element {
             // Contacts table
             DataTable {
                 loading: is_loading,
-                total_items: filtered_total,
+                total_items: total as usize,
                 current_page,
                 per_page: PER_PAGE,
                 columns: 5,
@@ -1350,10 +1752,10 @@ pub fn ContactListPage() -> Element {
                     } else if page_rows.is_empty() {
                         TableEmpty {
                             columns: 5,
-                            message: if remote_contacts.is_empty() {
-                                "No contacts yet. Click New Contact to add one.".to_string()
+                            message: if has_filters {
+                                "No contacts match your filters.".to_string()
                             } else {
-                                "No contacts match your search.".to_string()
+                                "No contacts yet. Click New Contact to add one.".to_string()
                             },
                         }
                     } else {
@@ -1419,18 +1821,58 @@ fn ContactRow(props: ContactRowProps) -> Element {
     }
 }
 
-/// New contact page
+/// New contact page. When linked with `?company_id=<uuid>` (the
+/// "Add Contact" button on the company detail page does this) the
+/// CompanyPicker pre-fills with that company and the user only has
+/// to fill in the contact's own fields.
 #[component]
 pub fn ContactNewPage() -> Element {
+    // Resolve the prefill from window.location.search. We could
+    // route through Dioxus' Route enum but that would require turning
+    // the query into a typed param and refactoring every
+    // `Route::ContactNew {}` link site; for a single optional prefill
+    // a one-shot web-sys read keeps the change local.
+    let prefill = use_signal(read_company_prefill_from_url);
+    let prefill = prefill.read().clone();
+
+    let initial = ContactFormValues {
+        company_id: prefill.id.clone(),
+        company_name: prefill.name.clone(),
+        contact_type: "other".to_string(),
+        ..ContactFormValues::default()
+    };
+
     rsx! {
         AppLayout { title: "New Contact",
             PageHeader { title: "New Contact", subtitle: "Add a new contact" }
             ContactForm {
-                initial: ContactFormValues::default(),
+                initial,
                 mode: ContactFormMode::Create,
             }
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct CompanyPrefill {
+    id: String,
+    name: String,
+}
+
+fn read_company_prefill_from_url() -> CompanyPrefill {
+    #[cfg(feature = "web")]
+    {
+        if let Some(search) = web_sys::window().and_then(|w| w.location().search().ok()) {
+            if let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) {
+                let id = params.get("company_id").unwrap_or_default();
+                let name = params.get("company_name").unwrap_or_default();
+                if uuid::Uuid::parse_str(&id).is_ok() {
+                    return CompanyPrefill { id, name };
+                }
+            }
+        }
+    }
+    CompanyPrefill::default()
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -1786,7 +2228,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             crate::hooks::fetch::api::get_authed::<PaginatedTicketSummaries>(&format!(
-                "/tickets?contact_id={id}&page_size=5&sort=-updated_at"
+                "/tickets?contact_id={id}&per_page=5&sort=-updated_at"
             ))
             .await
             .ok()
