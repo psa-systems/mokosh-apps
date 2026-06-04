@@ -112,22 +112,6 @@ struct PaginatedContacts {
     data: Vec<RemoteContact>,
 }
 
-/// Source of the rows currently on screen. Same progressive-enablement
-/// pattern as the calendar page.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum CompanySource {
-    Backend,
-    Demo,
-}
-
-/// Mirror of CompanySource for the contacts list; kept separate to
-/// avoid coupling the two pages' fallbacks.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum ContactSource {
-    Backend,
-    Demo,
-}
-
 /// Company list page
 #[component]
 pub fn CompanyListPage() -> Element {
@@ -144,38 +128,28 @@ pub fn CompanyListPage() -> Element {
         SelectOption::new("vendor", "Vendor"),
     ];
 
-    // Try to pull live companies from mokosh-server. If we don't have
-    // a token yet, or the API errors, or the route isn't deployed yet,
-    // fall back to the seeded demo rows below so the page stays demoable.
+    // F1: read the active-tenant generation so Dioxus re-runs this
+    // resource on an org switch / token swap and re-fetches the new
+    // tenant's rows instead of leaving the prior tenant's cached.
     let companies_resource = use_resource(|| async {
-        // F1: read the active-tenant generation so Dioxus re-runs this
-        // resource on an org switch / token swap and re-fetches the new
-        // tenant's rows instead of leaving the prior tenant's cached.
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        let token = match crate::hooks::fetch::api::current_access_token() {
-            Some(t) => t,
-            None => return (Vec::<RemoteCompany>::new(), CompanySource::Demo),
-        };
-        match crate::hooks::fetch::api::get_with_auth::<PaginatedCompanies>("/companies", &token)
+        let token = crate::hooks::fetch::api::current_access_token()?;
+        crate::hooks::fetch::api::get_with_auth::<PaginatedCompanies>("/companies", &token)
             .await
-        {
-            Ok(resp) => (resp.data, CompanySource::Backend),
-            Err(_) => (Vec::new(), CompanySource::Demo),
-        }
+            .ok()
+            .map(|resp| resp.data)
     });
 
-    // `None` here means the use_resource future is still in-flight on
-    // the first paint. We use that signal to render TableLoading
-    // skeletons rather than briefly flashing the demo rows.
     let resource_snapshot = companies_resource.read_unchecked();
     let is_loading = resource_snapshot.is_none();
-    let (remote_companies, source) = match &*resource_snapshot {
-        Some((rows, source)) => (rows.clone(), *source),
-        None => (Vec::new(), CompanySource::Demo),
+    let fetch_failed = matches!(*resource_snapshot, Some(None));
+    let remote_companies: Vec<RemoteCompany> = match &*resource_snapshot {
+        Some(Some(rows)) => rows.clone(),
+        _ => Vec::new(),
     };
 
     // F3: client-side filter (search + type), sort, and pagination over
-    // the live backend rows. Demo rows below are an unfiltered fallback.
+    // the live backend rows.
     let search_q = search.read().trim().to_lowercase();
     let type_q = type_filter.read().clone();
     let mut filtered: Vec<RemoteCompany> = remote_companies
@@ -259,20 +233,20 @@ pub fn CompanyListPage() -> Element {
                 }
             }
 
-            if source == CompanySource::Demo {
+            if fetch_failed {
                 div {
-                    class: "mb-3 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
-                    "Backend companies API not reachable - showing demo rows. Create/edit operations are disabled until the API is live."
+                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                    "Could not load companies. Refresh the page to retry."
                 }
             }
 
             // Companies table
             DataTable {
                 loading: is_loading,
-                total_items: if source == CompanySource::Backend { filtered_total } else { 5 },
+                total_items: filtered_total,
                 current_page,
                 per_page: PER_PAGE,
-                columns: 5,
+                columns: 4,
                 onpagechange: move |p| page.set(p),
                 Table {
                     TableHead {
@@ -289,71 +263,33 @@ pub fn CompanyListPage() -> Element {
                                 onsort: move |_| toggle_sort(&mut sort, CompanySortKey::Type, &mut page),
                                 "Type"
                             }
-                            TableHeader { "Primary Contact" }
+                            TableHeader { "Account Manager" }
                             TableHeader { "Open Tickets" }
-                            TableHeader { "Contract" }
                         }
                     }
                     if is_loading {
-                        TableLoading { columns: 5, rows: 5 }
-                    } else if source == CompanySource::Backend && page_rows.is_empty() {
-                        TableEmpty { columns: 5, message: "No companies match your filters.".to_string() }
+                        TableLoading { columns: 4, rows: 5 }
+                    } else if page_rows.is_empty() {
+                        TableEmpty {
+                            columns: 4,
+                            message: if remote_companies.is_empty() {
+                                "No companies yet. Click New Company to create one.".to_string()
+                            } else {
+                                "No companies match your filters.".to_string()
+                            },
+                        }
                     } else {
                         TableBody {
-                            if source == CompanySource::Backend {
-                                for company in page_rows.iter().cloned() {
-                                    CompanyRow {
-                                        key: "{company.id}",
-                                        id: company.id.to_string(),
-                                        name: company.name,
-                                        company_type: humanize_company_type(&company.company_type),
-                                        primary_contact: company.account_manager_name.unwrap_or_default(),
-                                        open_tickets: company.open_ticket_count.unwrap_or(0).max(0) as u32,
-                                        contract: String::new(),
-                                    }
-                                }
-                            } else {
+                            for company in page_rows.iter().cloned() {
                                 CompanyRow {
-                                id: "1",
-                                name: "Acme Corp",
-                                company_type: "Customer",
-                                primary_contact: "Bob Johnson",
-                                open_tickets: 5,
-                                contract: "Managed Services",
+                                    key: "{company.id}",
+                                    id: company.id.to_string(),
+                                    name: company.name,
+                                    company_type: humanize_company_type(&company.company_type),
+                                    primary_contact: company.account_manager_name.unwrap_or_default(),
+                                    open_tickets: company.open_ticket_count.unwrap_or(0).max(0) as u32,
+                                }
                             }
-                            CompanyRow {
-                                id: "2",
-                                name: "TechStart Inc",
-                                company_type: "Customer",
-                                primary_contact: "Alice Williams",
-                                open_tickets: 2,
-                                contract: "Block Hours",
-                            }
-                            CompanyRow {
-                                id: "3",
-                                name: "Global Widgets",
-                                company_type: "Customer",
-                                primary_contact: "Charlie Brown",
-                                open_tickets: 8,
-                                contract: "Time & Materials",
-                            }
-                            CompanyRow {
-                                id: "4",
-                                name: "New Venture LLC",
-                                company_type: "Prospect",
-                                primary_contact: "Diana Ross",
-                                open_tickets: 0,
-                                contract: "None",
-                            }
-                            CompanyRow {
-                                id: "5",
-                                name: "Dell Technologies",
-                                company_type: "Vendor",
-                                primary_contact: "Sales Rep",
-                                open_tickets: 0,
-                                contract: "Partner",
-                            }
-                        }
                         }
                     }
                 }
@@ -369,7 +305,6 @@ struct CompanyRowProps {
     company_type: String,
     primary_contact: String,
     open_tickets: u32,
-    contract: String,
 }
 
 #[component]
@@ -406,7 +341,6 @@ fn CompanyRow(props: CompanyRowProps) -> Element {
                     span { class: "text-gray-400", "0" }
                 }
             }
-            TableCell { "{props.contract}" }
         }
     }
 }
@@ -741,28 +675,22 @@ pub fn ContactListPage() -> Element {
     let mut sort = use_signal(|| None::<(ContactSortKey, SortDirection)>);
     let mut page = use_signal(|| 1usize);
 
-    // Try the live backend; fall back to seeded demo rows if the
-    // route isn't deployed or we have no token.
     let contacts_resource = use_resource(|| async {
         // F1: re-fetch on org switch (see CompanyListPage for rationale).
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        let token = match crate::hooks::fetch::api::current_access_token() {
-            Some(t) => t,
-            None => return (Vec::<RemoteContact>::new(), ContactSource::Demo),
-        };
-        match crate::hooks::fetch::api::get_with_auth::<PaginatedContacts>("/contacts", &token)
+        let token = crate::hooks::fetch::api::current_access_token()?;
+        crate::hooks::fetch::api::get_with_auth::<PaginatedContacts>("/contacts", &token)
             .await
-        {
-            Ok(resp) => (resp.data, ContactSource::Backend),
-            Err(_) => (Vec::new(), ContactSource::Demo),
-        }
+            .ok()
+            .map(|resp| resp.data)
     });
 
     let resource_snapshot = contacts_resource.read_unchecked();
     let is_loading = resource_snapshot.is_none();
-    let (remote_contacts, source) = match &*resource_snapshot {
-        Some((rows, source)) => (rows.clone(), *source),
-        None => (Vec::new(), ContactSource::Demo),
+    let fetch_failed = matches!(*resource_snapshot, Some(None));
+    let remote_contacts: Vec<RemoteContact> = match &*resource_snapshot {
+        Some(Some(rows)) => rows.clone(),
+        _ => Vec::new(),
     };
 
     // F3: client-side filter (search), sort, and pagination over the
@@ -845,17 +773,17 @@ pub fn ContactListPage() -> Element {
                 }
             }
 
-            if source == ContactSource::Demo && !is_loading {
+            if fetch_failed {
                 div {
-                    class: "mb-3 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
-                    "Backend contacts API not reachable - showing demo rows."
+                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                    "Could not load contacts. Refresh the page to retry."
                 }
             }
 
             // Contacts table
             DataTable {
                 loading: is_loading,
-                total_items: if source == ContactSource::Backend { filtered_total } else { 3 },
+                total_items: filtered_total,
                 current_page,
                 per_page: PER_PAGE,
                 columns: 5,
@@ -882,50 +810,27 @@ pub fn ContactListPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 5, rows: 5 }
-                    } else if source == ContactSource::Backend && page_rows.is_empty() {
-                        TableEmpty { columns: 5, message: "No contacts match your search.".to_string() }
+                    } else if page_rows.is_empty() {
+                        TableEmpty {
+                            columns: 5,
+                            message: if remote_contacts.is_empty() {
+                                "No contacts yet. Click New Contact to add one.".to_string()
+                            } else {
+                                "No contacts match your search.".to_string()
+                            },
+                        }
                     } else {
                         TableBody {
-                            if source == ContactSource::Backend {
-                                for contact in page_rows.iter().cloned() {
-                                    ContactRow {
-                                        key: "{contact.id}",
-                                        id: contact.id.to_string(),
-                                        name: format!("{} {}", contact.first_name, contact.last_name).trim().to_string(),
-                                        company: contact.company_name.clone().unwrap_or_default(),
-                                        company_id: contact.company_id.map(|id| id.to_string()).unwrap_or_default(),
-                                        email: contact.email.clone().unwrap_or_default(),
-                                        phone: contact.phone_primary.clone().unwrap_or_default(),
-                                        role: contact.job_title.clone().unwrap_or_default(),
-                                    }
-                                }
-                            } else {
+                            for contact in page_rows.iter().cloned() {
                                 ContactRow {
-                                    id: "1",
-                                    name: "Bob Johnson",
-                                    company: "Acme Corp",
-                                    company_id: "1",
-                                    email: "bob@acme.com",
-                                    phone: "(555) 123-4567",
-                                    role: "Primary Contact",
-                                }
-                                ContactRow {
-                                    id: "2",
-                                    name: "Alice Williams",
-                                    company: "TechStart Inc",
-                                    company_id: "2",
-                                    email: "alice@techstart.com",
-                                    phone: "(555) 234-5678",
-                                    role: "CTO",
-                                }
-                                ContactRow {
-                                    id: "3",
-                                    name: "Charlie Brown",
-                                    company: "Global Widgets",
-                                    company_id: "3",
-                                    email: "charlie@widgets.com",
-                                    phone: "(555) 345-6789",
-                                    role: "IT Director",
+                                    key: "{contact.id}",
+                                    id: contact.id.to_string(),
+                                    name: format!("{} {}", contact.first_name, contact.last_name).trim().to_string(),
+                                    company: contact.company_name.clone().unwrap_or_default(),
+                                    company_id: contact.company_id.map(|id| id.to_string()).unwrap_or_default(),
+                                    email: contact.email.clone().unwrap_or_default(),
+                                    phone: contact.phone_primary.clone().unwrap_or_default(),
+                                    role: contact.job_title.clone().unwrap_or_default(),
                                 }
                             }
                         }
