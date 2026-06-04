@@ -59,11 +59,11 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let path = if q.is_empty() {
-                "/companies?page_size=20".to_string()
+                "/contacts/companies?page_size=20".to_string()
             } else {
                 // The server stores names as-is and matches with ILIKE so
                 // we can pass the trimmed query straight through.
-                format!("/companies?q={}&page_size=20", urlencoding_minimal(&q))
+                format!("/contacts/companies?q={}&page_size=20", urlencoding_minimal(&q))
             };
             crate::hooks::fetch::api::get_authed::<PickerPage>(&path)
                 .await
