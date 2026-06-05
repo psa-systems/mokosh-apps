@@ -757,9 +757,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     // Reading-view UI state, persisted per user via the prefs store.
     let left_collapsed = use_signal(|| crate::utils::prefs::get_bool("kb_left_rail", false));
     let right_collapsed = use_signal(|| crate::utils::prefs::get_bool("kb_right_rail", false));
-    let read_mode = use_signal(|| crate::utils::prefs::get_bool("kb_read_mode", false));
     let comfortable = use_signal(|| crate::utils::prefs::get_bool("kb_density", true));
-    let prior = use_signal(|| (false, false));
     let open_overlay = use_signal(|| None::<crate::components::RailSide>);
     use_effect(move || crate::utils::prefs::set_bool("kb_left_rail", left_collapsed()));
     use_effect(move || crate::utils::prefs::set_bool("kb_right_rail", right_collapsed()));
@@ -825,7 +823,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                             div { class: "flex-1 min-w-0",
                                 div { class: "flex items-center justify-between gap-2",
                                     KbBreadcrumb { path: path.clone(), title: article.title.clone() }
-                                    ReadModeButton { read_mode, left_collapsed, right_collapsed, prior }
+                                    ReadModeButton { left_collapsed, right_collapsed }
                                 }
                                 div { class: "mt-2 flex items-center justify-between gap-3 flex-wrap",
                                     h1 { class: "text-2xl font-semibold text-gray-900 dark:text-white truncate", "{article.title}" }
@@ -1514,36 +1512,36 @@ fn DensityToggle(comfortable: Signal<bool>) -> Element {
 }
 
 #[component]
-fn ReadModeButton(
-    read_mode: Signal<bool>,
-    left_collapsed: Signal<bool>,
-    right_collapsed: Signal<bool>,
-    prior: Signal<(bool, bool)>,
-) -> Element {
-    let mut read_mode = read_mode;
+fn ReadModeButton(left_collapsed: Signal<bool>, right_collapsed: Signal<bool>) -> Element {
     let mut left_collapsed = left_collapsed;
     let mut right_collapsed = right_collapsed;
-    let mut prior = prior;
+    let both = left_collapsed() && right_collapsed();
     rsx! {
         button {
             class: "p-1 text-gray-500 hover:text-gray-700 dark:hover:text-gray-200",
-            title: if read_mode() { "Exit read mode" } else { "Read mode (hide panels)" },
+            title: if both { "Exit read mode (show panels)" } else { "Read mode (hide panels)" },
             onclick: move |_| {
-                if read_mode() {
-                    let (l, r) = prior();
-                    left_collapsed.set(l);
-                    right_collapsed.set(r);
-                    read_mode.set(false);
-                    crate::utils::prefs::set_bool("kb_read_mode", false);
-                } else {
-                    prior.set((left_collapsed(), right_collapsed()));
-                    left_collapsed.set(true);
-                    right_collapsed.set(true);
-                    read_mode.set(true);
-                    crate::utils::prefs::set_bool("kb_read_mode", true);
-                }
+                let collapse = !(left_collapsed() && right_collapsed());
+                left_collapsed.set(collapse);
+                right_collapsed.set(collapse);
             },
-            if read_mode() { "\u{2921}" } else { "\u{2922}" }
+            if both {
+                // arrows pointing inward (minimize / compress)
+                svg { class: "h-5 w-5", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round",
+                    path { d: "M9 9L4 4M9 9V5M9 9H5" }
+                    path { d: "M15 9l5-5M15 9V5M15 9h4" }
+                    path { d: "M9 15l-5 5M9 15v4M9 15H5" }
+                    path { d: "M15 15l5 5M15 15v4M15 15h4" }
+                }
+            } else {
+                // arrows pointing outward (expand / fullscreen)
+                svg { class: "h-5 w-5", view_box: "0 0 24 24", fill: "none", stroke: "currentColor", stroke_width: "2", stroke_linecap: "round", stroke_linejoin: "round",
+                    path { d: "M4 9V4h5" }
+                    path { d: "M20 9V4h-5" }
+                    path { d: "M4 15v5h5" }
+                    path { d: "M20 15v5h-5" }
+                }
+            }
         }
     }
 }
