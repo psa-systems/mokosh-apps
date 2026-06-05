@@ -53,6 +53,7 @@ Both side rails are collapsible (see "Rail collapse and responsive behavior" bel
 - **Center pane - article header + article.** A header block then the body:
   - Breadcrumb row: `KB / <category path> / <title>` (resolved via `category_id` + walking `parent_id`) on the left; the fullscreen read-mode toggle on the right.
   - Title row: the title, with the **rating inline** - a thumbs-up and thumbs-down each showing its count (`👍 12  👎 1`, from `helpful_count` / `not_helpful_count`) - plus the **status** and **visibility** badges and the **Edit** action. Everything that can live with the title moves here so it stays visible regardless of rail collapse or read mode.
+  - **Responsive overflow:** the title always stays inline. When the row is too narrow to fit the secondary header items (rating, status/visibility badges, Edit) without overflowing, they collapse into a single overflow dropdown (a `⋯` / kebab trigger on the title row) instead of bleeding out of the container; widen the row and they return inline. One reusable `OverflowActions` piece owns this measure-and-collapse behavior.
   - Sub-line: a small muted "Updated <date>" (and created, if useful).
   - Then the rendered markdown, **directly on the page** - not wrapped in a `Card`, not in a `<pre>` block - so it reads as a document, not a boxed card.
 - **Right pane - version-history rail.** Slimmed to just the compact version-history list (small type, restore action preserved). Status, visibility, updated date, rating, and edit have all moved to the article header, so the right rail is now only "tiny version history on the right," leaving the center as just the article.
@@ -111,6 +112,7 @@ A small reusable piece that, given an article's `category_id`, resolves the cate
 - [ ] Rendered HTML is sanitized (ammonia); a malicious tag in content does not execute.
 - [ ] Reading view is three panes: tree nav left; article center with a header (breadcrumb, title, inline rating, status/visibility badges, Edit, updated date); right rail is only the tiny version history.
 - [ ] Rating is `👍 <n>  👎 <n>` on the title row (not on the right rail) and stays visible under rail collapse and read mode; status, visibility, updated date, and Edit are also in the header, not the rail.
+- [ ] When the header row is too narrow to fit inline, the secondary items (rating, badges, Edit) collapse into an overflow `⋯` dropdown rather than overflowing the container; the title stays inline; widening restores them.
 - [ ] Left tree nav lists categories (hierarchical, sorted) with their articles, highlights the current one, and is collapsible. Present on detail and list pages.
 - [ ] Each side rail has a directional chevron toggle (`<`/`>`) that collapses/expands it; the wide-screen collapsed state persists per user across reloads.
 - [ ] On narrow screens both rails auto-collapse and open as overlays; only one rail overlay can be open at a time (the other is blocked until the open one is dismissed).
