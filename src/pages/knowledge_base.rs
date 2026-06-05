@@ -1382,6 +1382,121 @@ fn KbTreeArticle(article: KbArticle, current_id: String) -> Element {
     }
 }
 
+// ============================================================================
+// Rating bar, density toggle, read-mode button
+// ============================================================================
+
+#[component]
+fn RatingBar(article_id: String, helpful: i32, not_helpful: i32) -> Element {
+    let mut counts = use_signal(|| (helpful, not_helpful));
+    let mut busy = use_signal(|| false);
+    let (h, n) = counts();
+    let id_h = article_id.clone();
+    let id_n = article_id.clone();
+    rsx! {
+        div { class: "flex items-center gap-3 text-sm",
+            button {
+                class: "flex items-center gap-1 text-gray-600 dark:text-gray-300 hover:text-green-600 disabled:opacity-50",
+                disabled: busy(),
+                onclick: move |_| {
+                    if busy() { return; }
+                    busy.set(true);
+                    let id = id_h.clone();
+                    spawn(async move {
+                        #[cfg(feature = "web")]
+                        {
+                            let path = format!("/kb/articles/{id}/helpful");
+                            if let Ok(fb) = crate::hooks::fetch::api::post_authed::<KbArticleFeedback, _>(&path, &serde_json::json!({})).await {
+                                counts.set((fb.helpful_count, fb.not_helpful_count));
+                            }
+                        }
+                        #[cfg(not(feature = "web"))]
+                        let _ = &id;
+                        busy.set(false);
+                    });
+                },
+                span { "\u{1F44D}" }
+                span { class: "tabular-nums", "{h}" }
+            }
+            button {
+                class: "flex items-center gap-1 text-gray-600 dark:text-gray-300 hover:text-red-600 disabled:opacity-50",
+                disabled: busy(),
+                onclick: move |_| {
+                    if busy() { return; }
+                    busy.set(true);
+                    let id = id_n.clone();
+                    spawn(async move {
+                        #[cfg(feature = "web")]
+                        {
+                            let path = format!("/kb/articles/{id}/not_helpful");
+                            if let Ok(fb) = crate::hooks::fetch::api::post_authed::<KbArticleFeedback, _>(&path, &serde_json::json!({})).await {
+                                counts.set((fb.helpful_count, fb.not_helpful_count));
+                            }
+                        }
+                        #[cfg(not(feature = "web"))]
+                        let _ = &id;
+                        busy.set(false);
+                    });
+                },
+                span { "\u{1F44E}" }
+                span { class: "tabular-nums", "{n}" }
+            }
+        }
+    }
+}
+
+#[component]
+fn DensityToggle(comfortable: Signal<bool>) -> Element {
+    let mut comfortable = comfortable;
+    rsx! {
+        button {
+            class: "text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300",
+            title: "Toggle reading density",
+            onclick: move |_| {
+                let next = !comfortable();
+                comfortable.set(next);
+                crate::utils::prefs::set_bool("kb_density", next);
+            },
+            if comfortable() { "Comfortable" } else { "Compact" }
+        }
+    }
+}
+
+#[component]
+fn ReadModeButton(
+    read_mode: Signal<bool>,
+    left_collapsed: Signal<bool>,
+    right_collapsed: Signal<bool>,
+    prior: Signal<(bool, bool)>,
+) -> Element {
+    let mut read_mode = read_mode;
+    let mut left_collapsed = left_collapsed;
+    let mut right_collapsed = right_collapsed;
+    let mut prior = prior;
+    rsx! {
+        button {
+            class: "p-1 text-gray-500 hover:text-gray-700 dark:hover:text-gray-200",
+            title: if read_mode() { "Exit read mode" } else { "Read mode (hide panels)" },
+            onclick: move |_| {
+                if read_mode() {
+                    let (l, r) = prior();
+                    left_collapsed.set(l);
+                    right_collapsed.set(r);
+                    read_mode.set(false);
+                    crate::utils::prefs::set_bool("kb_read_mode", false);
+                } else {
+                    prior.set((left_collapsed(), right_collapsed()));
+                    left_collapsed.set(true);
+                    right_collapsed.set(true);
+                    read_mode.set(true);
+                    crate::utils::prefs::set_bool("kb_read_mode", true);
+                }
+            },
+            if read_mode() { "\u{2921}" } else { "\u{2922}" }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
