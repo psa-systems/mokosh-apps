@@ -118,6 +118,68 @@ fn resolve_category_path(category_id: Option<uuid::Uuid>, all: &[KbCategory]) ->
     chain
 }
 
+/// A category node in the nav tree: the category, its child categories
+/// (recursively, ordered by `sort_order` then name), and the articles
+/// filed directly under it (ordered by title).
+#[derive(Clone, PartialEq)]
+struct TreeNode {
+    category: KbCategory,
+    children: Vec<TreeNode>,
+    articles: Vec<KbArticle>,
+}
+
+/// Build the category forest (root categories with nested children and
+/// their articles). Articles with no/unknown category go in a separate
+/// "uncategorized" bucket returned as the second element.
+fn build_kb_tree(
+    categories: &[KbCategory],
+    articles: &[KbArticle],
+) -> (Vec<TreeNode>, Vec<KbArticle>) {
+    fn node_for(cat: &KbCategory, cats: &[KbCategory], arts: &[KbArticle]) -> TreeNode {
+        let mut children: Vec<TreeNode> = cats
+            .iter()
+            .filter(|c| c.parent_id == Some(cat.id))
+            .map(|c| node_for(c, cats, arts))
+            .collect();
+        children.sort_by(|a, b| {
+            a.category
+                .sort_order
+                .cmp(&b.category.sort_order)
+                .then(a.category.name.cmp(&b.category.name))
+        });
+        let mut articles: Vec<KbArticle> = arts
+            .iter()
+            .filter(|a| a.category_id == Some(cat.id))
+            .cloned()
+            .collect();
+        articles.sort_by(|a, b| a.title.cmp(&b.title));
+        TreeNode {
+            category: cat.clone(),
+            children,
+            articles,
+        }
+    }
+
+    let known: std::collections::HashSet<_> = categories.iter().map(|c| c.id).collect();
+    let mut roots: Vec<TreeNode> = categories
+        .iter()
+        .filter(|c| c.parent_id.is_none())
+        .map(|c| node_for(c, categories, articles))
+        .collect();
+    roots.sort_by(|a, b| {
+        a.category
+            .sort_order
+            .cmp(&b.category.sort_order)
+            .then(a.category.name.cmp(&b.category.name))
+    });
+    let uncategorized: Vec<KbArticle> = articles
+        .iter()
+        .filter(|a| a.category_id.is_none() || a.category_id.is_some_and(|id| !known.contains(&id)))
+        .cloned()
+        .collect();
+    (roots, uncategorized)
+}
+
 /// Title-case the server's lowercase visibility tag for display, and pick
 /// a badge color. Unknown values fall through unchanged / gray.
 fn visibility_label(raw: &str) -> (String, BadgeVariant) {
@@ -1272,5 +1334,46 @@ mod tests {
     fn empty_when_dangling() {
         let cats = vec![cat(Uuid::new_v4(), None, "X")];
         assert!(resolve_category_path(Some(Uuid::new_v4()), &cats).is_empty());
+    }
+
+    fn art(id: Uuid, category: Option<Uuid>, title: &str) -> KbArticle {
+        KbArticle {
+            id,
+            title: title.to_string(),
+            slug: title.to_lowercase(),
+            content: String::new(),
+            summary: None,
+            category_id: category,
+            visibility: "internal".into(),
+            status: "published".into(),
+            view_count: 0,
+            helpful_count: 0,
+            not_helpful_count: 0,
+            published_at: None,
+            tags: vec![],
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn nests_children_and_articles() {
+        let root = Uuid::new_v4();
+        let child = Uuid::new_v4();
+        let cats = vec![cat(root, None, "Net"), cat(child, Some(root), "VPN")];
+        let arts = vec![art(Uuid::new_v4(), Some(child), "Setup")];
+        let (roots, uncat) = build_kb_tree(&cats, &arts);
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].children.len(), 1);
+        assert_eq!(roots[0].children[0].articles[0].title, "Setup");
+        assert!(uncat.is_empty());
+    }
+
+    #[test]
+    fn uncategorized_bucket_collects_orphans() {
+        let arts = vec![art(Uuid::new_v4(), None, "Loose")];
+        let (roots, uncat) = build_kb_tree(&[], &arts);
+        assert!(roots.is_empty());
+        assert_eq!(uncat.len(), 1);
     }
 }
