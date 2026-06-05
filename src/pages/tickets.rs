@@ -386,15 +386,15 @@ fn TicketRow(props: TicketRowProps) -> Element {
 pub fn TicketNewPage() -> Element {
     let mut title = use_signal(String::new);
     let mut description = use_signal(String::new);
-    let mut company = use_signal(String::new);
+    // The company field holds a real company UUID (string) plus its human
+    // name, both fed by the CompanyPicker. The old hardcoded "1"/"2"/"3"
+    // Select submitted non-UUID ids that fell back to the nil UUID, so the
+    // create always failed against the server (MAPPS-122).
+    let mut company_id = use_signal(String::new);
+    let mut company_name = use_signal(String::new);
     let mut priority = use_signal(|| "medium".to_string());
     let mut is_submitting = use_signal(|| false);
-
-    let company_options = vec![
-        SelectOption::new("1", "Acme Corp"),
-        SelectOption::new("2", "TechStart Inc"),
-        SelectOption::new("3", "Global Widgets"),
-    ];
+    let mut error = use_signal(String::new);
 
     let priority_options = vec![
         SelectOption::new("critical", "Critical"),
@@ -407,28 +407,29 @@ pub fn TicketNewPage() -> Element {
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
         is_submitting.set(true);
+        error.set(String::new());
+
+        // The CompanyPicker only ever reports real company UUIDs, but a
+        // user can submit before picking one. Validate up front and bail
+        // with a visible message instead of POSTing the nil UUID.
+        let Ok(company_uuid) = uuid::Uuid::parse_str(company_id.read().as_str()) else {
+            error.set("Please pick a company first.".to_string());
+            is_submitting.set(false);
+            return;
+        };
 
         // Snapshot signals so the spawn doesn't need to read them.
         let title_v = title.read().clone();
         let description_v = description.read().clone();
-        let company_v = company.read().clone();
         let _priority_v = priority.read().clone();
 
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                // The Select still ships hardcoded "1"/"2"/"3" placeholders
-                // until the company dropdown is wired to /api/v1/contacts/companies
-                // (tracked under the contacts story). Parse as Uuid; non-UUID
-                // values fall back to `nil()` so the POST exercises the wire
-                // and the server returns a typed validation error we can
-                // surface to the user via the toast.
-                let company_id =
-                    uuid::Uuid::parse_str(&company_v).unwrap_or_else(|_| uuid::Uuid::nil());
                 let body = serde_json::json!({
                     "title": title_v,
                     "description": if description_v.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(description_v) },
-                    "company_id": company_id,
+                    "company_id": company_uuid,
                 });
 
                 #[derive(serde::Deserialize)]
@@ -445,13 +446,10 @@ pub fn TicketNewPage() -> Element {
                         });
                     }
                     Err(err) => {
-                        // The toast surface lands with the API client
-                        // story; until then surface the failure via the
-                        // browser console and keep the form mounted so
-                        // the user can retry without losing their text.
-                        web_sys::console::error_1(
-                            &format!("Could not create ticket: {err}").into(),
-                        );
+                        // Surface the failure in the form and keep it
+                        // mounted so the user can retry without losing
+                        // their text.
+                        error.set(format!("Could not create ticket: {err}"));
                     }
                 }
             }
@@ -459,6 +457,13 @@ pub fn TicketNewPage() -> Element {
             is_submitting.set(false);
         });
     };
+
+    let picker_selected_id: Option<String> =
+        if uuid::Uuid::parse_str(company_id.read().as_str()).is_ok() {
+            Some(company_id.read().clone())
+        } else {
+            None
+        };
 
     rsx! {
         AppLayout { title: "New Ticket",
@@ -472,6 +477,13 @@ pub fn TicketNewPage() -> Element {
                     class: "space-y-6",
                     onsubmit: handle_submit,
 
+                    if !error.read().is_empty() {
+                        div {
+                            class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                            "{error.read()}"
+                        }
+                    }
+
                     div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
                         crate::components::Input {
                             name: "title",
@@ -482,14 +494,18 @@ pub fn TicketNewPage() -> Element {
                             oninput: move |e: FormEvent| title.set(e.value()),
                         }
 
-                        Select {
-                            name: "company",
-                            label: "Company",
-                            options: company_options,
-                            value: company.read().clone(),
-                            placeholder: "Select a company",
+                        crate::components::CompanyPicker {
+                            value: company_name.read().clone(),
+                            selected_id: picker_selected_id,
                             required: true,
-                            onchange: move |e: FormEvent| company.set(e.value()),
+                            onselect: move |(id, name): (String, String)| {
+                                company_id.set(id);
+                                company_name.set(name);
+                            },
+                            onclear: move |_| {
+                                company_id.set(String::new());
+                                company_name.set(String::new());
+                            },
                         }
                     }
 
