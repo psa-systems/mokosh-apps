@@ -36,16 +36,28 @@ Both the reading view and the authoring preview consume this helper. The output 
 Replace the current 4-column grid with a three-pane layout:
 
 ```
-+-------------------+--------------------------------+---------------+
++--[‹]--------------+--------------------------------+--------[›]-----+
 | category/article  | breadcrumb: KB / Cat / Title   | metadata      |
-| tree (collapsible)| # Title                        | rating 👍/👎  |
+| tree (chevron ‹)  | # Title                        | rating 👍/👎  |
 |  current highlighted| rendered markdown (no <pre>) | versions(tiny)|
 +-------------------+--------------------------------+---------------+
+   left rail                 article only            right rail (chevron ›)
 ```
 
-- **Left pane - tree nav.** A collapsible tree built from `KbCategory` (grouped by `parent_id`, ordered by `sort_order`) with each category's articles (`category_id`) nested beneath it. The current article is highlighted. Categories collapse/expand; the whole rail collapses to reclaim width. Data comes from the existing `/kb/categories` and `/kb/articles` list endpoints.
-- **Center pane - article only.** Breadcrumb at the top (`KB / <category path> / <title>`), resolved by looking up `category_id` and walking `parent_id` to the root. Then the title, then the rendered markdown. No rating or version controls here.
+Both side rails are collapsible (see "Rail collapse and responsive behavior" below); the center article pane always stays.
+
+- **Left pane - tree nav.** A tree built from `KbCategory` (grouped by `parent_id`, ordered by `sort_order`) with each category's articles (`category_id`) nested beneath it. The current article is highlighted. Categories collapse/expand internally; the whole rail is collapsible via a chevron. Data comes from the existing `/kb/categories` and `/kb/articles` list endpoints.
+- **Center pane - article only.** Breadcrumb at the top (`KB / <category path> / <title>`), resolved by looking up `category_id` and walking `parent_id` to the root. Then the title, then the rendered markdown. The article content renders **directly on the page**, not wrapped in a `Card` and not in a `<pre>` block, so it reads as a document rather than a boxed card. No rating or version controls here.
 - **Right pane - metadata rail.** Status, visibility, and updated date (as today), then the rating widget (`helpful_count` / `not_helpful_count` with 👍 / 👎 actions, moved out of the center column), then a compact version-history list (smaller type, restore action preserved).
+
+### 2b. Rail collapse and responsive behavior
+
+Each side rail (left tree, right metadata) carries a directional chevron toggle that collapses it to a thin edge handle and expands it again. The chevron points outward toward the screen edge to collapse and inward to expand (left rail: `<` collapses / `>` expands; right rail: `>` collapses / `<` expands), so the affordance reads naturally on each side.
+
+- **Wide screens:** both rails are expanded by default and sit inline beside the article. The user may collapse either (or both) via its chevron to focus on the article; the collapsed/expanded state for each rail is persisted per user in `localStorage` (keys `kb_left_rail`, `kb_right_rail`) so the choice sticks across reloads, same mechanism as the density toggle.
+- **Narrow screens:** rails auto-collapse to edge handles so the article gets the full width. A collapsed rail opens as an overlay above the article when its chevron is clicked. Only one rail overlay may be open at a time: while one is open the other cannot be opened until the first is dismissed (click outside it, or its close chevron). This avoids two overlays fighting for a narrow viewport.
+
+The collapse mechanism is one reusable `CollapsibleRail` component (side = left|right, persisted key, overlay-on-narrow), used for both rails so the behavior is identical.
 
 ### 3. Reader density toggle
 
@@ -84,10 +96,12 @@ A small reusable piece that, given an article's `category_id`, resolves the cate
 
 ## Acceptance criteria
 
-- [ ] Article body renders as real markdown (headings, lists, code, links), not preformatted text, with no surrounding box.
+- [ ] Article body renders as real markdown (headings, lists, code, links), not preformatted text, directly on the page with no surrounding `Card` or box.
 - [ ] Rendered HTML is sanitized (ammonia); a malicious tag in content does not execute.
 - [ ] Reading view is three panes: tree nav left, article only center (with breadcrumb), metadata+rating+tiny versions right.
 - [ ] Left tree nav lists categories (hierarchical, sorted) with their articles, highlights the current one, and is collapsible. Present on detail and list pages.
+- [ ] Each side rail has a directional chevron toggle (`<`/`>`) that collapses/expands it; the wide-screen collapsed state persists per user across reloads.
+- [ ] On narrow screens both rails auto-collapse and open as overlays; only one rail overlay can be open at a time (the other is blocked until the open one is dismissed).
 - [ ] Breadcrumb shows `KB / <category path> / <title>` and resolves nested categories.
 - [ ] Reader density toggle (compact/comfortable) changes article spacing and persists per user across reloads.
 - [ ] Rating 👍/👎 lives in the right rail and reflects/updates `helpful_count` / `not_helpful_count`.
