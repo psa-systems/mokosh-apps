@@ -806,10 +806,14 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                     let updated = date_only(&article.updated_at);
                     let content = article.content.clone();
                     let path = resolve_category_path(article.category_id, &categories);
+                    // Density drives BOTH the line spacing (leading-*) and the
+                    // gap between paragraphs ([&_p]:my-*): comfortable reads
+                    // airy, compact reads dense. The arbitrary `[&_p]:` variant
+                    // overrides the prose plugin's default paragraph margins.
                     let prose_density = if comfortable() {
-                        "prose-base leading-relaxed"
+                        "prose-base leading-relaxed [&_p]:my-5"
                     } else {
-                        "prose-sm leading-snug"
+                        "prose-sm leading-snug [&_p]:my-2"
                     };
                     rsx! {
                         div { class: "flex gap-6 items-start",
