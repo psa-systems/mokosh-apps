@@ -1,7 +1,8 @@
 //! Time tracking pages
 
-use chrono::{Datelike, Duration, NaiveDate, Weekday};
+use chrono::{Datelike, Duration, NaiveDate, Utc, Weekday};
 use dioxus::prelude::*;
+use serde::Deserialize;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ChevronRightIcon, DataTable,
@@ -9,6 +10,52 @@ use crate::components::{
     TableHeader, TableRow,
 };
 use crate::Route;
+
+/// `PaginatedResponse<T>` envelope (`{ "data": [...], "meta": {...} }`);
+/// serde drops `meta`.
+#[derive(Clone, Debug, Deserialize)]
+struct Paginated<T> {
+    data: Vec<T>,
+}
+
+/// A time entry (`GET /api/v1/time-entries`). Names aren't joined into the
+/// response, so the list renders ids/links rather than ticket titles.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteTimeEntry {
+    date: NaiveDate,
+    #[serde(default)]
+    duration_minutes: i64,
+    #[serde(default)]
+    ticket_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    project_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(default)]
+    is_billable: bool,
+    #[serde(default)]
+    billing_status: String,
+}
+
+/// A ticket, used to populate the Work Item picker. Selecting one supplies
+/// both `ticket_id` and the required `company_id` for the create request.
+#[derive(Clone, Debug, Deserialize)]
+struct TicketOption {
+    id: uuid::Uuid,
+    #[serde(default)]
+    ticket_number: String,
+    #[serde(default)]
+    title: String,
+    company_id: uuid::Uuid,
+}
+
+/// A work type (`GET /api/v1/work-types`) for the required `work_type_id`.
+#[derive(Clone, Debug, Deserialize)]
+struct WorkTypeOption {
+    id: uuid::Uuid,
+    #[serde(default)]
+    name: String,
+}
 
 /// Start of the Monday-Sunday week that contains `date`.
 fn monday_of_week(date: NaiveDate) -> NaiveDate {
@@ -45,22 +92,29 @@ fn month_name(month: u32) -> &'static str {
 /// Time entry list page
 #[component]
 pub fn TimeEntryListPage() -> Element {
-    let mut date_range = use_signal(|| "this_week".to_string());
-    let mut user_filter = use_signal(String::new);
+    let entries_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimeEntry>>("/time-entries")
+            .await
+            .ok()
+            .map(|p| p.data)
+    });
 
-    let date_options = vec![
-        SelectOption::new("today", "Today"),
-        SelectOption::new("this_week", "This Week"),
-        SelectOption::new("last_week", "Last Week"),
-        SelectOption::new("this_month", "This Month"),
-        SelectOption::new("last_month", "Last Month"),
-    ];
+    let snapshot = entries_resource.read_unchecked().clone();
+    // `None` while loading; `Some(None)` on fetch failure; `Some(Some(rows))`.
+    let is_loading = snapshot.is_none();
+    let load_failed = matches!(&snapshot, Some(None));
+    let entries: Vec<RemoteTimeEntry> = snapshot.flatten().unwrap_or_default();
 
-    let user_options = vec![
-        SelectOption::new("", "All Users"),
-        SelectOption::new("1", "John Smith"),
-        SelectOption::new("2", "Jane Doe"),
-    ];
+    // Stat cards computed from the fetched entries (no hardcoded totals).
+    let today = Utc::now().date_naive();
+    let week_start = monday_of_week(today);
+    let hours = |m: i64| format!("{:.1}h", m as f64 / 60.0);
+    let today_h = hours(sum_minutes(&entries, |e| e.date == today));
+    let week_h = hours(sum_minutes(&entries, |e| e.date >= week_start));
+    let billable_h = hours(sum_minutes(&entries, |e| e.is_billable));
+    let nonbillable_h = hours(sum_minutes(&entries, |e| !e.is_billable));
+    let total = entries.len();
 
     rsx! {
         AppLayout { title: "Time Entries",
@@ -79,107 +133,97 @@ pub fn TimeEntryListPage() -> Element {
                 },
             }
 
-            // Stats
             div { class: "grid grid-cols-1 gap-5 sm:grid-cols-4 mb-6",
                 Card { class: "text-center",
                     p { class: "text-sm text-gray-500 dark:text-gray-400", "Today" }
-                    p { class: "text-2xl font-bold text-gray-900 dark:text-white", "4.5h" }
+                    p { class: "text-2xl font-bold text-gray-900 dark:text-white", "{today_h}" }
                 }
                 Card { class: "text-center",
                     p { class: "text-sm text-gray-500 dark:text-gray-400", "This Week" }
-                    p { class: "text-2xl font-bold text-gray-900 dark:text-white", "32.5h" }
+                    p { class: "text-2xl font-bold text-gray-900 dark:text-white", "{week_h}" }
                 }
                 Card { class: "text-center",
                     p { class: "text-sm text-gray-500 dark:text-gray-400", "Billable" }
-                    p { class: "text-2xl font-bold text-green-600", "28.0h" }
+                    p { class: "text-2xl font-bold text-green-600", "{billable_h}" }
                 }
                 Card { class: "text-center",
                     p { class: "text-sm text-gray-500 dark:text-gray-400", "Non-Billable" }
-                    p { class: "text-2xl font-bold text-gray-500", "4.5h" }
+                    p { class: "text-2xl font-bold text-gray-500", "{nonbillable_h}" }
                 }
             }
 
-            // Filters
-            Card { class: "mb-6",
-                div { class: "flex flex-col sm:flex-row gap-4",
-                    Select {
-                        name: "date_range",
-                        options: date_options,
-                        value: date_range.read().clone(),
-                        onchange: move |e: FormEvent| date_range.set(e.value()),
-                    }
-                    Select {
-                        name: "user",
-                        options: user_options,
-                        value: user_filter.read().clone(),
-                        placeholder: "User",
-                        onchange: move |e: FormEvent| user_filter.set(e.value()),
+            if load_failed {
+                Card { class: "mb-6",
+                    p { class: "text-sm text-yellow-600 dark:text-yellow-400",
+                        "Could not load time entries from the server."
                     }
                 }
             }
 
-            // Time entries table
             DataTable {
-                total_items: 25,
+                total_items: total,
                 current_page: 1,
-                per_page: 25,
-                columns: 6,
+                per_page: if total == 0 { 25 } else { total },
+                columns: 5,
                 Table {
                     TableHead {
                         TableRow {
-                            TableHeader { sortable: true, "Date" }
-                            TableHeader { sortable: true, "User" }
+                            TableHeader { "Date" }
                             TableHeader { "Work Item" }
                             TableHeader { "Description" }
-                            TableHeader { sortable: true, "Hours" }
+                            TableHeader { "Hours" }
                             TableHeader { "Billable" }
                         }
                     }
                     TableBody {
-                        TimeEntryRow {
-                            date: "Jan 15, 2025",
-                            user: "John Smith",
-                            work_item: "TKT-1234",
-                            work_item_title: "Email server issue",
-                            description: "Troubleshooting and restart of Exchange services",
-                            hours: "1.5",
-                            billable: true,
-                        }
-                        TimeEntryRow {
-                            date: "Jan 15, 2025",
-                            user: "John Smith",
-                            work_item: "TKT-1233",
-                            work_item_title: "User setup",
-                            description: "New employee onboarding - IT setup",
-                            hours: "2.0",
-                            billable: true,
-                        }
-                        TimeEntryRow {
-                            date: "Jan 15, 2025",
-                            user: "Jane Doe",
-                            work_item: "PRJ-101",
-                            work_item_title: "Network Upgrade",
-                            description: "Planning and documentation",
-                            hours: "3.0",
-                            billable: true,
-                        }
-                        TimeEntryRow {
-                            date: "Jan 14, 2025",
-                            user: "John Smith",
-                            work_item: "Internal",
-                            work_item_title: "",
-                            description: "Team meeting",
-                            hours: "1.0",
-                            billable: false,
-                        }
-                        TimeEntryRow {
-                            date: "Jan 14, 2025",
-                            user: "Jane Doe",
-                            work_item: "TKT-1230",
-                            work_item_title: "License renewal",
-                            description: "Research and procurement",
-                            hours: "0.5",
-                            billable: true,
+                        if is_loading {
+                            TableRow { TableCell { class: "text-gray-400", "Loading…" } }
+                        } else if entries.is_empty() {
+                            TableRow {
+                                TableCell { class: "text-gray-400 italic", "No time logged yet." }
+                            }
+                        } else {
+                            for e in entries.iter() {
+                                {
+                                    let hrs = hours(e.duration_minutes);
+                                    let note = e
+                                        .notes
+                                        .clone()
+                                        .filter(|s| !s.is_empty())
+                                        .unwrap_or_else(|| "-".to_string());
+                                    let status = e.billing_status.clone();
+                                    rsx! {
+                                        TableRow {
+                                            TableCell { class: "text-gray-500", "{e.date}" }
+                                            TableCell {
+                                                if let Some(tid) = e.ticket_id {
+                                                    Link {
+                                                        to: Route::TicketDetail { id: tid.to_string() },
+                                                        class: "font-medium text-blue-600 hover:text-blue-500",
+                                                        "Ticket"
+                                                    }
+                                                } else if e.project_id.is_some() {
+                                                    span { class: "font-medium text-gray-700 dark:text-gray-300", "Project" }
+                                                } else {
+                                                    span { class: "text-gray-400", "-" }
+                                                }
+                                            }
+                                            TableCell { class: "max-w-xs truncate", "{note}" }
+                                            TableCell { class: "font-medium", "{hrs}" }
+                                            TableCell {
+                                                if e.is_billable {
+                                                    Badge { variant: BadgeVariant::Green, "Billable" }
+                                                } else {
+                                                    Badge { variant: BadgeVariant::Gray, "Non-Billable" }
+                                                }
+                                                if !status.is_empty() && status != "not_billed" {
+                                                    span { class: "ml-2 text-xs text-gray-400", "{status}" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -188,105 +232,156 @@ pub fn TimeEntryListPage() -> Element {
     }
 }
 
-#[derive(Props, Clone, PartialEq)]
-struct TimeEntryRowProps {
-    date: String,
-    user: String,
-    work_item: String,
-    work_item_title: String,
-    description: String,
-    hours: String,
-    billable: bool,
-}
-
-#[component]
-fn TimeEntryRow(props: TimeEntryRowProps) -> Element {
-    // TKT-#### / PRJ-#### / etc. work_item codes should jump to the
-    // matching record so the time entry list doubles as a "what was I
-    // working on" navigation surface. Strip the prefix to get the id.
-    let work_link: Option<Route> = if let Some(id) = props.work_item.strip_prefix("TKT-") {
-        Some(Route::TicketDetail { id: id.to_string() })
-    } else {
-        props
-            .work_item
-            .strip_prefix("PRJ-")
-            .map(|id| Route::ProjectDetail { id: id.to_string() })
-    };
-
-    rsx! {
-        TableRow {
-            TableCell { class: "text-gray-500", "{props.date}" }
-            TableCell { "{props.user}" }
-            TableCell {
-                div {
-                    if let Some(route) = work_link.clone() {
-                        Link {
-                            to: route,
-                            class: "font-medium text-blue-600 hover:text-blue-500",
-                            "{props.work_item}"
-                        }
-                    } else {
-                        span { class: "font-medium text-gray-700 dark:text-gray-300", "{props.work_item}" }
-                    }
-                    if !props.work_item_title.is_empty() {
-                        p { class: "text-gray-500 text-xs", "{props.work_item_title}" }
-                    }
-                }
-            }
-            TableCell { class: "max-w-xs truncate", "{props.description}" }
-            TableCell { class: "font-medium", "{props.hours}h" }
-            TableCell {
-                if props.billable {
-                    Badge { variant: BadgeVariant::Green, "Billable" }
-                } else {
-                    Badge { variant: BadgeVariant::Gray, "Non-Billable" }
-                }
-            }
-        }
-    }
+/// Sum `duration_minutes` over the entries matching `pred`.
+fn sum_minutes(entries: &[RemoteTimeEntry], pred: impl Fn(&RemoteTimeEntry) -> bool) -> i64 {
+    entries
+        .iter()
+        .filter(|e| pred(e))
+        .map(|e| e.duration_minutes)
+        .sum()
 }
 
 /// New time entry page
 #[component]
 pub fn TimeEntryNewPage() -> Element {
+    let auth = crate::hooks::auth::use_auth();
     let mut work_item = use_signal(String::new);
+    let mut work_type = use_signal(String::new);
     let mut hours = use_signal(String::new);
     let mut description = use_signal(String::new);
     let mut is_billable = use_signal(|| true);
     let mut is_submitting = use_signal(|| false);
+    let mut error = use_signal(String::new);
 
-    let work_item_options = vec![
-        SelectOption::new("tkt-1234", "TKT-1234: Email server issue"),
-        SelectOption::new("tkt-1233", "TKT-1233: User setup"),
-        SelectOption::new("prj-101", "PRJ-101: Network Upgrade"),
-        SelectOption::new("internal", "Internal (Non-billable)"),
-    ];
+    // Real pickers: a ticket supplies ticket_id + the required company_id; a
+    // work type supplies the required work_type_id.
+    let tickets_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<TicketOption>>("/tickets")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+    let work_types_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOption>>("/work-types")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+    let tickets = tickets_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    let work_types = work_types_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+
+    let mut work_item_options = vec![SelectOption::new("", "Select a ticket")];
+    work_item_options.extend(tickets.iter().map(|t| {
+        SelectOption::new(
+            t.id.to_string(),
+            format!("{}: {}", t.ticket_number, t.title),
+        )
+    }));
+    let mut work_type_options = vec![SelectOption::new("", "Select a work type")];
+    work_type_options.extend(
+        work_types
+            .iter()
+            .map(|w| SelectOption::new(w.id.to_string(), w.name.clone())),
+    );
+
+    let tickets_for_submit = tickets.clone();
+    let err = error.read().clone();
 
     rsx! {
         AppLayout { title: "Log Time",
-            PageHeader {
-                title: "Log Time",
-                subtitle: "Record time spent on work",
-            }
+            PageHeader { title: "Log Time", subtitle: "Record time spent on work" }
 
             Card {
                 form {
                     class: "space-y-6",
                     onsubmit: move |e: FormEvent| {
                         e.prevent_default();
+                        error.set(String::new());
+                        let tid = work_item.read().clone();
+                        let wtid = work_type.read().clone();
+                        let hrs = hours.read().clone();
+                        let desc = description.read().clone();
+                        let billable = *is_billable.read();
+
+                        if tid.is_empty() {
+                            error.set("Please pick a work item (ticket).".to_string());
+                            return;
+                        }
+                        if wtid.is_empty() {
+                            error.set("Please pick a work type.".to_string());
+                            return;
+                        }
+                        let hours_val: f64 = match hrs.trim().parse() {
+                            Ok(h) if h > 0.0 => h,
+                            _ => {
+                                error.set("Enter hours greater than 0.".to_string());
+                                return;
+                            }
+                        };
+                        let company_id = match tickets_for_submit.iter().find(|t| t.id.to_string() == tid) {
+                            Some(t) => t.company_id,
+                            None => {
+                                error.set("Could not resolve the ticket's company.".to_string());
+                                return;
+                            }
+                        };
+                        let user_id = match auth.read().user.as_ref().map(|u| u.id) {
+                            Some(id) => id,
+                            None => {
+                                error.set("Not signed in.".to_string());
+                                return;
+                            }
+                        };
+                        let duration_minutes = (hours_val * 60.0).round() as i64;
+                        let date = Utc::now().date_naive().to_string();
+
                         is_submitting.set(true);
-                        // P1-04: mock submit while server time-tracking
-                        // module is still placeholder.
                         spawn(async move {
                             #[cfg(feature = "web")]
                             {
-                                use gloo_timers::future::TimeoutFuture;
-                                TimeoutFuture::new(1000).await;
+                                let body = serde_json::json!({
+                                    "user_id": user_id,
+                                    "date": date,
+                                    "duration_minutes": duration_minutes,
+                                    "work_type_id": wtid,
+                                    "ticket_id": tid,
+                                    "company_id": company_id,
+                                    "notes": desc,
+                                    "is_billable": billable,
+                                });
+                                match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
+                                    "/time-entries",
+                                    &body,
+                                )
+                                .await
+                                {
+                                    Ok(_) => {
+                                        dioxus::prelude::navigator().push(Route::TimeEntryList {});
+                                    }
+                                    Err(e) => {
+                                        error.set(format!("Could not save time entry: {e}"));
+                                    }
+                                }
                             }
                             is_submitting.set(false);
-                            dioxus::prelude::navigator().push(Route::TimeEntryList {});
                         });
                     },
+
+                    if !err.is_empty() {
+                        div { class: "rounded-md bg-red-50 dark:bg-red-900/20 p-3",
+                            p { class: "text-sm text-red-600 dark:text-red-400", "{err}" }
+                        }
+                    }
 
                     div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
                         Select {
@@ -294,20 +389,29 @@ pub fn TimeEntryNewPage() -> Element {
                             label: "Work Item",
                             options: work_item_options,
                             value: work_item.read().clone(),
-                            placeholder: "Select ticket or project",
+                            placeholder: "Select ticket",
                             required: true,
                             onchange: move |e: FormEvent| work_item.set(e.value()),
                         }
-
-                        crate::components::Input {
-                            name: "hours",
-                            label: "Hours",
-                            r#type: "number",
-                            placeholder: "0.00",
+                        Select {
+                            name: "work_type",
+                            label: "Work Type",
+                            options: work_type_options,
+                            value: work_type.read().clone(),
+                            placeholder: "Select work type",
                             required: true,
-                            value: hours.read().clone(),
-                            oninput: move |e: FormEvent| hours.set(e.value()),
+                            onchange: move |e: FormEvent| work_type.set(e.value()),
                         }
+                    }
+
+                    crate::components::Input {
+                        name: "hours",
+                        label: "Hours",
+                        r#type: "number",
+                        placeholder: "0.00",
+                        required: true,
+                        value: hours.read().clone(),
+                        oninput: move |e: FormEvent| hours.set(e.value()),
                     }
 
                     crate::components::Textarea {
