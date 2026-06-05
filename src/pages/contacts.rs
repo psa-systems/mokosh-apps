@@ -147,7 +147,11 @@ struct PaginationMeta {
 
 /// Subset of mokosh-server's `ContactResponse` we render in the contacts
 /// list. As with companies, serde drops unknown fields so this can grow
-/// without breaking decoding.
+/// without breaking decoding. Field names match the server's
+/// `ContactResponse` shape (`phone`, `title`); earlier names
+/// (`phone_primary`, `job_title`) silently parsed as `None` because
+/// `#[serde(default)]` swallowed the absent fields, which is why the
+/// company-detail Contacts card showed blank Phone and Role columns.
 #[derive(Clone, Debug, Deserialize)]
 struct RemoteContact {
     id: uuid::Uuid,
@@ -162,9 +166,9 @@ struct RemoteContact {
     #[serde(default)]
     email: Option<String>,
     #[serde(default)]
-    phone_primary: Option<String>,
+    phone: Option<String>,
     #[serde(default)]
-    job_title: Option<String>,
+    title: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -758,7 +762,11 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         let id = company_id_for_contacts.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Vec<RemoteContact>>(&format!(
+            // Server returns a paginated envelope `{data, meta}`, not a
+            // bare `Vec`. Decoding into `Vec<RemoteContact>` always fails
+            // here and `.ok()` swallowed it as `None`, rendering the
+            // "Could not load contacts" empty state.
+            crate::hooks::fetch::api::get_authed::<PaginatedContacts>(&format!(
                 "/contacts/companies/{id}/contacts"
             ))
             .await
@@ -769,7 +777,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         let id = company_id_for_sites.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Vec<SiteSummary>>(&format!(
+            crate::hooks::fetch::api::get_authed::<PaginatedSites>(&format!(
                 "/contacts/companies/{id}/sites"
             ))
             .await
@@ -1040,6 +1048,11 @@ struct SiteSummary {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+struct PaginatedSites {
+    data: Vec<SiteSummary>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 struct PaginatedTicketSummaries {
     data: Vec<TicketSummary>,
 }
@@ -1067,7 +1080,7 @@ struct TicketStatusBadge {
 fn CompanyContactsCard(
     company_id: String,
     company_name: String,
-    contacts_resource: Resource<Option<Vec<RemoteContact>>>,
+    contacts_resource: Resource<Option<PaginatedContacts>>,
 ) -> Element {
     let snap = contacts_resource.read_unchecked();
     let new_href = format!(
@@ -1098,11 +1111,11 @@ fn CompanyContactsCard(
                 match &*snap {
                     None => rsx! { TableLoading { columns: 4, rows: 3 } },
                     Some(None) => rsx! { TableEmpty { columns: 4, message: "Could not load contacts.".to_string() } },
-                    Some(Some(rows)) if rows.is_empty() => rsx! {
+                    Some(Some(page)) if page.data.is_empty() => rsx! {
                         TableEmpty { columns: 4, message: "No contacts at this company yet.".to_string() }
                     },
-                    Some(Some(rows)) => {
-                        let rows = rows.clone();
+                    Some(Some(page)) => {
+                        let rows = page.data.clone();
                         rsx! {
                             TableBody {
                                 for contact in rows.into_iter() {
@@ -1110,8 +1123,8 @@ fn CompanyContactsCard(
                                         let id = contact.id.to_string();
                                         let name = format!("{} {}", contact.first_name, contact.last_name).trim().to_string();
                                         let email = contact.email.clone().unwrap_or_default();
-                                        let phone = contact.phone_primary.clone().unwrap_or_default();
-                                        let role = contact.job_title.clone().unwrap_or_default();
+                                        let phone = contact.phone.clone().unwrap_or_default();
+                                        let role = contact.title.clone().unwrap_or_default();
                                         rsx! {
                                             TableRow { key: "{id}",
                                                 TableCell {
@@ -1140,7 +1153,7 @@ fn CompanyContactsCard(
 #[component]
 fn CompanySitesCard(
     company_id: String,
-    mut sites_resource: Resource<Option<Vec<SiteSummary>>>,
+    mut sites_resource: Resource<Option<PaginatedSites>>,
 ) -> Element {
     let snap = sites_resource.read_unchecked();
     let mut editing = use_signal(|| None::<SiteFormState>);
@@ -1173,11 +1186,11 @@ fn CompanySitesCard(
                 match &*snap {
                     None => rsx! { TableLoading { columns: 3, rows: 2 } },
                     Some(None) => rsx! { TableEmpty { columns: 3, message: "Could not load sites.".to_string() } },
-                    Some(Some(rows)) if rows.is_empty() => rsx! {
+                    Some(Some(page)) if page.data.is_empty() => rsx! {
                         TableEmpty { columns: 3, message: "No sites for this company yet.".to_string() }
                     },
-                    Some(Some(rows)) => {
-                        let rows = rows.clone();
+                    Some(Some(page)) => {
+                        let rows = page.data.clone();
                         let company_id = company_id.clone();
                         rsx! {
                             TableBody {
@@ -1768,8 +1781,8 @@ pub fn ContactListPage() -> Element {
                                     company: contact.company_name.clone().unwrap_or_default(),
                                     company_id: contact.company_id.map(|id| id.to_string()).unwrap_or_default(),
                                     email: contact.email.clone().unwrap_or_default(),
-                                    phone: contact.phone_primary.clone().unwrap_or_default(),
-                                    role: contact.job_title.clone().unwrap_or_default(),
+                                    phone: contact.phone.clone().unwrap_or_default(),
+                                    role: contact.title.clone().unwrap_or_default(),
                                 }
                             }
                         }
