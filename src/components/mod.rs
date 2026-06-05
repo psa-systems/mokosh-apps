@@ -4,6 +4,7 @@
 
 mod button;
 mod card;
+mod collapsible_rail;
 mod company_picker;
 mod form;
 mod icons;
@@ -14,6 +15,7 @@ mod update_banner;
 
 pub use button::*;
 pub use card::*;
+pub use collapsible_rail::*;
 pub use company_picker::*;
 pub use form::*;
 pub use icons::*;
