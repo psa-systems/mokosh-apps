@@ -762,13 +762,36 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     use_effect(move || crate::utils::prefs::set_bool("kb_left_rail", left_collapsed()));
     use_effect(move || crate::utils::prefs::set_bool("kb_right_rail", right_collapsed()));
 
-    // Shared rating counts: declared unconditionally (rules-of-hooks), seeded
-    // (0, 0) and synced via use_effect once the article loads so both copies
-    // rendered by OverflowActions share one signal.
+    // Shared rating counts + my_vote: declared unconditionally (rules-of-hooks),
+    // seeded from the article payload first, then refined by GET /vote which
+    // also returns the caller's current vote. Both OverflowActions copies of
+    // RatingBar share the same two signals.
     let mut rating = use_signal(|| (0i32, 0i32));
+    let mut my_vote = use_signal(|| None::<String>);
     use_effect(move || {
         if let Some(Some(a)) = &*article_resource.read_unchecked() {
             rating.set((a.helpful_count, a.not_helpful_count));
+        }
+    });
+
+    // Seed my_vote (and refine counts) from GET /kb/articles/{id}/vote once
+    // the article id is available. Declared unconditionally for rules-of-hooks.
+    let id_for_vote = props.id.clone();
+    use_resource(move || {
+        let id = id_for_vote.clone();
+        async move {
+            #[cfg(feature = "web")]
+            {
+                let path = format!("/kb/articles/{id}/vote");
+                if let Ok(fb) =
+                    crate::hooks::fetch::api::get_authed::<KbArticleFeedback>(&path).await
+                {
+                    rating.set((fb.helpful_count, fb.not_helpful_count));
+                    my_vote.set(fb.my_vote);
+                }
+            }
+            #[cfg(not(feature = "web"))]
+            let _ = &id;
         }
     });
 
@@ -835,6 +858,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                         RatingBar {
                                             article_id: props.id.clone(),
                                             counts: rating,
+                                            my_vote,
                                         }
                                         Badge { variant: status_variant(&status_label), "{status_label}" }
                                         Badge { variant: vis_variant, "{vis_label}" }
@@ -1440,16 +1464,37 @@ fn KbTreeArticle(article: KbArticle, current_id: String) -> Element {
 // ============================================================================
 
 #[component]
-fn RatingBar(article_id: String, counts: Signal<(i32, i32)>) -> Element {
+fn RatingBar(
+    article_id: String,
+    counts: Signal<(i32, i32)>,
+    my_vote: Signal<Option<String>>,
+) -> Element {
     let mut counts = counts;
+    let mut my_vote = my_vote;
     let mut busy = use_signal(|| false);
     let (h, n) = counts();
+    let active_vote = my_vote();
     let id_h = article_id.clone();
     let id_n = article_id.clone();
+
+    // Active state classes: green for helpful, red for not_helpful, neutral otherwise.
+    let helpful_class = if active_vote.as_deref() == Some("helpful") {
+        "flex items-center gap-1 text-green-600 font-semibold disabled:opacity-50"
+    } else {
+        "flex items-center gap-1 text-gray-600 dark:text-gray-300 hover:text-green-600 \
+         disabled:opacity-50"
+    };
+    let not_helpful_class = if active_vote.as_deref() == Some("not_helpful") {
+        "flex items-center gap-1 text-red-600 font-semibold disabled:opacity-50"
+    } else {
+        "flex items-center gap-1 text-gray-600 dark:text-gray-300 hover:text-red-600 \
+         disabled:opacity-50"
+    };
+
     rsx! {
         div { class: "flex items-center gap-3 text-sm",
             button {
-                class: "flex items-center gap-1 text-gray-600 dark:text-gray-300 hover:text-green-600 disabled:opacity-50",
+                class: "{helpful_class}",
                 disabled: busy(),
                 onclick: move |_| {
                     if busy() { return; }
@@ -1459,8 +1504,15 @@ fn RatingBar(article_id: String, counts: Signal<(i32, i32)>) -> Element {
                         #[cfg(feature = "web")]
                         {
                             let path = format!("/kb/articles/{id}/helpful");
-                            if let Ok(fb) = crate::hooks::fetch::api::post_authed::<KbArticleFeedback, _>(&path, &serde_json::json!({})).await {
+                            if let Ok(fb) =
+                                crate::hooks::fetch::api::post_authed::<KbArticleFeedback, _>(
+                                    &path,
+                                    &serde_json::json!({}),
+                                )
+                                .await
+                            {
                                 counts.set((fb.helpful_count, fb.not_helpful_count));
+                                my_vote.set(fb.my_vote);
                             }
                         }
                         #[cfg(not(feature = "web"))]
@@ -1472,7 +1524,7 @@ fn RatingBar(article_id: String, counts: Signal<(i32, i32)>) -> Element {
                 span { class: "tabular-nums", "{h}" }
             }
             button {
-                class: "flex items-center gap-1 text-gray-600 dark:text-gray-300 hover:text-red-600 disabled:opacity-50",
+                class: "{not_helpful_class}",
                 disabled: busy(),
                 onclick: move |_| {
                     if busy() { return; }
@@ -1482,8 +1534,15 @@ fn RatingBar(article_id: String, counts: Signal<(i32, i32)>) -> Element {
                         #[cfg(feature = "web")]
                         {
                             let path = format!("/kb/articles/{id}/not_helpful");
-                            if let Ok(fb) = crate::hooks::fetch::api::post_authed::<KbArticleFeedback, _>(&path, &serde_json::json!({})).await {
+                            if let Ok(fb) =
+                                crate::hooks::fetch::api::post_authed::<KbArticleFeedback, _>(
+                                    &path,
+                                    &serde_json::json!({}),
+                                )
+                                .await
+                            {
                                 counts.set((fb.helpful_count, fb.not_helpful_count));
+                                my_vote.set(fb.my_vote);
                             }
                         }
                         #[cfg(not(feature = "web"))]
