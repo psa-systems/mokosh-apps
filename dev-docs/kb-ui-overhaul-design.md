@@ -36,12 +36,13 @@ Both the reading view and the authoring preview consume this helper. The output 
 Replace the current 4-column grid with a three-pane layout:
 
 ```
-+--[‹]--------------+--------------------------------+--------[›]-----+
-| category/article  | breadcrumb: KB / Cat / Title   | metadata      |
-| tree (chevron ‹)  | # Title                        | rating 👍/👎  |
-|  current highlighted| rendered markdown (no <pre>) | versions(tiny)|
-+-------------------+--------------------------------+---------------+
-   left rail                 article only            right rail (chevron ›)
++--[‹]--------------+-------------------------------[⛶]+--------[›]-----+
+| category/article  | breadcrumb: KB / Cat / Title  fs |  metadata      |
+| tree (chevron ‹)  | # Title                          |  rating 👍/👎  |
+|  current highlighted| rendered markdown (no <pre>)   |  versions(tiny)|
++-------------------+----------------------------------+---------------+
+   left rail                 article only                right rail (chevron ›)
+   [⛶] = fullscreen read-mode toggle, top-right of the center pane
 ```
 
 Both side rails are collapsible (see "Rail collapse and responsive behavior" below); the center article pane always stays.
@@ -58,6 +59,10 @@ Each side rail (left tree, right metadata) carries a directional chevron toggle 
 - **Narrow screens:** rails auto-collapse to edge handles so the article gets the full width. A collapsed rail opens as an overlay above the article when its chevron is clicked. Only one rail overlay may be open at a time: while one is open the other cannot be opened until the first is dismissed (click outside it, or its close chevron). This avoids two overlays fighting for a narrow viewport.
 
 The collapse mechanism is one reusable `CollapsibleRail` component (side = left|right, persisted key, overlay-on-narrow), used for both rails so the behavior is identical.
+
+**Read mode (wide screens).** A fullscreen icon button collapses both rails in a single click for a distraction-free, article-only read; clicking it again restores whatever each rail's prior state was. It is effectively a master toggle over the two per-rail chevrons. The read-mode state persists per user (`kb_read_mode`); while active it overrides the individual rail states, and exiting it restores them.
+
+Placement: top-right of the center article pane, right-aligned on the breadcrumb row (breadcrumb on the left, the fullscreen icon on the right). This is the conventional corner for an expand/fullscreen control, it sits next to the right rail it hides, and it stays clear of the title and body so it never interrupts the reading flow. The icon swaps between an expand glyph (enter read mode) and a contract glyph (exit).
 
 ### 3. Reader density toggle
 
@@ -102,6 +107,7 @@ A small reusable piece that, given an article's `category_id`, resolves the cate
 - [ ] Left tree nav lists categories (hierarchical, sorted) with their articles, highlights the current one, and is collapsible. Present on detail and list pages.
 - [ ] Each side rail has a directional chevron toggle (`<`/`>`) that collapses/expands it; the wide-screen collapsed state persists per user across reloads.
 - [ ] On narrow screens both rails auto-collapse and open as overlays; only one rail overlay can be open at a time (the other is blocked until the open one is dismissed).
+- [ ] A fullscreen read-mode button at the top-right of the center pane collapses both rails in one click and restores their prior state on exit; its state persists per user and the icon reflects enter/exit.
 - [ ] Breadcrumb shows `KB / <category path> / <title>` and resolves nested categories.
 - [ ] Reader density toggle (compact/comfortable) changes article spacing and persists per user across reloads.
 - [ ] Rating 👍/👎 lives in the right rail and reflects/updates `helpful_count` / `not_helpful_count`.
