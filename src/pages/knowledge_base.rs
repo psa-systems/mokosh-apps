@@ -433,7 +433,12 @@ pub fn KBArticleListPage() -> Element {
     let mut category_filter = use_signal(String::new);
     let mut page = use_signal(|| 1usize);
 
-    // Category options for the filter dropdown.
+    // Rail collapse state, persisted under the same key as the detail view.
+    let left_collapsed = use_signal(|| crate::utils::prefs::get_bool("kb_left_rail", false));
+    let open_overlay = use_signal(|| None::<crate::components::RailSide>);
+    use_effect(move || crate::utils::prefs::set_bool("kb_left_rail", left_collapsed()));
+
+    // Category options for the filter dropdown and the tree rail.
     let categories_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
@@ -452,6 +457,22 @@ pub fn KBArticleListPage() -> Element {
     for c in categories.iter() {
         category_options.push(SelectOption::new(c.id.to_string(), c.name.clone()));
     }
+
+    // Article list feeding the tree rail (broader fetch than the paginated table).
+    let tree_articles_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let token = crate::hooks::fetch::api::current_access_token()?;
+        crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(
+            "/kb/articles?page=1&per_page=200",
+            &token,
+        )
+        .await
+        .ok()
+    });
+    let tree_articles: Vec<KbArticle> = match &*tree_articles_resource.read_unchecked() {
+        Some(Some(resp)) => resp.data.clone(),
+        _ => Vec::new(),
+    };
 
     let search_text = search.read().trim().to_string();
     let category_text = category_filter.read().clone();
@@ -506,75 +527,86 @@ pub fn KBArticleListPage() -> Element {
                 },
             }
 
-            // Filters
-            Card { class: "mb-6",
-                div { class: "flex flex-col sm:flex-row gap-4",
-                    div { class: "flex-1",
-                        SearchInput {
-                            value: search.read().clone(),
-                            placeholder: "Search articles...",
-                            oninput: move |e: FormEvent| {
-                                search.set(e.value());
-                                page.set(1);
-                            },
-                        }
-                    }
-                    Select {
-                        name: "category",
-                        options: category_options,
-                        value: category_filter.read().clone(),
-                        onchange: move |e: FormEvent| {
-                            category_filter.set(e.value());
-                            page.set(1);
-                        },
+            div { class: "flex gap-6 items-start",
+                CollapsibleRail { side: RailSide::Left, collapsed: left_collapsed, open_overlay,
+                    KbTreeNav {
+                        categories: categories.clone(),
+                        articles: tree_articles.clone(),
+                        current_id: String::new(),
                     }
                 }
-            }
-
-            if fetch_failed {
-                div {
-                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                    "Could not load articles. Refresh the page to retry."
-                }
-            }
-
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 4,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Title" }
-                            TableHeader { "Status" }
-                            TableHeader { "Visibility" }
-                            TableHeader { "Updated" }
+                div { class: "flex-1 min-w-0",
+                    // Filters
+                    Card { class: "mb-6",
+                        div { class: "flex flex-col sm:flex-row gap-4",
+                            div { class: "flex-1",
+                                SearchInput {
+                                    value: search.read().clone(),
+                                    placeholder: "Search articles...",
+                                    oninput: move |e: FormEvent| {
+                                        search.set(e.value());
+                                        page.set(1);
+                                    },
+                                }
+                            }
+                            Select {
+                                name: "category",
+                                options: category_options,
+                                value: category_filter.read().clone(),
+                                onchange: move |e: FormEvent| {
+                                    category_filter.set(e.value());
+                                    page.set(1);
+                                },
+                            }
                         }
                     }
-                    if is_loading {
-                        TableLoading { columns: 4, rows: 5 }
-                    } else if page_rows.is_empty() {
-                        TableEmpty {
-                            columns: 4,
-                            message: if has_filters {
-                                "No articles match your filters.".to_string()
+
+                    if fetch_failed {
+                        div {
+                            class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                            "Could not load articles. Refresh the page to retry."
+                        }
+                    }
+
+                    DataTable {
+                        loading: is_loading,
+                        total_items: total as usize,
+                        current_page,
+                        per_page: PER_PAGE,
+                        columns: 4,
+                        onpagechange: move |p| page.set(p),
+                        Table {
+                            TableHead {
+                                TableRow {
+                                    TableHeader { "Title" }
+                                    TableHeader { "Status" }
+                                    TableHeader { "Visibility" }
+                                    TableHeader { "Updated" }
+                                }
+                            }
+                            if is_loading {
+                                TableLoading { columns: 4, rows: 5 }
+                            } else if page_rows.is_empty() {
+                                TableEmpty {
+                                    columns: 4,
+                                    message: if has_filters {
+                                        "No articles match your filters.".to_string()
+                                    } else {
+                                        "No articles yet. Click New Article to create one.".to_string()
+                                    },
+                                }
                             } else {
-                                "No articles yet. Click New Article to create one.".to_string()
-                            },
-                        }
-                    } else {
-                        TableBody {
-                            for article in page_rows.iter().cloned() {
-                                ArticleRow {
-                                    key: "{article.id}",
-                                    id: article.id.to_string(),
-                                    title: article.title,
-                                    status: article.status,
-                                    visibility: article.visibility,
-                                    updated: date_only(&article.updated_at),
+                                TableBody {
+                                    for article in page_rows.iter().cloned() {
+                                        ArticleRow {
+                                            key: "{article.id}",
+                                            id: article.id.to_string(),
+                                            title: article.title,
+                                            status: article.status,
+                                            visibility: article.visibility,
+                                            updated: date_only(&article.updated_at),
+                                        }
+                                    }
                                 }
                             }
                         }
