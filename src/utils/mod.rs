@@ -3,6 +3,7 @@
 pub mod error;
 pub mod markdown;
 pub mod pagination;
+pub mod prefs;
 pub mod version;
 
 // Re-exports
