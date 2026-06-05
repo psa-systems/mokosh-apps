@@ -1,6 +1,6 @@
 //! Ticket pages
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use dioxus::prelude::*;
 use serde::Deserialize;
 
@@ -41,20 +41,65 @@ struct PaginatedTickets {
     data: Vec<RemoteTicket>,
 }
 
-/// SLA-relevant subset of mokosh-server's `TicketResponse`, fetched on
-/// the ticket detail page to surface an at-risk / breach / on-track
-/// badge. The server response carries `sla_due_date` and `sla_status`
-/// (a snake_case enum: `on_track` | `warning` | `breached` |
-/// `not_applicable`); `first_response_due` / `resolution_due` live on
-/// the internal ticket row but are NOT exposed in `TicketResponse`, so
-/// only the due date + status render here. Serde drops every other
-/// field of the response.
+/// The fields of mokosh-server's `TicketResponse` the detail page renders.
+/// Serde drops every field we don't ask for. The SLA pair (`sla_due_date`
+/// + `sla_status`, a snake_case enum) drives the at-risk / breach badge.
 #[derive(Clone, Debug, Deserialize)]
-struct TicketSlaInfo {
+struct RemoteTicketDetail {
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    company_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    company_name: String,
+    #[serde(default)]
+    contact_name: Option<String>,
+    #[serde(default)]
+    queue_name: String,
+    #[serde(default)]
+    status: RemoteSummary,
+    #[serde(default)]
+    priority: RemoteSummary,
+    #[serde(default)]
+    assigned_to_name: Option<String>,
+    #[serde(default)]
+    created_by_name: String,
+    created_at: DateTime<Utc>,
     #[serde(default)]
     sla_due_date: Option<DateTime<Utc>>,
     #[serde(default)]
     sla_status: SlaStatus,
+}
+
+/// A ticket note (`GET /tickets/:id/notes`), rendered as an Activity item.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteNote {
+    #[serde(default)]
+    note_type: String,
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    created_by_name: String,
+    created_at: DateTime<Utc>,
+}
+
+/// A time entry (`GET /time-entries?ticket_id=:id`), summed into Time Logged.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteTimeEntry {
+    date: NaiveDate,
+    #[serde(default)]
+    duration_minutes: i64,
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(default)]
+    is_billable: bool,
+}
+
+/// `PaginatedResponse<T>` envelope (`{ "data": [...], "meta": {...} }`);
+/// serde drops `meta`.
+#[derive(Clone, Debug, Deserialize)]
+struct Paginated<T> {
+    data: Vec<T>,
 }
 
 /// Mirror of the server `SlaStatus` enum (snake_case wire form). Defaults
@@ -179,6 +224,32 @@ fn humanize_priority(raw: &str) -> String {
             }
         }
     }
+}
+
+/// Badge colour for a humanized status label (shared by the list row and
+/// the detail Details card).
+fn status_badge_variant(label: &str) -> BadgeVariant {
+    match label {
+        "Open" => BadgeVariant::Blue,
+        "In Progress" => BadgeVariant::Yellow,
+        "Resolved" => BadgeVariant::Green,
+        _ => BadgeVariant::Gray,
+    }
+}
+
+/// Badge colour for a humanized priority label.
+fn priority_badge_variant(label: &str) -> BadgeVariant {
+    match label {
+        "Critical" | "High" => BadgeVariant::Red,
+        "Medium" => BadgeVariant::Yellow,
+        "Low" => BadgeVariant::Green,
+        _ => BadgeVariant::Gray,
+    }
+}
+
+/// Absolute timestamp for created / activity lines, e.g. "Jun 05, 2026 14:30".
+fn fmt_datetime(dt: DateTime<Utc>) -> String {
+    dt.format("%b %d, %Y %H:%M").to_string()
 }
 
 /// Ticket list page
@@ -633,21 +704,60 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let header_title = format!("Ticket {}", props.id);
     let ticket_id_for_note = props.id.clone();
 
-    // Fetch the ticket's SLA fields so the Details card can render a real
-    // at-risk / breach / on-track badge. The rest of this page is still
-    // demo content; this resource only drives the SLA section. `None`
-    // (fetch failed or no token) falls back to the static demo text.
-    let id_for_sla = props.id.clone();
-    let sla_resource = use_resource(move || {
-        let id = id_for_sla.clone();
+    // Drive the whole page off the real ticket, its notes, and its time
+    // entries. Each resource yields `Option<Option<T>>`: `None` while the
+    // fetch is in flight, `Some(None)` on failure / no token.
+    let id_for_ticket = props.id.clone();
+    let ticket_resource = use_resource(move || {
+        let id = id_for_ticket.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<TicketSlaInfo>(&format!("/tickets/{id}"))
+            crate::hooks::fetch::api::get_authed::<RemoteTicketDetail>(&format!("/tickets/{id}"))
                 .await
                 .ok()
         }
     });
-    let sla_snapshot = sla_resource.read_unchecked().clone();
+    let id_for_notes = props.id.clone();
+    let notes_resource = use_resource(move || {
+        let id = id_for_notes.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<Paginated<RemoteNote>>(&format!(
+                "/tickets/{id}/notes"
+            ))
+            .await
+            .ok()
+        }
+    });
+    let id_for_time = props.id.clone();
+    let time_resource = use_resource(move || {
+        let id = id_for_time.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimeEntry>>(&format!(
+                "/time-entries?ticket_id={id}"
+            ))
+            .await
+            .ok()
+        }
+    });
+
+    let ticket = ticket_resource.read_unchecked().clone().flatten();
+    let notes: Vec<RemoteNote> = notes_resource
+        .read_unchecked()
+        .clone()
+        .flatten()
+        .map(|p| p.data)
+        .unwrap_or_default();
+    let note_count = notes.len();
+    let time_entries: Vec<RemoteTimeEntry> = time_resource
+        .read_unchecked()
+        .clone()
+        .flatten()
+        .map(|p| p.data)
+        .unwrap_or_default();
+    let total_minutes: i64 = time_entries.iter().map(|e| e.duration_minutes).sum();
+    let total_hours_label = format!("{:.1} hours", total_minutes as f64 / 60.0);
 
     rsx! {
         AppLayout { title: "{header_title}",
@@ -674,46 +784,38 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
                 // Main content
                 div { class: "lg:col-span-2 space-y-6",
-                    // Description
+                    // Description (real ticket description)
                     Card { title: "Description",
-                        p { class: "text-gray-700 dark:text-gray-300",
-                            "Users are reporting that they cannot send or receive emails. "
-                            "The Exchange server appears to be unresponsive. "
-                            "This started occurring around 9:00 AM today."
+                        if let Some(t) = ticket.as_ref() {
+                            if let Some(desc) = t.description.as_ref().filter(|d| !d.trim().is_empty()) {
+                                p { class: "text-gray-700 dark:text-gray-300 whitespace-pre-wrap", "{desc}" }
+                            } else {
+                                p { class: "text-sm text-gray-400 italic", "No description provided." }
+                            }
+                        } else {
+                            p { class: "text-sm text-gray-400", "Loading…" }
                         }
                     }
 
-                    // Activity timeline
+                    // Activity timeline (real ticket notes; there is no audit
+                    // feed yet, so status / assignment events do not appear).
                     Card { title: "Activity",
-                        div { class: "flow-root",
-                            ul { class: "-mb-8",
-                                TimelineItem {
-                                    user: "John Smith",
-                                    action: "added a note",
-                                    time: "10 minutes ago",
-                                    content: Some("Restarted the Exchange services, monitoring for stability.".to_string()),
-                                    is_last: false,
-                                }
-                                TimelineItem {
-                                    user: "System",
-                                    action: "changed status to In Progress",
-                                    time: "30 minutes ago",
-                                    content: None,
-                                    is_last: false,
-                                }
-                                TimelineItem {
-                                    user: "Jane Doe",
-                                    action: "assigned ticket to John Smith",
-                                    time: "1 hour ago",
-                                    content: None,
-                                    is_last: false,
-                                }
-                                TimelineItem {
-                                    user: "Customer Portal",
-                                    action: "created ticket",
-                                    time: "2 hours ago",
-                                    content: None,
-                                    is_last: true,
+                        if note_count == 0 {
+                            p { class: "text-sm text-gray-400 italic",
+                                "No activity yet. Notes added to this ticket will appear here."
+                            }
+                        } else {
+                            div { class: "flow-root",
+                                ul { class: "-mb-8",
+                                    for (i , n) in notes.iter().enumerate() {
+                                        TimelineItem {
+                                            user: if n.created_by_name.is_empty() { "Someone".to_string() } else { n.created_by_name.clone() },
+                                            action: if n.note_type == "internal" { "added an internal note".to_string() } else { "added a note".to_string() },
+                                            time: fmt_datetime(n.created_at),
+                                            content: Some(n.content.clone()),
+                                            is_last: i + 1 == note_count,
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -722,85 +824,105 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
 
                 // Sidebar
                 div { class: "space-y-6",
-                    // Status card
                     Card { title: "Details",
-                        dl { class: "space-y-4",
-                            DetailItem { label: "Status", value: rsx!(Badge { variant: BadgeVariant::Blue, "Open" }) }
-                            DetailItem { label: "Priority", value: rsx!(Badge { variant: BadgeVariant::Red, "High" }) }
-                            DetailItem { label: "Assigned To", value: rsx!(span { "John Smith" }) }
-                            DetailItem { label: "Company", value: rsx!(
-                                Link { to: Route::CompanyDetail { id: "1".to_string() }, class: "text-blue-600 hover:text-blue-500", "Acme Corp" }
-                            ) }
-                            DetailItem { label: "Contact", value: rsx!(span { "Bob Johnson" }) }
-                            DetailItem { label: "Queue", value: rsx!(span { "Support" }) }
-                            DetailItem { label: "Created", value: rsx!(span { "Jan 15, 2025 9:15 AM" }) }
-                            {
-                                // SLA: drive the status badge + due time off
-                                // the fetched ticket when available; fall back
-                                // to the static demo line otherwise.
-                                match sla_snapshot.clone() {
-                                    Some(Some(info)) => {
-                                        let badge = info.sla_status.badge();
-                                        let due = info.sla_due_date.map(format_sla_due);
-                                        rsx! {
-                                            DetailItem {
-                                                label: "SLA Status",
-                                                value: rsx! {
-                                                    if let Some((variant, label)) = badge {
-                                                        Badge { variant, "{label}" }
-                                                    } else {
-                                                        span { class: "text-gray-400", "No SLA" }
-                                                    }
-                                                },
-                                            }
-                                            if let Some(due) = due {
-                                                DetailItem {
-                                                    label: "SLA Due",
-                                                    value: rsx! { span { "{due}" } },
-                                                }
-                                            }
+                        if let Some(t) = ticket.as_ref() {
+                            dl { class: "space-y-4",
+                                {
+                                    let status_label = humanize_status(&t.status.name);
+                                    rsx! {
+                                        DetailItem {
+                                            label: "Status",
+                                            value: rsx!(Badge { variant: status_badge_variant(&status_label), "{status_label}" }),
                                         }
                                     }
-                                    _ => rsx! {
+                                }
+                                {
+                                    let priority_label = humanize_priority(&t.priority.name);
+                                    rsx! {
                                         DetailItem {
-                                            label: "SLA Due",
-                                            value: rsx! {
-                                                span { class: "text-yellow-600 font-medium", "45 minutes remaining" }
-                                            },
+                                            label: "Priority",
+                                            value: rsx!(Badge { variant: priority_badge_variant(&priority_label), "{priority_label}" }),
                                         }
-                                    },
+                                    }
+                                }
+                                {
+                                    let assigned = t
+                                        .assigned_to_name
+                                        .clone()
+                                        .filter(|s| !s.is_empty())
+                                        .unwrap_or_else(|| "Unassigned".to_string());
+                                    rsx! {
+                                        DetailItem { label: "Assigned To", value: rsx!(span { "{assigned}" }) }
+                                    }
+                                }
+                                if !t.company_name.is_empty() {
+                                    DetailItem {
+                                        label: "Company",
+                                        value: rsx! {
+                                            if let Some(cid) = t.company_id {
+                                                Link {
+                                                    to: Route::CompanyDetail { id: cid.to_string() },
+                                                    class: "text-blue-600 hover:text-blue-500",
+                                                    "{t.company_name}"
+                                                }
+                                            } else {
+                                                span { "{t.company_name}" }
+                                            }
+                                        },
+                                    }
+                                }
+                                if let Some(contact) = t.contact_name.as_ref().filter(|s| !s.is_empty()) {
+                                    DetailItem { label: "Contact", value: rsx!(span { "{contact}" }) }
+                                }
+                                if !t.queue_name.is_empty() {
+                                    DetailItem { label: "Queue", value: rsx!(span { "{t.queue_name}" }) }
+                                }
+                                {
+                                    let created = if t.created_by_name.is_empty() {
+                                        fmt_datetime(t.created_at)
+                                    } else {
+                                        format!("{} by {}", fmt_datetime(t.created_at), t.created_by_name)
+                                    };
+                                    rsx! {
+                                        DetailItem { label: "Created", value: rsx!(span { "{created}" }) }
+                                    }
+                                }
+                                if let Some((variant , label)) = t.sla_status.badge() {
+                                    DetailItem { label: "SLA Status", value: rsx!(Badge { variant, "{label}" }) }
+                                }
+                                if let Some(due) = t.sla_due_date.map(format_sla_due) {
+                                    DetailItem { label: "SLA Due", value: rsx!(span { "{due}" }) }
                                 }
                             }
+                        } else {
+                            p { class: "text-sm text-gray-400", "Loading…" }
                         }
                     }
 
-                    // Time entries
+                    // Time entries (real, summed from /time-entries?ticket_id=)
                     Card { title: "Time Logged",
                         div { class: "space-y-3",
                             div { class: "flex justify-between items-center",
                                 span { class: "text-sm text-gray-500", "Total Time" }
-                                span { class: "text-lg font-semibold", "1.5 hours" }
+                                span { class: "text-lg font-semibold", "{total_hours_label}" }
                             }
-                            div { class: "text-sm text-gray-500",
-                                p { "John Smith - 1.0h" }
-                                p { "Jane Doe - 0.5h" }
-                            }
-                        }
-                    }
-
-                    // Related items
-                    Card { title: "Related",
-                        div { class: "space-y-2 text-sm",
-                            p {
-                                span { class: "text-gray-500", "Contract: " }
-                                Link { to: Route::ContractDetail { id: "1".to_string() }, class: "text-blue-600 hover:text-blue-500",
-                                    "Managed Services Agreement"
-                                }
-                            }
-                            p {
-                                span { class: "text-gray-500", "Asset: " }
-                                Link { to: Route::AssetDetail { id: "1".to_string() }, class: "text-blue-600 hover:text-blue-500",
-                                    "Exchange Server 01"
+                            if time_entries.is_empty() {
+                                p { class: "text-sm text-gray-400 italic", "No time logged yet." }
+                            } else {
+                                div { class: "space-y-2 text-sm text-gray-500",
+                                    for e in time_entries.iter() {
+                                        div {
+                                            div { class: "flex justify-between gap-2",
+                                                span { "{e.date} · {e.duration_minutes} min" }
+                                                if e.is_billable {
+                                                    span { class: "text-green-600 dark:text-green-400", "billable" }
+                                                }
+                                            }
+                                            if let Some(note) = e.notes.as_ref().filter(|s| !s.is_empty()) {
+                                                p { class: "text-xs text-gray-400 truncate", "{note}" }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -845,6 +967,9 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                         Ok(_) => {
                                             note_content.set(String::new());
                                             show_note_modal.set(false);
+                                            // Refresh the Activity feed so the new note shows.
+                                            let mut nr = notes_resource;
+                                            nr.restart();
                                         }
                                         Err(err) => {
                                             web_sys::console::error_1(
