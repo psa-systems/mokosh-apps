@@ -198,6 +198,12 @@ pub enum Route {
     #[route("/payments")]
     PaymentList {},
 
+    #[route("/tax-rates")]
+    TaxRateList {},
+
+    #[route("/payment-gateways")]
+    PaymentGatewayConfig {},
+
     // Assets
     #[route("/assets")]
     AssetList {},
@@ -503,6 +509,16 @@ fn InvoiceDetail(id: String) -> Element {
 #[component]
 fn PaymentList() -> Element {
     rsx! { billing::PaymentListPage {} }
+}
+
+#[component]
+fn TaxRateList() -> Element {
+    rsx! { billing::TaxRateListPage {} }
+}
+
+#[component]
+fn PaymentGatewayConfig() -> Element {
+    rsx! { billing::PaymentGatewayConfigPage {} }
 }
 
 #[component]
