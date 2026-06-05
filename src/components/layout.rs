@@ -119,6 +119,18 @@ pub fn Sidebar(props: SidebarProps) -> Element {
 
 #[component]
 fn SidebarContent() -> Element {
+    // Admin-only nav surfaces (e.g. the audit log) are gated on the
+    // cached user's role so non-admins never see the section. The pages
+    // themselves re-check server-side, so this is a UX affordance, not a
+    // security boundary.
+    let auth = crate::hooks::use_auth();
+    let is_admin = auth
+        .read()
+        .user
+        .as_ref()
+        .map(|u| u.role.is_admin())
+        .unwrap_or(false);
+
     rsx! {
         div { class: "flex flex-col flex-1 min-h-0",
             nav { class: "flex-1 px-2 py-4 space-y-1",
@@ -161,6 +173,12 @@ fn SidebarContent() -> Element {
 
             NavSection { title: "Analytics",
                 NavItem { to: Route::Reports {}, icon: rsx!(ChartIcon {}), label: "Reports" }
+            }
+
+            if is_admin {
+                NavSection { title: "Admin",
+                    NavItem { to: Route::AuditLog {}, icon: rsx!(DocumentIcon {}), label: "Audit Log" }
+                }
             }
 
             }

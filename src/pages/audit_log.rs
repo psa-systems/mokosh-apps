@@ -1,0 +1,441 @@
+//! Admin audit-log page.
+//!
+//! Reads `GET /api/v1/audit-log` (admin-only, paginated, filterable) and
+//! renders it as a filterable table with an expandable per-row JSON diff
+//! (old_values -> new_values). Structure mirrors the contacts list page
+//! (`src/pages/contacts.rs`): filter signals reset the page on change, a
+//! `use_resource` re-fetches on filter/page change AND on org switch via
+//! `active_tenant_generation()`, and loading/empty/error states reuse the
+//! shared `DataTable` family.
+
+use dioxus::prelude::*;
+
+use crate::components::{
+    AppLayout, Badge, BadgeVariant, Card, DataTable, PageHeader, Select, SelectOption, Table,
+    TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+};
+use crate::modules::audit::{AuditLogEntry, Paginated};
+
+/// Rows per page for the audit log. Matches the server's default
+/// `per_page` and the other list pages' `PER_PAGE`.
+const PER_PAGE: usize = 25;
+
+/// Tiny percent-encoder for query-string values. Mirrors the helper in
+/// `contacts.rs` so the audit page does not pull in the full
+/// `urlencoding` crate for the handful of inline path builds. The
+/// server exact-matches the result, so non-ASCII passes through.
+fn urlencoding_minimal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            ' ' => out.push_str("%20"),
+            '&' => out.push_str("%26"),
+            '#' => out.push_str("%23"),
+            '?' => out.push_str("%3F"),
+            '+' => out.push_str("%2B"),
+            '=' => out.push_str("%3D"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("%{:02X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Badge color per audit action verb. Unknown verbs fall through to
+/// gray so future server-side actions still render legibly.
+fn action_variant(action: &str) -> BadgeVariant {
+    match action {
+        "create" => BadgeVariant::Green,
+        "update" => BadgeVariant::Blue,
+        "delete" => BadgeVariant::Red,
+        "login" => BadgeVariant::Purple,
+        "logout" => BadgeVariant::Gray,
+        _ => BadgeVariant::Gray,
+    }
+}
+
+/// Format a UTC timestamp for the table. Mirrors admin.rs but keeps the
+/// time component since audit ordering is to-the-second.
+fn format_timestamp(when: chrono::DateTime<chrono::Utc>) -> String {
+    when.format("%b %-d, %Y %H:%M:%S UTC").to_string()
+}
+
+/// Render an optional UUID as a short hex prefix (first 8 chars) so the
+/// table stays scannable; the full value is available in the expanded
+/// detail row. Empty -> em-dash placeholder.
+fn short_uuid(id: Option<uuid::Uuid>) -> String {
+    match id {
+        Some(u) => {
+            let s = u.to_string();
+            s.chars().take(8).collect::<String>()
+        }
+        None => "-".to_string(),
+    }
+}
+
+/// Pretty-print an optional JSON value for the diff panel. `None`
+/// renders as a literal `null` placeholder so an empty side of the diff
+/// is still visible.
+fn pretty_json(value: &Option<serde_json::Value>) -> String {
+    match value {
+        Some(v) => serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string()),
+        None => "null".to_string(),
+    }
+}
+
+/// Admin-gated audit-log page.
+///
+/// This outer component holds only the role gate so its hook order stays
+/// stable across renders (rules of hooks). The data-fetching hooks live
+/// in [`AuditLogContent`], which is only mounted for admins; non-admins
+/// never kick off the (guaranteed-403) fetch.
+#[component]
+pub fn AuditLogPage() -> Element {
+    let auth = crate::hooks::use_auth();
+    // Role gate: only org admins / super-admins may view the audit log.
+    // Uses the `UserRole::is_admin()` helper on the cached CurrentUser so
+    // the gate matches the server's `RequireAdmin` extractor. Loading
+    // auth resolves to `false` here, which simply shows the notice until
+    // the user is known; the server still enforces the real check.
+    let is_admin = auth
+        .read()
+        .user
+        .as_ref()
+        .map(|u| u.role.is_admin())
+        .unwrap_or(false);
+
+    if !is_admin {
+        return rsx! {
+            AppLayout { title: "Audit Log",
+                PageHeader { title: "Audit Log", subtitle: "System activity" }
+                Card {
+                    div { class: "py-12 text-center",
+                        p { class: "text-sm font-medium text-gray-900 dark:text-white mb-1",
+                            "Admins only"
+                        }
+                        p { class: "text-sm text-gray-500 dark:text-gray-400",
+                            "You do not have permission to view the audit log."
+                        }
+                    }
+                }
+            }
+        };
+    }
+
+    rsx! { AuditLogContent {} }
+}
+
+/// Filterable audit-log table. Mounted only for admins by
+/// [`AuditLogPage`]; all data-fetching hooks live here so the outer
+/// component's hook order never changes with auth state.
+#[component]
+fn AuditLogContent() -> Element {
+    let mut entity_type_filter = use_signal(String::new);
+    let mut action_filter = use_signal(String::new);
+    let mut user_id_filter = use_signal(String::new);
+    let mut from_filter = use_signal(String::new);
+    let mut to_filter = use_signal(String::new);
+    let mut page = use_signal(|| 1usize);
+
+    let action_options = vec![
+        SelectOption::new("", "All Actions"),
+        SelectOption::new("create", "Create"),
+        SelectOption::new("update", "Update"),
+        SelectOption::new("delete", "Delete"),
+        SelectOption::new("login", "Login"),
+        SelectOption::new("logout", "Logout"),
+    ];
+
+    let entity_text = entity_type_filter.read().trim().to_string();
+    let action_text = action_filter.read().clone();
+    let user_text = user_id_filter.read().trim().to_string();
+    let from_text = from_filter.read().clone();
+    let to_text = to_filter.read().clone();
+    let current_page = (*page.read()).max(1);
+
+    // F1: read the active-tenant generation inside the resource closure so
+    // Dioxus re-runs the fetch on an org switch / token swap. Filters and
+    // page are captured by value so the resource also re-fetches on every
+    // change.
+    let entity_for_resource = entity_text.clone();
+    let action_for_resource = action_text.clone();
+    let user_for_resource = user_text.clone();
+    let from_for_resource = from_text.clone();
+    let to_for_resource = to_text.clone();
+    let audit_resource = use_resource(move || {
+        let entity_type = entity_for_resource.clone();
+        let action = action_for_resource.clone();
+        let user_id = user_for_resource.clone();
+        let from = from_for_resource.clone();
+        let to = to_for_resource.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let mut path = format!("/audit-log?page={current_page}&per_page={PER_PAGE}");
+            if !entity_type.is_empty() {
+                path.push_str(&format!(
+                    "&entity_type={}",
+                    urlencoding_minimal(&entity_type)
+                ));
+            }
+            if !action.is_empty() {
+                path.push_str(&format!("&action={}", urlencoding_minimal(&action)));
+            }
+            if !user_id.is_empty() {
+                path.push_str(&format!("&user_id={}", urlencoding_minimal(&user_id)));
+            }
+            // The server parses `from`/`to` as RFC3339 `DateTime<Utc>`.
+            // The native date input yields `YYYY-MM-DD`; widen each bound
+            // to a full-day UTC instant so the filter matches what the
+            // user intends (inclusive day range).
+            if !from.is_empty() {
+                path.push_str(&format!(
+                    "&from={}",
+                    urlencoding_minimal(&format!("{from}T00:00:00Z"))
+                ));
+            }
+            if !to.is_empty() {
+                path.push_str(&format!(
+                    "&to={}",
+                    urlencoding_minimal(&format!("{to}T23:59:59Z"))
+                ));
+            }
+            crate::hooks::fetch::api::get_authed_typed::<Paginated<AuditLogEntry>>(&path).await
+        }
+    });
+
+    let resource_snapshot = audit_resource.read_unchecked();
+    let is_loading = resource_snapshot.is_none();
+    let error_message: Option<String> = match &*resource_snapshot {
+        Some(Err(e)) => Some(e.user_message()),
+        _ => None,
+    };
+    let (page_rows, total): (Vec<AuditLogEntry>, u64) = match &*resource_snapshot {
+        Some(Ok(resp)) => (resp.data.clone(), resp.meta.total),
+        _ => (Vec::new(), 0),
+    };
+    let has_filters = !entity_text.is_empty()
+        || !action_text.is_empty()
+        || !user_text.is_empty()
+        || !from_text.is_empty()
+        || !to_text.is_empty();
+
+    rsx! {
+        AppLayout { title: "Audit Log",
+            PageHeader {
+                title: "Audit Log",
+                subtitle: "Review who changed what, and when",
+            }
+
+            // Filters
+            Card { class: "mb-6",
+                div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5",
+                    crate::components::Input {
+                        name: "entity_type",
+                        label: "Entity type",
+                        placeholder: "e.g. ticket",
+                        value: entity_type_filter.read().clone(),
+                        oninput: move |e: FormEvent| {
+                            entity_type_filter.set(e.value());
+                            page.set(1);
+                        },
+                    }
+                    Select {
+                        name: "action",
+                        label: "Action",
+                        options: action_options,
+                        value: action_filter.read().clone(),
+                        onchange: move |e: FormEvent| {
+                            action_filter.set(e.value());
+                            page.set(1);
+                        },
+                    }
+                    crate::components::Input {
+                        name: "user_id",
+                        label: "User ID",
+                        placeholder: "UUID",
+                        value: user_id_filter.read().clone(),
+                        oninput: move |e: FormEvent| {
+                            user_id_filter.set(e.value());
+                            page.set(1);
+                        },
+                    }
+                    crate::components::Input {
+                        name: "from",
+                        label: "From",
+                        r#type: "date",
+                        value: from_filter.read().clone(),
+                        oninput: move |e: FormEvent| {
+                            from_filter.set(e.value());
+                            page.set(1);
+                        },
+                    }
+                    crate::components::Input {
+                        name: "to",
+                        label: "To",
+                        r#type: "date",
+                        value: to_filter.read().clone(),
+                        oninput: move |e: FormEvent| {
+                            to_filter.set(e.value());
+                            page.set(1);
+                        },
+                    }
+                }
+            }
+
+            if let Some(message) = error_message {
+                div {
+                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                    "{message}"
+                }
+            }
+
+            // Audit table
+            DataTable {
+                loading: is_loading,
+                total_items: total as usize,
+                current_page,
+                per_page: PER_PAGE,
+                columns: 7,
+                onpagechange: move |p| page.set(p),
+                Table {
+                    TableHead {
+                        TableRow {
+                            TableHeader { "Timestamp" }
+                            TableHeader { "Action" }
+                            TableHeader { "Entity" }
+                            TableHeader { "Entity ID" }
+                            TableHeader { "User" }
+                            TableHeader { "IP" }
+                            TableHeader { "Details" }
+                        }
+                    }
+                    if is_loading {
+                        TableLoading { columns: 7, rows: 5 }
+                    } else if page_rows.is_empty() {
+                        TableEmpty {
+                            columns: 7,
+                            message: if has_filters {
+                                "No audit entries match your filters.".to_string()
+                            } else {
+                                "No audit entries yet.".to_string()
+                            },
+                        }
+                    } else {
+                        TableBody {
+                            for entry in page_rows.iter().cloned() {
+                                AuditRow { key: "{entry.id}", entry }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct AuditRowProps {
+    entry: AuditLogEntry,
+}
+
+/// One audit row plus a collapsible detail row holding the pretty-printed
+/// old_values -> new_values JSON diff. The expand state is per-row so
+/// opening one entry does not affect the others.
+#[component]
+fn AuditRow(props: AuditRowProps) -> Element {
+    let entry = props.entry;
+    let mut expanded = use_signal(|| false);
+
+    let has_detail =
+        entry.old_values.is_some() || entry.new_values.is_some() || entry.user_agent.is_some();
+
+    let timestamp = format_timestamp(entry.timestamp);
+    let action = entry.action.clone();
+    let variant = action_variant(&action);
+    let entity_type = entry.entity_type.clone();
+    let entity_id_short = short_uuid(entry.entity_id);
+    let user_id_short = short_uuid(entry.user_id);
+    let ip = entry.ip_address.clone().unwrap_or_else(|| "-".to_string());
+
+    let old_json = pretty_json(&entry.old_values);
+    let new_json = pretty_json(&entry.new_values);
+    let user_agent = entry.user_agent.clone().unwrap_or_default();
+    let entity_id_full = entry
+        .entity_id
+        .map(|u| u.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    let user_id_full = entry
+        .user_id
+        .map(|u| u.to_string())
+        .unwrap_or_else(|| "-".to_string());
+
+    let is_open = *expanded.read();
+
+    rsx! {
+        TableRow {
+            TableCell { class: "text-gray-500 font-mono text-xs", "{timestamp}" }
+            TableCell {
+                Badge { variant, "{action}" }
+            }
+            TableCell { "{entity_type}" }
+            TableCell { class: "font-mono text-xs text-gray-500", "{entity_id_short}" }
+            TableCell { class: "font-mono text-xs text-gray-500", "{user_id_short}" }
+            TableCell { class: "text-gray-500", "{ip}" }
+            TableCell {
+                if has_detail {
+                    button {
+                        r#type: "button",
+                        class: "text-sm text-blue-600 hover:text-blue-500",
+                        onclick: move |_| {
+                            let next = !*expanded.read();
+                            expanded.set(next);
+                        },
+                        if is_open { "Hide" } else { "View" }
+                    }
+                } else {
+                    span { class: "text-gray-400", "-" }
+                }
+            }
+        }
+        if is_open {
+            tr {
+                td {
+                    colspan: "7",
+                    class: "px-6 py-4 bg-gray-50 dark:bg-gray-800/50",
+                    dl { class: "grid grid-cols-1 gap-3 sm:grid-cols-2 text-xs",
+                        div {
+                            dt { class: "font-medium text-gray-500 dark:text-gray-400 mb-1", "Entity ID" }
+                            dd { class: "font-mono text-gray-900 dark:text-gray-100 break-all", "{entity_id_full}" }
+                        }
+                        div {
+                            dt { class: "font-medium text-gray-500 dark:text-gray-400 mb-1", "User ID" }
+                            dd { class: "font-mono text-gray-900 dark:text-gray-100 break-all", "{user_id_full}" }
+                        }
+                        if !user_agent.is_empty() {
+                            div { class: "sm:col-span-2",
+                                dt { class: "font-medium text-gray-500 dark:text-gray-400 mb-1", "User agent" }
+                                dd { class: "text-gray-900 dark:text-gray-100 break-all", "{user_agent}" }
+                            }
+                        }
+                        div {
+                            dt { class: "font-medium text-gray-500 dark:text-gray-400 mb-1", "Old values" }
+                            dd {
+                                pre { class: "overflow-x-auto rounded-md bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 p-3 font-mono text-gray-900 dark:text-gray-100",
+                                    "{old_json}"
+                                }
+                            }
+                        }
+                        div {
+                            dt { class: "font-medium text-gray-500 dark:text-gray-400 mb-1", "New values" }
+                            dd {
+                                pre { class: "overflow-x-auto rounded-md bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 p-3 font-mono text-gray-900 dark:text-gray-100",
+                                    "{new_json}"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
