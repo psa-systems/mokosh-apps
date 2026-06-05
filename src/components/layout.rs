@@ -146,6 +146,7 @@ fn SidebarContent() -> Element {
 
             NavSection { title: "Contracts & Billing",
                 NavItem { to: Route::ContractList {}, icon: rsx!(DocumentIcon {}), label: "Contracts" }
+                NavItem { to: Route::RateCardList {}, icon: rsx!(DocumentIcon {}), label: "Rate Cards" }
                 NavItem { to: Route::InvoiceList {}, icon: rsx!(CurrencyIcon {}), label: "Invoices" }
                 NavItem { to: Route::PaymentList {}, icon: rsx!(CurrencyIcon {}), label: "Payments" }
             }
