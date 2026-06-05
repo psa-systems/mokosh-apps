@@ -20,9 +20,9 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
-    PlusIcon, SearchInput, Select, SelectOption, Table, TableBody, TableCell, TableEmpty,
-    TableHead, TableHeader, TableLoading, TableRow,
+    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ChevronRightIcon, DataTable,
+    IconSize, PageHeader, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody, TableCell,
+    TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::modules::kb::{
     CreateKbArticleRequest, KbArticle, KbArticleFeedback, KbArticleVersion, KbCategory,
@@ -1294,6 +1294,91 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                 }
             }
         }
+    }
+}
+
+// ============================================================================
+// Breadcrumb and tree-nav components
+// ============================================================================
+
+#[component]
+fn KbBreadcrumb(path: Vec<KbCategory>, title: String) -> Element {
+    rsx! {
+        nav { class: "flex items-center flex-wrap gap-1 text-sm text-gray-500 dark:text-gray-400",
+            Link { to: Route::KBHome {}, class: "hover:text-gray-700 dark:hover:text-gray-200", "KB" }
+            for cat in path.iter() {
+                ChevronRightIcon { size: IconSize::Small }
+                Link {
+                    to: Route::KBArticleList {},
+                    class: "hover:text-gray-700 dark:hover:text-gray-200",
+                    "{cat.name}"
+                }
+            }
+            ChevronRightIcon { size: IconSize::Small }
+            span { class: "text-gray-700 dark:text-gray-200 font-medium", "{title}" }
+        }
+    }
+}
+
+#[component]
+fn KbTreeNav(categories: Vec<KbCategory>, articles: Vec<KbArticle>, current_id: String) -> Element {
+    let (roots, uncategorized) = build_kb_tree(&categories, &articles);
+    rsx! {
+        nav { class: "text-sm space-y-1",
+            for node in roots.iter() {
+                KbTreeCategory { node: node.clone(), current_id: current_id.clone() }
+            }
+            if !uncategorized.is_empty() {
+                div { class: "pt-2 mt-2 border-t border-gray-200 dark:border-gray-700",
+                    p { class: "px-2 py-1 text-xs uppercase tracking-wide text-gray-400", "Uncategorized" }
+                    for a in uncategorized.iter() {
+                        KbTreeArticle { article: a.clone(), current_id: current_id.clone() }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn KbTreeCategory(node: TreeNode, current_id: String) -> Element {
+    let mut open = use_signal(|| true);
+    rsx! {
+        div {
+            button {
+                class: "w-full flex items-center gap-1 px-2 py-1 rounded text-left text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800",
+                onclick: move |_| open.toggle(),
+                span {
+                    class: if open() { "rotate-90 transition-transform" } else { "transition-transform" },
+                    ChevronRightIcon { size: IconSize::Small }
+                }
+                span { class: "font-medium truncate", "{node.category.name}" }
+            }
+            if open() {
+                div { class: "ml-4 border-l border-gray-200 dark:border-gray-700 pl-2 space-y-1",
+                    for child in node.children.iter() {
+                        KbTreeCategory { node: child.clone(), current_id: current_id.clone() }
+                    }
+                    for a in node.articles.iter() {
+                        KbTreeArticle { article: a.clone(), current_id: current_id.clone() }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn KbTreeArticle(article: KbArticle, current_id: String) -> Element {
+    let is_current = article.id.to_string() == current_id;
+    let base = "block px-2 py-1 rounded truncate hover:bg-gray-100 dark:hover:bg-gray-800";
+    let cls = if is_current {
+        format!("{base} bg-blue-50 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 font-medium")
+    } else {
+        format!("{base} text-gray-600 dark:text-gray-300")
+    };
+    rsx! {
+        Link { to: Route::KBArticleDetail { id: article.id.to_string() }, class: "{cls}", "{article.title}" }
     }
 }
 
