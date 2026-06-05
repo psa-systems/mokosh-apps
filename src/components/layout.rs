@@ -119,6 +119,17 @@ pub fn Sidebar(props: SidebarProps) -> Element {
 
 #[component]
 fn SidebarContent() -> Element {
+    // Admin-only nav: SLA management (and future admin surfaces) only
+    // render for users whose role is admin/super_admin. Read the auth
+    // context so the section appears/disappears reactively on sign-in.
+    let auth = crate::hooks::use_auth();
+    let is_admin = auth
+        .read()
+        .user
+        .as_ref()
+        .map(|u| u.role.is_admin())
+        .unwrap_or(false);
+
     rsx! {
         div { class: "flex flex-col flex-1 min-h-0",
             nav { class: "flex-1 px-2 py-4 space-y-1",
@@ -160,6 +171,12 @@ fn SidebarContent() -> Element {
 
             NavSection { title: "Analytics",
                 NavItem { to: Route::Reports {}, icon: rsx!(ChartIcon {}), label: "Reports" }
+            }
+
+            if is_admin {
+                NavSection { title: "Administration",
+                    NavItem { to: Route::SlaManagement {}, icon: rsx!(DocumentIcon {}), label: "SLA Management" }
+                }
             }
 
             }

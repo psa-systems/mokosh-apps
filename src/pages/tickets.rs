@@ -41,6 +41,73 @@ struct PaginatedTickets {
     data: Vec<RemoteTicket>,
 }
 
+/// SLA-relevant subset of mokosh-server's `TicketResponse`, fetched on
+/// the ticket detail page to surface an at-risk / breach / on-track
+/// badge. The server response carries `sla_due_date` and `sla_status`
+/// (a snake_case enum: `on_track` | `warning` | `breached` |
+/// `not_applicable`); `first_response_due` / `resolution_due` live on
+/// the internal ticket row but are NOT exposed in `TicketResponse`, so
+/// only the due date + status render here. Serde drops every other
+/// field of the response.
+#[derive(Clone, Debug, Deserialize)]
+struct TicketSlaInfo {
+    #[serde(default)]
+    sla_due_date: Option<DateTime<Utc>>,
+    #[serde(default)]
+    sla_status: SlaStatus,
+}
+
+/// Mirror of the server `SlaStatus` enum (snake_case wire form). Defaults
+/// to `NotApplicable` so a ticket with no SLA configured still decodes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SlaStatus {
+    OnTrack,
+    Warning,
+    Breached,
+    #[default]
+    NotApplicable,
+}
+
+impl SlaStatus {
+    /// (badge variant, label) for rendering. `NotApplicable` returns
+    /// `None` so the caller can skip the badge entirely.
+    fn badge(self) -> Option<(BadgeVariant, &'static str)> {
+        match self {
+            SlaStatus::OnTrack => Some((BadgeVariant::Green, "On Track")),
+            SlaStatus::Warning => Some((BadgeVariant::Yellow, "At Risk")),
+            SlaStatus::Breached => Some((BadgeVariant::Red, "Breached")),
+            SlaStatus::NotApplicable => None,
+        }
+    }
+}
+
+/// Format an SLA due date as an absolute timestamp plus a coarse
+/// remaining/overdue hint, e.g. "Jan 15, 2025 5:00 PM (2 hours left)".
+fn format_sla_due(due: DateTime<Utc>) -> String {
+    let absolute = due.format("%b %-d, %Y %-I:%M %p").to_string();
+    let now = Utc::now();
+    let delta = due.signed_duration_since(now);
+    let secs = delta.num_seconds();
+    let hint = if secs <= 0 {
+        let overdue = (-secs).max(0);
+        if overdue < 3600 {
+            format!("{} min overdue", (overdue / 60).max(1))
+        } else if overdue < 86_400 {
+            format!("{} hr overdue", overdue / 3600)
+        } else {
+            format!("{} days overdue", overdue / 86_400)
+        }
+    } else if secs < 3600 {
+        format!("{} min left", (secs / 60).max(1))
+    } else if secs < 86_400 {
+        format!("{} hr left", secs / 3600)
+    } else {
+        format!("{} days left", secs / 86_400)
+    };
+    format!("{absolute} ({hint})")
+}
+
 /// Source of the rows currently on screen. Mirrors the companies-page
 /// pattern: backend if the fetch returned rows, demo otherwise.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -566,6 +633,22 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let header_title = format!("Ticket {}", props.id);
     let ticket_id_for_note = props.id.clone();
 
+    // Fetch the ticket's SLA fields so the Details card can render a real
+    // at-risk / breach / on-track badge. The rest of this page is still
+    // demo content; this resource only drives the SLA section. `None`
+    // (fetch failed or no token) falls back to the static demo text.
+    let id_for_sla = props.id.clone();
+    let sla_resource = use_resource(move || {
+        let id = id_for_sla.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<TicketSlaInfo>(&format!("/tickets/{id}"))
+                .await
+                .ok()
+        }
+    });
+    let sla_snapshot = sla_resource.read_unchecked().clone();
+
     rsx! {
         AppLayout { title: "{header_title}",
             PageHeader {
@@ -651,9 +734,43 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                             DetailItem { label: "Contact", value: rsx!(span { "Bob Johnson" }) }
                             DetailItem { label: "Queue", value: rsx!(span { "Support" }) }
                             DetailItem { label: "Created", value: rsx!(span { "Jan 15, 2025 9:15 AM" }) }
-                            DetailItem { label: "SLA Due", value: rsx!(
-                                span { class: "text-yellow-600 font-medium", "45 minutes remaining" }
-                            ) }
+                            {
+                                // SLA: drive the status badge + due time off
+                                // the fetched ticket when available; fall back
+                                // to the static demo line otherwise.
+                                match sla_snapshot.clone() {
+                                    Some(Some(info)) => {
+                                        let badge = info.sla_status.badge();
+                                        let due = info.sla_due_date.map(format_sla_due);
+                                        rsx! {
+                                            DetailItem {
+                                                label: "SLA Status",
+                                                value: rsx! {
+                                                    if let Some((variant, label)) = badge {
+                                                        Badge { variant, "{label}" }
+                                                    } else {
+                                                        span { class: "text-gray-400", "No SLA" }
+                                                    }
+                                                },
+                                            }
+                                            if let Some(due) = due {
+                                                DetailItem {
+                                                    label: "SLA Due",
+                                                    value: rsx! { span { "{due}" } },
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => rsx! {
+                                        DetailItem {
+                                            label: "SLA Due",
+                                            value: rsx! {
+                                                span { class: "text-yellow-600 font-medium", "45 minutes remaining" }
+                                            },
+                                        }
+                                    },
+                                }
+                            }
                         }
                     }
 

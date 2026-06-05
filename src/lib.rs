@@ -239,6 +239,11 @@ pub enum Route {
     #[route("/settings/active-tenant")]
     ActiveTenant {},
 
+    // SLA management (admin-gated in the component; not multi-tenant
+    // specific). Sits under /admin/* alongside the other admin surfaces.
+    #[route("/admin/sla")]
+    SlaManagement {},
+
     // Admin (multi-tenant only)
     #[cfg(feature = "multi-tenant")]
     #[route("/admin/tenants")]
@@ -556,6 +561,11 @@ fn ActiveTenant() -> Element {
     // docs/migration/settings-split.md. Bookmarks at the legacy URL
     // bounce there instead of 404ing.
     rsx! { HubRedirect { target: "/settings/active-tenant".to_string(), label: "tenant switcher" } }
+}
+
+#[component]
+fn SlaManagement() -> Element {
+    rsx! { sla::SlaManagementPage {} }
 }
 
 #[cfg(feature = "multi-tenant")]

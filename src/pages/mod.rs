@@ -22,5 +22,6 @@ pub mod not_found;
 pub mod portal;
 pub mod projects;
 pub mod reports;
+pub mod sla;
 pub mod tickets;
 pub mod time;
