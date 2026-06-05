@@ -24,7 +24,8 @@
 //! plus an inline error, never seeded fixtures.
 
 use chrono::{
-    DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc, Weekday,
+    DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone,
+    Timelike, Utc, Weekday,
 };
 use dioxus::prelude::*;
 
@@ -299,7 +300,7 @@ fn use_users_resource() -> Resource<Vec<RemoteUser>> {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         #[cfg(feature = "web")]
         {
-            crate::hooks::fetch::api::get_authed::<PaginatedUsers>("/users?per_page=100")
+            crate::hooks::fetch::api::get_authed::<PaginatedUsers>("/auth/users?per_page=100")
                 .await
                 .map(|p| p.data)
                 .unwrap_or_default()
@@ -339,10 +340,16 @@ pub fn CalendarPage() -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         #[cfg(feature = "web")]
         {
+            // Emit the UTC offset as `Z`, not `+00:00`. A literal `+`
+            // in a query string URL-decodes to a space on the server
+            // side, so `to_rfc3339()` produces a string that fails
+            // chrono's `DateTime<Utc>` parser after decoding and the
+            // request 400s. `SecondsFormat::Secs, use_z=true` yields
+            // `2026-05-31T04:00:00Z` which round-trips cleanly.
             let path = format!(
                 "/calendar/appointments?from={}&to={}",
-                from_utc.to_rfc3339(),
-                to_utc.to_rfc3339()
+                from_utc.to_rfc3339_opts(SecondsFormat::Secs, true),
+                to_utc.to_rfc3339_opts(SecondsFormat::Secs, true)
             );
             crate::hooks::fetch::api::get_authed::<PaginatedAppointments>(&path)
                 .await
