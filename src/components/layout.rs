@@ -119,9 +119,9 @@ pub fn Sidebar(props: SidebarProps) -> Element {
 
 #[component]
 fn SidebarContent() -> Element {
-    // Admin-only nav: SLA management (and future admin surfaces) only
-    // render for users whose role is admin/super_admin. Read the auth
-    // context so the section appears/disappears reactively on sign-in.
+    // Admin-only nav (audit log, SLA management): rendered only for
+    // admin/super_admin users (reactive on sign-in). The pages re-check
+    // server-side, so this is a UX affordance, not a security boundary.
     let auth = crate::hooks::use_auth();
     let is_admin = auth
         .read()
@@ -157,6 +157,7 @@ fn SidebarContent() -> Element {
 
             NavSection { title: "Contracts & Billing",
                 NavItem { to: Route::ContractList {}, icon: rsx!(DocumentIcon {}), label: "Contracts" }
+                NavItem { to: Route::RateCardList {}, icon: rsx!(DocumentIcon {}), label: "Rate Cards" }
                 NavItem { to: Route::InvoiceList {}, icon: rsx!(CurrencyIcon {}), label: "Invoices" }
                 NavItem { to: Route::PaymentList {}, icon: rsx!(CurrencyIcon {}), label: "Payments" }
             }
@@ -174,7 +175,8 @@ fn SidebarContent() -> Element {
             }
 
             if is_admin {
-                NavSection { title: "Administration",
+                NavSection { title: "Admin",
+                    NavItem { to: Route::AuditLog {}, icon: rsx!(DocumentIcon {}), label: "Audit Log" }
                     NavItem { to: Route::SlaManagement {}, icon: rsx!(DocumentIcon {}), label: "SLA Management" }
                 }
             }

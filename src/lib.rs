@@ -185,6 +185,16 @@ pub enum Route {
     #[route("/contracts/:id")]
     ContractDetail { id: String },
 
+    #[route("/contracts/:id/edit")]
+    ContractEdit { id: String },
+
+    // Rate cards
+    #[route("/rate-cards")]
+    RateCardList {},
+
+    #[route("/rate-cards/:id")]
+    RateCardDetail { id: String },
+
     // Billing
     #[route("/invoices")]
     InvoiceList {},
@@ -197,6 +207,12 @@ pub enum Route {
 
     #[route("/payments")]
     PaymentList {},
+
+    #[route("/tax-rates")]
+    TaxRateList {},
+
+    #[route("/payment-gateways")]
+    PaymentGatewayConfig {},
 
     // Assets
     #[route("/assets")]
@@ -239,8 +255,11 @@ pub enum Route {
     #[route("/settings/active-tenant")]
     ActiveTenant {},
 
-    // SLA management (admin-gated in the component; not multi-tenant
-    // specific). Sits under /admin/* alongside the other admin surfaces.
+    // Admin surfaces under /admin/*, gated at runtime by the user's role
+    // inside each page (matching the server's RequireAdmin), available in
+    // every build since the server endpoints exist regardless of tenancy.
+    #[route("/admin/audit")]
+    AuditLog {},
     #[route("/admin/sla")]
     SlaManagement {},
 
@@ -491,6 +510,21 @@ fn ContractDetail(id: String) -> Element {
 }
 
 #[component]
+fn ContractEdit(id: String) -> Element {
+    rsx! { contracts::ContractEditPage { id } }
+}
+
+#[component]
+fn RateCardList() -> Element {
+    rsx! { contracts::RateCardListPage {} }
+}
+
+#[component]
+fn RateCardDetail(id: String) -> Element {
+    rsx! { contracts::RateCardDetailPage { id } }
+}
+
+#[component]
 fn InvoiceList() -> Element {
     rsx! { billing::InvoiceListPage {} }
 }
@@ -508,6 +542,16 @@ fn InvoiceDetail(id: String) -> Element {
 #[component]
 fn PaymentList() -> Element {
     rsx! { billing::PaymentListPage {} }
+}
+
+#[component]
+fn TaxRateList() -> Element {
+    rsx! { billing::TaxRateListPage {} }
+}
+
+#[component]
+fn PaymentGatewayConfig() -> Element {
+    rsx! { billing::PaymentGatewayConfigPage {} }
 }
 
 #[component]
@@ -561,6 +605,11 @@ fn ActiveTenant() -> Element {
     // docs/migration/settings-split.md. Bookmarks at the legacy URL
     // bounce there instead of 404ing.
     rsx! { HubRedirect { target: "/settings/active-tenant".to_string(), label: "tenant switcher" } }
+}
+
+#[component]
+fn AuditLog() -> Element {
+    rsx! { audit_log::AuditLogPage {} }
 }
 
 #[component]

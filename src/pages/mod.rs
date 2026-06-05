@@ -10,6 +10,7 @@
 
 pub mod admin;
 pub mod assets;
+pub mod audit_log;
 pub mod auth_callback;
 pub mod billing;
 pub mod calendar;
