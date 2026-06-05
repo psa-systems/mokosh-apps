@@ -8,6 +8,7 @@ pub mod contracts;
 pub mod kb;
 pub mod oidc;
 pub mod runtime_config;
+pub mod sla;
 pub mod system;
 pub mod tenants;
 pub mod tickets;
