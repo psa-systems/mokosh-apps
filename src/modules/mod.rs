@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod contacts;
+pub mod kb;
 pub mod oidc;
 pub mod runtime_config;
 pub mod system;
