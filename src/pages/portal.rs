@@ -628,10 +628,70 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
     }
 }
 
-/// Portal knowledge base page
+/// Server-side paginated envelope (`PaginatedResponse<KbArticleResponse>`)
+/// for the portal KB feed. Only the fields the portal renders are pulled;
+/// serde drops the rest.
+#[derive(Clone, Debug, serde::Deserialize)]
+struct PortalKbFeed {
+    data: Vec<PortalKbArticle>,
+}
+
+/// `KbArticleResponse` subset for the portal reader. Mirrors the agent
+/// `KbArticle` DTO but local to the portal page (the portal feed reuses
+/// the same server response type).
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalKbArticle {
+    id: uuid::Uuid,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    summary: Option<String>,
+}
+
+/// Portal knowledge base page.
+///
+/// Fetches `GET /api/v1/portal/kb`, the portal-scoped feed. Auth differs
+/// from the agent KB pages: the server mounts this under a separate
+/// `/api/v1/portal` router guarded by `portal_auth_middleware`, whose
+/// identity is the authenticated *contacts* row (not a `users` row) and
+/// which scopes results to published, portal-visible articles for the
+/// caller's company. The SPA only holds the OIDC bearer token, so we send
+/// it via `get_authed`; the portal middleware is the server-side gate.
+/// (Other portal pages here are still demo and do not fetch yet, so there
+/// is no portal-token helper to mirror; `get_authed` is the available
+/// path.)
 #[component]
 pub fn PortalKBPage() -> Element {
     let mut search = use_signal(String::new);
+
+    let feed_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<PortalKbFeed>("/portal/kb?page=1&per_page=100")
+            .await
+            .ok()
+    });
+
+    let snap = feed_resource.read_unchecked();
+    let is_loading = snap.is_none();
+    let fetch_failed = matches!(*snap, Some(None));
+
+    let search_text = search.read().trim().to_lowercase();
+    let articles: Vec<PortalKbArticle> = match &*snap {
+        Some(Some(feed)) => feed
+            .data
+            .iter()
+            .filter(|a| {
+                search_text.is_empty()
+                    || a.title.to_lowercase().contains(&search_text)
+                    || a.summary
+                        .as_deref()
+                        .map(|s| s.to_lowercase().contains(&search_text))
+                        .unwrap_or(false)
+            })
+            .cloned()
+            .collect(),
+        _ => Vec::new(),
+    };
 
     rsx! {
         // P1-10 dedup: title rendered once below.
@@ -646,33 +706,35 @@ pub fn PortalKBPage() -> Element {
                 }
             }
 
-            // Popular articles
-            Card { title: "Popular Articles",
-                div { class: "space-y-3",
-                    PortalArticleItem {
-                        id: "portal-reset-password",
-                        title: "How to Reset Your Password",
-                        category: "Getting Started",
+            Card { title: "Articles",
+                if fetch_failed {
+                    div { class: "py-8 text-center text-sm text-red-600 dark:text-red-300",
+                        "Could not load articles. Refresh the page to retry."
                     }
-                    PortalArticleItem {
-                        id: "portal-vpn-troubleshooting",
-                        title: "Troubleshooting VPN Connection Issues",
-                        category: "Troubleshooting",
+                } else if is_loading {
+                    div { class: "space-y-3",
+                        for _ in 0..4 {
+                            div { class: "h-10 bg-gray-100 dark:bg-gray-800 rounded animate-pulse" }
+                        }
                     }
-                    PortalArticleItem {
-                        id: "portal-mfa-setup",
-                        title: "Setting Up Multi-Factor Authentication",
-                        category: "Security",
+                } else if articles.is_empty() {
+                    div { class: "py-8 text-center text-sm text-gray-500",
+                        if search_text.is_empty() {
+                            "No articles available yet."
+                        } else {
+                            "No articles match your search."
+                        }
                     }
-                    PortalArticleItem {
-                        id: "portal-email-mobile",
-                        title: "Email Setup Guide for Mobile Devices",
-                        category: "How-To Guides",
-                    }
-                    PortalArticleItem {
-                        id: "portal-support-best-practices",
-                        title: "Requesting IT Support - Best Practices",
-                        category: "Getting Started",
+                } else {
+                    div { class: "space-y-3",
+                        for article in articles.iter().cloned() {
+                            PortalArticleItem {
+                                key: "{article.id}",
+                                id: article.id.to_string(),
+                                title: article.title,
+                                summary: article.summary.unwrap_or_default(),
+                            }
+                        }
                     }
                 }
             }
@@ -684,7 +746,7 @@ pub fn PortalKBPage() -> Element {
 struct PortalArticleItemProps {
     id: String,
     title: String,
-    category: String,
+    summary: String,
 }
 
 #[component]
@@ -694,7 +756,9 @@ fn PortalArticleItem(props: PortalArticleItemProps) -> Element {
             to: Route::KBArticleDetail { id: props.id.clone() },
             class: "block p-3 -mx-3 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg transition-colors",
             h4 { class: "font-medium text-gray-900 dark:text-white", "{props.title}" }
-            p { class: "text-sm text-gray-500 mt-1", "{props.category}" }
+            if !props.summary.is_empty() {
+                p { class: "text-sm text-gray-500 mt-1", "{props.summary}" }
+            }
         }
     }
 }

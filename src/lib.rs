@@ -237,6 +237,9 @@ pub enum Route {
     #[route("/kb/articles/:id")]
     KBArticleDetail { id: String },
 
+    #[route("/kb/articles/:id/edit")]
+    KBArticleEdit { id: String },
+
     // Reports
     #[route("/reports")]
     Reports {},
@@ -255,13 +258,13 @@ pub enum Route {
     #[route("/settings/active-tenant")]
     ActiveTenant {},
 
-    // Admin
-    //
-    // Audit log is available in every build (the server endpoint exists
-    // regardless of multi-tenant) and is gated at runtime by the user's
-    // role inside `AuditLogPage`, matching the server's RequireAdmin.
+    // Admin surfaces under /admin/*, gated at runtime by the user's role
+    // inside each page (matching the server's RequireAdmin), available in
+    // every build since the server endpoints exist regardless of tenancy.
     #[route("/admin/audit")]
     AuditLog {},
+    #[route("/admin/sla")]
+    SlaManagement {},
 
     // Admin (multi-tenant only)
     #[cfg(feature = "multi-tenant")]
@@ -590,6 +593,11 @@ fn KBArticleDetail(id: String) -> Element {
 }
 
 #[component]
+fn KBArticleEdit(id: String) -> Element {
+    rsx! { knowledge_base::KBArticleEditPage { id } }
+}
+
+#[component]
 fn Reports() -> Element {
     rsx! { reports::ReportsPage {} }
 }
@@ -610,6 +618,11 @@ fn ActiveTenant() -> Element {
 #[component]
 fn AuditLog() -> Element {
     rsx! { audit_log::AuditLogPage {} }
+}
+
+#[component]
+fn SlaManagement() -> Element {
+    rsx! { sla::SlaManagementPage {} }
 }
 
 #[cfg(feature = "multi-tenant")]

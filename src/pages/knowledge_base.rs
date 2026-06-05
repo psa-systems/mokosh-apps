@@ -1,18 +1,187 @@
-//! Knowledge base pages
+//! Knowledge base pages.
+//!
+//! Wired to the mokosh-server KB module (PMS-79..84):
+//!   - `GET/POST  /api/v1/kb/categories`
+//!   - `PUT/DELETE /api/v1/kb/categories/{id}`
+//!   - `GET/POST  /api/v1/kb/articles` (filters: `category_id`, `q`,
+//!     `status`, `visibility`; paginated `{ data, meta: { total } }`)
+//!   - `GET/PUT/DELETE /api/v1/kb/articles/{id}`
+//!   - `GET  /api/v1/kb/articles/{id}/versions`
+//!   - `POST /api/v1/kb/articles/{id}/versions/{n}/restore`
+//!   - `POST /api/v1/kb/articles/{id}/helpful` and `/not_helpful`
+//!
+//! Structure and conventions mirror `crate::pages::contacts`: every
+//! list/detail view reads `active_tenant_generation()` inside its
+//! `use_resource` closure so an org switch / token swap re-fetches, the
+//! string-returning `*_authed` API helpers carry the bearer token, and
+//! loading / empty / error states match the contacts pages.
 
 use dioxus::prelude::*;
+use serde::Deserialize;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, BookIcon, Button, ButtonVariant, Card, DataTable, IconSize,
-    PageHeader, PlusIcon, SearchInput, Table, TableBody, TableCell, TableHead, TableHeader,
-    TableRow,
+    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
+    PlusIcon, SearchInput, Select, SelectOption, Table, TableBody, TableCell, TableEmpty,
+    TableHead, TableHeader, TableLoading, TableRow,
+};
+use crate::modules::kb::{
+    CreateKbArticleRequest, KbArticle, KbArticleFeedback, KbArticleVersion, KbCategory,
+    UpdateKbArticleRequest,
 };
 use crate::Route;
 
-/// Knowledge base home page
+/// Rows per page for the article list (mirrors contacts `PER_PAGE`).
+const PER_PAGE: usize = 25;
+
+/// How many recent articles the home page surfaces.
+const RECENT_LIMIT: usize = 5;
+
+/// Server-side paginated envelope (`PaginatedResponse<T>`): `{ data, meta }`.
+#[derive(Clone, Debug, Deserialize)]
+struct Paginated<T> {
+    data: Vec<T>,
+    #[serde(default)]
+    meta: PaginationMeta,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct PaginationMeta {
+    #[serde(default)]
+    total: u64,
+}
+
+/// Tiny percent-encoder for query-string values, copied from
+/// `contacts.rs` so the two pages stay consistent without pulling in the
+/// full `urlencoding` crate. The server ILIKE / similarity-matches the
+/// result so non-ASCII passes straight through.
+fn urlencoding_minimal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            ' ' => out.push_str("%20"),
+            '&' => out.push_str("%26"),
+            '#' => out.push_str("%23"),
+            '?' => out.push_str("%3F"),
+            '+' => out.push_str("%2B"),
+            '=' => out.push_str("%3D"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("%{:02X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Derive a URL slug from a title: lowercase, non-alphanumerics collapse
+/// to single hyphens, trimmed. Mirrors the obvious server expectation
+/// (`slug` is required, `length(min = 1, max = 255)`). Empty input yields
+/// `"article"` so we never POST an empty slug.
+fn slugify(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut prev_dash = false;
+    for c in input.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "article".to_string()
+    } else {
+        trimmed
+    }
+}
+
+/// Title-case the server's lowercase visibility tag for display, and pick
+/// a badge color. Unknown values fall through unchanged / gray.
+fn visibility_label(raw: &str) -> (String, BadgeVariant) {
+    match raw {
+        "public" => ("Public".to_string(), BadgeVariant::Green),
+        "internal" => ("Internal".to_string(), BadgeVariant::Blue),
+        "client_specific" => ("Client-specific".to_string(), BadgeVariant::Purple),
+        "" => ("Internal".to_string(), BadgeVariant::Blue),
+        other => (other.to_string(), BadgeVariant::Gray),
+    }
+}
+
+/// Badge color for an article status (`draft` / `published` / `archived`).
+fn status_variant(raw: &str) -> BadgeVariant {
+    match raw {
+        "published" => BadgeVariant::Green,
+        "draft" => BadgeVariant::Yellow,
+        "archived" => BadgeVariant::Gray,
+        _ => BadgeVariant::Gray,
+    }
+}
+
+/// Truncate an ISO timestamp to its date portion for compact display.
+/// The server returns RFC 3339 (`2026-06-05T12:34:56Z`); we show the
+/// leading `YYYY-MM-DD`. Falls back to the raw string if it is shorter.
+fn date_only(ts: &Option<String>) -> String {
+    match ts {
+        Some(s) if s.len() >= 10 => s[..10].to_string(),
+        Some(s) => s.clone(),
+        None => "-".to_string(),
+    }
+}
+
+// ============================================================================
+// Home page
+// ============================================================================
+
+/// Knowledge base home page: category grid + recent articles.
 #[component]
 pub fn KBHomePage() -> Element {
     let mut search = use_signal(String::new);
+    let navigator = use_navigator();
+
+    let categories_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let token = crate::hooks::fetch::api::current_access_token()?;
+        crate::hooks::fetch::api::get_with_auth::<Paginated<KbCategory>>(
+            "/kb/categories?page=1&per_page=100",
+            &token,
+        )
+        .await
+        .ok()
+    });
+
+    let recent_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let token = crate::hooks::fetch::api::current_access_token()?;
+        let path =
+            format!("/kb/articles?page=1&per_page={RECENT_LIMIT}&sort=updated_at&sort_dir=desc");
+        crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(&path, &token)
+            .await
+            .ok()
+    });
+
+    let categories_snapshot = categories_resource.read_unchecked();
+    let categories_loading = categories_snapshot.is_none();
+    let categories: Vec<KbCategory> = match &*categories_snapshot {
+        Some(Some(resp)) => resp.data.clone(),
+        _ => Vec::new(),
+    };
+
+    let recent_snapshot = recent_resource.read_unchecked();
+    let recent_loading = recent_snapshot.is_none();
+    let recent_failed = matches!(*recent_snapshot, Some(None));
+    let recent: Vec<KbArticle> = match &*recent_snapshot {
+        Some(Some(resp)) => resp.data.clone(),
+        _ => Vec::new(),
+    };
+
+    // Submitting the home search jumps to the full article list, which
+    // owns the live `?q=` filter against the server. Routes carry no
+    // query string, so the term is not forwarded; the list's own search
+    // box is the canonical filter entry point.
+    let go_search = move |e: FormEvent| {
+        e.prevent_default();
+        navigator.push(Route::KBArticleList {});
+    };
 
     rsx! {
         AppLayout { title: "Knowledge Base",
@@ -31,87 +200,72 @@ pub fn KBHomePage() -> Element {
                 },
             }
 
-            // Search
+            // Search: a submit jumps to the full article list (which owns
+            // the live `?q=` filter against the server).
             Card { class: "mb-6",
-                SearchInput {
-                    value: search.read().clone(),
-                    placeholder: "Search articles...",
-                    oninput: move |e: FormEvent| search.set(e.value()),
+                form {
+                    onsubmit: go_search,
+                    SearchInput {
+                        value: search.read().clone(),
+                        placeholder: "Search articles...",
+                        oninput: move |e: FormEvent| search.set(e.value()),
+                    }
                 }
             }
 
             // Categories
-            div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8",
-                CategoryCard {
-                    title: "Getting Started",
-                    description: "New user guides and onboarding documentation",
-                    article_count: 12,
-                    icon: "book",
+            if categories_loading {
+                div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8",
+                    for _ in 0..3 {
+                        Card {
+                            div { class: "h-16 bg-gray-100 dark:bg-gray-800 rounded animate-pulse" }
+                        }
+                    }
                 }
-                CategoryCard {
-                    title: "Troubleshooting",
-                    description: "Common issues and solutions",
-                    article_count: 45,
-                    icon: "wrench",
+            } else if categories.is_empty() {
+                Card { class: "mb-8",
+                    div { class: "py-8 text-center text-sm text-gray-500",
+                        "No categories yet."
+                    }
                 }
-                CategoryCard {
-                    title: "How-To Guides",
-                    description: "Step-by-step instructions",
-                    article_count: 28,
-                    icon: "list",
-                }
-                CategoryCard {
-                    title: "Network",
-                    description: "Networking documentation and guides",
-                    article_count: 18,
-                    icon: "network",
-                }
-                CategoryCard {
-                    title: "Security",
-                    description: "Security best practices and procedures",
-                    article_count: 15,
-                    icon: "shield",
-                }
-                CategoryCard {
-                    title: "Microsoft 365",
-                    description: "Office 365 and Azure documentation",
-                    article_count: 32,
-                    icon: "cloud",
+            } else {
+                div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8",
+                    for category in categories.iter().cloned() {
+                        CategoryCard {
+                            key: "{category.id}",
+                            title: category.name,
+                            description: category.description.unwrap_or_default(),
+                        }
+                    }
                 }
             }
 
             // Recent articles
             Card { title: "Recent Articles",
-                div { class: "space-y-4",
-                    ArticleItem {
-                        id: "1",
-                        title: "How to Reset a User's Password in Active Directory",
-                        category: "How-To Guides",
-                        updated: "2 hours ago",
+                if recent_failed {
+                    div { class: "py-8 text-center text-sm text-red-600 dark:text-red-300",
+                        "Could not load recent articles."
                     }
-                    ArticleItem {
-                        id: "2",
-                        title: "Troubleshooting VPN Connection Issues",
-                        category: "Troubleshooting",
-                        updated: "1 day ago",
+                } else if recent_loading {
+                    div { class: "space-y-4",
+                        for _ in 0..3 {
+                            div { class: "h-10 bg-gray-100 dark:bg-gray-800 rounded animate-pulse" }
+                        }
                     }
-                    ArticleItem {
-                        id: "3",
-                        title: "Setting Up Multi-Factor Authentication",
-                        category: "Security",
-                        updated: "2 days ago",
+                } else if recent.is_empty() {
+                    div { class: "py-8 text-center text-sm text-gray-500",
+                        "No articles yet. Click New Article to create one."
                     }
-                    ArticleItem {
-                        id: "4",
-                        title: "Exchange Online Migration Checklist",
-                        category: "Microsoft 365",
-                        updated: "3 days ago",
-                    }
-                    ArticleItem {
-                        id: "5",
-                        title: "Configuring Firewall Rules for Remote Access",
-                        category: "Network",
-                        updated: "1 week ago",
+                } else {
+                    div { class: "space-y-4",
+                        for article in recent.iter().cloned() {
+                            ArticleItem {
+                                key: "{article.id}",
+                                id: article.id.to_string(),
+                                title: article.title,
+                                updated: date_only(&article.updated_at),
+                            }
+                        }
                     }
                 }
             }
@@ -123,32 +277,34 @@ pub fn KBHomePage() -> Element {
 struct CategoryCardProps {
     title: String,
     description: String,
-    article_count: u32,
-    icon: String,
 }
 
 #[component]
 fn CategoryCard(props: CategoryCardProps) -> Element {
-    // P2-19: card was styled `cursor-pointer` but had no wrapping Link;
-    // clicking it did nothing. Wrap in Link to the article list.
+    let navigator = use_navigator();
+    // The list route carries no query string, so the category filter is
+    // not pre-applied; clicking lands on the full article list where the
+    // category dropdown is the canonical filter.
     rsx! {
-        Link {
-            to: Route::KBArticleList {},
-            class: "block",
+        button {
+            r#type: "button",
+            class: "block w-full text-left",
+            onclick: move |_| {
+                navigator.push(Route::KBArticleList {});
+            },
             Card { class: "hover:shadow-lg transition-shadow cursor-pointer",
                 div { class: "flex items-start",
                     div { class: "flex-shrink-0 w-10 h-10 bg-blue-100 dark:bg-blue-900 rounded-lg flex items-center justify-center",
-                        BookIcon { class: "h-5 w-5 text-blue-600 dark:text-blue-400".to_string() }
+                        crate::components::BookIcon { class: "h-5 w-5 text-blue-600 dark:text-blue-400".to_string() }
                     }
                     div { class: "ml-4",
                         h3 { class: "text-lg font-medium text-gray-900 dark:text-white",
                             "{props.title}"
                         }
-                        p { class: "text-sm text-gray-500 dark:text-gray-400 mt-1",
-                            "{props.description}"
-                        }
-                        p { class: "text-sm text-blue-600 dark:text-blue-400 mt-2",
-                            "{props.article_count} articles"
+                        if !props.description.is_empty() {
+                            p { class: "text-sm text-gray-500 dark:text-gray-400 mt-1",
+                                "{props.description}"
+                            }
                         }
                     }
                 }
@@ -161,7 +317,6 @@ fn CategoryCard(props: CategoryCardProps) -> Element {
 struct ArticleItemProps {
     id: String,
     title: String,
-    category: String,
     updated: String,
 }
 
@@ -173,12 +328,7 @@ fn ArticleItem(props: ArticleItemProps) -> Element {
             class: "block p-4 -mx-4 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg transition-colors",
             div { class: "flex items-center justify-between",
                 div {
-                    h4 { class: "font-medium text-gray-900 dark:text-white",
-                        "{props.title}"
-                    }
-                    p { class: "text-sm text-gray-500 dark:text-gray-400 mt-1",
-                        "{props.category}"
-                    }
+                    h4 { class: "font-medium text-gray-900 dark:text-white", "{props.title}" }
                 }
                 span { class: "text-sm text-gray-400", "{props.updated}" }
             }
@@ -186,9 +336,74 @@ fn ArticleItem(props: ArticleItemProps) -> Element {
     }
 }
 
-/// Article list page
+// ============================================================================
+// Article list page
+// ============================================================================
+
+/// Article list page: search box + category filter, server-paginated.
 #[component]
 pub fn KBArticleListPage() -> Element {
+    let mut search = use_signal(String::new);
+    let mut category_filter = use_signal(String::new);
+    let mut page = use_signal(|| 1usize);
+
+    // Category options for the filter dropdown.
+    let categories_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let token = crate::hooks::fetch::api::current_access_token()?;
+        crate::hooks::fetch::api::get_with_auth::<Paginated<KbCategory>>(
+            "/kb/categories?page=1&per_page=100",
+            &token,
+        )
+        .await
+        .ok()
+    });
+    let categories: Vec<KbCategory> = match &*categories_resource.read_unchecked() {
+        Some(Some(resp)) => resp.data.clone(),
+        _ => Vec::new(),
+    };
+    let mut category_options = vec![SelectOption::new("", "All Categories")];
+    for c in categories.iter() {
+        category_options.push(SelectOption::new(c.id.to_string(), c.name.clone()));
+    }
+
+    let search_text = search.read().trim().to_string();
+    let category_text = category_filter.read().clone();
+    let current_page = (*page.read()).max(1);
+
+    let q_for_resource = search_text.clone();
+    let cat_for_resource = category_text.clone();
+    let articles_resource = use_resource(move || {
+        let q = q_for_resource.clone();
+        let category_id = cat_for_resource.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let token = crate::hooks::fetch::api::current_access_token()?;
+            let mut path = format!("/kb/articles?page={current_page}&per_page={PER_PAGE}");
+            if !q.is_empty() {
+                path.push_str(&format!("&q={}", urlencoding_minimal(&q)));
+            }
+            if !category_id.is_empty() {
+                path.push_str(&format!(
+                    "&category_id={}",
+                    urlencoding_minimal(&category_id)
+                ));
+            }
+            crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(&path, &token)
+                .await
+                .ok()
+        }
+    });
+
+    let resource_snapshot = articles_resource.read_unchecked();
+    let is_loading = resource_snapshot.is_none();
+    let fetch_failed = matches!(*resource_snapshot, Some(None));
+    let (page_rows, total): (Vec<KbArticle>, u64) = match &*resource_snapshot {
+        Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
+        _ => (Vec::new(), 0),
+    };
+    let has_filters = !search_text.is_empty() || !category_text.is_empty();
+
     rsx! {
         AppLayout { title: "Articles",
             PageHeader {
@@ -205,44 +420,77 @@ pub fn KBArticleListPage() -> Element {
                 },
             }
 
+            // Filters
+            Card { class: "mb-6",
+                div { class: "flex flex-col sm:flex-row gap-4",
+                    div { class: "flex-1",
+                        SearchInput {
+                            value: search.read().clone(),
+                            placeholder: "Search articles...",
+                            oninput: move |e: FormEvent| {
+                                search.set(e.value());
+                                page.set(1);
+                            },
+                        }
+                    }
+                    Select {
+                        name: "category",
+                        options: category_options,
+                        value: category_filter.read().clone(),
+                        onchange: move |e: FormEvent| {
+                            category_filter.set(e.value());
+                            page.set(1);
+                        },
+                    }
+                }
+            }
+
+            if fetch_failed {
+                div {
+                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                    "Could not load articles. Refresh the page to retry."
+                }
+            }
+
             DataTable {
-                total_items: 150,
-                current_page: 1,
-                per_page: 25,
+                loading: is_loading,
+                total_items: total as usize,
+                current_page,
+                per_page: PER_PAGE,
                 columns: 4,
+                onpagechange: move |p| page.set(p),
                 Table {
                     TableHead {
                         TableRow {
-                            TableHeader { sortable: true, "Title" }
-                            TableHeader { "Category" }
+                            TableHeader { "Title" }
+                            TableHeader { "Status" }
                             TableHeader { "Visibility" }
-                            TableHeader { sortable: true, "Updated" }
+                            TableHeader { "Updated" }
                         }
                     }
-                    TableBody {
-                        TableRow {
-                            TableCell {
-                                Link {
-                                    to: Route::KBArticleDetail { id: "1".to_string() },
-                                    class: "font-medium text-blue-600 hover:text-blue-500",
-                                    "How to Reset a User's Password in Active Directory"
-                                }
-                            }
-                            TableCell { "How-To Guides" }
-                            TableCell { Badge { variant: BadgeVariant::Blue, "Internal" } }
-                            TableCell { class: "text-gray-500", "2 hours ago" }
+                    if is_loading {
+                        TableLoading { columns: 4, rows: 5 }
+                    } else if page_rows.is_empty() {
+                        TableEmpty {
+                            columns: 4,
+                            message: if has_filters {
+                                "No articles match your filters.".to_string()
+                            } else {
+                                "No articles yet. Click New Article to create one.".to_string()
+                            },
                         }
-                        TableRow {
-                            TableCell {
-                                Link {
-                                    to: Route::KBArticleDetail { id: "2".to_string() },
-                                    class: "font-medium text-blue-600 hover:text-blue-500",
-                                    "Troubleshooting VPN Connection Issues"
+                    } else {
+                        TableBody {
+                            for article in page_rows.iter().cloned() {
+                                ArticleRow {
+                                    key: "{article.id}",
+                                    id: article.id.to_string(),
+                                    title: article.title,
+                                    status: article.status,
+                                    visibility: article.visibility,
+                                    updated: date_only(&article.updated_at),
                                 }
                             }
-                            TableCell { "Troubleshooting" }
-                            TableCell { Badge { variant: BadgeVariant::Green, "Public" } }
-                            TableCell { class: "text-gray-500", "1 day ago" }
                         }
                     }
                 }
@@ -251,228 +499,712 @@ pub fn KBArticleListPage() -> Element {
     }
 }
 
-/// New article page
+#[derive(Props, Clone, PartialEq)]
+struct ArticleRowProps {
+    id: String,
+    title: String,
+    status: String,
+    visibility: String,
+    updated: String,
+}
+
 #[component]
-pub fn KBArticleNewPage() -> Element {
-    let mut title = use_signal(String::new);
-    let mut category = use_signal(|| "how-to".to_string());
-    let mut visibility = use_signal(|| "internal".to_string());
-    let mut body = use_signal(String::new);
-    let mut is_submitting = use_signal(|| false);
-
-    let category_options = vec![
-        crate::components::SelectOption::new("how-to", "How-To Guides"),
-        crate::components::SelectOption::new("troubleshooting", "Troubleshooting"),
-        crate::components::SelectOption::new("policies", "Policies & Procedures"),
-        crate::components::SelectOption::new("software", "Software"),
-        crate::components::SelectOption::new("hardware", "Hardware"),
-        crate::components::SelectOption::new("security", "Security"),
-    ];
-    let visibility_options = vec![
-        crate::components::SelectOption::new("internal", "Internal"),
-        crate::components::SelectOption::new("customer", "Customer-facing"),
-        crate::components::SelectOption::new("public", "Public"),
-    ];
-
+fn ArticleRow(props: ArticleRowProps) -> Element {
     let navigator = use_navigator();
-    let handle_submit = move |e: FormEvent| {
-        e.prevent_default();
-        is_submitting.set(true);
-        spawn(async move {
-            // Server KB module is still 501; stub the submit and
-            // navigate to the article list. POST goes live once the
-            // module ships.
-            #[cfg(feature = "web")]
-            {
-                use gloo_timers::future::TimeoutFuture;
-                TimeoutFuture::new(1000).await;
-            }
-            is_submitting.set(false);
-            navigator.push(Route::KBArticleList {});
-        });
+    let id = props.id.clone();
+    let (vis_label, vis_variant) = visibility_label(&props.visibility);
+    let status_var = status_variant(&props.status);
+    let status_label = if props.status.is_empty() {
+        "Draft".to_string()
+    } else {
+        let mut chars = props.status.chars();
+        match chars.next() {
+            Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            None => props.status.clone(),
+        }
     };
-
     rsx! {
-        AppLayout { title: "New Article",
-            PageHeader {
-                title: "New Article",
-                subtitle: "Create a new knowledge base article",
-            }
-
-            Card {
-                form {
-                    class: "space-y-6",
-                    onsubmit: handle_submit,
-
-                    crate::components::Input {
-                        name: "title",
-                        label: "Title",
-                        placeholder: "How to ...",
-                        required: true,
-                        value: title.read().clone(),
-                        oninput: move |e: FormEvent| title.set(e.value()),
-                    }
-
-                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
-                        crate::components::Select {
-                            name: "category",
-                            label: "Category",
-                            options: category_options,
-                            value: category.read().clone(),
-                            onchange: move |e: FormEvent| category.set(e.value()),
-                        }
-                        crate::components::Select {
-                            name: "visibility",
-                            label: "Visibility",
-                            options: visibility_options,
-                            value: visibility.read().clone(),
-                            onchange: move |e: FormEvent| visibility.set(e.value()),
-                        }
-                    }
-
-                    crate::components::Textarea {
-                        name: "body",
-                        label: "Body (Markdown)",
-                        placeholder: "## Overview\n\nWrite the article in Markdown...",
-                        rows: 16,
-                        required: true,
-                        value: body.read().clone(),
-                        oninput: move |e: FormEvent| body.set(e.value()),
-                    }
-                    p { class: "text-xs text-gray-500",
-                        "WYSIWYG editor lands with the KB module; for now this is a plain Markdown textarea."
-                    }
-
-                    div { class: "flex justify-end space-x-3",
-                        Link {
-                            to: Route::KBHome {},
-                            Button { variant: ButtonVariant::Secondary, "Cancel" }
-                        }
-                        Button {
-                            r#type: "submit",
-                            variant: ButtonVariant::Primary,
-                            loading: *is_submitting.read(),
-                            "Publish"
-                        }
-                    }
+        TableRow {
+            clickable: true,
+            onclick: move |_| { navigator.push(Route::KBArticleDetail { id: id.clone() }); },
+            TableCell {
+                Link {
+                    to: Route::KBArticleDetail { id: props.id.clone() },
+                    class: "font-medium text-blue-600 hover:text-blue-500",
+                    "{props.title}"
                 }
             }
+            TableCell { Badge { variant: status_var, "{status_label}" } }
+            TableCell { Badge { variant: vis_variant, "{vis_label}" } }
+            TableCell { class: "text-gray-500", "{props.updated}" }
         }
     }
 }
 
-/// Article detail page
+// ============================================================================
+// Article detail page
+// ============================================================================
+
 #[derive(Props, Clone, PartialEq)]
 pub struct KBArticleDetailPageProps {
     pub id: String,
 }
 
 #[component]
-#[allow(unused_variables)]
 pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
-    let header_title = format!("Article {}", props.id);
+    let id_for_article = props.id.clone();
+    let id_for_versions = props.id.clone();
+    let id_for_edit = props.id.clone();
+
+    let mut article_resource = use_resource(move || {
+        let id = id_for_article.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<KbArticle>(&format!("/kb/articles/{id}"))
+                .await
+                .ok()
+        }
+    });
+
+    let mut versions_resource = use_resource(move || {
+        let id = id_for_versions.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<Paginated<KbArticleVersion>>(&format!(
+                "/kb/articles/{id}/versions?page=1&per_page=50"
+            ))
+            .await
+            .ok()
+        }
+    });
+
+    // Local override for the helpful / not_helpful tallies so a click
+    // updates the sidebar without a full re-fetch of the article.
+    let mut feedback = use_signal(|| None::<(i32, i32)>);
+    let mut feedback_busy = use_signal(|| false);
+
+    let article_snapshot = article_resource.read_unchecked();
+    let header_title = match &*article_snapshot {
+        Some(Some(a)) => a.title.clone(),
+        _ => "Article".to_string(),
+    };
+
     rsx! {
         AppLayout { title: "{header_title}",
             PageHeader {
                 title: "{header_title}",
-                // F5: Edit was decorative (no onclick). Hidden until
-                // the KB edit flow ships.
+                actions: rsx! {
+                    Link {
+                        to: Route::KBArticleEdit { id: id_for_edit.clone() },
+                        Button { variant: ButtonVariant::Secondary, "Edit" }
+                    }
+                },
             }
 
-            div { class: "grid grid-cols-1 lg:grid-cols-4 gap-6",
-                // Article content
-                div { class: "lg:col-span-3",
+            match &*article_snapshot {
+                None => rsx! {
+                    Card { div { class: "py-12 text-center text-sm text-gray-500", "Loading article..." } }
+                },
+                Some(None) => rsx! {
                     Card {
-                        article { class: "prose dark:prose-invert max-w-none",
-                            p { class: "lead",
-                                "This guide walks you through resetting a user's password in Active Directory using Active Directory Users and Computers (ADUC)."
-                            }
-
-                            h2 { "Prerequisites" }
-                            ul {
-                                li { "Domain Admin or delegated password reset permissions" }
-                                li { "Access to Active Directory Users and Computers" }
-                                li { "Network connectivity to domain controller" }
-                            }
-
-                            h2 { "Steps" }
-                            ol {
-                                li {
-                                    strong { "Open Active Directory Users and Computers" }
-                                    p { "Press Win+R, type 'dsa.msc', and press Enter." }
-                                }
-                                li {
-                                    strong { "Locate the user account" }
-                                    p { "Navigate to the appropriate OU or use Find (Ctrl+F) to search for the user." }
-                                }
-                                li {
-                                    strong { "Reset the password" }
-                                    p { "Right-click the user account and select 'Reset Password'. Enter the new password twice and click OK." }
-                                }
-                                li {
-                                    strong { "Verify the reset" }
-                                    p { "Have the user test logging in with the new password." }
-                                }
-                            }
-
-                            h2 { "Troubleshooting" }
-                            p {
-                                "If the password reset fails, check that:"
-                            }
-                            ul {
-                                li { "The new password meets complexity requirements" }
-                                li { "The account is not locked out" }
-                                li { "You have the necessary permissions" }
+                        div { class: "py-8 text-center",
+                            p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load article." }
+                            Link {
+                                to: Route::KBHome {},
+                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                "Back to knowledge base"
                             }
                         }
+                    }
+                },
+                Some(Some(article)) => {
+                    let article_id = article.id.to_string();
+                    let (vis_label, vis_variant) = visibility_label(&article.visibility);
+                    let status_label = if article.status.is_empty() {
+                        "Draft".to_string()
+                    } else {
+                        article.status.clone()
+                    };
+                    let created = date_only(&article.created_at);
+                    let updated = date_only(&article.updated_at);
+                    let content = article.content.clone();
+                    let summary = article.summary.clone();
+                    let tags = article.tags.clone();
+                    // Live tallies: local override wins after a click,
+                    // otherwise show the fetched counts.
+                    let (helpful, not_helpful) = feedback
+                        .read()
+                        .unwrap_or((article.helpful_count, article.not_helpful_count));
+                    let id_helpful = article_id.clone();
+                    let id_not_helpful = article_id.clone();
+                    rsx! {
+                        div { class: "grid grid-cols-1 lg:grid-cols-4 gap-6",
+                            // Article content
+                            div { class: "lg:col-span-3 space-y-6",
+                                Card {
+                                    article { class: "prose dark:prose-invert max-w-none",
+                                        if let Some(summary) = summary {
+                                            if !summary.is_empty() {
+                                                p { class: "lead", "{summary}" }
+                                            }
+                                        }
+                                        // Content is Markdown source; render as
+                                        // preformatted text until a Markdown
+                                        // renderer lands (matches the plain
+                                        // textarea authoring flow).
+                                        pre { class: "whitespace-pre-wrap font-sans text-sm text-gray-800 dark:text-gray-200",
+                                            "{content}"
+                                        }
+                                    }
+                                }
+
+                                // Was this helpful?
+                                Card { title: "Was this helpful?",
+                                    div { class: "flex items-center space-x-3",
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            loading: *feedback_busy.read(),
+                                            onclick: move |_| {
+                                                if *feedback_busy.read() { return; }
+                                                feedback_busy.set(true);
+                                                let id = id_helpful.clone();
+                                                spawn(async move {
+                                                    #[cfg(feature = "web")]
+                                                    {
+                                                        let path = format!("/kb/articles/{id}/helpful");
+                                                        if let Ok(fb) = crate::hooks::fetch::api::post_authed::<KbArticleFeedback, _>(&path, &serde_json::json!({})).await {
+                                                            feedback.set(Some((fb.helpful_count, fb.not_helpful_count)));
+                                                        }
+                                                    }
+                                                    feedback_busy.set(false);
+                                                });
+                                            },
+                                            "Yes ({helpful})"
+                                        }
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            loading: *feedback_busy.read(),
+                                            onclick: move |_| {
+                                                if *feedback_busy.read() { return; }
+                                                feedback_busy.set(true);
+                                                let id = id_not_helpful.clone();
+                                                spawn(async move {
+                                                    #[cfg(feature = "web")]
+                                                    {
+                                                        let path = format!("/kb/articles/{id}/not_helpful");
+                                                        if let Ok(fb) = crate::hooks::fetch::api::post_authed::<KbArticleFeedback, _>(&path, &serde_json::json!({})).await {
+                                                            feedback.set(Some((fb.helpful_count, fb.not_helpful_count)));
+                                                        }
+                                                    }
+                                                    feedback_busy.set(false);
+                                                });
+                                            },
+                                            "No ({not_helpful})"
+                                        }
+                                    }
+                                }
+
+                                // Version history
+                                VersionHistoryCard {
+                                    article_id: article_id.clone(),
+                                    versions_resource,
+                                    on_restored: move |_| {
+                                        article_resource.restart();
+                                        versions_resource.restart();
+                                        feedback.set(None);
+                                    },
+                                }
+                            }
+
+                            // Sidebar
+                            div { class: "space-y-6",
+                                Card { title: "Article Info",
+                                    dl { class: "space-y-4",
+                                        div {
+                                            dt { class: "text-sm text-gray-500", "Status" }
+                                            dd { class: "mt-1", Badge { variant: status_variant(&status_label), "{status_label}" } }
+                                        }
+                                        div {
+                                            dt { class: "text-sm text-gray-500", "Visibility" }
+                                            dd { class: "mt-1", Badge { variant: vis_variant, "{vis_label}" } }
+                                        }
+                                        div {
+                                            dt { class: "text-sm text-gray-500", "Created" }
+                                            dd { class: "mt-1 text-sm", "{created}" }
+                                        }
+                                        div {
+                                            dt { class: "text-sm text-gray-500", "Updated" }
+                                            dd { class: "mt-1 text-sm", "{updated}" }
+                                        }
+                                        if !tags.is_empty() {
+                                            div {
+                                                dt { class: "text-sm text-gray-500 mb-1", "Tags" }
+                                                dd { class: "flex flex-wrap gap-1",
+                                                    for tag in tags.iter() {
+                                                        Badge { key: "{tag}", variant: BadgeVariant::Gray, "{tag}" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+            }
+        }
+    }
+}
+
+#[component]
+fn VersionHistoryCard(
+    article_id: String,
+    versions_resource: Resource<Option<Paginated<KbArticleVersion>>>,
+    on_restored: EventHandler<()>,
+) -> Element {
+    let snap = versions_resource.read_unchecked();
+    let mut restoring = use_signal(|| None::<i32>);
+
+    rsx! {
+        Card { title: "Version History", padding: false,
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Version" }
+                        TableHeader { "Title" }
+                        TableHeader { "Saved" }
+                        TableHeader { "" }
+                    }
+                }
+                match &*snap {
+                    None => rsx! { TableLoading { columns: 4, rows: 2 } },
+                    Some(None) => rsx! { TableEmpty { columns: 4, message: "Could not load version history.".to_string() } },
+                    Some(Some(page)) if page.data.is_empty() => rsx! {
+                        TableEmpty { columns: 4, message: "No prior versions.".to_string() }
+                    },
+                    Some(Some(page)) => {
+                        let rows = page.data.clone();
+                        let article_id = article_id.clone();
+                        rsx! {
+                            TableBody {
+                                for version in rows.into_iter() {
+                                    {
+                                        let key = version.id.to_string();
+                                        let n = version.version_number;
+                                        let title = version.title.clone();
+                                        let saved = date_only(&version.created_at);
+                                        let id_for_restore = article_id.clone();
+                                        rsx! {
+                                            TableRow { key: "{key}",
+                                                TableCell { class: "font-medium", "v{n}" }
+                                                TableCell { "{title}" }
+                                                TableCell { class: "text-gray-500", "{saved}" }
+                                                TableCell {
+                                                    Button {
+                                                        variant: ButtonVariant::Secondary,
+                                                        loading: *restoring.read() == Some(n),
+                                                        onclick: move |_| {
+                                                            if restoring.read().is_some() { return; }
+                                                            restoring.set(Some(n));
+                                                            let id = id_for_restore.clone();
+                                                            spawn(async move {
+                                                                #[cfg(feature = "web")]
+                                                                {
+                                                                    let path = format!("/kb/articles/{id}/versions/{n}/restore");
+                                                                    if crate::hooks::fetch::api::post_authed::<KbArticle, _>(&path, &serde_json::json!({})).await.is_ok() {
+                                                                        on_restored.call(());
+                                                                    }
+                                                                }
+                                                                restoring.set(None);
+                                                            });
+                                                        },
+                                                        "Restore"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// New / edit article pages
+// ============================================================================
+
+/// Editable form values shared by the new and edit flows.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct ArticleFormValues {
+    title: String,
+    slug: String,
+    summary: String,
+    category_id: String,
+    visibility: String,
+    status: String,
+    content: String,
+    tags: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum ArticleFormMode {
+    Create,
+    Edit { id: String },
+}
+
+/// New article page.
+#[component]
+pub fn KBArticleNewPage() -> Element {
+    rsx! {
+        AppLayout { title: "New Article",
+            PageHeader { title: "New Article", subtitle: "Create a new knowledge base article" }
+            ArticleForm {
+                initial: ArticleFormValues {
+                    visibility: "internal".to_string(),
+                    status: "draft".to_string(),
+                    ..Default::default()
+                },
+                mode: ArticleFormMode::Create,
+            }
+        }
+    }
+}
+
+/// Edit article page.
+#[derive(Props, Clone, PartialEq)]
+pub struct KBArticleEditPageProps {
+    pub id: String,
+}
+
+#[component]
+pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
+    let id_for_resource = props.id.clone();
+    let id_for_form = props.id.clone();
+    let article_resource = use_resource(move || {
+        let id = id_for_resource.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<KbArticle>(&format!("/kb/articles/{id}"))
+                .await
+                .ok()
+        }
+    });
+    let snap = article_resource.read_unchecked();
+    rsx! {
+        AppLayout { title: "Edit Article",
+            PageHeader { title: "Edit Article" }
+            match &*snap {
+                None => rsx! {
+                    Card { div { class: "py-12 text-center text-sm text-gray-500", "Loading article..." } }
+                },
+                Some(None) => rsx! {
+                    Card {
+                        div { class: "py-8 text-center",
+                            p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load article." }
+                            Link {
+                                to: Route::KBHome {},
+                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                "Back to knowledge base"
+                            }
+                        }
+                    }
+                },
+                Some(Some(article)) => {
+                    let initial = ArticleFormValues {
+                        title: article.title.clone(),
+                        slug: article.slug.clone(),
+                        summary: article.summary.clone().unwrap_or_default(),
+                        category_id: article.category_id.map(|c| c.to_string()).unwrap_or_default(),
+                        visibility: if article.visibility.is_empty() {
+                            "internal".to_string()
+                        } else {
+                            article.visibility.clone()
+                        },
+                        status: if article.status.is_empty() {
+                            "draft".to_string()
+                        } else {
+                            article.status.clone()
+                        },
+                        content: article.content.clone(),
+                        tags: article.tags.join(", "),
+                    };
+                    let id = id_for_form.clone();
+                    rsx! {
+                        ArticleForm {
+                            initial,
+                            mode: ArticleFormMode::Edit { id },
+                        }
+                    }
+                },
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct ArticleFormProps {
+    initial: ArticleFormValues,
+    mode: ArticleFormMode,
+}
+
+#[component]
+fn ArticleForm(props: ArticleFormProps) -> Element {
+    let initial = props.initial.clone();
+    let mode = props.mode.clone();
+
+    let mut title = use_signal(|| initial.title.clone());
+    let mut slug = use_signal(|| initial.slug.clone());
+    let mut summary = use_signal(|| initial.summary.clone());
+    let mut category_id = use_signal(|| initial.category_id.clone());
+    let mut visibility = use_signal(|| {
+        if initial.visibility.is_empty() {
+            "internal".to_string()
+        } else {
+            initial.visibility.clone()
+        }
+    });
+    let mut status = use_signal(|| {
+        if initial.status.is_empty() {
+            "draft".to_string()
+        } else {
+            initial.status.clone()
+        }
+    });
+    let mut content = use_signal(|| initial.content.clone());
+    let mut tags = use_signal(|| initial.tags.clone());
+    let mut is_submitting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    // Category dropdown options, fetched live.
+    let categories_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let token = crate::hooks::fetch::api::current_access_token()?;
+        crate::hooks::fetch::api::get_with_auth::<Paginated<KbCategory>>(
+            "/kb/categories?page=1&per_page=100",
+            &token,
+        )
+        .await
+        .ok()
+    });
+    let categories: Vec<KbCategory> = match &*categories_resource.read_unchecked() {
+        Some(Some(resp)) => resp.data.clone(),
+        _ => Vec::new(),
+    };
+    let mut category_options = vec![SelectOption::new("", "Uncategorized")];
+    for c in categories.iter() {
+        category_options.push(SelectOption::new(c.id.to_string(), c.name.clone()));
+    }
+
+    let visibility_options = vec![
+        SelectOption::new("internal", "Internal"),
+        SelectOption::new("public", "Public"),
+        SelectOption::new("client_specific", "Client-specific"),
+    ];
+    let status_options = vec![
+        SelectOption::new("draft", "Draft"),
+        SelectOption::new("published", "Published"),
+        SelectOption::new("archived", "Archived"),
+    ];
+
+    let navigator = use_navigator();
+    let is_edit = matches!(mode, ArticleFormMode::Edit { .. });
+    let submit_label = if is_edit { "Save Changes" } else { "Publish" };
+
+    let handle_submit = move |e: FormEvent| {
+        e.prevent_default();
+        let title_val = title.read().trim().to_string();
+        if title_val.is_empty() {
+            error.set("Title is required.".to_string());
+            return;
+        }
+        let content_val = content.read().to_string();
+        if content_val.trim().is_empty() {
+            error.set("Body is required.".to_string());
+            return;
+        }
+        is_submitting.set(true);
+        error.set(String::new());
+
+        // Slug: use the author's value, else derive from the title.
+        let slug_raw = slug.read().trim().to_string();
+        let slug_val = if slug_raw.is_empty() {
+            slugify(&title_val)
+        } else {
+            slug_raw
+        };
+        let summary_val = summary.read().trim().to_string();
+        let summary_opt = if summary_val.is_empty() {
+            None
+        } else {
+            Some(summary_val)
+        };
+        let category_opt = {
+            let raw = category_id.read().clone();
+            if raw.is_empty() {
+                None
+            } else {
+                raw.parse::<uuid::Uuid>().ok()
+            }
+        };
+        let visibility_val = visibility.read().clone();
+        let status_val = status.read().clone();
+        let tags_vec: Vec<String> = tags
+            .read()
+            .split(',')
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect();
+
+        let mode = mode.clone();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let result = match &mode {
+                    ArticleFormMode::Create => {
+                        let body = CreateKbArticleRequest {
+                            title: title_val.clone(),
+                            slug: slug_val.clone(),
+                            content: content_val.clone(),
+                            summary: summary_opt.clone(),
+                            category_id: category_opt,
+                            visibility: visibility_val.clone(),
+                            status: status_val.clone(),
+                            tags: tags_vec.clone(),
+                        };
+                        crate::hooks::fetch::api::post_authed::<KbArticle, _>("/kb/articles", &body)
+                            .await
+                            .map(|a| a.id.to_string())
+                    }
+                    ArticleFormMode::Edit { id } => {
+                        let body = UpdateKbArticleRequest {
+                            title: Some(title_val.clone()),
+                            slug: Some(slug_val.clone()),
+                            content: Some(content_val.clone()),
+                            summary: summary_opt.clone(),
+                            category_id: category_opt,
+                            visibility: Some(visibility_val.clone()),
+                            status: Some(status_val.clone()),
+                            tags: Some(tags_vec.clone()),
+                        };
+                        let path = format!("/kb/articles/{id}");
+                        crate::hooks::fetch::api::put_authed::<KbArticle, _>(&path, &body)
+                            .await
+                            .map(|_| id.clone())
+                    }
+                };
+                match result {
+                    Ok(id) => {
+                        navigator.push(Route::KBArticleDetail { id });
+                    }
+                    Err(err) => {
+                        error.set(format!("Could not save article: {err}"));
+                    }
+                }
+            }
+            is_submitting.set(false);
+        });
+    };
+
+    rsx! {
+        Card {
+            form {
+                class: "space-y-6",
+                onsubmit: handle_submit,
+
+                if !error.read().is_empty() {
+                    div {
+                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                        "{error.read()}"
                     }
                 }
 
-                // Sidebar
-                div { class: "space-y-6",
-                    Card { title: "Article Info",
-                        dl { class: "space-y-4",
-                            div {
-                                dt { class: "text-sm text-gray-500", "Category" }
-                                dd { class: "mt-1", "How-To Guides" }
-                            }
-                            div {
-                                dt { class: "text-sm text-gray-500", "Visibility" }
-                                dd { class: "mt-1", Badge { variant: BadgeVariant::Blue, "Internal" } }
-                            }
-                            div {
-                                dt { class: "text-sm text-gray-500", "Author" }
-                                dd { class: "mt-1", "John Smith" }
-                            }
-                            div {
-                                dt { class: "text-sm text-gray-500", "Created" }
-                                dd { class: "mt-1", "Dec 1, 2024" }
-                            }
-                            div {
-                                dt { class: "text-sm text-gray-500", "Updated" }
-                                dd { class: "mt-1", "2 hours ago" }
-                            }
-                        }
-                    }
+                crate::components::Input {
+                    name: "title",
+                    label: "Title",
+                    placeholder: "How to ...",
+                    required: true,
+                    value: title.read().clone(),
+                    oninput: move |e: FormEvent| title.set(e.value()),
+                }
 
-                    Card { title: "Related Articles",
-                        div { class: "space-y-2 text-sm",
-                            Link {
-                                to: Route::KBArticleDetail { id: "ad-best-practices".to_string() },
-                                class: "block text-blue-600 hover:text-blue-500",
-                                "Active Directory Best Practices"
-                            }
-                            Link {
-                                to: Route::KBArticleDetail { id: "ad-password-policies".to_string() },
-                                class: "block text-blue-600 hover:text-blue-500",
-                                "Setting Up AD Password Policies"
-                            }
-                            Link {
-                                to: Route::KBArticleDetail { id: "ad-unlock-accounts".to_string() },
-                                class: "block text-blue-600 hover:text-blue-500",
-                                "Unlocking User Accounts"
-                            }
-                        }
+                crate::components::Input {
+                    name: "slug",
+                    label: "Slug",
+                    placeholder: "Leave blank to derive from the title",
+                    help: "URL-safe identifier; auto-generated from the title when blank.",
+                    value: slug.read().clone(),
+                    oninput: move |e: FormEvent| slug.set(e.value()),
+                }
+
+                crate::components::Input {
+                    name: "summary",
+                    label: "Summary",
+                    placeholder: "Short one-line description (optional)",
+                    value: summary.read().clone(),
+                    oninput: move |e: FormEvent| summary.set(e.value()),
+                }
+
+                div { class: "grid grid-cols-1 gap-6 sm:grid-cols-3",
+                    Select {
+                        name: "category",
+                        label: "Category",
+                        options: category_options,
+                        value: category_id.read().clone(),
+                        onchange: move |e: FormEvent| category_id.set(e.value()),
+                    }
+                    Select {
+                        name: "visibility",
+                        label: "Visibility",
+                        options: visibility_options,
+                        value: visibility.read().clone(),
+                        onchange: move |e: FormEvent| visibility.set(e.value()),
+                    }
+                    Select {
+                        name: "status",
+                        label: "Status",
+                        options: status_options,
+                        value: status.read().clone(),
+                        onchange: move |e: FormEvent| status.set(e.value()),
+                    }
+                }
+
+                crate::components::Input {
+                    name: "tags",
+                    label: "Tags",
+                    placeholder: "Comma-separated, e.g. vpn, network",
+                    value: tags.read().clone(),
+                    oninput: move |e: FormEvent| tags.set(e.value()),
+                }
+
+                crate::components::Textarea {
+                    name: "content",
+                    label: "Body (Markdown)",
+                    placeholder: "## Overview\n\nWrite the article in Markdown...",
+                    rows: 16,
+                    required: true,
+                    value: content.read().clone(),
+                    oninput: move |e: FormEvent| content.set(e.value()),
+                }
+                p { class: "text-xs text-gray-500",
+                    "Markdown source is stored verbatim; a rendered preview lands with the WYSIWYG editor."
+                }
+
+                div { class: "flex justify-end space-x-3",
+                    Link {
+                        to: Route::KBHome {},
+                        Button { variant: ButtonVariant::Secondary, "Cancel" }
+                    }
+                    Button {
+                        r#type: "submit",
+                        variant: ButtonVariant::Primary,
+                        loading: *is_submitting.read(),
+                        "{submit_label}"
                     }
                 }
             }
