@@ -237,6 +237,9 @@ pub enum Route {
     #[route("/kb/articles/:id")]
     KBArticleDetail { id: String },
 
+    #[route("/kb/articles/:id/edit")]
+    KBArticleEdit { id: String },
+
     // Reports
     #[route("/reports")]
     Reports {},
@@ -587,6 +590,11 @@ fn KBArticleNew() -> Element {
 #[component]
 fn KBArticleDetail(id: String) -> Element {
     rsx! { knowledge_base::KBArticleDetailPage { id } }
+}
+
+#[component]
+fn KBArticleEdit(id: String) -> Element {
+    rsx! { knowledge_base::KBArticleEditPage { id } }
 }
 
 #[component]
