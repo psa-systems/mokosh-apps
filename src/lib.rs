@@ -185,6 +185,16 @@ pub enum Route {
     #[route("/contracts/:id")]
     ContractDetail { id: String },
 
+    #[route("/contracts/:id/edit")]
+    ContractEdit { id: String },
+
+    // Rate cards
+    #[route("/rate-cards")]
+    RateCardList {},
+
+    #[route("/rate-cards/:id")]
+    RateCardDetail { id: String },
+
     // Billing
     #[route("/invoices")]
     InvoiceList {},
@@ -197,6 +207,12 @@ pub enum Route {
 
     #[route("/payments")]
     PaymentList {},
+
+    #[route("/tax-rates")]
+    TaxRateList {},
+
+    #[route("/payment-gateways")]
+    PaymentGatewayConfig {},
 
     // Assets
     #[route("/assets")]
@@ -241,6 +257,14 @@ pub enum Route {
     // back as `/operations/*` routes when the work is scheduled.
     #[route("/settings/active-tenant")]
     ActiveTenant {},
+
+    // Admin
+    //
+    // Audit log is available in every build (the server endpoint exists
+    // regardless of multi-tenant) and is gated at runtime by the user's
+    // role inside `AuditLogPage`, matching the server's RequireAdmin.
+    #[route("/admin/audit")]
+    AuditLog {},
 
     // Admin (multi-tenant only)
     #[cfg(feature = "multi-tenant")]
@@ -489,6 +513,21 @@ fn ContractDetail(id: String) -> Element {
 }
 
 #[component]
+fn ContractEdit(id: String) -> Element {
+    rsx! { contracts::ContractEditPage { id } }
+}
+
+#[component]
+fn RateCardList() -> Element {
+    rsx! { contracts::RateCardListPage {} }
+}
+
+#[component]
+fn RateCardDetail(id: String) -> Element {
+    rsx! { contracts::RateCardDetailPage { id } }
+}
+
+#[component]
 fn InvoiceList() -> Element {
     rsx! { billing::InvoiceListPage {} }
 }
@@ -506,6 +545,16 @@ fn InvoiceDetail(id: String) -> Element {
 #[component]
 fn PaymentList() -> Element {
     rsx! { billing::PaymentListPage {} }
+}
+
+#[component]
+fn TaxRateList() -> Element {
+    rsx! { billing::TaxRateListPage {} }
+}
+
+#[component]
+fn PaymentGatewayConfig() -> Element {
+    rsx! { billing::PaymentGatewayConfigPage {} }
 }
 
 #[component]
@@ -564,6 +613,11 @@ fn ActiveTenant() -> Element {
     // docs/migration/settings-split.md. Bookmarks at the legacy URL
     // bounce there instead of 404ing.
     rsx! { HubRedirect { target: "/settings/active-tenant".to_string(), label: "tenant switcher" } }
+}
+
+#[component]
+fn AuditLog() -> Element {
+    rsx! { audit_log::AuditLogPage {} }
 }
 
 #[cfg(feature = "multi-tenant")]
