@@ -37,19 +37,25 @@ Replace the current 4-column grid with a three-pane layout:
 
 ```
 +--[‹]--------------+-------------------------------[⛶]+--------[›]-----+
-| category/article  | breadcrumb: KB / Cat / Title  fs |  metadata      |
-| tree (chevron ‹)  | # Title                          |  rating 👍/👎  |
-|  current highlighted| rendered markdown (no <pre>)   |  versions(tiny)|
+| category/article  | KB / Cat / Title              fs |  Versions     |
+| tree (chevron ‹)  | # Title  👍12 👎1  [Pub][Int] Edit|  v3 today     |
+|  current highlighted| Updated 6/5                     |  v2 · 6/4 ··· |
+|                   | rendered markdown (no <pre>)     |  v1 · ...      |
 +-------------------+----------------------------------+---------------+
    left rail                 article only                right rail (chevron ›)
    [⛶] = fullscreen read-mode toggle, top-right of the center pane
+   title row carries rating + status/visibility badges + Edit; right rail is just versions
 ```
 
 Both side rails are collapsible (see "Rail collapse and responsive behavior" below); the center article pane always stays.
 
 - **Left pane - tree nav.** A tree built from `KbCategory` (grouped by `parent_id`, ordered by `sort_order`) with each category's articles (`category_id`) nested beneath it. The current article is highlighted. Categories collapse/expand internally; the whole rail is collapsible via a chevron. Data comes from the existing `/kb/categories` and `/kb/articles` list endpoints.
-- **Center pane - article only.** Breadcrumb at the top (`KB / <category path> / <title>`), resolved by looking up `category_id` and walking `parent_id` to the root. Then the title, then the rendered markdown. The article content renders **directly on the page**, not wrapped in a `Card` and not in a `<pre>` block, so it reads as a document rather than a boxed card. No rating or version controls here.
-- **Right pane - metadata rail.** Status, visibility, and updated date (as today), then the rating widget (`helpful_count` / `not_helpful_count` with 👍 / 👎 actions, moved out of the center column), then a compact version-history list (smaller type, restore action preserved).
+- **Center pane - article header + article.** A header block then the body:
+  - Breadcrumb row: `KB / <category path> / <title>` (resolved via `category_id` + walking `parent_id`) on the left; the fullscreen read-mode toggle on the right.
+  - Title row: the title, with the **rating inline** - a thumbs-up and thumbs-down each showing its count (`👍 12  👎 1`, from `helpful_count` / `not_helpful_count`) - plus the **status** and **visibility** badges and the **Edit** action. Everything that can live with the title moves here so it stays visible regardless of rail collapse or read mode.
+  - Sub-line: a small muted "Updated <date>" (and created, if useful).
+  - Then the rendered markdown, **directly on the page** - not wrapped in a `Card`, not in a `<pre>` block - so it reads as a document, not a boxed card.
+- **Right pane - version-history rail.** Slimmed to just the compact version-history list (small type, restore action preserved). Status, visibility, updated date, rating, and edit have all moved to the article header, so the right rail is now only "tiny version history on the right," leaving the center as just the article.
 
 ### 2b. Rail collapse and responsive behavior
 
@@ -103,7 +109,8 @@ A small reusable piece that, given an article's `category_id`, resolves the cate
 
 - [ ] Article body renders as real markdown (headings, lists, code, links), not preformatted text, directly on the page with no surrounding `Card` or box.
 - [ ] Rendered HTML is sanitized (ammonia); a malicious tag in content does not execute.
-- [ ] Reading view is three panes: tree nav left, article only center (with breadcrumb), metadata+rating+tiny versions right.
+- [ ] Reading view is three panes: tree nav left; article center with a header (breadcrumb, title, inline rating, status/visibility badges, Edit, updated date); right rail is only the tiny version history.
+- [ ] Rating is `👍 <n>  👎 <n>` on the title row (not on the right rail) and stays visible under rail collapse and read mode; status, visibility, updated date, and Edit are also in the header, not the rail.
 - [ ] Left tree nav lists categories (hierarchical, sorted) with their articles, highlights the current one, and is collapsible. Present on detail and list pages.
 - [ ] Each side rail has a directional chevron toggle (`<`/`>`) that collapses/expands it; the wide-screen collapsed state persists per user across reloads.
 - [ ] On narrow screens both rails auto-collapse and open as overlays; only one rail overlay can be open at a time (the other is blocked until the open one is dismissed).
