@@ -640,7 +640,6 @@ pub struct KBArticleDetailPageProps {
 pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     let id_for_article = props.id.clone();
     let id_for_versions = props.id.clone();
-    let id_for_edit = props.id.clone();
 
     let mut article_resource = use_resource(move || {
         let id = id_for_article.clone();
@@ -715,16 +714,6 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
 
     rsx! {
         AppLayout { title: "{header_title}",
-            PageHeader {
-                title: "{header_title}",
-                actions: rsx! {
-                    Link {
-                        to: Route::KBArticleEdit { id: id_for_edit.clone() },
-                        Button { variant: ButtonVariant::Secondary, "Edit" }
-                    }
-                },
-            }
-
             match &*article_snapshot {
                 None => rsx! {
                     Card { div { class: "py-12 text-center text-sm text-gray-500", "Loading article..." } }
