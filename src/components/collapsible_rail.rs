@@ -21,6 +21,12 @@ pub fn CollapsibleRail(
     open_overlay: Signal<Option<RailSide>>,
     children: Element,
 ) -> Element {
+    // `#[component]` destructures props into immutable bindings; rebind to
+    // `mut` so the onclick closures can call `Signal::set` (which takes
+    // `&mut self`). Signals are `Copy`, so each `move` closure captures a
+    // mutable copy. Matches the DensityToggle / ReadModeButton convention.
+    let mut collapsed = collapsed;
+    let mut open_overlay = open_overlay;
     let is_overlay_open = open_overlay() == Some(side);
     let chevron_collapse = match side {
         RailSide::Left => "\u{2039}",  // single left-pointing angle quote
