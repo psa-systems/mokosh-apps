@@ -1383,10 +1383,15 @@ pub fn DispatchBoardPage() -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         #[cfg(feature = "web")]
         {
+            // Emit the UTC offset as `Z`, not `+00:00`. A literal `+` in
+            // a query string URL-decodes to a space server-side, so
+            // `to_rfc3339()` produces a value that fails chrono's
+            // `DateTime<Utc>` parser after decoding and the request 400s
+            // (same fix as the calendar list call above).
             let path = format!(
                 "/dispatch?from={}&to={}",
-                from_utc.to_rfc3339(),
-                to_utc.to_rfc3339()
+                from_utc.to_rfc3339_opts(SecondsFormat::Secs, true),
+                to_utc.to_rfc3339_opts(SecondsFormat::Secs, true)
             );
             crate::hooks::fetch::api::get_authed::<DispatchResponse>(&path).await
         }
