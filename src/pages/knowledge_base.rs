@@ -96,6 +96,32 @@ fn slugify(input: &str) -> String {
     }
 }
 
+/// Decide the slug to apply as the title changes: follow the title
+/// (via `slugify`) until the user has manually edited the slug, after
+/// which leave it alone. Returns None to leave the slug untouched.
+fn next_slug(new_title: &str, touched: bool) -> Option<String> {
+    if touched {
+        None
+    } else {
+        Some(slugify(new_title))
+    }
+}
+
+/// Tab state for the article body editor.
+#[derive(Clone, Copy, PartialEq)]
+enum BodyTab {
+    Write,
+    Preview,
+}
+
+fn body_tab_class(active: bool) -> &'static str {
+    if active {
+        "px-3 py-1 text-sm border-b-2 border-blue-600 text-blue-600 dark:text-blue-400 font-medium"
+    } else {
+        "px-3 py-1 text-sm border-b-2 border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+    }
+}
+
 /// Resolve the chain of categories from root down to the article's own
 /// category by walking `parent_id`. Returns `[]` when the article has no
 /// category or the id is dangling. Guards against cycles with a visited
@@ -1085,8 +1111,13 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         SelectOption::new("archived", "Archived"),
     ];
 
+    let mut tab = use_signal(|| BodyTab::Write);
+
     let navigator = use_navigator();
     let is_edit = matches!(mode, ArticleFormMode::Edit { .. });
+    // In edit mode the slug is already published, so start it touched so
+    // typing a new title never clobbers an existing URL slug.
+    let mut slug_touched = use_signal(|| is_edit);
     let submit_label = if is_edit { "Save Changes" } else { "Publish" };
 
     let handle_submit = move |e: FormEvent| {
@@ -1203,7 +1234,12 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     placeholder: "How to ...",
                     required: true,
                     value: title.read().clone(),
-                    oninput: move |e: FormEvent| title.set(e.value()),
+                    oninput: move |e: FormEvent| {
+                        title.set(e.value());
+                        if let Some(s) = next_slug(&e.value(), slug_touched()) {
+                            slug.set(s);
+                        }
+                    },
                 }
 
                 crate::components::Input {
@@ -1212,7 +1248,10 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     placeholder: "Leave blank to derive from the title",
                     help: "URL-safe identifier; auto-generated from the title when blank.",
                     value: slug.read().clone(),
-                    oninput: move |e: FormEvent| slug.set(e.value()),
+                    oninput: move |e: FormEvent| {
+                        slug_touched.set(true);
+                        slug.set(e.value());
+                    },
                 }
 
                 crate::components::Input {
@@ -1255,17 +1294,30 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     oninput: move |e: FormEvent| tags.set(e.value()),
                 }
 
-                crate::components::Textarea {
-                    name: "content",
-                    label: "Body (Markdown)",
-                    placeholder: "## Overview\n\nWrite the article in Markdown...",
-                    rows: 16,
-                    required: true,
-                    value: content.read().clone(),
-                    oninput: move |e: FormEvent| content.set(e.value()),
-                }
-                p { class: "text-xs text-gray-500",
-                    "Markdown source is stored verbatim; a rendered preview lands with the WYSIWYG editor."
+                div {
+                    div { class: "flex gap-2 border-b border-gray-200 dark:border-gray-700 mb-2",
+                        button { r#type: "button", class: body_tab_class(tab() == BodyTab::Write), onclick: move |_| tab.set(BodyTab::Write), "Write" }
+                        button { r#type: "button", class: body_tab_class(tab() == BodyTab::Preview), onclick: move |_| tab.set(BodyTab::Preview), "Preview" }
+                    }
+                    match tab() {
+                        BodyTab::Write => rsx! {
+                            crate::components::Textarea {
+                                name: "content",
+                                label: "Body (Markdown)",
+                                placeholder: "## Overview\n\nWrite the article in Markdown...",
+                                rows: 16,
+                                required: true,
+                                value: content.read().clone(),
+                                oninput: move |e: FormEvent| content.set(e.value()),
+                            }
+                        },
+                        BodyTab::Preview => rsx! {
+                            article {
+                                class: "prose dark:prose-invert max-w-none p-2 min-h-40 border border-gray-200 dark:border-gray-700 rounded",
+                                dangerous_inner_html: crate::utils::markdown::render_markdown(&content.read()),
+                            }
+                        },
+                    }
                 }
 
                 div { class: "flex justify-end space-x-3",
@@ -1563,5 +1615,11 @@ mod tests {
         let (roots, uncat) = build_kb_tree(&[], &arts);
         assert!(roots.is_empty());
         assert_eq!(uncat.len(), 1);
+    }
+
+    #[test]
+    fn slug_follows_title_until_touched() {
+        assert_eq!(next_slug("My Article", false), Some(slugify("My Article")));
+        assert_eq!(next_slug("My Article", true), None);
     }
 }
