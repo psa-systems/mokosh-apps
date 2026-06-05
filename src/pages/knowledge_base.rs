@@ -764,6 +764,16 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     use_effect(move || crate::utils::prefs::set_bool("kb_left_rail", left_collapsed()));
     use_effect(move || crate::utils::prefs::set_bool("kb_right_rail", right_collapsed()));
 
+    // Shared rating counts: declared unconditionally (rules-of-hooks), seeded
+    // (0, 0) and synced via use_effect once the article loads so both copies
+    // rendered by OverflowActions share one signal.
+    let mut rating = use_signal(|| (0i32, 0i32));
+    use_effect(move || {
+        if let Some(Some(a)) = &*article_resource.read_unchecked() {
+            rating.set((a.helpful_count, a.not_helpful_count));
+        }
+    });
+
     let article_snapshot = article_resource.read_unchecked();
     let header_title = match &*article_snapshot {
         Some(Some(a)) => a.title.clone(),
@@ -822,8 +832,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                     OverflowActions {
                                         RatingBar {
                                             article_id: props.id.clone(),
-                                            helpful: article.helpful_count,
-                                            not_helpful: article.not_helpful_count,
+                                            counts: rating,
                                         }
                                         Badge { variant: status_variant(&status_label), "{status_label}" }
                                         Badge { variant: vis_variant, "{vis_label}" }
@@ -1429,8 +1438,8 @@ fn KbTreeArticle(article: KbArticle, current_id: String) -> Element {
 // ============================================================================
 
 #[component]
-fn RatingBar(article_id: String, helpful: i32, not_helpful: i32) -> Element {
-    let mut counts = use_signal(|| (helpful, not_helpful));
+fn RatingBar(article_id: String, counts: Signal<(i32, i32)>) -> Element {
+    let mut counts = counts;
     let mut busy = use_signal(|| false);
     let (h, n) = counts();
     let id_h = article_id.clone();
