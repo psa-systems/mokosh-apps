@@ -185,6 +185,16 @@ pub enum Route {
     #[route("/contracts/:id")]
     ContractDetail { id: String },
 
+    #[route("/contracts/:id/edit")]
+    ContractEdit { id: String },
+
+    // Rate cards
+    #[route("/rate-cards")]
+    RateCardList {},
+
+    #[route("/rate-cards/:id")]
+    RateCardDetail { id: String },
+
     // Billing
     #[route("/invoices")]
     InvoiceList {},
@@ -497,6 +507,21 @@ fn ContractNew() -> Element {
 #[component]
 fn ContractDetail(id: String) -> Element {
     rsx! { contracts::ContractDetailPage { id } }
+}
+
+#[component]
+fn ContractEdit(id: String) -> Element {
+    rsx! { contracts::ContractEditPage { id } }
+}
+
+#[component]
+fn RateCardList() -> Element {
+    rsx! { contracts::RateCardListPage {} }
+}
+
+#[component]
+fn RateCardDetail(id: String) -> Element {
+    rsx! { contracts::RateCardDetailPage { id } }
 }
 
 #[component]
