@@ -36,7 +36,11 @@ pub fn CollapsibleRail(
         RailSide::Left => "\u{203A}",
         RailSide::Right => "\u{2039}",
     };
-    let overlay_pos = if side == RailSide::Left { "left-0" } else { "right-0" };
+    let overlay_pos = if side == RailSide::Left {
+        "left-0"
+    } else {
+        "right-0"
+    };
     rsx! {
         // Wide screens: inline rail, collapses to a thin handle.
         div { class: "hidden lg:block relative",

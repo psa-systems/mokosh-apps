@@ -1413,7 +1413,9 @@ fn KbTreeArticle(article: KbArticle, current_id: String) -> Element {
     let is_current = article.id.to_string() == current_id;
     let base = "block px-2 py-1 rounded truncate hover:bg-gray-100 dark:hover:bg-gray-800";
     let cls = if is_current {
-        format!("{base} bg-blue-50 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 font-medium")
+        format!(
+            "{base} bg-blue-50 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 font-medium"
+        )
     } else {
         format!("{base} text-gray-600 dark:text-gray-300")
     };
