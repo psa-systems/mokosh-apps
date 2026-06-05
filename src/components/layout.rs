@@ -132,7 +132,13 @@ fn SidebarContent() -> Element {
 
     rsx! {
         div { class: "flex flex-col flex-1 min-h-0",
-            nav { class: "flex-1 px-2 py-4 space-y-1",
+            // The nav itself is the scroll container (flex-1 + min-h-0 +
+            // overflow-y-auto) so the nav list scrolls when it is taller
+            // than the sidebar - notably in the mobile drawer, whose
+            // `aside` has no overflow of its own, where the lower groups
+            // (Analytics / Admin) were otherwise unreachable. The footer
+            // below stays pinned.
+            nav { class: "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin px-2 py-4 space-y-1",
                 NavItem { to: Route::Dashboard {}, icon: rsx!(HomeIcon {}), label: "Dashboard" }
 
             NavSection { title: "Service Desk",
