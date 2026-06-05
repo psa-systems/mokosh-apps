@@ -295,9 +295,24 @@ fn appointment_status_options() -> Vec<SelectOption> {
 /// Fetch the tenant's users once for assignee dropdowns / technician
 /// labels. Returns an empty vec on failure (the form falls back to
 /// "Me"). Reads the tenant generation so it re-runs on an org switch.
+///
+/// `GET /api/v1/auth/users` is server-gated to Admin / Manager (see
+/// `src/modules/auth/routes.rs::list_users`), so signed-in users with
+/// lower roles would get a 403. Skip the fetch for them: the dropdown
+/// just shows the "Select technician..." placeholder and the user can
+/// only self-assign anyway. Saves a noisy console error per page load.
 fn use_users_resource() -> Resource<Vec<RemoteUser>> {
-    use_resource(|| async {
+    let auth = crate::hooks::use_auth();
+    use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        let can_manage = auth
+            .read()
+            .user
+            .as_ref()
+            .is_some_and(|u| u.role.can_manage_users());
+        if !can_manage {
+            return Vec::<RemoteUser>::new();
+        }
         #[cfg(feature = "web")]
         {
             crate::hooks::fetch::api::get_authed::<PaginatedUsers>("/auth/users?per_page=100")
@@ -1119,7 +1134,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                             recurrence_rule: rrule,
                         };
                         crate::hooks::fetch::api::post_authed_typed::<AppointmentResponse, _>(
-                            "/calendar/appointments",
+                            "/appointments",
                             &body,
                         )
                         .await
@@ -1138,7 +1153,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                             status: Some(status_val),
                             location: loc,
                         };
-                        let path = format!("/calendar/appointments/{id}");
+                        let path = format!("/appointments/{id}");
                         crate::hooks::fetch::api::put_authed_typed::<AppointmentResponse, _>(
                             &path, &body,
                         )
@@ -1190,7 +1205,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                     })
                     .unwrap_or(false);
                 if confirmed {
-                    let path = format!("/calendar/appointments/{id}");
+                    let path = format!("/appointments/{id}");
                     match crate::hooks::fetch::api::delete_authed_typed(&path).await {
                         Ok(()) => onsaved.call(()),
                         Err(e) => error.set(format!(
