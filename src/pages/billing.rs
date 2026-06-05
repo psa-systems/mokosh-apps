@@ -129,10 +129,41 @@ struct RemoteInvoice {
     balance_due: String,
 }
 
+/// Shared "no finance permission" card rendered by every billing list page
+/// when the current user lacks the `can_manage_billing` role set
+/// (super_admin / admin / finance).
+#[component]
+fn NoFinancePermission(title: String) -> Element {
+    rsx! {
+        AppLayout { title: "{title}",
+            PageHeader { title: "{title}" }
+            Card {
+                div { class: "py-12 text-center",
+                    p { class: "text-sm text-gray-600 dark:text-gray-300",
+                        "You do not have permission to access billing pages. Ask an administrator for access."
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Invoice list page. GET `/invoices` with optional company / status
 /// filters, server-paginated.
 #[component]
 pub fn InvoiceListPage() -> Element {
+    let auth = crate::hooks::use_auth();
+    let has_finance = auth
+        .read()
+        .user
+        .as_ref()
+        .map(|u| u.role.can_manage_billing())
+        .unwrap_or(false);
+
+    if !has_finance {
+        return rsx! { NoFinancePermission { title: "Invoices" } };
+    }
+
     let mut company_filter = use_signal(String::new);
     let mut status_filter = use_signal(String::new);
     let mut page = use_signal(|| 1usize);
@@ -910,6 +941,18 @@ struct RemotePayment {
 /// `/payments/{id}`).
 #[component]
 pub fn PaymentListPage() -> Element {
+    let auth = crate::hooks::use_auth();
+    let has_finance = auth
+        .read()
+        .user
+        .as_ref()
+        .map(|u| u.role.can_manage_billing())
+        .unwrap_or(false);
+
+    if !has_finance {
+        return rsx! { NoFinancePermission { title: "Payments" } };
+    }
+
     let mut page = use_signal(|| 1usize);
     let mut recording = use_signal(|| false);
     // Bumped after a create/delete to force the resource to re-fetch.
@@ -1288,6 +1331,18 @@ struct RemoteTaxRate {
 /// `/tax-rates/{id}`. Create/edit happen in a modal.
 #[component]
 pub fn TaxRateListPage() -> Element {
+    let auth = crate::hooks::use_auth();
+    let has_finance = auth
+        .read()
+        .user
+        .as_ref()
+        .map(|u| u.role.can_manage_billing())
+        .unwrap_or(false);
+
+    if !has_finance {
+        return rsx! { NoFinancePermission { title: "Tax Rates" } };
+    }
+
     let mut page = use_signal(|| 1usize);
     // `Some` => the create/edit modal is open with this state.
     let mut editing = use_signal(|| None::<TaxRateFormState>);
@@ -1651,6 +1706,18 @@ struct RemoteGateway {
 /// in a modal that posts the whole config back.
 #[component]
 pub fn PaymentGatewayConfigPage() -> Element {
+    let auth = crate::hooks::use_auth();
+    let has_finance = auth
+        .read()
+        .user
+        .as_ref()
+        .map(|u| u.role.can_manage_billing())
+        .unwrap_or(false);
+
+    if !has_finance {
+        return rsx! { NoFinancePermission { title: "Payment Gateways" } };
+    }
+
     let mut editing = use_signal(|| None::<GatewayFormState>);
 
     let mut gateways_resource = use_resource(move || async move {
