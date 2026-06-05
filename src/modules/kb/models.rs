@@ -80,7 +80,9 @@ pub struct KbArticleVersion {
 }
 
 /// `KbArticleFeedbackResponse`: returned by the helpful / not_helpful
-/// endpoints so the detail page can re-render tallies without a GET.
+/// toggle endpoints and by `GET /kb/articles/{id}/vote`, so the detail
+/// page can re-render tallies and the caller's current vote without a
+/// full article reload.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct KbArticleFeedback {
     pub id: Uuid,
@@ -88,6 +90,9 @@ pub struct KbArticleFeedback {
     pub helpful_count: i32,
     #[serde(default)]
     pub not_helpful_count: i32,
+    /// `"helpful"` | `"not_helpful"` | `null` (null = no vote / cleared).
+    #[serde(default)]
+    pub my_vote: Option<String>,
 }
 
 /// `CreateKbArticleRequest`. `slug` is required server-side; the new-article
