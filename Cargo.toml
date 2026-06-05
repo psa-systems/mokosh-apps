@@ -73,6 +73,7 @@ rand = "0.9"
 
 # Markdown rendering
 pulldown-cmark = "0.12"
+ammonia = "4"
 
 [profile.release]
 lto = true

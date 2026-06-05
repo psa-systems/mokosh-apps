@@ -20,9 +20,10 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
-    PlusIcon, SearchInput, Select, SelectOption, Table, TableBody, TableCell, TableEmpty,
-    TableHead, TableHeader, TableLoading, TableRow,
+    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ChevronRightIcon, CollapsibleRail,
+    DataTable, IconSize, OverflowActions, PageHeader, PlusIcon, RailSide, SearchInput, Select,
+    SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
+    TableRow,
 };
 use crate::modules::kb::{
     CreateKbArticleRequest, KbArticle, KbArticleFeedback, KbArticleVersion, KbCategory,
@@ -93,6 +94,117 @@ fn slugify(input: &str) -> String {
     } else {
         trimmed
     }
+}
+
+/// Decide the slug to apply as the title changes: follow the title
+/// (via `slugify`) until the user has manually edited the slug, after
+/// which leave it alone. Returns None to leave the slug untouched.
+fn next_slug(new_title: &str, touched: bool) -> Option<String> {
+    if touched {
+        None
+    } else {
+        Some(slugify(new_title))
+    }
+}
+
+/// Tab state for the article body editor.
+#[derive(Clone, Copy, PartialEq)]
+enum BodyTab {
+    Write,
+    Preview,
+}
+
+fn body_tab_class(active: bool) -> &'static str {
+    if active {
+        "px-3 py-1 text-sm border-b-2 border-blue-600 text-blue-600 dark:text-blue-400 font-medium"
+    } else {
+        "px-3 py-1 text-sm border-b-2 border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+    }
+}
+
+/// Resolve the chain of categories from root down to the article's own
+/// category by walking `parent_id`. Returns `[]` when the article has no
+/// category or the id is dangling. Guards against cycles with a visited
+/// set so a malformed parent chain cannot loop forever.
+fn resolve_category_path(category_id: Option<uuid::Uuid>, all: &[KbCategory]) -> Vec<KbCategory> {
+    use std::collections::HashSet;
+    let mut chain = Vec::new();
+    let mut seen = HashSet::new();
+    let mut current = category_id;
+    while let Some(id) = current {
+        if !seen.insert(id) {
+            break; // cycle guard
+        }
+        let Some(cat) = all.iter().find(|c| c.id == id) else {
+            break;
+        };
+        chain.push(cat.clone());
+        current = cat.parent_id;
+    }
+    chain.reverse();
+    chain
+}
+
+/// A category node in the nav tree: the category, its child categories
+/// (recursively, ordered by `sort_order` then name), and the articles
+/// filed directly under it (ordered by title).
+#[derive(Clone, PartialEq)]
+struct TreeNode {
+    category: KbCategory,
+    children: Vec<TreeNode>,
+    articles: Vec<KbArticle>,
+}
+
+/// Build the category forest (root categories with nested children and
+/// their articles). Articles with no/unknown category go in a separate
+/// "uncategorized" bucket returned as the second element.
+fn build_kb_tree(
+    categories: &[KbCategory],
+    articles: &[KbArticle],
+) -> (Vec<TreeNode>, Vec<KbArticle>) {
+    fn node_for(cat: &KbCategory, cats: &[KbCategory], arts: &[KbArticle]) -> TreeNode {
+        let mut children: Vec<TreeNode> = cats
+            .iter()
+            .filter(|c| c.parent_id == Some(cat.id))
+            .map(|c| node_for(c, cats, arts))
+            .collect();
+        children.sort_by(|a, b| {
+            a.category
+                .sort_order
+                .cmp(&b.category.sort_order)
+                .then(a.category.name.cmp(&b.category.name))
+        });
+        let mut articles: Vec<KbArticle> = arts
+            .iter()
+            .filter(|a| a.category_id == Some(cat.id))
+            .cloned()
+            .collect();
+        articles.sort_by(|a, b| a.title.cmp(&b.title));
+        TreeNode {
+            category: cat.clone(),
+            children,
+            articles,
+        }
+    }
+
+    let known: std::collections::HashSet<_> = categories.iter().map(|c| c.id).collect();
+    let mut roots: Vec<TreeNode> = categories
+        .iter()
+        .filter(|c| c.parent_id.is_none())
+        .map(|c| node_for(c, categories, articles))
+        .collect();
+    roots.sort_by(|a, b| {
+        a.category
+            .sort_order
+            .cmp(&b.category.sort_order)
+            .then(a.category.name.cmp(&b.category.name))
+    });
+    let uncategorized: Vec<KbArticle> = articles
+        .iter()
+        .filter(|a| a.category_id.is_none() || a.category_id.is_some_and(|id| !known.contains(&id)))
+        .cloned()
+        .collect();
+    (roots, uncategorized)
 }
 
 /// Title-case the server's lowercase visibility tag for display, and pick
@@ -347,7 +459,12 @@ pub fn KBArticleListPage() -> Element {
     let mut category_filter = use_signal(String::new);
     let mut page = use_signal(|| 1usize);
 
-    // Category options for the filter dropdown.
+    // Rail collapse state, persisted under the same key as the detail view.
+    let left_collapsed = use_signal(|| crate::utils::prefs::get_bool("kb_left_rail", false));
+    let open_overlay = use_signal(|| None::<crate::components::RailSide>);
+    use_effect(move || crate::utils::prefs::set_bool("kb_left_rail", left_collapsed()));
+
+    // Category options for the filter dropdown and the tree rail.
     let categories_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
@@ -366,6 +483,22 @@ pub fn KBArticleListPage() -> Element {
     for c in categories.iter() {
         category_options.push(SelectOption::new(c.id.to_string(), c.name.clone()));
     }
+
+    // Article list feeding the tree rail (broader fetch than the paginated table).
+    let tree_articles_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let token = crate::hooks::fetch::api::current_access_token()?;
+        crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(
+            "/kb/articles?page=1&per_page=200",
+            &token,
+        )
+        .await
+        .ok()
+    });
+    let tree_articles: Vec<KbArticle> = match &*tree_articles_resource.read_unchecked() {
+        Some(Some(resp)) => resp.data.clone(),
+        _ => Vec::new(),
+    };
 
     let search_text = search.read().trim().to_string();
     let category_text = category_filter.read().clone();
@@ -420,75 +553,86 @@ pub fn KBArticleListPage() -> Element {
                 },
             }
 
-            // Filters
-            Card { class: "mb-6",
-                div { class: "flex flex-col sm:flex-row gap-4",
-                    div { class: "flex-1",
-                        SearchInput {
-                            value: search.read().clone(),
-                            placeholder: "Search articles...",
-                            oninput: move |e: FormEvent| {
-                                search.set(e.value());
-                                page.set(1);
-                            },
-                        }
-                    }
-                    Select {
-                        name: "category",
-                        options: category_options,
-                        value: category_filter.read().clone(),
-                        onchange: move |e: FormEvent| {
-                            category_filter.set(e.value());
-                            page.set(1);
-                        },
+            div { class: "flex gap-6 items-start",
+                CollapsibleRail { side: RailSide::Left, collapsed: left_collapsed, open_overlay,
+                    KbTreeNav {
+                        categories: categories.clone(),
+                        articles: tree_articles.clone(),
+                        current_id: String::new(),
                     }
                 }
-            }
-
-            if fetch_failed {
-                div {
-                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                    "Could not load articles. Refresh the page to retry."
-                }
-            }
-
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 4,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Title" }
-                            TableHeader { "Status" }
-                            TableHeader { "Visibility" }
-                            TableHeader { "Updated" }
+                div { class: "flex-1 min-w-0",
+                    // Filters
+                    Card { class: "mb-6",
+                        div { class: "flex flex-col sm:flex-row gap-4",
+                            div { class: "flex-1",
+                                SearchInput {
+                                    value: search.read().clone(),
+                                    placeholder: "Search articles...",
+                                    oninput: move |e: FormEvent| {
+                                        search.set(e.value());
+                                        page.set(1);
+                                    },
+                                }
+                            }
+                            Select {
+                                name: "category",
+                                options: category_options,
+                                value: category_filter.read().clone(),
+                                onchange: move |e: FormEvent| {
+                                    category_filter.set(e.value());
+                                    page.set(1);
+                                },
+                            }
                         }
                     }
-                    if is_loading {
-                        TableLoading { columns: 4, rows: 5 }
-                    } else if page_rows.is_empty() {
-                        TableEmpty {
-                            columns: 4,
-                            message: if has_filters {
-                                "No articles match your filters.".to_string()
+
+                    if fetch_failed {
+                        div {
+                            class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                            "Could not load articles. Refresh the page to retry."
+                        }
+                    }
+
+                    DataTable {
+                        loading: is_loading,
+                        total_items: total as usize,
+                        current_page,
+                        per_page: PER_PAGE,
+                        columns: 4,
+                        onpagechange: move |p| page.set(p),
+                        Table {
+                            TableHead {
+                                TableRow {
+                                    TableHeader { "Title" }
+                                    TableHeader { "Status" }
+                                    TableHeader { "Visibility" }
+                                    TableHeader { "Updated" }
+                                }
+                            }
+                            if is_loading {
+                                TableLoading { columns: 4, rows: 5 }
+                            } else if page_rows.is_empty() {
+                                TableEmpty {
+                                    columns: 4,
+                                    message: if has_filters {
+                                        "No articles match your filters.".to_string()
+                                    } else {
+                                        "No articles yet. Click New Article to create one.".to_string()
+                                    },
+                                }
                             } else {
-                                "No articles yet. Click New Article to create one.".to_string()
-                            },
-                        }
-                    } else {
-                        TableBody {
-                            for article in page_rows.iter().cloned() {
-                                ArticleRow {
-                                    key: "{article.id}",
-                                    id: article.id.to_string(),
-                                    title: article.title,
-                                    status: article.status,
-                                    visibility: article.visibility,
-                                    updated: date_only(&article.updated_at),
+                                TableBody {
+                                    for article in page_rows.iter().cloned() {
+                                        ArticleRow {
+                                            key: "{article.id}",
+                                            id: article.id.to_string(),
+                                            title: article.title,
+                                            status: article.status,
+                                            visibility: article.visibility,
+                                            updated: date_only(&article.updated_at),
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -554,7 +698,6 @@ pub struct KBArticleDetailPageProps {
 pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     let id_for_article = props.id.clone();
     let id_for_versions = props.id.clone();
-    let id_for_edit = props.id.clone();
 
     let mut article_resource = use_resource(move || {
         let id = id_for_article.clone();
@@ -578,10 +721,58 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         }
     });
 
-    // Local override for the helpful / not_helpful tallies so a click
-    // updates the sidebar without a full re-fetch of the article.
-    let mut feedback = use_signal(|| None::<(i32, i32)>);
-    let mut feedback_busy = use_signal(|| false);
+    // Category list for the breadcrumb path and the left tree rail.
+    let categories_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let token = crate::hooks::fetch::api::current_access_token()?;
+        crate::hooks::fetch::api::get_with_auth::<Paginated<KbCategory>>(
+            "/kb/categories?page=1&per_page=100",
+            &token,
+        )
+        .await
+        .ok()
+    });
+
+    // Article list feeding the left tree rail.
+    let tree_articles_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let token = crate::hooks::fetch::api::current_access_token()?;
+        crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(
+            "/kb/articles?page=1&per_page=200",
+            &token,
+        )
+        .await
+        .ok()
+    });
+
+    let categories: Vec<KbCategory> = match &*categories_resource.read_unchecked() {
+        Some(Some(resp)) => resp.data.clone(),
+        _ => Vec::new(),
+    };
+    let tree_articles: Vec<KbArticle> = match &*tree_articles_resource.read_unchecked() {
+        Some(Some(resp)) => resp.data.clone(),
+        _ => Vec::new(),
+    };
+
+    // Reading-view UI state, persisted per user via the prefs store.
+    let left_collapsed = use_signal(|| crate::utils::prefs::get_bool("kb_left_rail", false));
+    let right_collapsed = use_signal(|| crate::utils::prefs::get_bool("kb_right_rail", false));
+    let read_mode = use_signal(|| crate::utils::prefs::get_bool("kb_read_mode", false));
+    let comfortable = use_signal(|| crate::utils::prefs::get_bool("kb_density", true));
+    let prior = use_signal(|| (false, false));
+    let open_overlay = use_signal(|| None::<crate::components::RailSide>);
+    use_effect(move || crate::utils::prefs::set_bool("kb_left_rail", left_collapsed()));
+    use_effect(move || crate::utils::prefs::set_bool("kb_right_rail", right_collapsed()));
+
+    // Shared rating counts: declared unconditionally (rules-of-hooks), seeded
+    // (0, 0) and synced via use_effect once the article loads so both copies
+    // rendered by OverflowActions share one signal.
+    let mut rating = use_signal(|| (0i32, 0i32));
+    use_effect(move || {
+        if let Some(Some(a)) = &*article_resource.read_unchecked() {
+            rating.set((a.helpful_count, a.not_helpful_count));
+        }
+    });
 
     let article_snapshot = article_resource.read_unchecked();
     let header_title = match &*article_snapshot {
@@ -591,16 +782,6 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
 
     rsx! {
         AppLayout { title: "{header_title}",
-            PageHeader {
-                title: "{header_title}",
-                actions: rsx! {
-                    Link {
-                        to: Route::KBArticleEdit { id: id_for_edit.clone() },
-                        Button { variant: ButtonVariant::Secondary, "Edit" }
-                    }
-                },
-            }
-
             match &*article_snapshot {
                 None => rsx! {
                     Card { div { class: "py-12 text-center text-sm text-gray-500", "Loading article..." } }
@@ -618,135 +799,63 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                     }
                 },
                 Some(Some(article)) => {
-                    let article_id = article.id.to_string();
                     let (vis_label, vis_variant) = visibility_label(&article.visibility);
                     let status_label = if article.status.is_empty() {
                         "Draft".to_string()
                     } else {
                         article.status.clone()
                     };
-                    let created = date_only(&article.created_at);
                     let updated = date_only(&article.updated_at);
                     let content = article.content.clone();
-                    let summary = article.summary.clone();
-                    let tags = article.tags.clone();
-                    // Live tallies: local override wins after a click,
-                    // otherwise show the fetched counts.
-                    let (helpful, not_helpful) = feedback
-                        .read()
-                        .unwrap_or((article.helpful_count, article.not_helpful_count));
-                    let id_helpful = article_id.clone();
-                    let id_not_helpful = article_id.clone();
+                    let path = resolve_category_path(article.category_id, &categories);
+                    let prose_density = if comfortable() {
+                        "prose-base leading-relaxed"
+                    } else {
+                        "prose-sm leading-snug"
+                    };
                     rsx! {
-                        div { class: "grid grid-cols-1 lg:grid-cols-4 gap-6",
-                            // Article content
-                            div { class: "lg:col-span-3 space-y-6",
-                                Card {
-                                    article { class: "prose dark:prose-invert max-w-none",
-                                        if let Some(summary) = summary {
-                                            if !summary.is_empty() {
-                                                p { class: "lead", "{summary}" }
-                                            }
+                        div { class: "flex gap-6 items-start",
+                            CollapsibleRail { side: RailSide::Left, collapsed: left_collapsed, open_overlay,
+                                KbTreeNav {
+                                    categories: categories.clone(),
+                                    articles: tree_articles.clone(),
+                                    current_id: props.id.clone(),
+                                }
+                            }
+                            div { class: "flex-1 min-w-0",
+                                div { class: "flex items-center justify-between gap-2",
+                                    KbBreadcrumb { path: path.clone(), title: article.title.clone() }
+                                    ReadModeButton { read_mode, left_collapsed, right_collapsed, prior }
+                                }
+                                div { class: "mt-2 flex items-center justify-between gap-3 flex-wrap",
+                                    h1 { class: "text-2xl font-semibold text-gray-900 dark:text-white truncate", "{article.title}" }
+                                    OverflowActions {
+                                        RatingBar {
+                                            article_id: props.id.clone(),
+                                            counts: rating,
                                         }
-                                        // Content is Markdown source; render as
-                                        // preformatted text until a Markdown
-                                        // renderer lands (matches the plain
-                                        // textarea authoring flow).
-                                        pre { class: "whitespace-pre-wrap font-sans text-sm text-gray-800 dark:text-gray-200",
-                                            "{content}"
+                                        Badge { variant: status_variant(&status_label), "{status_label}" }
+                                        Badge { variant: vis_variant, "{vis_label}" }
+                                        Link { to: Route::KBArticleEdit { id: props.id.clone() },
+                                            Button { variant: ButtonVariant::Secondary, "Edit" }
                                         }
+                                        DensityToggle { comfortable }
                                     }
                                 }
-
-                                // Was this helpful?
-                                Card { title: "Was this helpful?",
-                                    div { class: "flex items-center space-x-3",
-                                        Button {
-                                            variant: ButtonVariant::Secondary,
-                                            loading: *feedback_busy.read(),
-                                            onclick: move |_| {
-                                                if *feedback_busy.read() { return; }
-                                                feedback_busy.set(true);
-                                                let id = id_helpful.clone();
-                                                spawn(async move {
-                                                    #[cfg(feature = "web")]
-                                                    {
-                                                        let path = format!("/kb/articles/{id}/helpful");
-                                                        if let Ok(fb) = crate::hooks::fetch::api::post_authed::<KbArticleFeedback, _>(&path, &serde_json::json!({})).await {
-                                                            feedback.set(Some((fb.helpful_count, fb.not_helpful_count)));
-                                                        }
-                                                    }
-                                                    feedback_busy.set(false);
-                                                });
-                                            },
-                                            "Yes ({helpful})"
-                                        }
-                                        Button {
-                                            variant: ButtonVariant::Secondary,
-                                            loading: *feedback_busy.read(),
-                                            onclick: move |_| {
-                                                if *feedback_busy.read() { return; }
-                                                feedback_busy.set(true);
-                                                let id = id_not_helpful.clone();
-                                                spawn(async move {
-                                                    #[cfg(feature = "web")]
-                                                    {
-                                                        let path = format!("/kb/articles/{id}/not_helpful");
-                                                        if let Ok(fb) = crate::hooks::fetch::api::post_authed::<KbArticleFeedback, _>(&path, &serde_json::json!({})).await {
-                                                            feedback.set(Some((fb.helpful_count, fb.not_helpful_count)));
-                                                        }
-                                                    }
-                                                    feedback_busy.set(false);
-                                                });
-                                            },
-                                            "No ({not_helpful})"
-                                        }
-                                    }
+                                p { class: "mt-1 text-xs text-gray-400", "Updated {updated}" }
+                                article {
+                                    class: "mt-4 prose dark:prose-invert max-w-none {prose_density}",
+                                    dangerous_inner_html: crate::utils::markdown::render_markdown(&content),
                                 }
-
-                                // Version history
+                            }
+                            CollapsibleRail { side: RailSide::Right, collapsed: right_collapsed, open_overlay,
                                 VersionHistoryCard {
-                                    article_id: article_id.clone(),
+                                    article_id: props.id.clone(),
                                     versions_resource,
                                     on_restored: move |_| {
                                         article_resource.restart();
                                         versions_resource.restart();
-                                        feedback.set(None);
                                     },
-                                }
-                            }
-
-                            // Sidebar
-                            div { class: "space-y-6",
-                                Card { title: "Article Info",
-                                    dl { class: "space-y-4",
-                                        div {
-                                            dt { class: "text-sm text-gray-500", "Status" }
-                                            dd { class: "mt-1", Badge { variant: status_variant(&status_label), "{status_label}" } }
-                                        }
-                                        div {
-                                            dt { class: "text-sm text-gray-500", "Visibility" }
-                                            dd { class: "mt-1", Badge { variant: vis_variant, "{vis_label}" } }
-                                        }
-                                        div {
-                                            dt { class: "text-sm text-gray-500", "Created" }
-                                            dd { class: "mt-1 text-sm", "{created}" }
-                                        }
-                                        div {
-                                            dt { class: "text-sm text-gray-500", "Updated" }
-                                            dd { class: "mt-1 text-sm", "{updated}" }
-                                        }
-                                        if !tags.is_empty() {
-                                            div {
-                                                dt { class: "text-sm text-gray-500 mb-1", "Tags" }
-                                                dd { class: "flex flex-wrap gap-1",
-                                                    for tag in tags.iter() {
-                                                        Badge { key: "{tag}", variant: BadgeVariant::Gray, "{tag}" }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
                                 }
                             }
                         }
@@ -767,69 +876,68 @@ fn VersionHistoryCard(
     let mut restoring = use_signal(|| None::<i32>);
 
     rsx! {
-        Card { title: "Version History", padding: false,
-            Table {
-                TableHead {
-                    TableRow {
-                        TableHeader { "Version" }
-                        TableHeader { "Title" }
-                        TableHeader { "Saved" }
-                        TableHeader { "" }
-                    }
-                }
-                match &*snap {
-                    None => rsx! { TableLoading { columns: 4, rows: 2 } },
-                    Some(None) => rsx! { TableEmpty { columns: 4, message: "Could not load version history.".to_string() } },
-                    Some(Some(page)) if page.data.is_empty() => rsx! {
-                        TableEmpty { columns: 4, message: "No prior versions.".to_string() }
-                    },
-                    Some(Some(page)) => {
-                        let rows = page.data.clone();
-                        let article_id = article_id.clone();
-                        rsx! {
-                            TableBody {
-                                for version in rows.into_iter() {
-                                    {
-                                        let key = version.id.to_string();
-                                        let n = version.version_number;
-                                        let title = version.title.clone();
-                                        let saved = date_only(&version.created_at);
-                                        let id_for_restore = article_id.clone();
-                                        rsx! {
-                                            TableRow { key: "{key}",
-                                                TableCell { class: "font-medium", "v{n}" }
-                                                TableCell { "{title}" }
-                                                TableCell { class: "text-gray-500", "{saved}" }
-                                                TableCell {
-                                                    Button {
-                                                        variant: ButtonVariant::Secondary,
-                                                        loading: *restoring.read() == Some(n),
-                                                        onclick: move |_| {
-                                                            if restoring.read().is_some() { return; }
-                                                            restoring.set(Some(n));
-                                                            let id = id_for_restore.clone();
-                                                            spawn(async move {
-                                                                #[cfg(feature = "web")]
-                                                                {
-                                                                    let path = format!("/kb/articles/{id}/versions/{n}/restore");
-                                                                    if crate::hooks::fetch::api::post_authed::<KbArticle, _>(&path, &serde_json::json!({})).await.is_ok() {
-                                                                        on_restored.call(());
-                                                                    }
+        div { class: "rounded border border-gray-200 dark:border-gray-700",
+            p { class: "px-3 py-2 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700",
+                "Versions"
+            }
+            match &*snap {
+                None => rsx! {
+                    p { class: "px-3 py-3 text-xs text-gray-400", "Loading..." }
+                },
+                Some(None) => rsx! {
+                    p { class: "px-3 py-3 text-xs text-red-600 dark:text-red-300", "Could not load version history." }
+                },
+                Some(Some(page)) if page.data.is_empty() => rsx! {
+                    p { class: "px-3 py-3 text-xs text-gray-400", "No prior versions." }
+                },
+                Some(Some(page)) => {
+                    let rows = page.data.clone();
+                    let article_id = article_id.clone();
+                    rsx! {
+                        ul { class: "divide-y divide-gray-100 dark:divide-gray-800",
+                            for version in rows.into_iter() {
+                                {
+                                    let key = version.id.to_string();
+                                    let n = version.version_number;
+                                    let title = version.title.clone();
+                                    let saved = date_only(&version.created_at);
+                                    let id_for_restore = article_id.clone();
+                                    rsx! {
+                                        li { key: "{key}", class: "px-3 py-2 text-xs",
+                                            div { class: "flex items-center justify-between gap-2",
+                                                span { class: "font-medium text-gray-700 dark:text-gray-200", "v{n}" }
+                                                button {
+                                                    class: "text-blue-600 hover:text-blue-500 disabled:opacity-50",
+                                                    disabled: *restoring.read() == Some(n),
+                                                    onclick: move |_| {
+                                                        if restoring.read().is_some() { return; }
+                                                        restoring.set(Some(n));
+                                                        let id = id_for_restore.clone();
+                                                        spawn(async move {
+                                                            #[cfg(feature = "web")]
+                                                            {
+                                                                let path = format!("/kb/articles/{id}/versions/{n}/restore");
+                                                                if crate::hooks::fetch::api::post_authed::<KbArticle, _>(&path, &serde_json::json!({})).await.is_ok() {
+                                                                    on_restored.call(());
                                                                 }
-                                                                restoring.set(None);
-                                                            });
-                                                        },
-                                                        "Restore"
-                                                    }
+                                                            }
+                                                            #[cfg(not(feature = "web"))]
+                                                            let _ = &id;
+                                                            restoring.set(None);
+                                                        });
+                                                    },
+                                                    "Restore"
                                                 }
                                             }
+                                            p { class: "mt-0.5 text-gray-500 dark:text-gray-400 truncate", "{title}" }
+                                            p { class: "text-gray-400", "{saved}" }
                                         }
                                     }
                                 }
                             }
                         }
-                    },
-                }
+                    }
+                },
             }
         }
     }
@@ -1012,8 +1120,13 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         SelectOption::new("archived", "Archived"),
     ];
 
+    let mut tab = use_signal(|| BodyTab::Write);
+
     let navigator = use_navigator();
     let is_edit = matches!(mode, ArticleFormMode::Edit { .. });
+    // In edit mode the slug is already published, so start it touched so
+    // typing a new title never clobbers an existing URL slug.
+    let mut slug_touched = use_signal(|| is_edit);
     let submit_label = if is_edit { "Save Changes" } else { "Publish" };
 
     let handle_submit = move |e: FormEvent| {
@@ -1130,7 +1243,12 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     placeholder: "How to ...",
                     required: true,
                     value: title.read().clone(),
-                    oninput: move |e: FormEvent| title.set(e.value()),
+                    oninput: move |e: FormEvent| {
+                        title.set(e.value());
+                        if let Some(s) = next_slug(&e.value(), slug_touched()) {
+                            slug.set(s);
+                        }
+                    },
                 }
 
                 crate::components::Input {
@@ -1139,7 +1257,10 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     placeholder: "Leave blank to derive from the title",
                     help: "URL-safe identifier; auto-generated from the title when blank.",
                     value: slug.read().clone(),
-                    oninput: move |e: FormEvent| slug.set(e.value()),
+                    oninput: move |e: FormEvent| {
+                        slug_touched.set(true);
+                        slug.set(e.value());
+                    },
                 }
 
                 crate::components::Input {
@@ -1182,17 +1303,30 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     oninput: move |e: FormEvent| tags.set(e.value()),
                 }
 
-                crate::components::Textarea {
-                    name: "content",
-                    label: "Body (Markdown)",
-                    placeholder: "## Overview\n\nWrite the article in Markdown...",
-                    rows: 16,
-                    required: true,
-                    value: content.read().clone(),
-                    oninput: move |e: FormEvent| content.set(e.value()),
-                }
-                p { class: "text-xs text-gray-500",
-                    "Markdown source is stored verbatim; a rendered preview lands with the WYSIWYG editor."
+                div {
+                    div { class: "flex gap-2 border-b border-gray-200 dark:border-gray-700 mb-2",
+                        button { r#type: "button", class: body_tab_class(tab() == BodyTab::Write), onclick: move |_| tab.set(BodyTab::Write), "Write" }
+                        button { r#type: "button", class: body_tab_class(tab() == BodyTab::Preview), onclick: move |_| tab.set(BodyTab::Preview), "Preview" }
+                    }
+                    match tab() {
+                        BodyTab::Write => rsx! {
+                            crate::components::Textarea {
+                                name: "content",
+                                label: "Body (Markdown)",
+                                placeholder: "## Overview\n\nWrite the article in Markdown...",
+                                rows: 16,
+                                required: true,
+                                value: content.read().clone(),
+                                oninput: move |e: FormEvent| content.set(e.value()),
+                            }
+                        },
+                        BodyTab::Preview => rsx! {
+                            article {
+                                class: "prose dark:prose-invert max-w-none p-2 min-h-40 border border-gray-200 dark:border-gray-700 rounded",
+                                dangerous_inner_html: crate::utils::markdown::render_markdown(&content.read()),
+                            }
+                        },
+                    }
                 }
 
                 div { class: "flex justify-end space-x-3",
@@ -1209,5 +1343,294 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                 }
             }
         }
+    }
+}
+
+// ============================================================================
+// Breadcrumb and tree-nav components
+// ============================================================================
+
+#[component]
+fn KbBreadcrumb(path: Vec<KbCategory>, title: String) -> Element {
+    rsx! {
+        nav { class: "flex items-center flex-wrap gap-1 text-sm text-gray-500 dark:text-gray-400",
+            Link { to: Route::KBHome {}, class: "hover:text-gray-700 dark:hover:text-gray-200", "KB" }
+            for cat in path.iter() {
+                ChevronRightIcon { size: IconSize::Small }
+                Link {
+                    to: Route::KBArticleList {},
+                    class: "hover:text-gray-700 dark:hover:text-gray-200",
+                    "{cat.name}"
+                }
+            }
+            ChevronRightIcon { size: IconSize::Small }
+            span { class: "text-gray-700 dark:text-gray-200 font-medium", "{title}" }
+        }
+    }
+}
+
+#[component]
+fn KbTreeNav(categories: Vec<KbCategory>, articles: Vec<KbArticle>, current_id: String) -> Element {
+    let (roots, uncategorized) = build_kb_tree(&categories, &articles);
+    rsx! {
+        nav { class: "text-sm space-y-1",
+            for node in roots.iter() {
+                KbTreeCategory { node: node.clone(), current_id: current_id.clone() }
+            }
+            if !uncategorized.is_empty() {
+                div { class: "pt-2 mt-2 border-t border-gray-200 dark:border-gray-700",
+                    p { class: "px-2 py-1 text-xs uppercase tracking-wide text-gray-400", "Uncategorized" }
+                    for a in uncategorized.iter() {
+                        KbTreeArticle { article: a.clone(), current_id: current_id.clone() }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn KbTreeCategory(node: TreeNode, current_id: String) -> Element {
+    let mut open = use_signal(|| true);
+    rsx! {
+        div {
+            button {
+                class: "w-full flex items-center gap-1 px-2 py-1 rounded text-left text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800",
+                onclick: move |_| open.toggle(),
+                span {
+                    class: if open() { "rotate-90 transition-transform" } else { "transition-transform" },
+                    ChevronRightIcon { size: IconSize::Small }
+                }
+                span { class: "font-medium truncate", "{node.category.name}" }
+            }
+            if open() {
+                div { class: "ml-4 border-l border-gray-200 dark:border-gray-700 pl-2 space-y-1",
+                    for child in node.children.iter() {
+                        KbTreeCategory { node: child.clone(), current_id: current_id.clone() }
+                    }
+                    for a in node.articles.iter() {
+                        KbTreeArticle { article: a.clone(), current_id: current_id.clone() }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn KbTreeArticle(article: KbArticle, current_id: String) -> Element {
+    let is_current = article.id.to_string() == current_id;
+    let base = "block px-2 py-1 rounded truncate hover:bg-gray-100 dark:hover:bg-gray-800";
+    let cls = if is_current {
+        format!(
+            "{base} bg-blue-50 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 font-medium"
+        )
+    } else {
+        format!("{base} text-gray-600 dark:text-gray-300")
+    };
+    rsx! {
+        Link { to: Route::KBArticleDetail { id: article.id.to_string() }, class: "{cls}", "{article.title}" }
+    }
+}
+
+// ============================================================================
+// Rating bar, density toggle, read-mode button
+// ============================================================================
+
+#[component]
+fn RatingBar(article_id: String, counts: Signal<(i32, i32)>) -> Element {
+    let mut counts = counts;
+    let mut busy = use_signal(|| false);
+    let (h, n) = counts();
+    let id_h = article_id.clone();
+    let id_n = article_id.clone();
+    rsx! {
+        div { class: "flex items-center gap-3 text-sm",
+            button {
+                class: "flex items-center gap-1 text-gray-600 dark:text-gray-300 hover:text-green-600 disabled:opacity-50",
+                disabled: busy(),
+                onclick: move |_| {
+                    if busy() { return; }
+                    busy.set(true);
+                    let id = id_h.clone();
+                    spawn(async move {
+                        #[cfg(feature = "web")]
+                        {
+                            let path = format!("/kb/articles/{id}/helpful");
+                            if let Ok(fb) = crate::hooks::fetch::api::post_authed::<KbArticleFeedback, _>(&path, &serde_json::json!({})).await {
+                                counts.set((fb.helpful_count, fb.not_helpful_count));
+                            }
+                        }
+                        #[cfg(not(feature = "web"))]
+                        let _ = &id;
+                        busy.set(false);
+                    });
+                },
+                span { "\u{1F44D}" }
+                span { class: "tabular-nums", "{h}" }
+            }
+            button {
+                class: "flex items-center gap-1 text-gray-600 dark:text-gray-300 hover:text-red-600 disabled:opacity-50",
+                disabled: busy(),
+                onclick: move |_| {
+                    if busy() { return; }
+                    busy.set(true);
+                    let id = id_n.clone();
+                    spawn(async move {
+                        #[cfg(feature = "web")]
+                        {
+                            let path = format!("/kb/articles/{id}/not_helpful");
+                            if let Ok(fb) = crate::hooks::fetch::api::post_authed::<KbArticleFeedback, _>(&path, &serde_json::json!({})).await {
+                                counts.set((fb.helpful_count, fb.not_helpful_count));
+                            }
+                        }
+                        #[cfg(not(feature = "web"))]
+                        let _ = &id;
+                        busy.set(false);
+                    });
+                },
+                span { "\u{1F44E}" }
+                span { class: "tabular-nums", "{n}" }
+            }
+        }
+    }
+}
+
+#[component]
+fn DensityToggle(comfortable: Signal<bool>) -> Element {
+    let mut comfortable = comfortable;
+    rsx! {
+        button {
+            class: "text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300",
+            title: "Toggle reading density",
+            onclick: move |_| {
+                let next = !comfortable();
+                comfortable.set(next);
+                crate::utils::prefs::set_bool("kb_density", next);
+            },
+            if comfortable() { "Comfortable" } else { "Compact" }
+        }
+    }
+}
+
+#[component]
+fn ReadModeButton(
+    read_mode: Signal<bool>,
+    left_collapsed: Signal<bool>,
+    right_collapsed: Signal<bool>,
+    prior: Signal<(bool, bool)>,
+) -> Element {
+    let mut read_mode = read_mode;
+    let mut left_collapsed = left_collapsed;
+    let mut right_collapsed = right_collapsed;
+    let mut prior = prior;
+    rsx! {
+        button {
+            class: "p-1 text-gray-500 hover:text-gray-700 dark:hover:text-gray-200",
+            title: if read_mode() { "Exit read mode" } else { "Read mode (hide panels)" },
+            onclick: move |_| {
+                if read_mode() {
+                    let (l, r) = prior();
+                    left_collapsed.set(l);
+                    right_collapsed.set(r);
+                    read_mode.set(false);
+                    crate::utils::prefs::set_bool("kb_read_mode", false);
+                } else {
+                    prior.set((left_collapsed(), right_collapsed()));
+                    left_collapsed.set(true);
+                    right_collapsed.set(true);
+                    read_mode.set(true);
+                    crate::utils::prefs::set_bool("kb_read_mode", true);
+                }
+            },
+            if read_mode() { "\u{2921}" } else { "\u{2922}" }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn cat(id: Uuid, parent: Option<Uuid>, name: &str) -> KbCategory {
+        KbCategory {
+            id,
+            name: name.to_string(),
+            description: None,
+            parent_id: parent,
+            slug: name.to_lowercase(),
+            visibility: "internal".into(),
+            sort_order: 0,
+        }
+    }
+
+    #[test]
+    fn resolves_nested_path_root_first() {
+        let root = Uuid::new_v4();
+        let child = Uuid::new_v4();
+        let cats = vec![cat(root, None, "Networking"), cat(child, Some(root), "VPN")];
+        let path = resolve_category_path(Some(child), &cats);
+        let names: Vec<_> = path.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["Networking", "VPN"]);
+    }
+
+    #[test]
+    fn empty_when_no_category() {
+        let cats = vec![cat(Uuid::new_v4(), None, "X")];
+        assert!(resolve_category_path(None, &cats).is_empty());
+    }
+
+    #[test]
+    fn empty_when_dangling() {
+        let cats = vec![cat(Uuid::new_v4(), None, "X")];
+        assert!(resolve_category_path(Some(Uuid::new_v4()), &cats).is_empty());
+    }
+
+    fn art(id: Uuid, category: Option<Uuid>, title: &str) -> KbArticle {
+        KbArticle {
+            id,
+            title: title.to_string(),
+            slug: title.to_lowercase(),
+            content: String::new(),
+            summary: None,
+            category_id: category,
+            visibility: "internal".into(),
+            status: "published".into(),
+            view_count: 0,
+            helpful_count: 0,
+            not_helpful_count: 0,
+            published_at: None,
+            tags: vec![],
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn nests_children_and_articles() {
+        let root = Uuid::new_v4();
+        let child = Uuid::new_v4();
+        let cats = vec![cat(root, None, "Net"), cat(child, Some(root), "VPN")];
+        let arts = vec![art(Uuid::new_v4(), Some(child), "Setup")];
+        let (roots, uncat) = build_kb_tree(&cats, &arts);
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].children.len(), 1);
+        assert_eq!(roots[0].children[0].articles[0].title, "Setup");
+        assert!(uncat.is_empty());
+    }
+
+    #[test]
+    fn uncategorized_bucket_collects_orphans() {
+        let arts = vec![art(Uuid::new_v4(), None, "Loose")];
+        let (roots, uncat) = build_kb_tree(&[], &arts);
+        assert!(roots.is_empty());
+        assert_eq!(uncat.len(), 1);
+    }
+
+    #[test]
+    fn slug_follows_title_until_touched() {
+        assert_eq!(next_slug("My Article", false), Some(slugify("My Article")));
+        assert_eq!(next_slug("My Article", true), None);
     }
 }
