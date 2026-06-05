@@ -1,79 +1,105 @@
-//! Calendar and dispatch pages
+//! Calendar and dispatch pages.
 //!
-//! The calendar grid is generated from the `active_month` signal so
-//! prev/next/today actually navigate. Per-day event content is still
-//! demo data (no backend yet); we surface that with disabled stubs on
-//! the "New Appointment" CTA and the Week/Day view toggles. Stubs use
-//! `<button disabled title="Coming soon">` so users see them as
-//! intentional placeholders.
+//! Both pages are wired to the real mokosh-server calendar API (PMS-58):
+//!
+//!   * The calendar fetches appointments for the visible range from
+//!     `GET /api/v1/calendar/appointments?from=<rfc3339>&to=<rfc3339>`.
+//!     The server expands recurring series (RRULE) into concrete
+//!     occurrence instances in-memory, so the grid just renders whatever
+//!     comes back; no client-side recurrence math is needed. Month,
+//!     Week, and Day views all share that one resource and only differ
+//!     in how they lay the returned appointments out.
+//!   * "New Appointment" / "Schedule Appointment" POST to
+//!     `/api/v1/calendar/appointments`; editing an existing one-off PUTs
+//!     to `/{id}` and deleting DELETEs it. Expanded recurring instances
+//!     are read-only (their id is the master's) so edit/delete is
+//!     disabled on them.
+//!   * The dispatch board fetches the aggregated
+//!     `GET /api/v1/dispatch?from&to` payload (appointments + weekly
+//!     availability + approved time off + current on-call) and groups
+//!     appointments per technician.
+//!
+//! The previous demo-data fallback and the wrong `/calendar/events`
+//! path are gone: an empty or failed fetch now renders an empty grid
+//! plus an inline error, never seeded fixtures.
 
-use chrono::{Datelike, Duration, Local, NaiveDate, Weekday};
+use chrono::{
+    DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc, Weekday,
+};
 use dioxus::prelude::*;
-use serde::Deserialize;
 
 use crate::components::{
-    AppLayout, Button, ButtonVariant, Card, ChevronRightIcon, IconSize, PageHeader, PlusIcon,
+    AppLayout, Button, ButtonVariant, Card, ChevronRightIcon, IconSize, Input, Modal, ModalSize,
+    PageHeader, PlusIcon, Select, SelectOption, Textarea,
+};
+use crate::modules::calendar::{
+    AppointmentResponse, CreateAppointmentRequest, DispatchResponse, OnCallNowResponse,
+    TimeOffResponse, UpdateAppointmentRequest, UserAvailabilityResponse,
 };
 
-/// Calendar event as returned by `GET /api/v1/calendar/events`. The
-/// frontend only needs the title and the date for grid rendering.
-#[derive(Clone, Debug, Deserialize)]
-struct RemoteCalendarEvent {
-    title: String,
-    start_at: chrono::DateTime<chrono::Utc>,
-}
+// ============================================================================
+// Shared helpers
+// ============================================================================
 
-/// Source of the calendar events the page is rendering. Used to decide
-/// whether to show the "demo data - backend not wired yet" indicator
-/// and whether the "New Appointment" CTA can be enabled.
+/// The day-view / week-view time grid spans 7:00 .. 19:00 (12 hours).
+/// Appointments outside that window are clamped to the edges so they
+/// stay visible rather than overflowing the grid.
+const GRID_START_HOUR: u32 = 7;
+const GRID_END_HOUR: u32 = 19;
+const GRID_TOTAL_HOURS: f64 = (GRID_END_HOUR - GRID_START_HOUR) as f64;
+
+/// Which calendar layout is active. Month is the default; Week and Day
+/// are now real views (previously disabled "coming soon" stubs).
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum EventSource {
-    /// Backend returned a list (possibly empty). The calendar is live.
-    Backend,
-    /// Backend errored or returned 404. Falling back to seeded demo data.
-    Demo,
+enum CalendarView {
+    Month,
+    Week,
+    Day,
 }
 
-/// Pick events for a given grid cell. When the backend is reachable
-/// (`EventSource::Backend`), filter the remote list to events whose
-/// `start_at` lands on `date` (UTC for now; future iteration adds
-/// per-user timezone). When the backend isn't wired or errored
-/// (`EventSource::Demo`), fall through to the seeded demo list.
-fn events_for_date(
-    date: NaiveDate,
-    remote: &[RemoteCalendarEvent],
-    source: EventSource,
-) -> Vec<String> {
-    match source {
-        EventSource::Backend => remote
-            .iter()
-            .filter(|e| e.start_at.date_naive() == date)
-            .map(|e| e.title.clone())
-            .collect(),
-        EventSource::Demo => demo_events_for(date)
-            .into_iter()
-            .map(String::from)
-            .collect(),
+/// Subset of the server's `PaginatedResponse<AppointmentResponse>`
+/// envelope. The appointment range endpoint wraps its rows in
+/// `{ data, meta }` exactly like the contacts list endpoints, so we
+/// decode the same shape and only read `data` (the range is bounded by
+/// `from`/`to`, so a single page covers it for the views we render).
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PaginatedAppointments {
+    #[serde(default)]
+    data: Vec<AppointmentResponse>,
+}
+
+/// One user as returned by `GET /api/v1/users` (subset). Used to label
+/// appointments by technician and to populate the assignee dropdown.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct RemoteUser {
+    id: uuid::Uuid,
+    #[serde(default)]
+    full_name: String,
+    #[serde(default)]
+    first_name: String,
+    #[serde(default)]
+    last_name: String,
+}
+
+impl RemoteUser {
+    fn display_name(&self) -> String {
+        if !self.full_name.trim().is_empty() {
+            return self.full_name.clone();
+        }
+        let joined = format!("{} {}", self.first_name, self.last_name);
+        let joined = joined.trim();
+        if joined.is_empty() {
+            "Unknown".to_string()
+        } else {
+            joined.to_string()
+        }
     }
 }
 
-/// Pin demo events to specific January-2025 days. Everything else
-/// renders an empty grid; clearer than leaving Jan-2025 events showing
-/// when the user navigates to March.
-fn demo_events_for(date: NaiveDate) -> Vec<&'static str> {
-    if date.year() != 2025 || date.month() != 1 {
-        return vec![];
-    }
-    match date.day() {
-        1 => vec!["New Year Holiday"],
-        6 => vec!["Acme Corp - Onsite"],
-        8 => vec!["TechStart Meeting"],
-        10 => vec!["Team Standup", "Client Call"],
-        13 => vec!["Network Upgrade"],
-        15 => vec!["Acme Onsite", "Quarterly Review"],
-        21 => vec!["Server Migration"],
-        _ => vec![],
-    }
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PaginatedUsers {
+    #[serde(default)]
+    data: Vec<RemoteUser>,
 }
 
 fn month_name(month: u32) -> &'static str {
@@ -94,26 +120,19 @@ fn month_name(month: u32) -> &'static str {
     }
 }
 
-/// Add `delta` months to `date`, clamping the day to the new month's
-/// last valid day. Used by the prev/next month buttons.
+/// Add `delta` months to `date`, anchored on day 1 of the result (the
+/// grid is regenerated from the month, so the day-of-month is moot).
 fn shift_months(date: NaiveDate, delta: i32) -> NaiveDate {
     let total = date.year() * 12 + (date.month() as i32 - 1) + delta;
     let year = total.div_euclid(12);
     let month0 = total.rem_euclid(12);
-    // Day 1 is always valid; we only navigate by month and don't care
-    // about preserving the day-of-month since the grid is regenerated.
     NaiveDate::from_ymd_opt(year, (month0 + 1) as u32, 1).unwrap_or(date)
 }
 
-/// Return 35 cells (5 rows × 7 cols) covering the calendar grid for
-/// the given month, starting on the Sunday before (or on) the 1st.
-/// Each cell is (date, is_in_active_month).
-fn calendar_cells(active: NaiveDate) -> Vec<(NaiveDate, bool)> {
-    let first_of_month =
-        NaiveDate::from_ymd_opt(active.year(), active.month(), 1).unwrap_or(active);
-    let weekday = first_of_month.weekday();
-    // Sunday = 0, Saturday = 6 in our header order.
-    let lead = match weekday {
+/// Number of leading days before `first_of_month` so the grid starts on
+/// a Sunday (Sun=0 .. Sat=6).
+fn sunday_lead(weekday: Weekday) -> i64 {
+    match weekday {
         Weekday::Sun => 0,
         Weekday::Mon => 1,
         Weekday::Tue => 2,
@@ -121,54 +140,270 @@ fn calendar_cells(active: NaiveDate) -> Vec<(NaiveDate, bool)> {
         Weekday::Thu => 4,
         Weekday::Fri => 5,
         Weekday::Sat => 6,
-    };
-    let grid_start = first_of_month - Duration::days(lead);
-    // 5 weeks is enough for any month layout when started on the
-    // preceding Sunday; six only matters for months where the 1st is
-    // Friday/Saturday AND the month has 31 days. Use 6 rows to be safe.
+    }
+}
+
+/// 42 cells (6 rows x 7 cols) covering the month grid, starting on the
+/// Sunday on/before the 1st. Each cell is `(date, is_in_active_month)`.
+fn calendar_cells(active: NaiveDate) -> Vec<(NaiveDate, bool)> {
+    let first_of_month =
+        NaiveDate::from_ymd_opt(active.year(), active.month(), 1).unwrap_or(active);
+    let grid_start = first_of_month - Duration::days(sunday_lead(first_of_month.weekday()));
     (0..42)
         .map(|i| {
-            let d = grid_start + Duration::days(i as i64);
+            let d = grid_start + Duration::days(i);
             (d, d.month() == active.month())
         })
         .collect()
 }
 
-/// Calendar page
+/// The seven dates of the week containing `date`, Sunday first.
+fn week_dates(date: NaiveDate) -> Vec<NaiveDate> {
+    let start = date - Duration::days(sunday_lead(date.weekday()));
+    (0..7).map(|i| start + Duration::days(i)).collect()
+}
+
+/// Inclusive-exclusive local-date span the given view covers, used to
+/// build the `from`/`to` query the server expands recurrence over. We
+/// pad the month view to whole grid weeks so appointments on
+/// leading/trailing days from adjacent months still show.
+fn visible_range(active: NaiveDate, view: CalendarView) -> (NaiveDate, NaiveDate) {
+    match view {
+        CalendarView::Month => {
+            let cells = calendar_cells(active);
+            let first = cells.first().map(|c| c.0).unwrap_or(active);
+            let last = cells.last().map(|c| c.0).unwrap_or(active);
+            (first, last + Duration::days(1))
+        }
+        CalendarView::Week => {
+            let dates = week_dates(active);
+            let first = dates.first().copied().unwrap_or(active);
+            (first, first + Duration::days(7))
+        }
+        CalendarView::Day => (active, active + Duration::days(1)),
+    }
+}
+
+/// Convert a local date to the UTC instant at its 00:00 local boundary.
+/// `from`/`to` go to the server as RFC 3339 UTC; building them from the
+/// local midnight keeps the visible local range aligned with what the
+/// user sees regardless of the browser's offset.
+fn local_date_start_utc(d: NaiveDate) -> DateTime<Utc> {
+    let naive = d.and_hms_opt(0, 0, 0).unwrap_or_else(|| {
+        // 00:00 is always valid; this branch is unreachable in practice.
+        d.and_time(chrono::NaiveTime::MIN)
+    });
+    match Local.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc),
+        chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc),
+        // DST gap: fall back to treating the naive value as UTC.
+        chrono::LocalResult::None => Utc.from_utc_datetime(&naive),
+    }
+}
+
+/// Parse a `<input type="datetime-local">` value (`YYYY-MM-DDTHH:MM`,
+/// optionally with seconds) as a local wall-clock time and convert to
+/// UTC for the API. Returns `None` on a malformed / empty value so the
+/// form can surface a validation error instead of sending garbage.
+fn parse_local_datetime_to_utc(s: &str) -> Option<DateTime<Utc>> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
+        .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M"))
+        .ok()?;
+    match Local.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(dt) => Some(dt.with_timezone(&Utc)),
+        chrono::LocalResult::Ambiguous(dt, _) => Some(dt.with_timezone(&Utc)),
+        chrono::LocalResult::None => Some(Utc.from_utc_datetime(&naive)),
+    }
+}
+
+/// Format a UTC instant as the `YYYY-MM-DDTHH:MM` string a
+/// `datetime-local` input expects, in the browser's local zone.
+fn utc_to_datetime_local_value(dt: DateTime<Utc>) -> String {
+    dt.with_timezone(&Local)
+        .format("%Y-%m-%dT%H:%M")
+        .to_string()
+}
+
+/// Local clock label like `9:00 AM` for an appointment start/end.
+fn time_label(dt: DateTime<Utc>) -> String {
+    dt.with_timezone(&Local).format("%-I:%M %p").to_string()
+}
+
+/// Local date an appointment falls on (used to bucket into day cells).
+fn local_date(dt: DateTime<Utc>) -> NaiveDate {
+    dt.with_timezone(&Local).date_naive()
+}
+
+/// Local hour-of-day as a float (e.g. 14.5 for 2:30 PM) for positioning
+/// blocks in the week/day time grids.
+fn local_hour_f(dt: DateTime<Utc>) -> f64 {
+    let local = dt.with_timezone(&Local);
+    local.hour() as f64 + local.minute() as f64 / 60.0
+}
+
+/// Tailwind block color keyed on appointment type. Falls back to slate
+/// for unknown types so a future server-side type still renders.
+fn type_color(appointment_type: &str) -> &'static str {
+    match appointment_type {
+        "ticket" => "bg-blue-500",
+        "project" => "bg-green-500",
+        "meeting" => "bg-purple-500",
+        "other" => "bg-gray-500",
+        _ => "bg-slate-500",
+    }
+}
+
+/// Lighter type color for the month-grid chips (which sit on a white
+/// cell and need a tinted, not solid, background).
+fn type_chip_class(appointment_type: &str) -> &'static str {
+    match appointment_type {
+        "ticket" => "bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300",
+        "project" => "bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300",
+        "meeting" => "bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300",
+        _ => "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300",
+    }
+}
+
+/// Appointment type options shared by the create/edit form and any
+/// type-driven UI. Values match the server's CHECK constraint
+/// (`ticket`, `project`, `meeting`, `other`).
+fn appointment_type_options() -> Vec<SelectOption> {
+    vec![
+        SelectOption::new("meeting", "Meeting"),
+        SelectOption::new("ticket", "Ticket"),
+        SelectOption::new("project", "Project"),
+        SelectOption::new("other", "Other"),
+    ]
+}
+
+/// Appointment status options (server CHECK: scheduled / in_progress /
+/// completed / cancelled). Only surfaced in the edit form.
+fn appointment_status_options() -> Vec<SelectOption> {
+    vec![
+        SelectOption::new("scheduled", "Scheduled"),
+        SelectOption::new("in_progress", "In Progress"),
+        SelectOption::new("completed", "Completed"),
+        SelectOption::new("cancelled", "Cancelled"),
+    ]
+}
+
+/// Fetch the tenant's users once for assignee dropdowns / technician
+/// labels. Returns an empty vec on failure (the form falls back to
+/// "Me"). Reads the tenant generation so it re-runs on an org switch.
+fn use_users_resource() -> Resource<Vec<RemoteUser>> {
+    use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        #[cfg(feature = "web")]
+        {
+            crate::hooks::fetch::api::get_authed::<PaginatedUsers>("/users?per_page=100")
+                .await
+                .map(|p| p.data)
+                .unwrap_or_default()
+        }
+        #[cfg(not(feature = "web"))]
+        {
+            Vec::<RemoteUser>::new()
+        }
+    })
+}
+
+// ============================================================================
+// Calendar page
+// ============================================================================
+
+/// Calendar page: month / week / day views over real appointments.
 #[component]
 pub fn CalendarPage() -> Element {
-    // Default to Jan 2025 so the existing demo data shows up when the
-    // backend has no events. Once a tenant has real events, the page
-    // defaults to today.
     let today_real = Local::now().naive_local().date();
-    let mut active_month = use_signal(|| NaiveDate::from_ymd_opt(2025, 1, 1).unwrap_or(today_real));
+    let mut active_date = use_signal(|| today_real);
+    let mut view = use_signal(|| CalendarView::Month);
 
-    // Fetch the live event list. If the backend isn't wired yet (404),
-    // returns errors, or the user isn't authed, we fall back to the
-    // demo data so the page never renders empty. `EventSource` tells
-    // the UI which mode it's in so users see the difference.
-    let events_resource = use_resource(|| async {
-        // F1: re-fetch on org switch so the calendar reflects the newly
-        // active tenant's events rather than the prior tenant's cache.
+    // Modal state: None = closed, Some(None) = creating, Some(Some(appt))
+    // = editing that appointment.
+    let mut form_state = use_signal(|| None::<Option<AppointmentResponse>>);
+
+    let users_resource = use_users_resource();
+    let users = users_resource.read_unchecked().clone().unwrap_or_default();
+
+    // Range the active view covers, used both to build the query and to
+    // re-fetch when the user navigates or switches view.
+    let (range_from_date, range_to_date) = visible_range(active_date(), view());
+    let from_utc = local_date_start_utc(range_from_date);
+    let to_utc = local_date_start_utc(range_to_date);
+
+    let mut appts_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        let token = match crate::hooks::fetch::api::current_access_token() {
-            Some(t) => t,
-            None => return (Vec::new(), EventSource::Demo),
-        };
-        match crate::hooks::fetch::api::get_with_auth::<Vec<RemoteCalendarEvent>>(
-            "/calendar/events",
-            &token,
-        )
-        .await
+        #[cfg(feature = "web")]
         {
-            Ok(events) => (events, EventSource::Backend),
-            Err(_) => (Vec::new(), EventSource::Demo),
+            let path = format!(
+                "/calendar/appointments?from={}&to={}",
+                from_utc.to_rfc3339(),
+                to_utc.to_rfc3339()
+            );
+            crate::hooks::fetch::api::get_authed::<PaginatedAppointments>(&path)
+                .await
+                .map(|p| p.data)
+        }
+        #[cfg(not(feature = "web"))]
+        {
+            let _ = (from_utc, to_utc);
+            Ok::<Vec<AppointmentResponse>, String>(Vec::new())
         }
     });
 
-    let title = {
-        let m = active_month();
-        format!("{} {}", month_name(m.month()), m.year())
+    let appts_snapshot = appts_resource.read_unchecked();
+    let is_loading = appts_snapshot.is_none();
+    let fetch_failed = matches!(*appts_snapshot, Some(Err(_)));
+    let appointments: Vec<AppointmentResponse> = match &*appts_snapshot {
+        Some(Ok(list)) => list.clone(),
+        _ => Vec::new(),
+    };
+
+    let header_label = {
+        let d = active_date();
+        match view() {
+            CalendarView::Month => format!("{} {}", month_name(d.month()), d.year()),
+            CalendarView::Week => {
+                let dates = week_dates(d);
+                let (first, last) = (
+                    dates.first().copied().unwrap_or(d),
+                    dates.last().copied().unwrap_or(d),
+                );
+                format!(
+                    "{} {} - {} {}, {}",
+                    month_name(first.month()),
+                    first.day(),
+                    month_name(last.month()),
+                    last.day(),
+                    last.year()
+                )
+            }
+            CalendarView::Day => d.format("%A, %B %-d, %Y").to_string(),
+        }
+    };
+
+    // Prev/next step depends on the active view.
+    let go_prev = move |_| {
+        let d = active_date();
+        let next = match view() {
+            CalendarView::Month => shift_months(d, -1),
+            CalendarView::Week => d - Duration::days(7),
+            CalendarView::Day => d - Duration::days(1),
+        };
+        active_date.set(next);
+    };
+    let go_next = move |_| {
+        let d = active_date();
+        let next = match view() {
+            CalendarView::Month => shift_months(d, 1),
+            CalendarView::Week => d + Duration::days(7),
+            CalendarView::Day => d + Duration::days(1),
+        };
+        active_date.set(next);
     };
 
     rsx! {
@@ -176,17 +411,9 @@ pub fn CalendarPage() -> Element {
             PageHeader {
                 title: "Calendar",
                 actions: rsx! {
-                    // Disabled stub: creating appointments requires the
-                    // calendar API on mokosh-server, which isn't wired
-                    // yet. Surface as "Coming soon" rather than a
-                    // silent no-op.
-                    // TODO(calendar-api): wire up once /v1/calendar
-                    // endpoints exist on mokosh-server.
-                    button {
-                        r#type: "button",
-                        disabled: true,
-                        title: "Coming soon - calendar API not wired yet",
-                        class: "inline-flex items-center justify-center font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-blue-600 text-white px-4 py-2 text-sm",
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        onclick: move |_| form_state.set(Some(None)),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Appointment"
                     }
@@ -194,155 +421,186 @@ pub fn CalendarPage() -> Element {
             }
 
             div { class: "grid grid-cols-1 lg:grid-cols-4 gap-6",
-                // Calendar grid
                 div { class: "lg:col-span-3",
                     Card { padding: false,
-                        // Calendar header
+                        // Toolbar
                         div { class: "flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700",
                             div { class: "flex items-center space-x-4",
                                 button {
                                     r#type: "button",
                                     class: "p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded",
-                                    title: "Previous month",
-                                    onclick: move |_| {
-                                        let prev = shift_months(active_month(), -1);
-                                        active_month.set(prev);
-                                    },
+                                    title: "Previous",
+                                    onclick: go_prev,
                                     ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
                                 }
                                 h2 { class: "text-lg font-semibold text-gray-900 dark:text-white",
-                                    "{title}"
+                                    "{header_label}"
                                 }
                                 button {
                                     r#type: "button",
                                     class: "p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded",
-                                    title: "Next month",
-                                    onclick: move |_| {
-                                        let next = shift_months(active_month(), 1);
-                                        active_month.set(next);
-                                    },
+                                    title: "Next",
+                                    onclick: go_next,
                                     ChevronRightIcon { class: "h-5 w-5".to_string() }
                                 }
                             }
                             div { class: "flex space-x-2",
                                 Button {
                                     variant: ButtonVariant::Secondary,
-                                    onclick: move |_| {
-                                        active_month.set(today_real);
-                                    },
+                                    onclick: move |_| active_date.set(today_real),
                                     "Today"
                                 }
-                                div { class: "flex border border-gray-300 dark:border-gray-600 rounded-md",
-                                    // Month is the only implemented view today; Week/Day
-                                    // are placeholders. Keep all three visible as roadmap
-                                    // signal, but disable the unimplemented two.
-                                    button {
-                                        r#type: "button",
-                                        class: "px-3 py-1 text-sm bg-blue-600 text-white rounded-l-md cursor-default",
-                                        aria_pressed: true,
-                                        "Month"
+                                div { class: "flex border border-gray-300 dark:border-gray-600 rounded-md overflow-hidden",
+                                    ViewToggleButton {
+                                        label: "Month",
+                                        active: view() == CalendarView::Month,
+                                        onclick: move |_| view.set(CalendarView::Month),
                                     }
-                                    // TODO(calendar-views): week / day layouts.
-                                    button {
-                                        r#type: "button",
-                                        disabled: true,
-                                        title: "Coming soon - week view not implemented",
-                                        class: "px-3 py-1 text-sm text-gray-700 dark:text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed",
-                                        "Week"
+                                    ViewToggleButton {
+                                        label: "Week",
+                                        active: view() == CalendarView::Week,
+                                        onclick: move |_| view.set(CalendarView::Week),
                                     }
-                                    button {
-                                        r#type: "button",
-                                        disabled: true,
-                                        title: "Coming soon - day view not implemented",
-                                        class: "px-3 py-1 text-sm text-gray-700 dark:text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed rounded-r-md",
-                                        "Day"
+                                    ViewToggleButton {
+                                        label: "Day",
+                                        active: view() == CalendarView::Day,
+                                        onclick: move |_| view.set(CalendarView::Day),
                                     }
                                 }
                             }
                         }
 
-                        // Calendar grid
                         div { class: "p-4",
-                            // Day headers
-                            div { class: "grid grid-cols-7 gap-px mb-2",
-                                for day in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] {
-                                    div { class: "text-center text-sm font-medium text-gray-500 dark:text-gray-400 py-2",
-                                        "{day}"
-                                    }
+                            if fetch_failed {
+                                div {
+                                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                                    "Could not load appointments. Refresh the page to retry."
                                 }
                             }
-
-                            // Render based on the fetched events. While
-                            // pending, render an empty grid (preserves layout).
-                            {
-                                let (remote_events, source) = match &*events_resource.read_unchecked() {
-                                    Some((events, source)) => (events.clone(), *source),
-                                    None => (Vec::new(), EventSource::Demo),
-                                };
-                                rsx! {
-                                    if source == EventSource::Demo {
-                                        // Surface the fallback state so users know
-                                        // the calendar is showing seeded demo data.
-                                        div {
-                                            class: "mb-3 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
-                                            "Backend calendar API not reachable - showing demo events. Events you create won't be saved."
+                            if is_loading {
+                                div { class: "py-12 text-center text-sm text-gray-500", "Loading appointments..." }
+                            } else {
+                                match view() {
+                                    CalendarView::Month => rsx! {
+                                        MonthGrid {
+                                            active_date: active_date(),
+                                            today: today_real,
+                                            appointments: appointments.clone(),
+                                            onpick: move |a| form_state.set(Some(Some(a))),
                                         }
-                                    }
-                                    div { class: "grid grid-cols-7 gap-px bg-gray-200 dark:bg-gray-700 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden",
-                                        for (date, in_active) in calendar_cells(active_month()) {
-                                            CalendarDay {
-                                                day: date.day(),
-                                                is_other_month: !in_active,
-                                                is_today: date == today_real,
-                                                events: events_for_date(date, &remote_events, source),
-                                            }
+                                    },
+                                    CalendarView::Week => rsx! {
+                                        WeekGrid {
+                                            active_date: active_date(),
+                                            today: today_real,
+                                            appointments: appointments.clone(),
+                                            onpick: move |a| form_state.set(Some(Some(a))),
                                         }
-                                    }
+                                    },
+                                    CalendarView::Day => rsx! {
+                                        DayGrid {
+                                            active_date: active_date(),
+                                            appointments: appointments.clone(),
+                                            onpick: move |a| form_state.set(Some(Some(a))),
+                                        }
+                                    },
                                 }
                             }
                         }
                     }
                 }
 
-                // Sidebar
+                // Sidebar: agenda for the focused day (the active date).
                 div { class: "space-y-6",
-                    // Today's schedule (demo data; matches the Jan 15 2025 layout)
-                    Card { title: "Today's Schedule",
-                        div { class: "space-y-3",
-                            ScheduleEvent {
-                                time: "9:00 AM",
-                                title: "Onsite: Acme Corp",
-                                event_type: "onsite",
-                            }
-                            ScheduleEvent {
-                                time: "11:30 AM",
-                                title: "Quarterly Review",
-                                event_type: "meeting",
-                            }
-                            ScheduleEvent {
-                                time: "2:00 PM",
-                                title: "Remote Support",
-                                event_type: "remote",
-                            }
-                            ScheduleEvent {
-                                time: "4:00 PM",
-                                title: "Team Standup",
-                                event_type: "internal",
-                            }
-                        }
+                    AgendaCard {
+                        date: active_date(),
+                        appointments: appointments.clone(),
+                        users: users.clone(),
                     }
+                }
+            }
+        }
 
-                    // Upcoming (demo data; static for now)
-                    Card { title: "Upcoming",
-                        div { class: "space-y-2 text-sm",
-                            p { class: "text-gray-600 dark:text-gray-400",
-                                span { class: "font-medium", "Jan 21: " }
-                                "Server Migration"
-                            }
-                            p { class: "text-gray-600 dark:text-gray-400",
-                                span { class: "font-medium", "Jan 28: " }
-                                "Monthly Review"
-                            }
+        // Create / edit appointment modal.
+        if let Some(editing) = form_state.read().clone() {
+            AppointmentFormModal {
+                existing: editing,
+                users: users.clone(),
+                default_date: active_date(),
+                onclose: move |_| form_state.set(None),
+                onsaved: move |_| {
+                    form_state.set(None);
+                    appts_resource.restart();
+                },
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct ViewToggleButtonProps {
+    label: &'static str,
+    active: bool,
+    onclick: EventHandler<MouseEvent>,
+}
+
+#[component]
+fn ViewToggleButton(props: ViewToggleButtonProps) -> Element {
+    let class = if props.active {
+        "px-3 py-1 text-sm bg-blue-600 text-white"
+    } else {
+        "px-3 py-1 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+    };
+    rsx! {
+        button {
+            r#type: "button",
+            class: "{class}",
+            aria_pressed: props.active,
+            onclick: move |e| props.onclick.call(e),
+            "{props.label}"
+        }
+    }
+}
+
+// ============================================================================
+// Month view
+// ============================================================================
+
+#[derive(Props, Clone, PartialEq)]
+struct MonthGridProps {
+    active_date: NaiveDate,
+    today: NaiveDate,
+    appointments: Vec<AppointmentResponse>,
+    onpick: EventHandler<AppointmentResponse>,
+}
+
+#[component]
+fn MonthGrid(props: MonthGridProps) -> Element {
+    rsx! {
+        div { class: "grid grid-cols-7 gap-px mb-2",
+            for day in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] {
+                div { class: "text-center text-sm font-medium text-gray-500 dark:text-gray-400 py-2",
+                    "{day}"
+                }
+            }
+        }
+        div { class: "grid grid-cols-7 gap-px bg-gray-200 dark:bg-gray-700 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden",
+            for (date, in_active) in calendar_cells(props.active_date) {
+                {
+                    let day_appts: Vec<AppointmentResponse> = props
+                        .appointments
+                        .iter()
+                        .filter(|a| local_date(a.start_time) == date)
+                        .cloned()
+                        .collect();
+                    rsx! {
+                        MonthDayCell {
+                            key: "{date}",
+                            day: date.day(),
+                            is_other_month: !in_active,
+                            is_today: date == props.today,
+                            appointments: day_appts,
+                            onpick: move |a| props.onpick.call(a),
                         }
                     }
                 }
@@ -352,23 +610,21 @@ pub fn CalendarPage() -> Element {
 }
 
 #[derive(Props, Clone, PartialEq)]
-struct CalendarDayProps {
+struct MonthDayCellProps {
     day: u32,
-    #[props(default = false)]
     is_other_month: bool,
-    #[props(default = false)]
     is_today: bool,
-    events: Vec<String>,
+    appointments: Vec<AppointmentResponse>,
+    onpick: EventHandler<AppointmentResponse>,
 }
 
 #[component]
-fn CalendarDay(props: CalendarDayProps) -> Element {
+fn MonthDayCell(props: MonthDayCellProps) -> Element {
     let bg_class = if props.is_today {
         "bg-blue-50 dark:bg-blue-900/20"
     } else {
         "bg-white dark:bg-gray-800"
     };
-
     let text_class = if props.is_other_month {
         "text-gray-400 dark:text-gray-600"
     } else if props.is_today {
@@ -376,21 +632,33 @@ fn CalendarDay(props: CalendarDayProps) -> Element {
     } else {
         "text-gray-900 dark:text-white"
     };
+    let total = props.appointments.len();
 
     rsx! {
         div { class: "min-h-24 p-2 {bg_class}",
             span { class: "text-sm {text_class}", "{props.day}" }
             div { class: "mt-1 space-y-1",
-                for (i, event) in props.events.iter().enumerate() {
-                    if i < 2 {
-                        div { class: "text-xs truncate px-1 py-0.5 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded",
-                            "{event}"
+                for (i, appt) in props.appointments.iter().enumerate() {
+                    if i < 3 {
+                        {
+                            let chip = type_chip_class(&appt.appointment_type);
+                            let appt_clone = appt.clone();
+                            let label = format!("{} {}", time_label(appt.start_time), appt.title);
+                            rsx! {
+                                button {
+                                    r#type: "button",
+                                    class: "w-full text-left text-xs truncate px-1 py-0.5 rounded {chip} hover:opacity-80",
+                                    title: "{label}",
+                                    onclick: move |_| props.onpick.call(appt_clone.clone()),
+                                    "{label}"
+                                }
+                            }
                         }
                     }
                 }
-                if props.events.len() > 2 {
+                if total > 3 {
                     {
-                        let remaining = props.events.len() - 2;
+                        let remaining = total - 3;
                         rsx! { span { class: "text-xs text-gray-500", "+{remaining} more" } }
                     }
                 }
@@ -399,40 +667,728 @@ fn CalendarDay(props: CalendarDayProps) -> Element {
     }
 }
 
+// ============================================================================
+// Week view
+// ============================================================================
+
 #[derive(Props, Clone, PartialEq)]
-struct ScheduleEventProps {
-    time: String,
-    title: String,
-    event_type: String,
+struct WeekGridProps {
+    active_date: NaiveDate,
+    today: NaiveDate,
+    appointments: Vec<AppointmentResponse>,
+    onpick: EventHandler<AppointmentResponse>,
 }
 
 #[component]
-fn ScheduleEvent(props: ScheduleEventProps) -> Element {
-    let color_class = match props.event_type.as_str() {
-        "onsite" => "border-l-green-500 bg-green-50 dark:bg-green-900/20",
-        "meeting" => "border-l-blue-500 bg-blue-50 dark:bg-blue-900/20",
-        "remote" => "border-l-purple-500 bg-purple-50 dark:bg-purple-900/20",
-        _ => "border-l-gray-500 bg-gray-50 dark:bg-gray-800",
-    };
-
+fn WeekGrid(props: WeekGridProps) -> Element {
+    let dates = week_dates(props.active_date);
     rsx! {
-        div { class: "border-l-4 {color_class} p-3 rounded-r",
-            p { class: "text-xs text-gray-500 dark:text-gray-400", "{props.time}" }
-            p { class: "font-medium text-gray-900 dark:text-white", "{props.title}" }
+        div { class: "overflow-x-auto",
+            div { class: "min-w-[700px]",
+                // Day-of-week header row (time gutter + 7 day columns).
+                div { class: "grid grid-cols-[60px_repeat(7,1fr)] border-b border-gray-200 dark:border-gray-700",
+                    div { class: "p-2" }
+                    for d in dates.iter() {
+                        {
+                            let is_today = *d == props.today;
+                            let head_class = if is_today {
+                                "p-2 text-center text-sm font-semibold text-blue-600 dark:text-blue-400 border-l border-gray-200 dark:border-gray-700"
+                            } else {
+                                "p-2 text-center text-sm font-medium text-gray-500 dark:text-gray-400 border-l border-gray-200 dark:border-gray-700"
+                            };
+                            let weekday = d.format("%a").to_string();
+                            let daynum = d.day();
+                            rsx! {
+                                div { class: "{head_class}",
+                                    div { "{weekday}" }
+                                    div { class: "text-lg", "{daynum}" }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Body: hour-labeled gutter + 7 positioned day columns.
+                div { class: "grid grid-cols-[60px_repeat(7,1fr)]",
+                    // Hour gutter.
+                    div { class: "relative",
+                        for hour in GRID_START_HOUR..GRID_END_HOUR {
+                            {
+                                let label = hour_label(hour);
+                                rsx! {
+                                    div { class: "h-12 text-right pr-2 text-xs text-gray-400 -mt-2",
+                                        "{label}"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    for d in dates.iter() {
+                        {
+                            let day = *d;
+                            let day_appts: Vec<AppointmentResponse> = props
+                                .appointments
+                                .iter()
+                                .filter(|a| local_date(a.start_time) == day)
+                                .cloned()
+                                .collect();
+                            rsx! {
+                                DayColumn {
+                                    key: "{day}",
+                                    appointments: day_appts,
+                                    onpick: move |a| props.onpick.call(a),
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
-/// Dispatch board page. Day-by-day navigation works (prev/next/today);
-/// scheduling new appointments is stubbed because there's no backend yet.
+/// Hour label like `7 AM` / `12 PM` for the time gutter.
+fn hour_label(hour: u32) -> String {
+    let suffix = if hour < 12 { "AM" } else { "PM" };
+    let h12 = match hour % 12 {
+        0 => 12,
+        h => h,
+    };
+    format!("{h12} {suffix}")
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct DayColumnProps {
+    appointments: Vec<AppointmentResponse>,
+    onpick: EventHandler<AppointmentResponse>,
+}
+
+/// One day's column in the week view: an absolutely-positioned stack of
+/// appointment blocks over hour divider lines.
+#[component]
+fn DayColumn(props: DayColumnProps) -> Element {
+    let rows = (GRID_END_HOUR - GRID_START_HOUR) as usize;
+    rsx! {
+        div { class: "relative border-l border-gray-200 dark:border-gray-700",
+            style: "height: {rows as f64 * 3.0}rem;",
+            // Hour grid lines.
+            for _ in 0..rows {
+                div { class: "h-12 border-b border-gray-100 dark:border-gray-800" }
+            }
+            // Appointment blocks.
+            for appt in props.appointments.iter() {
+                {
+                    let (top_pct, height_pct) = block_geometry(appt);
+                    let color = type_color(&appt.appointment_type);
+                    let appt_clone = appt.clone();
+                    let label = appt.title.clone();
+                    let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
+                    rsx! {
+                        button {
+                            r#type: "button",
+                            class: "absolute left-0.5 right-0.5 rounded px-1 py-0.5 text-[10px] leading-tight text-white text-left overflow-hidden shadow-sm hover:opacity-90 {color}",
+                            style: "top: {top_pct:.4}%; height: {height_pct:.4}%;",
+                            title: "{time}: {label}",
+                            onclick: move |_| props.onpick.call(appt_clone.clone()),
+                            div { class: "font-medium truncate", "{label}" }
+                            div { class: "truncate opacity-90", "{time}" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Top offset + height as percentages of the GRID_START_HOUR..GRID_END_HOUR
+/// window for an appointment, clamped so out-of-window events stay visible.
+fn block_geometry(appt: &AppointmentResponse) -> (f64, f64) {
+    let start = local_hour_f(appt.start_time).clamp(GRID_START_HOUR as f64, GRID_END_HOUR as f64);
+    let end = local_hour_f(appt.end_time).clamp(start, GRID_END_HOUR as f64);
+    let top = (start - GRID_START_HOUR as f64) / GRID_TOTAL_HOURS * 100.0;
+    // Floor the visible height so a zero-length / all-day item still
+    // shows a tappable sliver.
+    let height = (((end - start) / GRID_TOTAL_HOURS) * 100.0).max(3.0);
+    (top.max(0.0), height)
+}
+
+// ============================================================================
+// Day view
+// ============================================================================
+
+#[derive(Props, Clone, PartialEq)]
+struct DayGridProps {
+    active_date: NaiveDate,
+    appointments: Vec<AppointmentResponse>,
+    onpick: EventHandler<AppointmentResponse>,
+}
+
+#[component]
+fn DayGrid(props: DayGridProps) -> Element {
+    let day = props.active_date;
+    let day_appts: Vec<AppointmentResponse> = props
+        .appointments
+        .iter()
+        .filter(|a| local_date(a.start_time) == day)
+        .cloned()
+        .collect();
+    let rows = (GRID_END_HOUR - GRID_START_HOUR) as usize;
+
+    rsx! {
+        if day_appts.is_empty() {
+            div { class: "mb-3 text-sm text-gray-500", "No appointments scheduled for this day." }
+        }
+        div { class: "grid grid-cols-[80px_1fr]",
+            // Hour gutter.
+            div {
+                for hour in GRID_START_HOUR..GRID_END_HOUR {
+                    {
+                        let label = hour_label(hour);
+                        rsx! {
+                            div { class: "h-16 text-right pr-3 text-xs text-gray-400 -mt-2", "{label}" }
+                        }
+                    }
+                }
+            }
+            // Single positioned column (taller rows than the week view).
+            div { class: "relative border-l border-gray-200 dark:border-gray-700",
+                style: "height: {rows as f64 * 4.0}rem;",
+                for _ in 0..rows {
+                    div { class: "h-16 border-b border-gray-100 dark:border-gray-800" }
+                }
+                for appt in day_appts.iter() {
+                    {
+                        let (top_pct, height_pct) = block_geometry(appt);
+                        let color = type_color(&appt.appointment_type);
+                        let appt_clone = appt.clone();
+                        let label = appt.title.clone();
+                        let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
+                        let location = appt.location.clone().unwrap_or_default();
+                        rsx! {
+                            button {
+                                r#type: "button",
+                                class: "absolute left-2 right-2 rounded-md px-2 py-1 text-xs text-white text-left overflow-hidden shadow-sm hover:opacity-90 {color}",
+                                style: "top: {top_pct:.4}%; height: {height_pct:.4}%;",
+                                title: "{time}: {label}",
+                                onclick: move |_| props.onpick.call(appt_clone.clone()),
+                                div { class: "font-medium truncate", "{label}" }
+                                div { class: "opacity-90", "{time}" }
+                                if !location.is_empty() {
+                                    div { class: "truncate opacity-90", "{location}" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Sidebar agenda
+// ============================================================================
+
+#[derive(Props, Clone, PartialEq)]
+struct AgendaCardProps {
+    date: NaiveDate,
+    appointments: Vec<AppointmentResponse>,
+    users: Vec<RemoteUser>,
+}
+
+#[component]
+fn AgendaCard(props: AgendaCardProps) -> Element {
+    let mut day_appts: Vec<AppointmentResponse> = props
+        .appointments
+        .iter()
+        .filter(|a| local_date(a.start_time) == props.date)
+        .cloned()
+        .collect();
+    day_appts.sort_by_key(|a| a.start_time);
+    let heading = props.date.format("%A, %b %-d").to_string();
+
+    rsx! {
+        Card { title: "{heading}",
+            if day_appts.is_empty() {
+                p { class: "text-sm text-gray-500 dark:text-gray-400", "Nothing scheduled." }
+            } else {
+                div { class: "space-y-3",
+                    for appt in day_appts.iter() {
+                        {
+                            let border = match appt.appointment_type.as_str() {
+                                "ticket" => "border-l-blue-500",
+                                "project" => "border-l-green-500",
+                                "meeting" => "border-l-purple-500",
+                                _ => "border-l-gray-500",
+                            };
+                            let time = time_label(appt.start_time);
+                            let title = appt.title.clone();
+                            let who = props
+                                .users
+                                .iter()
+                                .find(|u| u.id == appt.assigned_to_id)
+                                .map(|u| u.display_name())
+                                .unwrap_or_default();
+                            rsx! {
+                                div { class: "border-l-4 {border} bg-gray-50 dark:bg-gray-800 p-3 rounded-r",
+                                    p { class: "text-xs text-gray-500 dark:text-gray-400", "{time}" }
+                                    p { class: "font-medium text-gray-900 dark:text-white", "{title}" }
+                                    if !who.is_empty() {
+                                        p { class: "text-xs text-gray-500 dark:text-gray-400", "{who}" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Create / edit appointment modal
+// ============================================================================
+
+#[derive(Props, Clone, PartialEq)]
+struct AppointmentFormModalProps {
+    /// `None` => create a new appointment; `Some(appt)` => edit it.
+    existing: Option<AppointmentResponse>,
+    users: Vec<RemoteUser>,
+    /// Date to seed a brand-new appointment with (the active calendar day).
+    default_date: NaiveDate,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
+    // Read the signed-in user's id unconditionally (rules of hooks) to
+    // default the assignee on a new appointment.
+    let auth = crate::hooks::use_auth();
+    let signed_in_user_id = auth.read().user.as_ref().map(|u| u.id);
+
+    let existing = props.existing.clone();
+    let is_edit = existing.is_some();
+    // Expanded recurring instances cannot be edited individually: their
+    // id is the series master's, so a PUT/DELETE would hit the master.
+    let is_recurring_instance = existing
+        .as_ref()
+        .map(|a| a.is_recurring_instance())
+        .unwrap_or(false);
+    let modal_title = if is_edit {
+        "Edit Appointment"
+    } else {
+        "New Appointment"
+    };
+
+    // Seed defaults: editing pulls from the appointment; creating uses a
+    // 9-10am block on the active day.
+    let default_start = props
+        .default_date
+        .and_hms_opt(9, 0, 0)
+        .map(|n| match Local.from_local_datetime(&n) {
+            chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc),
+            chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc),
+            chrono::LocalResult::None => Utc.from_utc_datetime(&n),
+        })
+        .unwrap_or_else(Utc::now);
+    let default_end = default_start + Duration::hours(1);
+
+    let init_title = existing
+        .as_ref()
+        .map(|a| a.title.clone())
+        .unwrap_or_default();
+    let init_desc = existing
+        .as_ref()
+        .and_then(|a| a.description.clone())
+        .unwrap_or_default();
+    let init_type = existing
+        .as_ref()
+        .map(|a| a.appointment_type.clone())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| "meeting".to_string());
+    let init_status = existing
+        .as_ref()
+        .map(|a| a.status.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "scheduled".to_string());
+    let init_location = existing
+        .as_ref()
+        .and_then(|a| a.location.clone())
+        .unwrap_or_default();
+    let init_start = existing
+        .as_ref()
+        .map(|a| a.start_time)
+        .unwrap_or(default_start);
+    let init_end = existing.as_ref().map(|a| a.end_time).unwrap_or(default_end);
+    let init_assignee = existing
+        .as_ref()
+        .map(|a| a.assigned_to_id)
+        .or(signed_in_user_id)
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+
+    let mut title = use_signal(|| init_title);
+    let mut description = use_signal(|| init_desc);
+    let mut appointment_type = use_signal(|| init_type);
+    let mut status = use_signal(|| init_status);
+    let mut location = use_signal(|| init_location);
+    let mut start_value = use_signal(|| utc_to_datetime_local_value(init_start));
+    let mut end_value = use_signal(|| utc_to_datetime_local_value(init_end));
+    let mut assignee = use_signal(|| init_assignee);
+    let mut recurrence = use_signal(String::new);
+    let mut saving = use_signal(|| false);
+    let mut deleting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let assignee_options: Vec<SelectOption> = {
+        let mut opts = vec![SelectOption::new("", "Select technician...")];
+        for u in props.users.iter() {
+            opts.push(SelectOption::new(u.id.to_string(), u.display_name()));
+        }
+        opts
+    };
+
+    let onsaved = props.onsaved;
+    let onclose = props.onclose;
+    let edit_id = existing.as_ref().map(|a| a.id);
+
+    // ---- Save (create or update) ----
+    let handle_save = move |_| {
+        if saving() || deleting() {
+            return;
+        }
+        let title_val = title.read().trim().to_string();
+        if title_val.is_empty() {
+            error.set("Title is required.".to_string());
+            return;
+        }
+        let assignee_str = assignee.read().clone();
+        let Some(assigned_to_id) = uuid::Uuid::parse_str(assignee_str.trim()).ok() else {
+            error.set("Please pick a technician to assign.".to_string());
+            return;
+        };
+        let Some(start_time) = parse_local_datetime_to_utc(&start_value.read()) else {
+            error.set("Please enter a valid start time.".to_string());
+            return;
+        };
+        let Some(end_time) = parse_local_datetime_to_utc(&end_value.read()) else {
+            error.set("Please enter a valid end time.".to_string());
+            return;
+        };
+        if end_time < start_time {
+            error.set("End time must be on or after the start time.".to_string());
+            return;
+        }
+
+        let desc = optional(&description.read());
+        let loc = optional(&location.read());
+        let type_val = appointment_type.read().clone();
+        let status_val = status.read().clone();
+        let rrule = optional(&recurrence.read());
+
+        saving.set(true);
+        error.set(String::new());
+
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let result: Result<(), crate::hooks::fetch::api::ApiError> = match edit_id {
+                    None => {
+                        let body = CreateAppointmentRequest {
+                            title: title_val,
+                            description: desc,
+                            appointment_type: type_val,
+                            ticket_id: None,
+                            project_id: None,
+                            company_id: None,
+                            contact_id: None,
+                            assigned_to_id,
+                            start_time,
+                            end_time,
+                            all_day: false,
+                            timezone: "UTC".to_string(),
+                            location: loc,
+                            recurrence_rule: rrule,
+                        };
+                        crate::hooks::fetch::api::post_authed_typed::<AppointmentResponse, _>(
+                            "/calendar/appointments",
+                            &body,
+                        )
+                        .await
+                        .map(|_| ())
+                    }
+                    Some(id) => {
+                        let body = UpdateAppointmentRequest {
+                            title: Some(title_val),
+                            description: desc,
+                            appointment_type: Some(type_val),
+                            assigned_to_id: Some(assigned_to_id),
+                            start_time: Some(start_time),
+                            end_time: Some(end_time),
+                            all_day: Some(false),
+                            timezone: None,
+                            status: Some(status_val),
+                            location: loc,
+                        };
+                        let path = format!("/calendar/appointments/{id}");
+                        crate::hooks::fetch::api::put_authed_typed::<AppointmentResponse, _>(
+                            &path, &body,
+                        )
+                        .await
+                        .map(|_| ())
+                    }
+                };
+                match result {
+                    Ok(()) => onsaved.call(()),
+                    Err(e) => {
+                        error.set(format!("Could not save appointment: {}", e.user_message()))
+                    }
+                }
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                let _ = (
+                    edit_id,
+                    title_val,
+                    desc,
+                    type_val,
+                    status_val,
+                    loc,
+                    rrule,
+                    assigned_to_id,
+                    start_time,
+                    end_time,
+                );
+            }
+            saving.set(false);
+        });
+    };
+
+    // ---- Delete (edit mode only, non-recurring) ----
+    let handle_delete = move |_| {
+        let Some(id) = edit_id else { return };
+        if saving() || deleting() {
+            return;
+        }
+        deleting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let confirmed = web_sys::window()
+                    .and_then(|w| {
+                        w.confirm_with_message("Delete this appointment? This cannot be undone.")
+                            .ok()
+                    })
+                    .unwrap_or(false);
+                if confirmed {
+                    let path = format!("/calendar/appointments/{id}");
+                    match crate::hooks::fetch::api::delete_authed_typed(&path).await {
+                        Ok(()) => onsaved.call(()),
+                        Err(e) => error.set(format!(
+                            "Could not delete appointment: {}",
+                            e.user_message()
+                        )),
+                    }
+                }
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                let _ = id;
+            }
+            deleting.set(false);
+        });
+    };
+
+    let footer = rsx! {
+        if is_edit && !is_recurring_instance {
+            Button {
+                variant: ButtonVariant::Danger,
+                loading: *deleting.read(),
+                onclick: handle_delete,
+                "Delete"
+            }
+        }
+        div { class: "flex-1" }
+        Button {
+            variant: ButtonVariant::Secondary,
+            onclick: move |_| onclose.call(()),
+            "Cancel"
+        }
+        if !is_recurring_instance {
+            Button {
+                variant: ButtonVariant::Primary,
+                loading: *saving.read(),
+                onclick: handle_save,
+                if is_edit { "Save Changes" } else { "Create Appointment" }
+            }
+        }
+    };
+
+    rsx! {
+        Modal {
+            open: true,
+            title: modal_title,
+            size: ModalSize::Large,
+            onclose: move |_| onclose.call(()),
+            footer,
+            div { class: "space-y-4",
+                if is_recurring_instance {
+                    div {
+                        class: "text-sm text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
+                        "This is an occurrence of a recurring series. Editing individual occurrences isn't supported yet; edit the series from its first appointment."
+                    }
+                }
+                if !error.read().is_empty() {
+                    div {
+                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                        "{error.read()}"
+                    }
+                }
+                Input {
+                    name: "appt_title",
+                    label: "Title",
+                    placeholder: "e.g. Onsite: Acme Corp",
+                    required: true,
+                    value: title.read().clone(),
+                    oninput: move |e: FormEvent| title.set(e.value()),
+                }
+                div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
+                    Input {
+                        name: "appt_start",
+                        label: "Start",
+                        r#type: "datetime-local".to_string(),
+                        required: true,
+                        value: start_value.read().clone(),
+                        oninput: move |e: FormEvent| start_value.set(e.value()),
+                    }
+                    Input {
+                        name: "appt_end",
+                        label: "End",
+                        r#type: "datetime-local".to_string(),
+                        required: true,
+                        value: end_value.read().clone(),
+                        oninput: move |e: FormEvent| end_value.set(e.value()),
+                    }
+                    Select {
+                        name: "appt_type",
+                        label: "Type",
+                        options: appointment_type_options(),
+                        value: appointment_type.read().clone(),
+                        onchange: move |e: FormEvent| appointment_type.set(e.value()),
+                    }
+                    Select {
+                        name: "appt_assignee",
+                        label: "Assigned to",
+                        options: assignee_options.clone(),
+                        value: assignee.read().clone(),
+                        onchange: move |e: FormEvent| assignee.set(e.value()),
+                    }
+                    if is_edit {
+                        Select {
+                            name: "appt_status",
+                            label: "Status",
+                            options: appointment_status_options(),
+                            value: status.read().clone(),
+                            onchange: move |e: FormEvent| status.set(e.value()),
+                        }
+                    }
+                    Input {
+                        name: "appt_location",
+                        label: "Location",
+                        placeholder: "e.g. Client site / Remote",
+                        value: location.read().clone(),
+                        oninput: move |e: FormEvent| location.set(e.value()),
+                    }
+                }
+                if !is_edit {
+                    Input {
+                        name: "appt_recurrence",
+                        label: "Recurrence (RRULE, optional)",
+                        placeholder: "e.g. FREQ=WEEKLY;BYDAY=MO",
+                        help: "RFC 5545 rule. Leave blank for a one-off. The series is anchored on the start time."
+                            .to_string(),
+                        value: recurrence.read().clone(),
+                        oninput: move |e: FormEvent| recurrence.set(e.value()),
+                    }
+                }
+                Textarea {
+                    name: "appt_description",
+                    label: "Description",
+                    rows: 3,
+                    value: description.read().clone(),
+                    oninput: move |e: FormEvent| description.set(e.value()),
+                }
+            }
+        }
+    }
+}
+
+/// Trim a field and return `None` when empty so optional request fields
+/// are omitted (and the server keeps its existing value on update).
+fn optional(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+// ============================================================================
+// Dispatch board page
+// ============================================================================
+
+/// Dispatch board: aggregated technician view over `GET /api/v1/dispatch`.
+/// Day-by-day navigation; appointments are grouped per assignee and laid
+/// out on a shared 7am-7pm timeline, with availability, time-off, and
+/// on-call context surfaced alongside.
 #[component]
 pub fn DispatchBoardPage() -> Element {
     let today_real = Local::now().naive_local().date();
-    // Default to Jan 15 2025 so the demo data lines up with the page text.
-    let initial = NaiveDate::from_ymd_opt(2025, 1, 15).unwrap_or(today_real);
-    let mut active_day = use_signal(|| initial);
+    let mut active_day = use_signal(|| today_real);
+    let mut form_state = use_signal(|| None::<Option<AppointmentResponse>>);
 
-    let title = active_day().format("%A, %B %-d, %Y").to_string();
+    let users_resource = use_users_resource();
+    let users = users_resource.read_unchecked().clone().unwrap_or_default();
+
+    let day = active_day();
+    let from_utc = local_date_start_utc(day);
+    let to_utc = local_date_start_utc(day + Duration::days(1));
+
+    let mut dispatch_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        #[cfg(feature = "web")]
+        {
+            let path = format!(
+                "/dispatch?from={}&to={}",
+                from_utc.to_rfc3339(),
+                to_utc.to_rfc3339()
+            );
+            crate::hooks::fetch::api::get_authed::<DispatchResponse>(&path).await
+        }
+        #[cfg(not(feature = "web"))]
+        {
+            let _ = (from_utc, to_utc);
+            Ok::<DispatchResponse, String>(DispatchResponse {
+                appointments: Vec::new(),
+                availability: Vec::new(),
+                time_off: Vec::new(),
+                on_call: Vec::new(),
+            })
+        }
+    });
+
+    let snapshot = dispatch_resource.read_unchecked();
+    let is_loading = snapshot.is_none();
+    let fetch_failed = matches!(*snapshot, Some(Err(_)));
+    let dispatch: Option<DispatchResponse> = match &*snapshot {
+        Some(Ok(d)) => Some(d.clone()),
+        _ => None,
+    };
+
+    let title = day.format("%A, %B %-d, %Y").to_string();
 
     rsx! {
         AppLayout { title: "Dispatch Board",
@@ -440,90 +1396,109 @@ pub fn DispatchBoardPage() -> Element {
                 title: "Dispatch Board",
                 subtitle: "Manage technician schedules and appointments",
                 actions: rsx! {
-                    // TODO(calendar-api): schedule new appointments via
-                    // mokosh-server once the endpoint exists.
-                    button {
-                        r#type: "button",
-                        disabled: true,
-                        title: "Coming soon - dispatch API not wired yet",
-                        class: "inline-flex items-center justify-center font-medium rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-blue-600 text-white px-4 py-2 text-sm",
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        onclick: move |_| form_state.set(Some(None)),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "Schedule Appointment"
                     }
                 },
             }
 
+            // On-call banner (who is covering right now).
+            if let Some(d) = dispatch.as_ref() {
+                if !d.on_call.is_empty() {
+                    OnCallBanner { on_call: d.on_call.clone(), users: users.clone() }
+                }
+            }
+
             Card { padding: false,
-                // Header
                 div { class: "flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700",
                     div { class: "flex items-center space-x-4",
                         button {
                             r#type: "button",
                             class: "p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded",
                             title: "Previous day",
-                            onclick: move |_| {
-                                active_day.set(active_day() - Duration::days(1));
-                            },
+                            onclick: move |_| active_day.set(active_day() - Duration::days(1)),
                             ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
                         }
-                        h2 { class: "text-lg font-semibold text-gray-900 dark:text-white",
-                            "{title}"
-                        }
+                        h2 { class: "text-lg font-semibold text-gray-900 dark:text-white", "{title}" }
                         button {
                             r#type: "button",
                             class: "p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded",
                             title: "Next day",
-                            onclick: move |_| {
-                                active_day.set(active_day() + Duration::days(1));
-                            },
+                            onclick: move |_| active_day.set(active_day() + Duration::days(1)),
                             ChevronRightIcon { class: "h-5 w-5".to_string() }
                         }
                     }
                     Button {
                         variant: ButtonVariant::Secondary,
-                        onclick: move |_| { active_day.set(today_real); },
+                        onclick: move |_| active_day.set(today_real),
                         "Today"
                     }
                 }
 
-                // Dispatch grid
-                div { class: "overflow-x-auto",
-                    div { class: "min-w-[800px]",
-                        // Time headers
-                        div { class: "grid grid-cols-[200px_repeat(9,1fr)] border-b border-gray-200 dark:border-gray-700",
-                            div { class: "p-2 bg-gray-50 dark:bg-gray-800 font-medium text-sm text-gray-500", "Technician" }
-                            for hour in 8..=16 {
-                                div { class: "p-2 bg-gray-50 dark:bg-gray-800 text-center text-sm text-gray-500 border-l border-gray-200 dark:border-gray-700",
-                                    if hour <= 12 {
-                                        "{hour}:00 AM"
-                                    } else {
-                                        "{hour - 12}:00 PM"
-                                    }
-                                }
-                            }
+                div { class: "p-4",
+                    if fetch_failed {
+                        div {
+                            class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                            "Could not load the dispatch board. Refresh the page to retry."
                         }
+                    }
+                    if is_loading {
+                        div { class: "py-12 text-center text-sm text-gray-500", "Loading dispatch board..." }
+                    } else if let Some(d) = dispatch.as_ref() {
+                        DispatchTimeline {
+                            day,
+                            dispatch: d.clone(),
+                            users: users.clone(),
+                            onpick: move |a| form_state.set(Some(Some(a))),
+                        }
+                    }
+                }
+            }
+        }
 
-                        // Technician rows
-                        TechnicianRow {
-                            name: "John Smith",
-                            appointments: vec![
-                                ("8:00 AM", "10:00 AM", "Acme Corp - Server Maint.", "onsite"),
-                                ("10:30 AM", "12:00 PM", "TechStart - Network Issue", "remote"),
-                                ("2:00 PM", "4:00 PM", "Global Widgets - Setup", "onsite"),
-                            ],
-                        }
-                        TechnicianRow {
-                            name: "Jane Doe",
-                            appointments: vec![
-                                ("9:00 AM", "11:00 AM", "Meeting - Quarterly Review", "meeting"),
-                                ("1:00 PM", "3:00 PM", "New Venture - Site Survey", "onsite"),
-                            ],
-                        }
-                        TechnicianRow {
-                            name: "Mike Wilson",
-                            appointments: vec![
-                                ("8:00 AM", "12:00 PM", "Acme Corp - Migration", "onsite"),
-                            ],
+        if let Some(editing) = form_state.read().clone() {
+            AppointmentFormModal {
+                existing: editing,
+                users: users.clone(),
+                default_date: active_day(),
+                onclose: move |_| form_state.set(None),
+                onsaved: move |_| {
+                    form_state.set(None);
+                    dispatch_resource.restart();
+                },
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct OnCallBannerProps {
+    on_call: Vec<OnCallNowResponse>,
+    users: Vec<RemoteUser>,
+}
+
+#[component]
+fn OnCallBanner(props: OnCallBannerProps) -> Element {
+    rsx! {
+        div { class: "mb-4 rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 px-4 py-3",
+            p { class: "text-sm font-medium text-amber-800 dark:text-amber-300 mb-1", "On call now" }
+            div { class: "flex flex-wrap gap-x-6 gap-y-1 text-sm text-amber-700 dark:text-amber-300",
+                for entry in props.on_call.iter() {
+                    {
+                        let who = entry
+                            .on_call_user_id
+                            .and_then(|id| props.users.iter().find(|u| u.id == id))
+                            .map(|u| u.display_name())
+                            .unwrap_or_else(|| "Unassigned".to_string());
+                        let name = entry.schedule_name.clone();
+                        rsx! {
+                            span { key: "{entry.schedule_id}",
+                                span { class: "font-medium", "{name}: " }
+                                "{who}"
+                            }
                         }
                     }
                 }
@@ -533,48 +1508,138 @@ pub fn DispatchBoardPage() -> Element {
 }
 
 #[derive(Props, Clone, PartialEq)]
-struct TechnicianRowProps {
-    name: String,
-    appointments: Vec<(&'static str, &'static str, &'static str, &'static str)>,
-}
-
-/// Parse a label like "10:30 AM" into a 24h hour-of-day float (e.g.
-/// 10.5). Returns `None` if the input doesn't match the dispatch
-/// board's `H:MM AM/PM` shape so a typo doesn't crash the page.
-fn parse_dispatch_time(s: &str) -> Option<f64> {
-    let s = s.trim();
-    let (clock, ampm) = s.rsplit_once(' ')?;
-    let (h_str, m_str) = clock.split_once(':')?;
-    let h: f64 = h_str.parse().ok()?;
-    let m: f64 = m_str.parse().ok()?;
-    let mut hour = (h % 12.0) + m / 60.0;
-    if ampm.eq_ignore_ascii_case("PM") {
-        hour += 12.0;
-    }
-    Some(hour)
-}
-
-fn dispatch_color(kind: &str) -> &'static str {
-    match kind {
-        "onsite" => "bg-blue-500",
-        "remote" => "bg-green-500",
-        "meeting" => "bg-purple-500",
-        "internal" => "bg-gray-500",
-        _ => "bg-slate-500",
-    }
+struct DispatchTimelineProps {
+    day: NaiveDate,
+    dispatch: DispatchResponse,
+    users: Vec<RemoteUser>,
+    onpick: EventHandler<AppointmentResponse>,
 }
 
 #[component]
-fn TechnicianRow(props: TechnicianRowProps) -> Element {
-    // The dispatch board covers 8am-5pm (9 hour slots). Each appointment
-    // gets an absolutely-positioned colored block within the time-grid
-    // area whose left/width are percentages of those 9 hours.
-    const FIRST_HOUR: f64 = 8.0;
-    const TOTAL_HOURS: f64 = 9.0;
+fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
+    // Which user ids to show as rows: everyone who has an appointment,
+    // an availability window, or time off today. Sorted by display name
+    // for a stable layout.
+    let mut user_ids: Vec<uuid::Uuid> = Vec::new();
+    for a in props.dispatch.appointments.iter() {
+        if !user_ids.contains(&a.assigned_to_id) {
+            user_ids.push(a.assigned_to_id);
+        }
+    }
+    for av in props.dispatch.availability.iter() {
+        if !user_ids.contains(&av.user_id) {
+            user_ids.push(av.user_id);
+        }
+    }
+    for t in props.dispatch.time_off.iter() {
+        if !user_ids.contains(&t.user_id) {
+            user_ids.push(t.user_id);
+        }
+    }
+    let name_for = |id: uuid::Uuid| {
+        props
+            .users
+            .iter()
+            .find(|u| u.id == id)
+            .map(|u| u.display_name())
+            .unwrap_or_else(|| "Unknown".to_string())
+    };
+    user_ids.sort_by_key(|id| name_for(*id));
+
+    // 0=Sunday .. 6=Saturday for matching availability windows.
+    let dow = props.day.weekday().num_days_from_sunday() as i32;
+
+    if user_ids.is_empty() {
+        return rsx! {
+            div { class: "py-12 text-center text-sm text-gray-500",
+                "No technicians scheduled for this day."
+            }
+        };
+    }
 
     rsx! {
-        div { class: "grid grid-cols-[200px_repeat(9,1fr)] border-b border-gray-200 dark:border-gray-700 min-h-16",
-            // Technician name
+        div { class: "overflow-x-auto",
+            div { class: "min-w-[800px]",
+                // Hour header.
+                div { class: "grid border-b border-gray-200 dark:border-gray-700",
+                    style: "grid-template-columns: 200px repeat({GRID_END_HOUR - GRID_START_HOUR}, 1fr);",
+                    div { class: "p-2 bg-gray-50 dark:bg-gray-800 font-medium text-sm text-gray-500", "Technician" }
+                    for hour in GRID_START_HOUR..GRID_END_HOUR {
+                        {
+                            let label = hour_label(hour);
+                            rsx! {
+                                div { class: "p-2 bg-gray-50 dark:bg-gray-800 text-center text-xs text-gray-500 border-l border-gray-200 dark:border-gray-700",
+                                    "{label}"
+                                }
+                            }
+                        }
+                    }
+                }
+                for id in user_ids.iter() {
+                    {
+                        let uid = *id;
+                        let name = name_for(uid);
+                        let row_appts: Vec<AppointmentResponse> = props
+                            .dispatch
+                            .appointments
+                            .iter()
+                            .filter(|a| a.assigned_to_id == uid)
+                            .cloned()
+                            .collect();
+                        let windows: Vec<UserAvailabilityResponse> = props
+                            .dispatch
+                            .availability
+                            .iter()
+                            .filter(|w| w.user_id == uid && w.day_of_week == dow && w.is_available)
+                            .cloned()
+                            .collect();
+                        let time_off: Vec<TimeOffResponse> = props
+                            .dispatch
+                            .time_off
+                            .iter()
+                            .filter(|t| t.user_id == uid)
+                            .cloned()
+                            .collect();
+                        rsx! {
+                            DispatchRow {
+                                key: "{uid}",
+                                name,
+                                appointments: row_appts,
+                                availability: windows,
+                                time_off,
+                                onpick: move |a| props.onpick.call(a),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct DispatchRowProps {
+    name: String,
+    appointments: Vec<AppointmentResponse>,
+    availability: Vec<UserAvailabilityResponse>,
+    time_off: Vec<TimeOffResponse>,
+    onpick: EventHandler<AppointmentResponse>,
+}
+
+#[component]
+fn DispatchRow(props: DispatchRowProps) -> Element {
+    let cols = GRID_END_HOUR - GRID_START_HOUR;
+    let off_today = !props.time_off.is_empty();
+    let off_kind = props
+        .time_off
+        .first()
+        .map(|t| t.kind.clone())
+        .unwrap_or_default();
+
+    rsx! {
+        div { class: "grid border-b border-gray-200 dark:border-gray-700 min-h-16",
+            style: "grid-template-columns: 200px repeat({cols}, 1fr);",
+            // Technician name + status.
             div { class: "p-2 flex items-center",
                 div { class: "flex items-center",
                     div { class: "w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center mr-2",
@@ -582,36 +1647,52 @@ fn TechnicianRow(props: TechnicianRowProps) -> Element {
                             {props.name.chars().next().unwrap_or('?').to_string()}
                         }
                     }
-                    span { class: "font-medium text-sm text-gray-900 dark:text-white", "{props.name}" }
+                    div {
+                        span { class: "font-medium text-sm text-gray-900 dark:text-white", "{props.name}" }
+                        if off_today {
+                            div { class: "text-xs text-amber-600 dark:text-amber-400", "Off: {off_kind}" }
+                        }
+                    }
                 }
             }
 
-            // Time-grid area: a single container spanning columns 2..=10
-            // so we can absolutely-position blocks across hour boundaries
-            // without fighting the underlying column track.
-            div {
-                class: "relative border-l border-gray-200 dark:border-gray-700",
+            // Timeline area spanning the hour columns.
+            div { class: "relative border-l border-gray-200 dark:border-gray-700",
                 style: "grid-column: 2 / -1; min-height: 4rem;",
-                // Hour divider lines (visual parity with the previous
-                // 9 empty divs).
-                div { class: "absolute inset-0 grid grid-cols-9",
-                    for _ in 0..9 {
+                // Hour divider lines.
+                div { class: "absolute inset-0 grid",
+                    style: "grid-template-columns: repeat({cols}, 1fr);",
+                    for _ in 0..cols {
                         div { class: "border-l border-gray-100 dark:border-gray-800 first:border-l-0" }
                     }
                 }
-                // Appointment blocks (PMC-53).
-                for (start, end, label, kind) in props.appointments.iter() {
+                // Availability shading (one band per available window today).
+                for w in props.availability.iter() {
                     {
-                        let start_h = parse_dispatch_time(start).unwrap_or(FIRST_HOUR);
-                        let end_h = parse_dispatch_time(end).unwrap_or(start_h + 1.0);
-                        let left = ((start_h - FIRST_HOUR) / TOTAL_HOURS * 100.0).max(0.0);
-                        let width = ((end_h - start_h) / TOTAL_HOURS * 100.0).max(0.0);
-                        let color = dispatch_color(kind);
+                        let (left, width) = availability_geometry(w);
                         rsx! {
                             div {
-                                class: "absolute top-1 bottom-1 rounded-md px-2 py-1 text-xs text-white shadow-sm overflow-hidden {color}",
+                                class: "absolute top-0 bottom-0 bg-green-100/50 dark:bg-green-900/20 pointer-events-none",
                                 style: "left: {left:.4}%; width: {width:.4}%;",
-                                title: "{start} - {end}: {label}",
+                            }
+                        }
+                    }
+                }
+                // Appointment blocks.
+                for appt in props.appointments.iter() {
+                    {
+                        let (left, width) = appointment_h_geometry(appt);
+                        let color = type_color(&appt.appointment_type);
+                        let appt_clone = appt.clone();
+                        let label = appt.title.clone();
+                        let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
+                        rsx! {
+                            button {
+                                r#type: "button",
+                                class: "absolute top-1 bottom-1 rounded-md px-2 py-1 text-xs text-white shadow-sm overflow-hidden text-left hover:opacity-90 {color}",
+                                style: "left: {left:.4}%; width: {width:.4}%;",
+                                title: "{time}: {label}",
+                                onclick: move |_| props.onpick.call(appt_clone.clone()),
                                 "{label}"
                             }
                         }
@@ -620,4 +1701,25 @@ fn TechnicianRow(props: TechnicianRowProps) -> Element {
             }
         }
     }
+}
+
+/// Horizontal left/width percentages for an appointment on the
+/// GRID_START_HOUR..GRID_END_HOUR dispatch timeline.
+fn appointment_h_geometry(appt: &AppointmentResponse) -> (f64, f64) {
+    let start = local_hour_f(appt.start_time).clamp(GRID_START_HOUR as f64, GRID_END_HOUR as f64);
+    let end = local_hour_f(appt.end_time).clamp(start, GRID_END_HOUR as f64);
+    let left = (start - GRID_START_HOUR as f64) / GRID_TOTAL_HOURS * 100.0;
+    let width = (((end - start) / GRID_TOTAL_HOURS) * 100.0).max(2.0);
+    (left.max(0.0), width)
+}
+
+/// Horizontal band geometry for an availability window (NaiveTime based).
+fn availability_geometry(w: &UserAvailabilityResponse) -> (f64, f64) {
+    let start = (w.start_time.hour() as f64 + w.start_time.minute() as f64 / 60.0)
+        .clamp(GRID_START_HOUR as f64, GRID_END_HOUR as f64);
+    let end = (w.end_time.hour() as f64 + w.end_time.minute() as f64 / 60.0)
+        .clamp(start, GRID_END_HOUR as f64);
+    let left = (start - GRID_START_HOUR as f64) / GRID_TOTAL_HOURS * 100.0;
+    let width = ((end - start) / GRID_TOTAL_HOURS) * 100.0;
+    (left.max(0.0), width.max(0.0))
 }
