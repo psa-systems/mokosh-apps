@@ -95,6 +95,29 @@ fn slugify(input: &str) -> String {
     }
 }
 
+/// Resolve the chain of categories from root down to the article's own
+/// category by walking `parent_id`. Returns `[]` when the article has no
+/// category or the id is dangling. Guards against cycles with a visited
+/// set so a malformed parent chain cannot loop forever.
+fn resolve_category_path(category_id: Option<uuid::Uuid>, all: &[KbCategory]) -> Vec<KbCategory> {
+    use std::collections::HashSet;
+    let mut chain = Vec::new();
+    let mut seen = HashSet::new();
+    let mut current = category_id;
+    while let Some(id) = current {
+        if !seen.insert(id) {
+            break; // cycle guard
+        }
+        let Some(cat) = all.iter().find(|c| c.id == id) else {
+            break;
+        };
+        chain.push(cat.clone());
+        current = cat.parent_id;
+    }
+    chain.reverse();
+    chain
+}
+
 /// Title-case the server's lowercase visibility tag for display, and pick
 /// a badge color. Unknown values fall through unchanged / gray.
 fn visibility_label(raw: &str) -> (String, BadgeVariant) {
@@ -1209,5 +1232,45 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn cat(id: Uuid, parent: Option<Uuid>, name: &str) -> KbCategory {
+        KbCategory {
+            id,
+            name: name.to_string(),
+            description: None,
+            parent_id: parent,
+            slug: name.to_lowercase(),
+            visibility: "internal".into(),
+            sort_order: 0,
+        }
+    }
+
+    #[test]
+    fn resolves_nested_path_root_first() {
+        let root = Uuid::new_v4();
+        let child = Uuid::new_v4();
+        let cats = vec![cat(root, None, "Networking"), cat(child, Some(root), "VPN")];
+        let path = resolve_category_path(Some(child), &cats);
+        let names: Vec<_> = path.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["Networking", "VPN"]);
+    }
+
+    #[test]
+    fn empty_when_no_category() {
+        let cats = vec![cat(Uuid::new_v4(), None, "X")];
+        assert!(resolve_category_path(None, &cats).is_empty());
+    }
+
+    #[test]
+    fn empty_when_dangling() {
+        let cats = vec![cat(Uuid::new_v4(), None, "X")];
+        assert!(resolve_category_path(Some(Uuid::new_v4()), &cats).is_empty());
     }
 }
