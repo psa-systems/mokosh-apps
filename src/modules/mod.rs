@@ -1,5 +1,6 @@
 //! Mokosh Platform Modules - client-side DTOs only
 
+pub mod audit;
 pub mod auth;
 pub mod contacts;
 pub mod oidc;

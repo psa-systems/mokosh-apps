@@ -239,6 +239,14 @@ pub enum Route {
     #[route("/settings/active-tenant")]
     ActiveTenant {},
 
+    // Admin
+    //
+    // Audit log is available in every build (the server endpoint exists
+    // regardless of multi-tenant) and is gated at runtime by the user's
+    // role inside `AuditLogPage`, matching the server's RequireAdmin.
+    #[route("/admin/audit")]
+    AuditLog {},
+
     // Admin (multi-tenant only)
     #[cfg(feature = "multi-tenant")]
     #[route("/admin/tenants")]
@@ -556,6 +564,11 @@ fn ActiveTenant() -> Element {
     // docs/migration/settings-split.md. Bookmarks at the legacy URL
     // bounce there instead of 404ing.
     rsx! { HubRedirect { target: "/settings/active-tenant".to_string(), label: "tenant switcher" } }
+}
+
+#[component]
+fn AuditLog() -> Element {
+    rsx! { audit_log::AuditLogPage {} }
 }
 
 #[cfg(feature = "multi-tenant")]
