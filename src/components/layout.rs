@@ -380,7 +380,9 @@ pub fn TopBar(props: TopBarProps) -> Element {
 #[component]
 fn UserMenu() -> Element {
     let mut open = use_signal(|| false);
-    let mut auth = crate::hooks::use_auth();
+    // No `mut auth` binding here on purpose. `use_auth` is the read-only
+    // hook; logout deliberately does NOT mutate the auth signal (see the
+    // ordering comment on the `logout` closure below).
     let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
     // `/settings/profile` does not exist on bunyip-web; the generic
     // settings page is at `/settings`. The Profile menu item lands
@@ -410,9 +412,17 @@ fn UserMenu() -> Element {
 
     let logout = move |_| {
         open.set(false);
+        // Order matters here, see the same warning on `hooks::use_logout`:
+        // any write to the auth signal BEFORE `location.replace` schedules
+        // a Dioxus re-render. On that re-render `use_require_auth` (the
+        // route guard) sees `user = None` on `/dashboard` and calls
+        // `navigator.push(Route::Login {})`, which puts `/login` on TOP
+        // of `/dashboard` in history. The subsequent `location.replace`
+        // then races with the router push; the user ends up navigated
+        // away from the hub logout URL and back onto an authenticated-
+        // looking dashboard view. So: clear sessionStorage, navigate
+        // away, let the full page reload reset all in-memory state.
         crate::modules::oidc::storage::clear_auth();
-        crate::hooks::fetch::api::set_access_token(None);
-        auth.write().user = None;
         if let Some(win) = web_sys::window() {
             let _ = win.location().replace(&hub_logout);
         }
