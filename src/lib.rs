@@ -258,6 +258,14 @@ pub enum Route {
     #[route("/settings/active-tenant")]
     ActiveTenant {},
 
+    // Mokosh-side profile. Edits the tenant-scoped fields on the
+    // user row (name, title, phone, mobile, timezone). Cross-app
+    // identity (email, password, MFA, sessions, billing) lives on
+    // bunyip-web's `/settings`; the UserMenu's "Account Settings"
+    // link sends users there.
+    #[route("/profile")]
+    Profile {},
+
     // Admin surfaces under /admin/*, gated at runtime by the user's role
     // inside each page (matching the server's RequireAdmin), available in
     // every build since the server endpoints exist regardless of tenancy.
@@ -613,6 +621,11 @@ fn ActiveTenant() -> Element {
     // docs/migration/settings-split.md. Bookmarks at the legacy URL
     // bounce there instead of 404ing.
     rsx! { HubRedirect { target: "/settings/active-tenant".to_string(), label: "tenant switcher" } }
+}
+
+#[component]
+fn Profile() -> Element {
+    rsx! { profile::ProfilePage {} }
 }
 
 #[component]
