@@ -1,28 +1,39 @@
 //! Profile page (mokosh-side).
 //!
-//! Edits the tenant-scoped user fields that live in mokosh-server's
-//! `users` table: first name, last name, phone, mobile, title,
-//! timezone. Things that belong to the cross-app Bunyip identity
-//! (email, password, MFA, sessions, billing) are intentionally NOT
-//! here; the UserMenu's "Account Settings" link sends the user to
-//! bunyip-web's `/settings` for those.
+//! Three sections, layered from "identity owned by Bunyip" through
+//! "tenant-scoped fields on the mokosh user row" to "local-only UI
+//! preferences":
 //!
-//! Reads via `GET /api/v1/auth/me`, writes via `PUT /api/v1/auth/me`.
-//! The server enforces that callers cannot change their own role /
-//! status from this endpoint, so the form does not expose them.
+//! 1. **Bunyip identity strip.** Full name, email, and role, sourced
+//!    from `AuthContext` (which the SPA hydrates from the OIDC
+//!    id_token + a periodic `/v1/auth/me` refresh against bunyip).
+//!    Read-only here; editing requires the "Account Settings" link
+//!    that bounces over to bunyip-web's `/settings`.
+//!
+//! 2. **Personal info.** First / last name, title, phone, mobile,
+//!    timezone. Lives on mokosh-server's `users` row, edited via
+//!    `GET` + `PUT /api/v1/auth/me`. mokosh-server's
+//!    `update_current_user` handler already strips role / status from
+//!    the inbound request, so the form does not need to defend
+//!    against escalation.
+//!
+//! 3. **Preferences.** Theme, time format, and first day of week.
+//!    Persisted to `localStorage` via `utils::prefs`; no server
+//!    round-trip. Applies immediately; theme toggling re-applies the
+//!    `<html class="dark">` Tailwind variant via `hooks::theme`.
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{AppLayout, Button, ButtonVariant, Card, Input, PageHeader};
+use crate::hooks::theme::{self, Theme};
+use crate::utils::prefs;
 
 /// Subset of mokosh-server's `UserResponse` the profile screen reads.
 /// Mirrors the shape returned by `GET /api/v1/auth/me`; fields not
 /// rendered here are dropped at deserialise time.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct MeResponse {
-    #[serde(default)]
-    email: String,
     #[serde(default)]
     first_name: String,
     #[serde(default)]
@@ -35,8 +46,6 @@ struct MeResponse {
     title: Option<String>,
     #[serde(default)]
     timezone: String,
-    #[serde(default)]
-    role: String,
 }
 
 /// Body sent on `PUT /api/v1/auth/me`. Matches mokosh-server's
@@ -63,6 +72,14 @@ fn optional_field(s: &str) -> Option<String> {
     }
 }
 
+// ── Preference keys ─────────────────────────────────────────────────────────
+//
+// String prefs use `utils::prefs::get_str/set_str`. Keep the keys
+// stable across releases; renaming would silently reset every user.
+
+const PREF_TIME_FORMAT: &str = "mokosh_time_format";
+const PREF_FIRST_DAY: &str = "mokosh_first_day_of_week";
+
 #[component]
 pub fn ProfilePage() -> Element {
     let me_resource = use_resource(|| async {
@@ -84,8 +101,15 @@ pub fn ProfilePage() -> Element {
         AppLayout { title: "Profile",
             PageHeader {
                 title: "Profile",
-                subtitle: "Your name, title, phone, and timezone for this organization.",
+                subtitle: "Identity, personal info, and your local preferences.",
             }
+
+            // Identity strip is rendered unconditionally: it reads
+            // from AuthContext (already loaded by the time this page
+            // mounts) so it does not block on the mokosh `/auth/me`
+            // round-trip.
+            IdentityStrip {}
+
             match &*snap {
                 None => rsx! {
                     Card {
@@ -104,22 +128,94 @@ pub fn ProfilePage() -> Element {
                     }
                 },
                 Some(Some(me)) => rsx! {
-                    ProfileForm { initial: me.clone() }
+                    PersonalInfoForm { initial: me.clone() }
                 },
+            }
+
+            PreferencesCard {}
+        }
+    }
+}
+
+/// Top-of-page strip. Pulls the user's identity (name, email, role)
+/// from `AuthContext` rather than from the mokosh `/auth/me` payload:
+/// `AuthContext` is hydrated from the OIDC id_token at sign-in and
+/// then refreshed against bunyip's `/v1/auth/me`, so Bunyip stays
+/// authoritative for who the user is. Links over to the Bunyip
+/// Account Settings page where these fields are actually editable.
+#[component]
+fn IdentityStrip() -> Element {
+    let auth = crate::hooks::use_auth();
+    let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
+    let account_settings_url = cfg.hub_url("/settings");
+
+    let auth_read = auth.read();
+    let (full_name, initials, email, role) = match auth_read.user.as_ref() {
+        Some(u) => (
+            u.full_name(),
+            u.initials(),
+            u.email.clone(),
+            format!("{:?}", u.role),
+        ),
+        None => (
+            "Unknown".to_string(),
+            "?".to_string(),
+            String::new(),
+            String::new(),
+        ),
+    };
+
+    rsx! {
+        Card {
+            div { class: "flex flex-wrap items-center gap-4 p-6",
+                // Initials disc. The avatar URL pipeline lands as a
+                // follow-up; until then we render initials in a
+                // gradient pill so the strip is not visually flat.
+                div { class: "flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 text-white text-lg font-semibold",
+                    "{initials}"
+                }
+                div { class: "flex-1 min-w-0",
+                    p { class: "text-lg font-semibold text-gray-900 dark:text-white truncate",
+                        "{full_name}"
+                    }
+                    if !email.is_empty() {
+                        p { class: "text-sm text-gray-500 dark:text-gray-400 truncate",
+                            "{email}"
+                        }
+                    }
+                    if !role.is_empty() {
+                        p { class: "mt-1 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400",
+                            "Role: {role}"
+                        }
+                    }
+                }
+                div { class: "flex flex-col items-end gap-1",
+                    a {
+                        href: "{account_settings_url}",
+                        class: "text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline",
+                        "Account Settings (Bunyip)"
+                    }
+                    p { class: "text-xs text-gray-500 dark:text-gray-400 text-right max-w-xs",
+                        "Name, email, password, 2FA, sessions, and billing are owned by Bunyip. Change them there."
+                    }
+                }
             }
         }
     }
 }
 
 #[derive(Props, Clone, PartialEq)]
-struct ProfileFormProps {
+struct PersonalInfoFormProps {
     initial: MeResponse,
 }
 
+/// Editable mokosh-side fields. Same shape PR #82 shipped; first /
+/// last name remain editable because mokosh's `users` row carries
+/// them per tenant (a user may go by "Sam" in one PSA tenant and
+/// "Samantha" in another), but the identity strip above shows
+/// Bunyip's canonical name so the difference is visible at a glance.
 #[component]
-fn ProfileForm(props: ProfileFormProps) -> Element {
-    let account_settings_url =
-        crate::modules::oidc::OidcConfig::for_current_origin().hub_url("/settings");
+fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
     let mut first_name = use_signal(|| props.initial.first_name.clone());
     let mut last_name = use_signal(|| props.initial.last_name.clone());
     let mut phone = use_signal(|| props.initial.phone.clone().unwrap_or_default());
@@ -130,9 +226,6 @@ fn ProfileForm(props: ProfileFormProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
     let mut saved = use_signal(|| false);
-
-    let email_readonly = props.initial.email.clone();
-    let role_readonly = props.initial.role.clone();
 
     let handle_save = move |_| {
         if saving() {
@@ -170,27 +263,12 @@ fn ProfileForm(props: ProfileFormProps) -> Element {
     rsx! {
         Card {
             div { class: "space-y-6 p-6",
-                // Read-only identity strip up top so users understand
-                // which account they are editing and where the
-                // identity fields actually live (Bunyip).
-                div { class: "rounded-md bg-gray-50 dark:bg-gray-800 p-4 text-sm",
-                    div { class: "flex flex-wrap items-center justify-between gap-2",
-                        div {
-                            p { class: "font-medium text-gray-900 dark:text-white",
-                                "{email_readonly}"
-                            }
-                            p { class: "text-gray-500 dark:text-gray-400",
-                                "Role: {role_readonly}"
-                            }
-                        }
-                        a {
-                            href: "{account_settings_url}",
-                            class: "text-sm text-blue-600 dark:text-blue-400 hover:underline",
-                            "Account Settings (Bunyip)"
-                        }
+                div {
+                    h2 { class: "text-base font-semibold text-gray-900 dark:text-white",
+                        "Personal info"
                     }
-                    p { class: "mt-2 text-xs text-gray-500 dark:text-gray-400",
-                        "Email, password, 2FA, sessions, and billing live in Account Settings on the Bunyip hub. This page only edits your mokosh profile."
+                    p { class: "text-sm text-gray-500 dark:text-gray-400",
+                        "How you show up in this organization. Saved on mokosh."
                     }
                 }
 
@@ -255,6 +333,106 @@ fn ProfileForm(props: ProfileFormProps) -> Element {
                         onclick: handle_save,
                         disabled: saving(),
                         if saving() { "Saving..." } else { "Save changes" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Local-only preferences. No server writes; everything persists to
+/// `localStorage` via `utils::prefs`. Applies immediately on
+/// selection.
+#[component]
+fn PreferencesCard() -> Element {
+    let mut theme_value = use_signal(theme::current);
+    let mut time_format = use_signal(|| prefs::get_str(PREF_TIME_FORMAT, "12h"));
+    let mut first_day = use_signal(|| prefs::get_str(PREF_FIRST_DAY, "sunday"));
+
+    rsx! {
+        Card {
+            div { class: "space-y-6 p-6",
+                div {
+                    h2 { class: "text-base font-semibold text-gray-900 dark:text-white",
+                        "Preferences"
+                    }
+                    p { class: "text-sm text-gray-500 dark:text-gray-400",
+                        "Saved on this device. Applies immediately."
+                    }
+                }
+
+                div { class: "grid gap-6 sm:grid-cols-3",
+                    // Theme
+                    fieldset { class: "space-y-2",
+                        legend { class: "text-sm font-medium text-gray-700 dark:text-gray-300",
+                            "Theme"
+                        }
+                        for opt in [Theme::System, Theme::Light, Theme::Dark] {
+                            label {
+                                class: "flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300",
+                                input {
+                                    r#type: "radio",
+                                    name: "theme",
+                                    value: "{opt.as_str()}",
+                                    checked: theme_value() == opt,
+                                    onchange: move |_| {
+                                        theme_value.set(opt);
+                                        theme::set(opt);
+                                    },
+                                }
+                                match opt {
+                                    Theme::System => "Match system",
+                                    Theme::Light => "Light",
+                                    Theme::Dark => "Dark",
+                                }
+                            }
+                        }
+                    }
+
+                    // Time format
+                    fieldset { class: "space-y-2",
+                        legend { class: "text-sm font-medium text-gray-700 dark:text-gray-300",
+                            "Time format"
+                        }
+                        for (val, label) in [("12h", "12-hour (1:30 PM)"), ("24h", "24-hour (13:30)")] {
+                            label {
+                                class: "flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300",
+                                input {
+                                    r#type: "radio",
+                                    name: "time_format",
+                                    value: "{val}",
+                                    checked: time_format() == val,
+                                    onchange: move |_| {
+                                        time_format.set(val.to_string());
+                                        prefs::set_str(PREF_TIME_FORMAT, val);
+                                    },
+                                }
+                                "{label}"
+                            }
+                        }
+                    }
+
+                    // First day of week
+                    fieldset { class: "space-y-2",
+                        legend { class: "text-sm font-medium text-gray-700 dark:text-gray-300",
+                            "First day of week"
+                        }
+                        for (val, label) in [("sunday", "Sunday"), ("monday", "Monday")] {
+                            label {
+                                class: "flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300",
+                                input {
+                                    r#type: "radio",
+                                    name: "first_day",
+                                    value: "{val}",
+                                    checked: first_day() == val,
+                                    onchange: move |_| {
+                                        first_day.set(val.to_string());
+                                        prefs::set_str(PREF_FIRST_DAY, val);
+                                    },
+                                }
+                                "{label}"
+                            }
+                        }
                     }
                 }
             }

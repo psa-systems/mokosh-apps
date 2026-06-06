@@ -14,10 +14,12 @@ pub mod auth;
 pub mod fetch;
 mod google_oauth;
 mod sidebar;
+pub mod theme;
 pub mod toast;
 
 pub use auth::*;
 pub use fetch::*;
 pub use google_oauth::*;
 pub use sidebar::*;
+pub use theme::use_apply_theme;
 pub use toast::*;
