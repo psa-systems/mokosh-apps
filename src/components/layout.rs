@@ -382,20 +382,34 @@ fn UserMenu() -> Element {
     let mut open = use_signal(|| false);
     let mut auth = crate::hooks::use_auth();
     let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
-    let hub_profile = cfg.hub_url("/settings/profile");
+    // `/settings/profile` does not exist on bunyip-web; the generic
+    // settings page is at `/settings`. The Profile menu item lands
+    // there until bunyip ships a dedicated profile screen.
+    let hub_profile = cfg.hub_url("/settings");
     let hub_dashboard = cfg.hub_url("/dashboard");
-    let hub_logout = cfg.hub_url("/logout");
+    // RP-initiated logout via bunyip-api's `OptionalUser`-backed
+    // endpoint (NOT bunyip-web's `/logout`, which proxies through
+    // bunyip-api's `AuthenticatedUser`-required `POST /v1/auth/logout`
+    // and silently no-ops when the cookie does not validate as
+    // legacy HS256, leaving the SSO session live). bunyip-api's
+    // `GET /v1/auth/logout?url=<absolute>` always clears the
+    // .a8n.systems-scoped cookies via Set-Cookie, then redirects to
+    // bunyip-web's `/login?redirect=<url>&checked=1`. Sending the
+    // user to bunyip's `/login` (rather than mokosh's `/login` which
+    // would auto-initiate another OIDC flow) is the "logged out"
+    // resting place; they re-authenticate from there if they want
+    // back in.
+    let issuer = cfg.issuer.trim_end_matches('/');
+    let hub_login = cfg.hub_url("/login");
+    let hub_logout = format!(
+        "{issuer}/v1/auth/logout?url={}",
+        js_sys::encode_uri_component(&hub_login)
+            .as_string()
+            .unwrap_or(hub_login)
+    );
 
     let logout = move |_| {
         open.set(false);
-        // Tear down THIS SPA's local state, then redirect to the
-        // hub's canonical /logout page. Bunyip's /logout POSTs
-        // /v1/auth/logout (clears the .a8n.run-scoped OP session
-        // cookie via Set-Cookie), drops bunyip's localStorage
-        // tokens, and lands the user on /login. Without that
-        // round-trip, the OP cookie would still be live and a
-        // subsequent visit here would silently sign the user back
-        // in via the SSO bridge.
         crate::modules::oidc::storage::clear_auth();
         crate::hooks::fetch::api::set_access_token(None);
         auth.write().user = None;
