@@ -396,24 +396,27 @@ fn UserMenu() -> Element {
     let hub_account_settings = cfg.hub_url("/settings");
     let hub_dashboard = cfg.hub_url("/dashboard");
     // RP-initiated logout via bunyip-api's `OptionalUser`-backed
-    // endpoint (NOT bunyip-web's `/logout`, which proxies through
-    // bunyip-api's `AuthenticatedUser`-required `POST /v1/auth/logout`
-    // and silently no-ops when the cookie does not validate as
-    // legacy HS256, leaving the SSO session live). bunyip-api's
-    // `GET /v1/auth/logout?url=<absolute>` always clears the
-    // .a8n.systems-scoped cookies via Set-Cookie, then redirects to
-    // bunyip-web's `/login?redirect=<url>&checked=1`. Sending the
-    // user to bunyip's `/login` (rather than mokosh's `/login` which
-    // would auto-initiate another OIDC flow) is the "logged out"
-    // resting place; they re-authenticate from there if they want
-    // back in.
+    // endpoint. bunyip-api's `GET /v1/auth/logout?url=<absolute>`
+    // clears the .a8n.systems-scoped cookies via Set-Cookie, then
+    // 302s the browser straight to `url`. The companion bunyip change
+    // (fix/logout-honors-final-url) replaced the old "bounce through
+    // /login" handler with a direct redirect, so this URL is now the
+    // user's actual landing page after logout.
+    //
+    // Land them on this SPA's own origin root (msp.<tld>/) so they
+    // see mokosh's public landing page, signed out. Falls back to
+    // the hub root when the browser origin is somehow unavailable
+    // (server-side render path, mostly unreachable in `web` builds).
     let issuer = cfg.issuer.trim_end_matches('/');
-    let hub_login = cfg.hub_url("/login");
+    let post_logout_target = web_sys::window()
+        .and_then(|w| w.location().origin().ok())
+        .map(|origin| format!("{}/", origin.trim_end_matches('/')))
+        .unwrap_or_else(|| cfg.hub_url("/"));
     let hub_logout = format!(
         "{issuer}/v1/auth/logout?url={}",
-        js_sys::encode_uri_component(&hub_login)
+        js_sys::encode_uri_component(&post_logout_target)
             .as_string()
-            .unwrap_or(hub_login)
+            .unwrap_or(post_logout_target)
     );
 
     let logout = move |_| {
