@@ -25,7 +25,9 @@
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::components::{AppLayout, Button, ButtonVariant, Card, Input, PageHeader};
+use crate::components::{
+    AppLayout, Button, ButtonVariant, Card, Input, PageHeader, Select, SelectOption,
+};
 use crate::hooks::theme::{self, Theme};
 use crate::utils::prefs;
 
@@ -70,6 +72,110 @@ fn optional_field(s: &str) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+// ── Timezone dropdown ───────────────────────────────────────────────────────
+//
+// A curated, alphabetised list of IANA tz names covering the regions
+// mokosh customers actually serve. NOT exhaustive (the IANA database
+// has ~600 zones); the goal is a usable picker, not a full atlas.
+// `Etc/UTC` stays at the top because it is the schema default and
+// what JIT-provisioned rows arrive with. If the user's stored
+// timezone is not in this list, the form prepends it as a "(current)"
+// entry so saving does not silently overwrite an unknown choice.
+const COMMON_TIMEZONES: &[(&str, &str)] = &[
+    ("Etc/UTC", "UTC (Coordinated Universal Time)"),
+    // Americas
+    ("America/Anchorage", "America/Anchorage (Alaska)"),
+    ("America/Chicago", "America/Chicago (Central US)"),
+    ("America/Denver", "America/Denver (Mountain US)"),
+    ("America/Halifax", "America/Halifax (Atlantic Canada)"),
+    ("America/Los_Angeles", "America/Los Angeles (Pacific US)"),
+    ("America/Mexico_City", "America/Mexico City"),
+    ("America/New_York", "America/New York (Eastern US)"),
+    ("America/Phoenix", "America/Phoenix (Arizona, no DST)"),
+    ("America/Sao_Paulo", "America/Sao Paulo"),
+    ("America/Toronto", "America/Toronto"),
+    ("America/Vancouver", "America/Vancouver"),
+    ("Pacific/Honolulu", "Pacific/Honolulu (Hawaii)"),
+    // Europe
+    ("Europe/Amsterdam", "Europe/Amsterdam"),
+    ("Europe/Berlin", "Europe/Berlin"),
+    ("Europe/Dublin", "Europe/Dublin"),
+    ("Europe/Helsinki", "Europe/Helsinki"),
+    ("Europe/Lisbon", "Europe/Lisbon"),
+    ("Europe/London", "Europe/London"),
+    ("Europe/Madrid", "Europe/Madrid"),
+    ("Europe/Paris", "Europe/Paris"),
+    ("Europe/Rome", "Europe/Rome"),
+    ("Europe/Stockholm", "Europe/Stockholm"),
+    ("Europe/Warsaw", "Europe/Warsaw"),
+    ("Europe/Zurich", "Europe/Zurich"),
+    // Africa / Middle East
+    ("Africa/Cairo", "Africa/Cairo"),
+    ("Africa/Johannesburg", "Africa/Johannesburg"),
+    ("Asia/Dubai", "Asia/Dubai"),
+    ("Asia/Jerusalem", "Asia/Jerusalem"),
+    ("Asia/Riyadh", "Asia/Riyadh"),
+    // Asia
+    ("Asia/Hong_Kong", "Asia/Hong Kong"),
+    ("Asia/Karachi", "Asia/Karachi"),
+    ("Asia/Kolkata", "Asia/Kolkata (India)"),
+    ("Asia/Seoul", "Asia/Seoul"),
+    ("Asia/Shanghai", "Asia/Shanghai"),
+    ("Asia/Singapore", "Asia/Singapore"),
+    ("Asia/Tokyo", "Asia/Tokyo"),
+    // Australia / Pacific
+    ("Australia/Brisbane", "Australia/Brisbane (no DST)"),
+    ("Australia/Melbourne", "Australia/Melbourne"),
+    ("Australia/Perth", "Australia/Perth"),
+    ("Australia/Sydney", "Australia/Sydney"),
+    ("Pacific/Auckland", "Pacific/Auckland"),
+];
+
+/// Browser-detected IANA timezone via
+/// `Intl.DateTimeFormat().resolvedOptions().timeZone`. Returns `None`
+/// when the API is unavailable (older browser, non-web build, or some
+/// hardened environment without Intl). The fallback is the form's
+/// own initial value, which is whatever mokosh-server gave us.
+#[cfg(feature = "web")]
+fn browser_timezone() -> Option<String> {
+    use wasm_bindgen::{JsCast, JsValue};
+    let intl = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("Intl")).ok()?;
+    let dtf_ctor = js_sys::Reflect::get(&intl, &JsValue::from_str("DateTimeFormat")).ok()?;
+    let dtf_fn = dtf_ctor.dyn_into::<js_sys::Function>().ok()?;
+    let dtf = js_sys::Reflect::construct(&dtf_fn, &js_sys::Array::new()).ok()?;
+    let resolved_options_fn = js_sys::Reflect::get(&dtf, &JsValue::from_str("resolvedOptions"))
+        .ok()?
+        .dyn_into::<js_sys::Function>()
+        .ok()?;
+    let resolved = resolved_options_fn.call0(&dtf).ok()?;
+    js_sys::Reflect::get(&resolved, &JsValue::from_str("timeZone"))
+        .ok()?
+        .as_string()
+}
+
+#[cfg(not(feature = "web"))]
+fn browser_timezone() -> Option<String> {
+    None
+}
+
+/// Build the option list, prepending the currently-stored value if it
+/// isn't already in `COMMON_TIMEZONES` (so a user with an exotic zone
+/// can keep it without us silently changing it on save).
+fn timezone_options(current: &str) -> Vec<SelectOption> {
+    let mut opts: Vec<SelectOption> = COMMON_TIMEZONES
+        .iter()
+        .map(|(v, l)| SelectOption::new(*v, *l))
+        .collect();
+    let known = COMMON_TIMEZONES.iter().any(|(v, _)| *v == current);
+    if !known && !current.is_empty() {
+        opts.insert(
+            0,
+            SelectOption::new(current, format!("{current} (current)")),
+        );
+    }
+    opts
 }
 
 // ── Preference keys ─────────────────────────────────────────────────────────
@@ -221,7 +327,20 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
     let mut phone = use_signal(|| props.initial.phone.clone().unwrap_or_default());
     let mut mobile = use_signal(|| props.initial.mobile.clone().unwrap_or_default());
     let mut title = use_signal(|| props.initial.title.clone().unwrap_or_default());
-    let mut timezone = use_signal(|| props.initial.timezone.clone());
+    // Default the timezone signal to the saved value; when the saved
+    // value is the JIT placeholder ("UTC" or "Etc/UTC"), seed with the
+    // browser's detected zone so the form arrives pre-populated with
+    // a sensible local choice. The user can change it before saving.
+    let initial_tz = props.initial.timezone.clone();
+    let mut timezone = use_signal(|| {
+        let saved = initial_tz.clone();
+        let looks_placeholder = saved.is_empty() || saved == "UTC" || saved == "Etc/UTC";
+        if looks_placeholder {
+            browser_timezone().unwrap_or(saved)
+        } else {
+            saved
+        }
+    });
 
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -303,13 +422,13 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
                         value: title(),
                         oninput: move |e: FormEvent| title.set(e.value()),
                     }
-                    Input {
+                    Select {
                         name: "timezone",
                         label: "Timezone",
-                        placeholder: "America/New_York",
-                        help: "IANA timezone name. Affects appointment + dispatch grid times.",
+                        options: timezone_options(&timezone()),
                         value: timezone(),
-                        oninput: move |e: FormEvent| timezone.set(e.value()),
+                        help: "Affects appointment + dispatch grid times. Auto-detected from your browser when unset.",
+                        onchange: move |e: FormEvent| timezone.set(e.value()),
                     }
                     Input {
                         name: "phone",
