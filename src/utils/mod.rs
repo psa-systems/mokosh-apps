@@ -1,7 +1,9 @@
 //! Utility modules for the Mokosh platform
 
 pub mod error;
+pub mod markdown;
 pub mod pagination;
+pub mod prefs;
 pub mod version;
 
 // Re-exports

@@ -35,6 +35,13 @@ RUN bun install --frozen-lockfile
 # --- Full source ---
 COPY . .
 
+# Build provenance: the image build context has no `.git`, so build.rs
+# cannot derive the commit hash itself. Surface the CI-provided commit
+# (passed as `--build-arg GIT_SHA=$GITHUB_SHA`) to build.rs as an env so
+# the SPA footer shows the real revision instead of `unknown`.
+ARG GIT_SHA=""
+ENV GIT_SHA=${GIT_SHA}
+
 RUN bun x @tailwindcss/cli --input input.css --output assets/styles.css --minify
 
 # Build fullstack client (WASM bundle + static assets)

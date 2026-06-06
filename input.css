@@ -62,6 +62,49 @@
     @apply bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-gray-100;
   }
 
+  /* Themed scrollbars (global default). The browser default is an
+     opaque white trough that reads as a hard seam against the gray/blue
+     theme, especially in dark mode. Style every scrollable element to
+     match the theme: a transparent track and a rounded gray thumb that
+     darkens on hover, mirroring the `.scrollbar-thin` utility palette.
+     `.scrollbar-thin` / `.scrollbar-hide` still override this per element. */
+  * {
+    scrollbar-width: thin;
+    /* thumb, track - gray-400 (#9ca3af) on transparent (light mode) */
+    scrollbar-color: #9ca3af transparent;
+  }
+
+  .dark * {
+    /* gray-600 (#4b5563) thumb in dark mode */
+    scrollbar-color: #4b5563 transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-gray-300 dark:bg-gray-600 rounded-full;
+    /* Inset border keeps the thumb visually thinner than the track and
+       off the very edge, so it reads as a soft pill, not a hard bar. */
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-gray-400 dark:bg-gray-500;
+    background-clip: padding-box;
+  }
+
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
   /* Improve focus styles for accessibility */
   *:focus-visible {
     @apply outline-none ring-2 ring-blue-500 ring-offset-2 ring-offset-white dark:ring-offset-gray-900;

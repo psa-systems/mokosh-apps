@@ -21,6 +21,7 @@ pub mod home;
 pub mod knowledge_base;
 pub mod not_found;
 pub mod portal;
+pub mod profile;
 pub mod projects;
 pub mod reports;
 pub mod sla;

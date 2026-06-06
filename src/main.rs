@@ -2,8 +2,8 @@
 
 use dioxus::prelude::*;
 use mokosh_apps::hooks::{
-    use_auth_provider, use_bfcache_invalidator, use_memberships_loader, use_sidebar_provider,
-    use_token_refresh,
+    use_apply_theme, use_auth_provider, use_bfcache_invalidator, use_memberships_loader,
+    use_sidebar_provider, use_token_refresh,
 };
 use mokosh_apps::Route;
 
@@ -35,6 +35,9 @@ fn App() -> Element {
     // the dashboard's prior JS state (including populated auth) from
     // the cache.
     use_bfcache_invalidator();
+    // Apply the persisted theme preference on boot and follow system
+    // dark-mode changes for `Theme::System` users.
+    use_apply_theme();
 
     rsx! {
         document::Stylesheet { href: asset!("/assets/styles.css") }

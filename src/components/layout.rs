@@ -132,7 +132,13 @@ fn SidebarContent() -> Element {
 
     rsx! {
         div { class: "flex flex-col flex-1 min-h-0",
-            nav { class: "flex-1 px-2 py-4 space-y-1",
+            // The nav itself is the scroll container (flex-1 + min-h-0 +
+            // overflow-y-auto) so the nav list scrolls when it is taller
+            // than the sidebar - notably in the mobile drawer, whose
+            // `aside` has no overflow of its own, where the lower groups
+            // (Analytics / Admin) were otherwise unreachable. The footer
+            // below stays pinned.
+            nav { class: "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin px-2 py-4 space-y-1",
                 NavItem { to: Route::Dashboard {}, icon: rsx!(HomeIcon {}), label: "Dashboard" }
 
             NavSection { title: "Service Desk",
@@ -374,25 +380,58 @@ pub fn TopBar(props: TopBarProps) -> Element {
 #[component]
 fn UserMenu() -> Element {
     let mut open = use_signal(|| false);
-    let mut auth = crate::hooks::use_auth();
+    // No `mut auth` binding here on purpose. `use_auth` is the read-only
+    // hook; logout deliberately does NOT mutate the auth signal (see the
+    // ordering comment on the `logout` closure below).
     let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
-    let hub_profile = cfg.hub_url("/settings/profile");
+    // Two distinct entries:
+    //   - "Profile" -> mokosh's own `/profile` page, edits the
+    //     tenant-scoped user row (name, title, phone, mobile,
+    //     timezone). Internal route, uses `Link`.
+    //   - "Account Settings" -> bunyip-web's `/settings`, edits the
+    //     cross-app identity (email, password, MFA, sessions,
+    //     billing). External origin, uses `<a>` so the browser
+    //     actually navigates instead of resolving the URL against
+    //     this SPA's Route enum.
+    let hub_account_settings = cfg.hub_url("/settings");
     let hub_dashboard = cfg.hub_url("/dashboard");
-    let hub_logout = cfg.hub_url("/logout");
+    // RP-initiated logout via bunyip-api's `OptionalUser`-backed
+    // endpoint. bunyip-api's `GET /v1/auth/logout?url=<absolute>`
+    // clears the .a8n.systems-scoped cookies via Set-Cookie, then
+    // 302s the browser straight to `url`. The companion bunyip change
+    // (fix/logout-honors-final-url) replaced the old "bounce through
+    // /login" handler with a direct redirect, so this URL is now the
+    // user's actual landing page after logout.
+    //
+    // Land them on this SPA's own origin root (msp.<tld>/) so they
+    // see mokosh's public landing page, signed out. Falls back to
+    // the hub root when the browser origin is somehow unavailable
+    // (server-side render path, mostly unreachable in `web` builds).
+    let issuer = cfg.issuer.trim_end_matches('/');
+    let post_logout_target = web_sys::window()
+        .and_then(|w| w.location().origin().ok())
+        .map(|origin| format!("{}/", origin.trim_end_matches('/')))
+        .unwrap_or_else(|| cfg.hub_url("/"));
+    let hub_logout = format!(
+        "{issuer}/v1/auth/logout?url={}",
+        js_sys::encode_uri_component(&post_logout_target)
+            .as_string()
+            .unwrap_or(post_logout_target)
+    );
 
     let logout = move |_| {
         open.set(false);
-        // Tear down THIS SPA's local state, then redirect to the
-        // hub's canonical /logout page. Bunyip's /logout POSTs
-        // /v1/auth/logout (clears the .a8n.run-scoped OP session
-        // cookie via Set-Cookie), drops bunyip's localStorage
-        // tokens, and lands the user on /login. Without that
-        // round-trip, the OP cookie would still be live and a
-        // subsequent visit here would silently sign the user back
-        // in via the SSO bridge.
+        // Order matters here, see the same warning on `hooks::use_logout`:
+        // any write to the auth signal BEFORE `location.replace` schedules
+        // a Dioxus re-render. On that re-render `use_require_auth` (the
+        // route guard) sees `user = None` on `/dashboard` and calls
+        // `navigator.push(Route::Login {})`, which puts `/login` on TOP
+        // of `/dashboard` in history. The subsequent `location.replace`
+        // then races with the router push; the user ends up navigated
+        // away from the hub logout URL and back onto an authenticated-
+        // looking dashboard view. So: clear sessionStorage, navigate
+        // away, let the full page reload reset all in-memory state.
         crate::modules::oidc::storage::clear_auth();
-        crate::hooks::fetch::api::set_access_token(None);
-        auth.write().user = None;
         if let Some(win) = web_sys::window() {
             let _ = win.location().replace(&hub_logout);
         }
@@ -411,16 +450,25 @@ fn UserMenu() -> Element {
             }
             if *open.read() {
                 div {
-                    class: "absolute right-0 mt-2 w-44 rounded-md shadow-lg bg-white dark:bg-gray-800 ring-1 ring-black ring-opacity-5 z-20 p-1",
+                    class: "absolute right-0 mt-2 w-52 rounded-md shadow-lg bg-white dark:bg-gray-800 ring-1 ring-black ring-opacity-5 z-20 p-1",
                     role: "menu",
-                    // Profile + Apps live on the bunyip hub; cross-origin
-                    // top-level <a> rather than the router Link so the
-                    // browser actually navigates instead of trying to
-                    // resolve the URL against this SPA's Route enum.
+                    // Profile is a mokosh-side route, served by this
+                    // SPA. Use the router `Link` so the SPA does an
+                    // internal transition instead of a full reload.
+                    Link {
+                        to: Route::Profile {},
+                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
+                        onclick: move |_| open.set(false),
+                        "Profile"
+                    }
+                    // Account Settings + Apps live on the bunyip hub;
+                    // cross-origin top-level <a> so the browser
+                    // navigates instead of resolving against this
+                    // SPA's Route enum.
                     a {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
-                        href: "{hub_profile}",
-                        "Profile"
+                        href: "{hub_account_settings}",
+                        "Account Settings"
                     }
                     a {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
