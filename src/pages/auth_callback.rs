@@ -57,6 +57,29 @@ pub fn AuthCallbackPage() -> Element {
                 // helpers across the app. Stored in the same in-memory
                 // holder used by every authed fetch call; no localStorage.
                 crate::hooks::fetch::api::set_access_token(Some(tokens.access_token.clone()));
+                // Persist the token bundle to sessionStorage BEFORE any
+                // navigation. The post-login route can be reached two
+                // ways: an internal `navigator.push` (no reload, the
+                // in-memory `auth.write` above carries) OR a hard
+                // `location.set_href` for absolute return_to URLs. The
+                // hard reload tears the in-memory `AuthContext` down,
+                // and without a saved bundle `rehydrate_from_storage`
+                // finds nothing on the next boot: `AuthGuard` sees
+                // `is_authenticated = false` and immediately fires
+                // another `start_login`, looping the user back through
+                // OIDC instead of landing them on the dashboard.
+                // `use_token_refresh` writes to sessionStorage on every
+                // rotation but that only fires 60s+ later. Save here
+                // so the very next render of any route is authed.
+                crate::modules::oidc::storage::save_auth(
+                    &crate::modules::oidc::storage::StoredTokens {
+                        access_token: tokens.access_token.clone(),
+                        id_token: tokens.id_token.clone(),
+                        refresh_token: tokens.refresh_token.clone(),
+                        expires_at: tokens.expires_at,
+                        scope: tokens.scope.clone(),
+                    },
+                );
                 {
                     let mut a = auth.write();
                     a.user = Some(CurrentUser {
@@ -73,8 +96,23 @@ pub fn AuthCallbackPage() -> Element {
                     a.error = None;
                     a.tokens = Some(tokens);
                 }
-                // Land back on the originally requested page, or dashboard.
-                if return_to.is_empty() || return_to == "/" {
+                // Land back on the originally requested page. Same-
+                // origin paths (starting with `/`, not `//`) take the
+                // router path so the in-memory `AuthContext` set
+                // above survives the transition: a hard reload here
+                // would tear the signal down between the write and
+                // the next render, and although the sessionStorage
+                // save above would let `rehydrate_from_storage`
+                // recover, it's cleaner to keep the same component
+                // tree alive. Anything cross-origin falls back to a
+                // hard navigation (the sessionStorage save still
+                // covers any subsequent reload). The Dioxus router
+                // only knows `Route` variants, so an internal path
+                // beyond `/dashboard` collapses to `Dashboard` for
+                // the moment; expand as new post-login return-to
+                // targets are introduced.
+                let internal_path = return_to.starts_with('/') && !return_to.starts_with("//");
+                if return_to.is_empty() || return_to == "/" || internal_path {
                     navigator.push(Route::Dashboard {});
                 } else if let Some(win) = web_sys::window() {
                     let _ = win.location().set_href(&return_to);
