@@ -382,10 +382,16 @@ fn UserMenu() -> Element {
     let mut open = use_signal(|| false);
     let mut auth = crate::hooks::use_auth();
     let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
-    // `/settings/profile` does not exist on bunyip-web; the generic
-    // settings page is at `/settings`. The Profile menu item lands
-    // there until bunyip ships a dedicated profile screen.
-    let hub_profile = cfg.hub_url("/settings");
+    // Two distinct entries:
+    //   - "Profile" -> mokosh's own `/profile` page, edits the
+    //     tenant-scoped user row (name, title, phone, mobile,
+    //     timezone). Internal route, uses `Link`.
+    //   - "Account Settings" -> bunyip-web's `/settings`, edits the
+    //     cross-app identity (email, password, MFA, sessions,
+    //     billing). External origin, uses `<a>` so the browser
+    //     actually navigates instead of resolving the URL against
+    //     this SPA's Route enum.
+    let hub_account_settings = cfg.hub_url("/settings");
     let hub_dashboard = cfg.hub_url("/dashboard");
     // RP-initiated logout via bunyip-api's `OptionalUser`-backed
     // endpoint (NOT bunyip-web's `/logout`, which proxies through
@@ -431,16 +437,25 @@ fn UserMenu() -> Element {
             }
             if *open.read() {
                 div {
-                    class: "absolute right-0 mt-2 w-44 rounded-md shadow-lg bg-white dark:bg-gray-800 ring-1 ring-black ring-opacity-5 z-20 p-1",
+                    class: "absolute right-0 mt-2 w-52 rounded-md shadow-lg bg-white dark:bg-gray-800 ring-1 ring-black ring-opacity-5 z-20 p-1",
                     role: "menu",
-                    // Profile + Apps live on the bunyip hub; cross-origin
-                    // top-level <a> rather than the router Link so the
-                    // browser actually navigates instead of trying to
-                    // resolve the URL against this SPA's Route enum.
+                    // Profile is a mokosh-side route, served by this
+                    // SPA. Use the router `Link` so the SPA does an
+                    // internal transition instead of a full reload.
+                    Link {
+                        to: Route::Profile {},
+                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
+                        onclick: move |_| open.set(false),
+                        "Profile"
+                    }
+                    // Account Settings + Apps live on the bunyip hub;
+                    // cross-origin top-level <a> so the browser
+                    // navigates instead of resolving against this
+                    // SPA's Route enum.
                     a {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
-                        href: "{hub_profile}",
-                        "Profile"
+                        href: "{hub_account_settings}",
+                        "Account Settings"
                     }
                     a {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
