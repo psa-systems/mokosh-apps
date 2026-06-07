@@ -47,6 +47,10 @@ struct PaginatedTickets {
 #[derive(Clone, Debug, Deserialize)]
 struct RemoteTicketDetail {
     #[serde(default)]
+    ticket_number: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
     description: Option<String>,
     #[serde(default)]
     company_id: Option<uuid::Uuid>,
@@ -701,7 +705,6 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let mut note_type = use_signal(|| "internal".to_string());
     let mut note_content = use_signal(String::new);
     let mut note_submitting = use_signal(|| false);
-    let header_title = format!("Ticket {}", props.id);
     let ticket_id_for_note = props.id.clone();
 
     // Drive the whole page off the real ticket, its notes, and its time
@@ -743,6 +746,19 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     });
 
     let ticket = ticket_resource.read_unchecked().clone().flatten();
+    // Prefer the ticket's human label (number + title) over the raw UUID. Fall
+    // back to "Ticket <id>" only if the title is missing, "Loading…" in flight.
+    let header_title = match ticket.as_ref() {
+        Some(t) if !t.title.trim().is_empty() => {
+            if t.ticket_number.trim().is_empty() {
+                t.title.clone()
+            } else {
+                format!("{}: {}", t.ticket_number, t.title)
+            }
+        }
+        Some(_) => format!("Ticket {}", props.id),
+        None => "Loading…".to_string(),
+    };
     let notes: Vec<RemoteNote> = notes_resource
         .read_unchecked()
         .clone()
