@@ -1,7 +1,7 @@
 # Mokosh Platform - Dioxus Client - Task Runner
 
 # Image used by the pre-commit hook. Matches ci-build/Dockerfile so `just pre-commit` and the Forgejo `check.yml` job run a toolchain compatible with the rust-builder-glibc image the client is built against.
-dev_image := "ghcr.io/niceguyit/rust-builder-glibc:v1.0.0-rust1.94-trixie"
+dev_image := "ghcr.io/niceguyit/rust-builder-glibc:v1.0.1-rust1.94-trixie"
 
 # List available recipes
 default:
