@@ -26,15 +26,25 @@ struct RemoteProject {
     #[serde(default)]
     name: String,
     #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
     status: String,
     #[serde(default)]
     company_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    project_manager_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    start_date: Option<String>,
+    #[serde(default)]
+    target_end_date: Option<String>,
+    #[serde(default, deserialize_with = "de_flex_f64")]
+    budget_hours: Option<f64>,
     #[serde(default, deserialize_with = "de_flex_f64")]
     budget_amount: Option<f64>,
     #[serde(default, deserialize_with = "de_flex_f64")]
+    actual_hours: Option<f64>,
+    #[serde(default, deserialize_with = "de_flex_f64")]
     actual_amount: Option<f64>,
-    #[serde(default)]
-    target_end_date: Option<String>,
 }
 
 /// A company, used to resolve `company_id` to a name and to populate the
@@ -44,6 +54,74 @@ struct CompanyOption {
     id: uuid::Uuid,
     #[serde(default)]
     name: String,
+}
+
+/// A task (`GET /api/v1/projects/:id/tasks`).
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteTask {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    status_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    assigned_to_id: Option<uuid::Uuid>,
+    #[serde(default, deserialize_with = "de_flex_f64")]
+    estimated_hours: Option<f64>,
+    #[serde(default, deserialize_with = "de_flex_f64")]
+    actual_hours: Option<f64>,
+    #[serde(default)]
+    due_date: Option<String>,
+}
+
+/// A per-tenant task status (`GET /api/v1/task-statuses`).
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteTaskStatus {
+    id: uuid::Uuid,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    is_completed: bool,
+}
+
+/// A user, used to resolve `assigned_to_id` / `project_manager_id` to a name.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteUser {
+    id: uuid::Uuid,
+    #[serde(default)]
+    full_name: String,
+}
+
+/// Resolve a task status id to a (badge colour, label). Completed
+/// statuses are green; everything else is blue (in-flight).
+fn task_status_badge(
+    statuses: &[RemoteTaskStatus],
+    id: &Option<uuid::Uuid>,
+) -> (BadgeVariant, String) {
+    match id.and_then(|sid| statuses.iter().find(|s| s.id == sid)) {
+        Some(s) if s.is_completed => (BadgeVariant::Green, s.name.clone()),
+        Some(s) => (BadgeVariant::Blue, s.name.clone()),
+        None => (BadgeVariant::Gray, "Unknown".to_string()),
+    }
+}
+
+/// Resolve a user id to a display name; "Unassigned" when none.
+fn user_name(users: &[RemoteUser], id: &Option<uuid::Uuid>) -> String {
+    match id {
+        Some(uid) => users
+            .iter()
+            .find(|u| &u.id == uid)
+            .map(|u| u.full_name.clone())
+            .unwrap_or_else(|| "Unknown".to_string()),
+        None => "Unassigned".to_string(),
+    }
+}
+
+/// One-decimal hours, or "-" when absent.
+fn fmt_hours(v: Option<f64>) -> String {
+    match v {
+        Some(n) => format!("{n:.1}"),
+        None => "-".to_string(),
+    }
 }
 
 /// Deserialize an optional `Decimal`-ish field that may arrive as a JSON
@@ -450,7 +528,82 @@ pub struct ProjectDetailPageProps {
 
 #[component]
 pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
-    let header_title = format!("Project {}", props.id);
+    let id_for_project = props.id.clone();
+    let project_resource = use_resource(move || {
+        let id = id_for_project.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<RemoteProject>(&format!("/projects/{id}"))
+                .await
+                .ok()
+        }
+    });
+    let id_for_tasks = props.id.clone();
+    let tasks_resource = use_resource(move || {
+        let id = id_for_tasks.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<Paginated<RemoteTask>>(&format!(
+                "/projects/{id}/tasks"
+            ))
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+        }
+    });
+    let statuses_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTaskStatus>>("/task-statuses")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+    let users_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteUser>>("/auth/users")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+
+    let snapshot = project_resource.read_unchecked().clone();
+    let is_loading = snapshot.is_none();
+    let project = snapshot.flatten();
+    let tasks = tasks_resource.read_unchecked().clone().unwrap_or_default();
+    let statuses = statuses_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    let users = users_resource.read_unchecked().clone().unwrap_or_default();
+
+    let header_title = match project.as_ref() {
+        Some(p) if !p.name.trim().is_empty() => p.name.clone(),
+        Some(_) => format!("Project {}", props.id),
+        None if is_loading => "Loading…".to_string(),
+        None => "Project".to_string(),
+    };
+
+    // Progress from task completion (per-tenant statuses flag the "done"
+    // columns via is_completed).
+    let total_tasks = tasks.len();
+    let completed_tasks = tasks
+        .iter()
+        .filter(|t| {
+            t.status_id
+                .and_then(|sid| statuses.iter().find(|s| s.id == sid))
+                .map(|s| s.is_completed)
+                .unwrap_or(false)
+        })
+        .count();
+    let progress = if total_tasks > 0 {
+        (completed_tasks * 100 / total_tasks) as u32
+    } else {
+        0
+    };
+
     rsx! {
         AppLayout { title: "{header_title}",
             PageHeader {
@@ -458,196 +611,139 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                 actions: rsx! {
                     Link {
                         to: Route::ProjectTasks { id: props.id.clone() },
-                        Button {
-                            variant: ButtonVariant::Secondary,
-                            "View Tasks"
-                        }
+                        Button { variant: ButtonVariant::Secondary, "View Tasks" }
                     }
-                    // F5: Add Task here was decorative (no onclick, no
-                    // server projects module yet). Hidden until the
-                    // server lands; live wiring tracked under PMC-39.
                 },
             }
 
-            div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
-                // Main content
-                div { class: "lg:col-span-2 space-y-6",
-                    // Overview
-                    Card { title: "Overview",
-                        p { class: "text-gray-700 dark:text-gray-300",
-                            "Complete upgrade of network infrastructure including new switches, "
-                            "firewall replacement, and wireless access points for all three floors."
-                        }
-                    }
-
-                    // Tasks summary
-                    Card { title: "Tasks",
-                        div { class: "space-y-3",
-                            TaskItem {
-                                name: "Site survey and documentation",
-                                status: "Completed",
-                                assignee: "John Smith",
-                            }
-                            TaskItem {
-                                name: "Hardware procurement",
-                                status: "Completed",
-                                assignee: "Jane Doe",
-                            }
-                            TaskItem {
-                                name: "Core switch installation",
-                                status: "In Progress",
-                                assignee: "John Smith",
-                            }
-                            TaskItem {
-                                name: "Access point deployment",
-                                status: "Pending",
-                                assignee: "Unassigned",
-                            }
-                            TaskItem {
-                                name: "Testing and documentation",
-                                status: "Pending",
-                                assignee: "Unassigned",
-                            }
-                        }
-                    }
-
-                    // Recent activity
-                    Card { title: "Recent Activity",
-                        div { class: "space-y-3 text-sm",
-                            ActivityItem {
-                                user: "John Smith",
-                                action: "completed task 'Hardware procurement'",
-                                time: "2 hours ago",
-                            }
-                            ActivityItem {
-                                user: "Jane Doe",
-                                action: "added 4.0 hours to 'Core switch installation'",
-                                time: "3 hours ago",
-                            }
-                            ActivityItem {
-                                user: "System",
-                                action: "project progress updated to 65%",
-                                time: "1 day ago",
-                            }
-                        }
+            if is_loading {
+                Card { p { class: "text-sm text-gray-400", "Loading project…" } }
+            } else if project.is_none() {
+                Card {
+                    p { class: "text-sm text-yellow-600 dark:text-yellow-400",
+                        "Could not load this project."
                     }
                 }
+            } else {
+                {
+                    let p = project.clone().unwrap();
+                    let (status_variant, status_label) = status_badge(&p.status);
+                    let pm = user_name(&users, &p.project_manager_id);
+                    let spent = p.actual_amount.unwrap_or(0.0);
+                    let budget = p.budget_amount.unwrap_or(0.0);
+                    let remaining = budget - spent;
+                    let util = if budget > 0.0 {
+                        ((spent / budget) * 100.0).clamp(0.0, 100.0).round() as u32
+                    } else {
+                        0
+                    };
+                    let logged_h = p.actual_hours.unwrap_or(0.0);
+                    let remaining_h = p.budget_hours.unwrap_or(0.0) - logged_h;
+                    let description = p.description.clone().filter(|d| !d.trim().is_empty());
+                    rsx! {
+                        div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
+                            // Main content
+                            div { class: "lg:col-span-2 space-y-6",
+                                Card { title: "Overview",
+                                    if let Some(d) = description {
+                                        p { class: "text-gray-700 dark:text-gray-300 whitespace-pre-wrap", "{d}" }
+                                    } else {
+                                        p { class: "text-sm text-gray-400 italic", "No description provided." }
+                                    }
+                                }
+                                Card { title: "Tasks",
+                                    if tasks.is_empty() {
+                                        p { class: "text-sm text-gray-400 italic", "No tasks yet." }
+                                    } else {
+                                        div { class: "space-y-3",
+                                            for t in tasks.iter() {
+                                                {
+                                                    let (tv, tl) = task_status_badge(&statuses, &t.status_id);
+                                                    let who = user_name(&users, &t.assigned_to_id);
+                                                    rsx! {
+                                                        div { class: "flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg",
+                                                            div {
+                                                                p { class: "font-medium text-gray-900 dark:text-white", "{t.title}" }
+                                                                p { class: "text-sm text-gray-500 dark:text-gray-400", "{who}" }
+                                                            }
+                                                            Badge { variant: tv, "{tl}" }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
 
-                // Sidebar
-                div { class: "space-y-6",
-                    // Status card
-                    Card { title: "Details",
-                        dl { class: "space-y-4",
-                            div { class: "flex justify-between",
-                                dt { class: "text-sm text-gray-500", "Status" }
-                                dd { Badge { variant: BadgeVariant::Green, "Active" } }
-                            }
-                            div { class: "flex justify-between",
-                                dt { class: "text-sm text-gray-500", "Progress" }
-                                dd { class: "text-sm font-medium", "65%" }
-                            }
-                            div { class: "flex justify-between",
-                                dt { class: "text-sm text-gray-500", "Start Date" }
-                                dd { class: "text-sm", "Dec 1, 2024" }
-                            }
-                            div { class: "flex justify-between",
-                                dt { class: "text-sm text-gray-500", "Due Date" }
-                                dd { class: "text-sm", "Feb 28, 2025" }
-                            }
-                            div { class: "flex justify-between",
-                                dt { class: "text-sm text-gray-500", "Project Manager" }
-                                dd { class: "text-sm", "Jane Doe" }
-                            }
-                        }
-                    }
-
-                    // Budget
-                    Card { title: "Budget",
-                        div { class: "space-y-3",
-                            div { class: "flex justify-between",
-                                span { class: "text-sm text-gray-500", "Total Budget" }
-                                span { class: "font-medium", "$45,000" }
-                            }
-                            div { class: "flex justify-between",
-                                span { class: "text-sm text-gray-500", "Spent" }
-                                span { class: "font-medium text-green-600", "$28,500" }
-                            }
-                            div { class: "flex justify-between",
-                                span { class: "text-sm text-gray-500", "Remaining" }
-                                span { class: "font-medium", "$16,500" }
-                            }
-                            // Progress bar
-                            div { class: "w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 mt-2",
-                                div { class: "bg-green-600 h-2 rounded-full", style: "width: 63%" }
-                            }
-                        }
-                    }
-
-                    // Time
-                    Card { title: "Time",
-                        div { class: "space-y-3",
-                            div { class: "flex justify-between",
-                                span { class: "text-sm text-gray-500", "Estimated" }
-                                span { class: "font-medium", "120 hours" }
-                            }
-                            div { class: "flex justify-between",
-                                span { class: "text-sm text-gray-500", "Logged" }
-                                span { class: "font-medium", "78 hours" }
-                            }
-                            div { class: "flex justify-between",
-                                span { class: "text-sm text-gray-500", "Remaining" }
-                                span { class: "font-medium", "42 hours" }
+                            // Sidebar
+                            div { class: "space-y-6",
+                                Card { title: "Details",
+                                    dl { class: "space-y-4",
+                                        div { class: "flex justify-between",
+                                            dt { class: "text-sm text-gray-500", "Status" }
+                                            dd { Badge { variant: status_variant, "{status_label}" } }
+                                        }
+                                        div { class: "flex justify-between",
+                                            dt { class: "text-sm text-gray-500", "Progress" }
+                                            dd { class: "text-sm font-medium",
+                                                "{progress}% ({completed_tasks}/{total_tasks} tasks)"
+                                            }
+                                        }
+                                        div { class: "flex justify-between",
+                                            dt { class: "text-sm text-gray-500", "Start Date" }
+                                            dd { class: "text-sm", "{fmt_date(&p.start_date)}" }
+                                        }
+                                        div { class: "flex justify-between",
+                                            dt { class: "text-sm text-gray-500", "Due Date" }
+                                            dd { class: "text-sm", "{fmt_date(&p.target_end_date)}" }
+                                        }
+                                        div { class: "flex justify-between",
+                                            dt { class: "text-sm text-gray-500", "Project Manager" }
+                                            dd { class: "text-sm", "{pm}" }
+                                        }
+                                    }
+                                }
+                                Card { title: "Budget",
+                                    div { class: "space-y-3",
+                                        div { class: "flex justify-between",
+                                            span { class: "text-sm text-gray-500", "Total Budget" }
+                                            span { class: "font-medium", "{fmt_money(p.budget_amount)}" }
+                                        }
+                                        div { class: "flex justify-between",
+                                            span { class: "text-sm text-gray-500", "Spent" }
+                                            span { class: "font-medium text-green-600", "{fmt_money(p.actual_amount)}" }
+                                        }
+                                        div { class: "flex justify-between",
+                                            span { class: "text-sm text-gray-500", "Remaining" }
+                                            span { class: "font-medium", "${remaining:.0}" }
+                                        }
+                                        div { class: "w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 mt-2",
+                                            div { class: "bg-green-600 h-2 rounded-full", style: "width: {util}%" }
+                                        }
+                                    }
+                                }
+                                Card { title: "Time",
+                                    div { class: "space-y-3",
+                                        div { class: "flex justify-between",
+                                            span { class: "text-sm text-gray-500", "Estimated" }
+                                            span { class: "font-medium", "{fmt_hours(p.budget_hours)} h" }
+                                        }
+                                        div { class: "flex justify-between",
+                                            span { class: "text-sm text-gray-500", "Logged" }
+                                            span { class: "font-medium", "{fmt_hours(p.actual_hours)} h" }
+                                        }
+                                        div { class: "flex justify-between",
+                                            span { class: "text-sm text-gray-500", "Remaining" }
+                                            span { class: "font-medium", "{remaining_h:.1} h" }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-    }
-}
-
-#[derive(Props, Clone, PartialEq)]
-struct TaskItemProps {
-    name: String,
-    status: String,
-    assignee: String,
-}
-
-#[component]
-fn TaskItem(props: TaskItemProps) -> Element {
-    let status_variant = match props.status.as_str() {
-        "Completed" => BadgeVariant::Green,
-        "In Progress" => BadgeVariant::Blue,
-        _ => BadgeVariant::Gray,
-    };
-
-    rsx! {
-        div { class: "flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg",
-            div {
-                p { class: "font-medium text-gray-900 dark:text-white", "{props.name}" }
-                p { class: "text-sm text-gray-500 dark:text-gray-400", "{props.assignee}" }
-            }
-            Badge { variant: status_variant, "{props.status}" }
-        }
-    }
-}
-
-#[derive(Props, Clone, PartialEq)]
-struct ActivityItemProps {
-    user: String,
-    action: String,
-    time: String,
-}
-
-#[component]
-fn ActivityItem(props: ActivityItemProps) -> Element {
-    rsx! {
-        div { class: "flex justify-between",
-            p { class: "text-gray-700 dark:text-gray-300",
-                span { class: "font-medium", "{props.user}" }
-                " {props.action}"
-            }
-            span { class: "text-gray-500 dark:text-gray-400 whitespace-nowrap ml-4", "{props.time}" }
         }
     }
 }
@@ -659,22 +755,56 @@ pub struct ProjectTasksPageProps {
 }
 
 #[component]
-#[allow(unused_variables)]
 pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
-    let header_title = format!("Project {} - Tasks", props.id);
+    let id_for_tasks = props.id.clone();
+    let tasks_resource = use_resource(move || {
+        let id = id_for_tasks.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<Paginated<RemoteTask>>(&format!(
+                "/projects/{id}/tasks"
+            ))
+            .await
+            .ok()
+            .map(|p| p.data)
+        }
+    });
+    let statuses_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTaskStatus>>("/task-statuses")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+    let users_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteUser>>("/auth/users")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+
+    let snapshot = tasks_resource.read_unchecked().clone();
+    let is_loading = snapshot.is_none();
+    let load_failed = matches!(&snapshot, Some(None));
+    let tasks: Vec<RemoteTask> = snapshot.flatten().unwrap_or_default();
+    let statuses = statuses_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    let users = users_resource.read_unchecked().clone().unwrap_or_default();
+    let total = tasks.len();
+
     rsx! {
-        AppLayout { title: "{header_title}",
-            PageHeader {
-                title: "{header_title}",
-                // F5: Add Task here was decorative (no onclick, no
-                // server projects module yet). Hidden until the server
-                // lands; reopen PMC-39 alongside that backend story.
-            }
+        AppLayout { title: "Project Tasks",
+            PageHeader { title: "Project Tasks", subtitle: "Tasks for this project" }
 
             DataTable {
-                total_items: 5,
+                total_items: total,
                 current_page: 1,
-                per_page: 25,
+                per_page: if total == 0 { 25 } else { total },
                 columns: 5,
                 Table {
                     TableHead {
@@ -687,40 +817,47 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
                         }
                     }
                     TableBody {
-                        TableRow {
-                            TableCell { "Site survey and documentation" }
-                            TableCell { Badge { variant: BadgeVariant::Green, "Completed" } }
-                            TableCell { "John Smith" }
-                            TableCell { "Dec 15, 2024" }
-                            TableCell { "8 / 8" }
-                        }
-                        TableRow {
-                            TableCell { "Hardware procurement" }
-                            TableCell { Badge { variant: BadgeVariant::Green, "Completed" } }
-                            TableCell { "Jane Doe" }
-                            TableCell { "Dec 30, 2024" }
-                            TableCell { "12 / 10" }
-                        }
-                        TableRow {
-                            TableCell { "Core switch installation" }
-                            TableCell { Badge { variant: BadgeVariant::Blue, "In Progress" } }
-                            TableCell { "John Smith" }
-                            TableCell { "Jan 31, 2025" }
-                            TableCell { "24 / 40" }
-                        }
-                        TableRow {
-                            TableCell { "Access point deployment" }
-                            TableCell { Badge { variant: BadgeVariant::Gray, "Pending" } }
-                            TableCell { class: "text-gray-400 italic", "Unassigned" }
-                            TableCell { "Feb 15, 2025" }
-                            TableCell { "0 / 32" }
-                        }
-                        TableRow {
-                            TableCell { "Testing and documentation" }
-                            TableCell { Badge { variant: BadgeVariant::Gray, "Pending" } }
-                            TableCell { class: "text-gray-400 italic", "Unassigned" }
-                            TableCell { "Feb 28, 2025" }
-                            TableCell { "0 / 16" }
+                        if is_loading {
+                            TableRow { TableCell { class: "text-gray-400", "Loading…" } }
+                        } else if load_failed {
+                            TableRow {
+                                TableCell { class: "text-yellow-600 dark:text-yellow-400",
+                                    "Could not load tasks."
+                                }
+                            }
+                        } else if tasks.is_empty() {
+                            TableRow {
+                                TableCell { class: "text-gray-400 italic", "No tasks yet." }
+                            }
+                        } else {
+                            for t in tasks.iter() {
+                                {
+                                    let (tv, tl) = task_status_badge(&statuses, &t.status_id);
+                                    let who = user_name(&users, &t.assigned_to_id);
+                                    let due = fmt_date(&t.due_date);
+                                    let hours = format!(
+                                        "{} / {}",
+                                        fmt_hours(t.actual_hours),
+                                        fmt_hours(t.estimated_hours),
+                                    );
+                                    let unassigned = t.assigned_to_id.is_none();
+                                    rsx! {
+                                        TableRow {
+                                            TableCell { "{t.title}" }
+                                            TableCell { Badge { variant: tv, "{tl}" } }
+                                            TableCell {
+                                                if unassigned {
+                                                    span { class: "text-gray-400 italic", "Unassigned" }
+                                                } else {
+                                                    "{who}"
+                                                }
+                                            }
+                                            TableCell { "{due}" }
+                                            TableCell { "{hours}" }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
