@@ -1,6 +1,7 @@
 //! Project pages
 
 use dioxus::prelude::*;
+use serde::Deserialize;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
@@ -8,6 +9,86 @@ use crate::components::{
     TableHeader, TableRow,
 };
 use crate::Route;
+
+/// `PaginatedResponse<T>` envelope (`{ "data": [...], "meta": {...} }`);
+/// serde drops `meta`.
+#[derive(Clone, Debug, Deserialize)]
+struct Paginated<T> {
+    data: Vec<T>,
+}
+
+/// A project (`GET /api/v1/projects`). Money/hours are decoded with a
+/// number-or-string tolerant reader because the server's `Decimal` wire
+/// form depends on rust_decimal's serde feature set.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteProject {
+    id: uuid::Uuid,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    company_id: Option<uuid::Uuid>,
+    #[serde(default, deserialize_with = "de_flex_f64")]
+    budget_amount: Option<f64>,
+    #[serde(default, deserialize_with = "de_flex_f64")]
+    actual_amount: Option<f64>,
+    #[serde(default)]
+    target_end_date: Option<String>,
+}
+
+/// A company, used to resolve `company_id` to a name and to populate the
+/// New Project picker.
+#[derive(Clone, Debug, Deserialize)]
+struct CompanyOption {
+    id: uuid::Uuid,
+    #[serde(default)]
+    name: String,
+}
+
+/// Deserialize an optional `Decimal`-ish field that may arrive as a JSON
+/// number, a string, or null.
+fn de_flex_f64<'de, D>(d: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        Some(serde_json::Value::Number(n)) => n.as_f64(),
+        Some(serde_json::Value::String(s)) => s.parse().ok(),
+        _ => None,
+    })
+}
+
+/// (badge colour, label) for a project status.
+fn status_badge(status: &str) -> (BadgeVariant, &'static str) {
+    match status {
+        "active" => (BadgeVariant::Green, "Active"),
+        "on_hold" => (BadgeVariant::Yellow, "On Hold"),
+        "completed" => (BadgeVariant::Blue, "Completed"),
+        "cancelled" => (BadgeVariant::Gray, "Cancelled"),
+        "planning" => (BadgeVariant::Gray, "Planning"),
+        _ => (BadgeVariant::Gray, "Unknown"),
+    }
+}
+
+/// Whole-dollar money, or "-" when absent.
+fn fmt_money(v: Option<f64>) -> String {
+    match v {
+        Some(n) => format!("${n:.0}"),
+        None => "-".to_string(),
+    }
+}
+
+/// "Feb 28, 2025" from an ISO date string; raw string on parse failure,
+/// "-" when absent.
+fn fmt_date(s: &Option<String>) -> String {
+    match s {
+        Some(d) => chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
+            .map(|nd| nd.format("%b %-d, %Y").to_string())
+            .unwrap_or_else(|_| d.clone()),
+        None => "-".to_string(),
+    }
+}
 
 /// Project list page
 #[component]
@@ -17,10 +98,65 @@ pub fn ProjectListPage() -> Element {
 
     let status_options = vec![
         SelectOption::new("", "All Statuses"),
+        SelectOption::new("planning", "Planning"),
         SelectOption::new("active", "Active"),
         SelectOption::new("on_hold", "On Hold"),
         SelectOption::new("completed", "Completed"),
+        SelectOption::new("cancelled", "Cancelled"),
     ];
+
+    let projects_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteProject>>("/projects")
+            .await
+            .ok()
+            .map(|p| p.data)
+    });
+    let companies_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<CompanyOption>>("/contacts/companies")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+
+    let snapshot = projects_resource.read_unchecked().clone();
+    // `None` while loading; `Some(None)` on fetch failure; `Some(Some(rows))`.
+    let is_loading = snapshot.is_none();
+    let load_failed = matches!(&snapshot, Some(None));
+    let projects: Vec<RemoteProject> = snapshot.flatten().unwrap_or_default();
+    let companies = companies_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+
+    let company_name = |id: &Option<uuid::Uuid>| -> String {
+        match id {
+            Some(cid) => companies
+                .iter()
+                .find(|c| &c.id == cid)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| "Unknown company".to_string()),
+            None => "No company".to_string(),
+        }
+    };
+
+    // Stat cards computed from the fetched projects (no hardcoded totals).
+    let active = projects.iter().filter(|p| p.status == "active").count();
+    let on_hold = projects.iter().filter(|p| p.status == "on_hold").count();
+    let completed = projects.iter().filter(|p| p.status == "completed").count();
+    let total_value: f64 = projects.iter().filter_map(|p| p.budget_amount).sum();
+    let total_value_label = format!("${total_value:.0}");
+
+    // Client-side search + status filter.
+    let needle = search.read().to_lowercase();
+    let sf = status_filter.read().clone();
+    let filtered: Vec<&RemoteProject> = projects
+        .iter()
+        .filter(|p| sf.is_empty() || p.status == sf)
+        .filter(|p| needle.is_empty() || p.name.to_lowercase().contains(&needle))
+        .collect();
 
     rsx! {
         AppLayout { title: "Projects",
@@ -43,19 +179,19 @@ pub fn ProjectListPage() -> Element {
             div { class: "grid grid-cols-1 gap-5 sm:grid-cols-4 mb-6",
                 Card { class: "text-center",
                     p { class: "text-sm text-gray-500 dark:text-gray-400", "Active Projects" }
-                    p { class: "text-2xl font-bold text-gray-900 dark:text-white", "8" }
+                    p { class: "text-2xl font-bold text-gray-900 dark:text-white", "{active}" }
                 }
                 Card { class: "text-center",
                     p { class: "text-sm text-gray-500 dark:text-gray-400", "On Hold" }
-                    p { class: "text-2xl font-bold text-yellow-600", "2" }
+                    p { class: "text-2xl font-bold text-yellow-600", "{on_hold}" }
                 }
                 Card { class: "text-center",
-                    p { class: "text-sm text-gray-500 dark:text-gray-400", "Completed (YTD)" }
-                    p { class: "text-2xl font-bold text-green-600", "15" }
+                    p { class: "text-sm text-gray-500 dark:text-gray-400", "Completed" }
+                    p { class: "text-2xl font-bold text-green-600", "{completed}" }
                 }
                 Card { class: "text-center",
-                    p { class: "text-sm text-gray-500 dark:text-gray-400", "Total Value" }
-                    p { class: "text-2xl font-bold text-blue-600", "$125,000" }
+                    p { class: "text-sm text-gray-500 dark:text-gray-400", "Total Budget" }
+                    p { class: "text-2xl font-bold text-blue-600", "{total_value_label}" }
                 }
             }
 
@@ -78,136 +214,96 @@ pub fn ProjectListPage() -> Element {
                 }
             }
 
-            // Project cards
-            div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6",
-                ProjectCard {
-                    id: "1",
-                    name: "Network Infrastructure Upgrade",
-                    company: "Acme Corp",
-                    status: "Active",
-                    progress: 65,
-                    due_date: "Feb 28, 2025",
-                    budget: "$45,000",
-                }
-                ProjectCard {
-                    id: "2",
-                    name: "Office 365 Migration",
-                    company: "TechStart Inc",
-                    status: "Active",
-                    progress: 30,
-                    due_date: "Mar 15, 2025",
-                    budget: "$12,000",
-                }
-                ProjectCard {
-                    id: "3",
-                    name: "Security Audit & Remediation",
-                    company: "Global Widgets",
-                    status: "On Hold",
-                    progress: 15,
-                    due_date: "Apr 30, 2025",
-                    budget: "$28,000",
-                }
-                ProjectCard {
-                    id: "4",
-                    name: "VoIP Phone System",
-                    company: "Acme Corp",
-                    status: "Active",
-                    progress: 80,
-                    due_date: "Jan 31, 2025",
-                    budget: "$18,000",
-                }
-                ProjectCard {
-                    id: "5",
-                    name: "Backup Solution Implementation",
-                    company: "TechStart Inc",
-                    status: "Active",
-                    progress: 45,
-                    due_date: "Feb 15, 2025",
-                    budget: "$8,500",
-                }
-                ProjectCard {
-                    id: "6",
-                    name: "New Office Setup",
-                    company: "Global Widgets",
-                    status: "Active",
-                    progress: 90,
-                    due_date: "Jan 20, 2025",
-                    budget: "$15,000",
-                }
-            }
-        }
-    }
-}
-
-#[derive(Props, Clone, PartialEq)]
-struct ProjectCardProps {
-    id: String,
-    name: String,
-    company: String,
-    status: String,
-    progress: u32,
-    due_date: String,
-    budget: String,
-}
-
-#[component]
-fn ProjectCard(props: ProjectCardProps) -> Element {
-    let status_variant = match props.status.as_str() {
-        "Active" => BadgeVariant::Green,
-        "On Hold" => BadgeVariant::Yellow,
-        "Completed" => BadgeVariant::Blue,
-        _ => BadgeVariant::Gray,
-    };
-
-    let progress_color = if props.progress >= 75 {
-        "bg-green-600"
-    } else if props.progress >= 50 {
-        "bg-blue-600"
-    } else if props.progress >= 25 {
-        "bg-yellow-500"
-    } else {
-        "bg-gray-400"
-    };
-
-    rsx! {
-        Link {
-            to: Route::ProjectDetail { id: props.id.clone() },
-            Card { class: "hover:shadow-lg transition-shadow cursor-pointer",
-                div { class: "flex items-start justify-between mb-4",
-                    div {
-                        h3 { class: "text-lg font-medium text-gray-900 dark:text-white",
-                            "{props.name}"
-                        }
-                        p { class: "text-sm text-gray-500 dark:text-gray-400",
-                            "{props.company}"
-                        }
+            if is_loading {
+                Card { p { class: "text-sm text-gray-400", "Loading projects…" } }
+            } else if load_failed {
+                Card {
+                    p { class: "text-sm text-yellow-600 dark:text-yellow-400",
+                        "Could not load projects from the server."
                     }
-                    Badge { variant: status_variant, "{props.status}" }
                 }
-
-                // Progress bar
-                div { class: "mb-4",
-                    div { class: "flex justify-between text-sm mb-1",
-                        span { class: "text-gray-500 dark:text-gray-400", "Progress" }
-                        span { class: "font-medium text-gray-900 dark:text-white", "{props.progress}%" }
-                    }
-                    div { class: "w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2",
-                        div {
-                            class: "{progress_color} h-2 rounded-full transition-all",
-                            style: "width: {props.progress}%",
+            } else if filtered.is_empty() {
+                Card {
+                    p { class: "text-sm text-gray-400 italic",
+                        if projects.is_empty() {
+                            "No projects yet. Create one to get started."
+                        } else {
+                            "No projects match the current filters."
                         }
                     }
                 }
+            } else {
+                // Project cards
+                div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6",
+                    for p in filtered.iter() {
+                        {
+                            let (variant, label) = status_badge(&p.status);
+                            let cname = company_name(&p.company_id);
+                            let util = match (p.actual_amount, p.budget_amount) {
+                                (Some(a), Some(b)) if b > 0.0 => {
+                                    Some(((a / b) * 100.0).clamp(0.0, 100.0).round() as u32)
+                                }
+                                _ => None,
+                            };
+                            let bar_color = match util {
+                                Some(u) if u >= 90 => "bg-red-600",
+                                Some(u) if u >= 75 => "bg-yellow-500",
+                                Some(_) => "bg-green-600",
+                                None => "bg-gray-400",
+                            };
+                            let due = fmt_date(&p.target_end_date);
+                            let budget = fmt_money(p.budget_amount);
+                            let pid = p.id.to_string();
+                            rsx! {
+                                Link {
+                                    key: "{pid}",
+                                    to: Route::ProjectDetail { id: pid.clone() },
+                                    Card { class: "hover:shadow-lg transition-shadow cursor-pointer",
+                                        div { class: "flex items-start justify-between mb-4",
+                                            div {
+                                                h3 { class: "text-lg font-medium text-gray-900 dark:text-white",
+                                                    "{p.name}"
+                                                }
+                                                p { class: "text-sm text-gray-500 dark:text-gray-400",
+                                                    "{cname}"
+                                                }
+                                            }
+                                            Badge { variant, "{label}" }
+                                        }
 
-                // Footer info
-                div { class: "flex justify-between text-sm",
-                    div {
-                        span { class: "text-gray-500 dark:text-gray-400", "Due: " }
-                        span { class: "text-gray-900 dark:text-white", "{props.due_date}" }
-                    }
-                    div {
-                        span { class: "text-gray-500 dark:text-gray-400", "Budget: " }
-                        span { class: "font-medium text-gray-900 dark:text-white", "{props.budget}" }
+                                        // Budget utilization (actual vs budget)
+                                        div { class: "mb-4",
+                                            div { class: "flex justify-between text-sm mb-1",
+                                                span { class: "text-gray-500 dark:text-gray-400", "Budget used" }
+                                                if let Some(u) = util {
+                                                    span { class: "font-medium text-gray-900 dark:text-white", "{u}%" }
+                                                } else {
+                                                    span { class: "text-gray-400", "n/a" }
+                                                }
+                                            }
+                                            div { class: "w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2",
+                                                div {
+                                                    class: "{bar_color} h-2 rounded-full transition-all",
+                                                    style: "width: {util.unwrap_or(0)}%",
+                                                }
+                                            }
+                                        }
+
+                                        // Footer info
+                                        div { class: "flex justify-between text-sm",
+                                            div {
+                                                span { class: "text-gray-500 dark:text-gray-400", "Due: " }
+                                                span { class: "text-gray-900 dark:text-white", "{due}" }
+                                            }
+                                            div {
+                                                span { class: "text-gray-500 dark:text-gray-400", "Budget: " }
+                                                span { class: "font-medium text-gray-900 dark:text-white", "{budget}" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -222,12 +318,29 @@ pub fn ProjectNewPage() -> Element {
     let mut company = use_signal(String::new);
     let mut description = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
+    let mut error = use_signal(String::new);
 
-    let company_options = vec![
-        SelectOption::new("1", "Acme Corp"),
-        SelectOption::new("2", "TechStart Inc"),
-        SelectOption::new("3", "Global Widgets"),
-    ];
+    // Real company picker from the live companies list.
+    let companies_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<CompanyOption>>("/contacts/companies")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+    let companies = companies_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    let mut company_options = vec![SelectOption::new("", "No company")];
+    company_options.extend(
+        companies
+            .iter()
+            .map(|c| SelectOption::new(c.id.to_string(), c.name.clone())),
+    );
+
+    let err = error.read().clone();
 
     rsx! {
         AppLayout { title: "New Project",
@@ -241,20 +354,48 @@ pub fn ProjectNewPage() -> Element {
                     class: "space-y-6",
                     onsubmit: move |e: FormEvent| {
                         e.prevent_default();
+                        error.set(String::new());
+                        let project_name = name.read().trim().to_string();
+                        let company_id = company.read().clone();
+                        let desc = description.read().clone();
+                        if project_name.is_empty() {
+                            error.set("Please enter a project name.".to_string());
+                            return;
+                        }
                         is_submitting.set(true);
-                        // P1-04: mock 1s "submit" so the spinner doesn't
-                        // get stuck. Real POST lands when server F7-style
-                        // module exists for projects.
                         spawn(async move {
                             #[cfg(feature = "web")]
                             {
-                                use gloo_timers::future::TimeoutFuture;
-                                TimeoutFuture::new(1000).await;
+                                let mut body = serde_json::json!({
+                                    "name": project_name,
+                                    "description": desc,
+                                });
+                                if !company_id.is_empty() {
+                                    body["company_id"] = serde_json::json!(company_id);
+                                }
+                                match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
+                                        "/projects",
+                                        &body,
+                                    )
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        dioxus::prelude::navigator().push(Route::ProjectList {});
+                                    }
+                                    Err(e) => {
+                                        error.set(format!("Could not create project: {e}"));
+                                    }
+                                }
                             }
                             is_submitting.set(false);
-                            dioxus::prelude::navigator().push(Route::ProjectList {});
                         });
                     },
+
+                    if !err.is_empty() {
+                        div { class: "rounded-md bg-red-50 dark:bg-red-900/20 p-3",
+                            p { class: "text-sm text-red-600 dark:text-red-400", "{err}" }
+                        }
+                    }
 
                     crate::components::Input {
                         name: "name",
@@ -271,7 +412,6 @@ pub fn ProjectNewPage() -> Element {
                         options: company_options,
                         value: company.read().clone(),
                         placeholder: "Select a company",
-                        required: true,
                         onchange: move |e: FormEvent| company.set(e.value()),
                     }
 
