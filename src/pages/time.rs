@@ -57,6 +57,24 @@ struct WorkTypeOption {
     name: String,
 }
 
+/// A project (`GET /api/v1/projects`), used to label project-linked time in
+/// the timesheet grid.
+#[derive(Clone, Debug, Deserialize)]
+struct ProjectOption {
+    id: uuid::Uuid,
+    #[serde(default)]
+    name: String,
+}
+
+/// A week summary (`GET /api/v1/timesheets`). The endpoint aggregates a
+/// `(user, week)` over `time_entries`; the grid pivots the raw entries
+/// itself, so only the week-level `approval_status` is consumed here.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteTimesheet {
+    #[serde(default)]
+    approval_status: String,
+}
+
 /// Start of the Monday-Sunday week that contains `date`.
 fn monday_of_week(date: NaiveDate) -> NaiveDate {
     let offset = match date.weekday() {
@@ -239,6 +257,16 @@ fn sum_minutes(entries: &[RemoteTimeEntry], pred: impl Fn(&RemoteTimeEntry) -> b
         .filter(|e| pred(e))
         .map(|e| e.duration_minutes)
         .sum()
+}
+
+/// Minutes rendered as a one-decimal hour figure (e.g. 90 -> "1.5").
+fn fmt_hours(minutes: i64) -> String {
+    format!("{:.1}", minutes as f64 / 60.0)
+}
+
+/// First 8 chars of a UUID, for a compact label when a name isn't loaded.
+fn short_id(id: uuid::Uuid) -> String {
+    id.to_string().chars().take(8).collect()
 }
 
 /// New time entry page
@@ -456,35 +484,216 @@ pub fn TimeEntryNewPage() -> Element {
     }
 }
 
-/// Timesheets page
+/// Timesheets page. Builds the weekly grid by pivoting the signed-in user's
+/// `time_entries` for the selected week (the `/timesheets` summary endpoint
+/// returns week totals, not the per-work-item/day breakdown the grid needs),
+/// shows the week's approval status, and wires the Submit action.
 #[component]
 pub fn TimesheetsPage() -> Element {
-    // Default to the week of Jan 13 2025 so the existing demo grid lines
-    // up. Move to chrono::Local::now() when a real timesheet backend lands.
-    let initial = NaiveDate::from_ymd_opt(2025, 1, 13)
-        .unwrap_or_else(|| chrono::Local::now().naive_local().date());
-    let mut week_start = use_signal(|| monday_of_week(initial));
+    let auth = crate::hooks::auth::use_auth();
+    let today = Utc::now().date_naive();
+    let mut week_start = use_signal(|| monday_of_week(today));
+    let mut is_submitting = use_signal(|| false);
+    let mut action_msg = use_signal(String::new);
+    let mut action_err = use_signal(String::new);
 
-    let label = {
+    // The selected week's entries, scoped to the signed-in user. Reading
+    // `week_start`/`auth` inside makes the resource re-run when they change.
+    let entries_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
         let start = week_start();
         let end = start + Duration::days(6);
-        format!(
-            "Week of {} {}-{}, {}",
-            month_name(start.month()),
-            start.day(),
-            end.day(),
-            start.year()
-        )
+        let user_id = auth.read().user.as_ref().map(|u| u.id)?;
+        let path =
+            format!("/time-entries?user_id={user_id}&date_from={start}&date_to={end}&per_page=500");
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimeEntry>>(&path)
+            .await
+            .ok()
+            .map(|p| p.data)
+    });
+
+    // The week summary, for the approval-status badge.
+    let summary_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let start = week_start();
+        let user_id = auth.read().user.as_ref().map(|u| u.id)?;
+        let path = format!("/timesheets?user_id={user_id}&week={start}");
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimesheet>>(&path)
+            .await
+            .ok()
+            .and_then(|p| p.data.into_iter().next())
+    });
+
+    // Work-item labels: tickets and projects.
+    let tickets_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<TicketOption>>("/tickets")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+    let projects_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<ProjectOption>>("/projects")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+    let tickets = tickets_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    let projects = projects_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+
+    let snapshot = entries_resource.read_unchecked().clone();
+    // `None` while loading; `Some(None)` on fetch failure (or no signed-in
+    // user yet); `Some(Some(rows))` once loaded.
+    let is_loading = snapshot.is_none();
+    let load_failed = matches!(&snapshot, Some(None));
+    let entries: Vec<RemoteTimeEntry> = snapshot.flatten().unwrap_or_default();
+
+    let start = week_start();
+    let end = start + Duration::days(6);
+
+    // Pivot the week's entries into per-work-item rows with seven day buckets
+    // (Mon..Sun), summing duration into each (row, weekday) cell.
+    let label_for = |e: &RemoteTimeEntry| -> String {
+        if let Some(tid) = e.ticket_id {
+            return tickets
+                .iter()
+                .find(|t| t.id == tid)
+                .map(|t| format!("{}: {}", t.ticket_number, t.title))
+                .unwrap_or_else(|| format!("Ticket {}", short_id(tid)));
+        }
+        if let Some(pid) = e.project_id {
+            return projects
+                .iter()
+                .find(|p| p.id == pid)
+                .map(|p| format!("Project: {}", p.name))
+                .unwrap_or_else(|| format!("Project {}", short_id(pid)));
+        }
+        "Internal".to_string()
     };
+
+    let mut rows: Vec<(String, [i64; 7])> = Vec::new();
+    for e in &entries {
+        let day_idx = (e.date - start).num_days();
+        if !(0..7).contains(&day_idx) {
+            continue;
+        }
+        let label = label_for(e);
+        let pos = match rows.iter().position(|(l, _)| *l == label) {
+            Some(p) => p,
+            None => {
+                rows.push((label, [0; 7]));
+                rows.len() - 1
+            }
+        };
+        rows[pos].1[day_idx as usize] += e.duration_minutes;
+    }
+    let mut daily_totals = [0i64; 7];
+    for (_, buckets) in &rows {
+        for (i, m) in buckets.iter().enumerate() {
+            daily_totals[i] += m;
+        }
+    }
+    let grand_total: i64 = daily_totals.iter().sum();
+    let has_entries = !rows.is_empty();
+
+    let week_label = format!(
+        "Week of {} {}-{}, {}",
+        month_name(start.month()),
+        start.day(),
+        end.day(),
+        start.year()
+    );
+
+    // Week-level approval status -> badge.
+    let approval = summary_resource
+        .read_unchecked()
+        .clone()
+        .flatten()
+        .map(|s| s.approval_status)
+        .unwrap_or_default();
+    let (status_variant, status_text) = match approval.as_str() {
+        "approved" => (BadgeVariant::Green, "Approved"),
+        "rejected" => (BadgeVariant::Red, "Rejected"),
+        _ if has_entries => (BadgeVariant::Yellow, "Pending approval"),
+        _ => (BadgeVariant::Gray, "Not submitted"),
+    };
+    let already_approved = approval == "approved";
+    let submitting = *is_submitting.read();
+    let msg = action_msg.read().clone();
+    let err = action_err.read().clone();
 
     rsx! {
         AppLayout { title: "Timesheets",
             PageHeader {
                 title: "Timesheets",
                 subtitle: "Weekly timesheet management",
-                // Audit P1-07: Submit Timesheet button was decorative (no
-                // onclick, no submission workflow). Hidden until timesheet
-                // approval flow ships.
+                actions: rsx! {
+                    div { class: "flex items-center gap-3",
+                        Badge { variant: status_variant, "{status_text}" }
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            loading: submitting,
+                            disabled: already_approved || !has_entries,
+                            onclick: move |_| {
+                                action_msg.set(String::new());
+                                action_err.set(String::new());
+                                let start = week_start();
+                                let user_id = match auth.read().user.as_ref().map(|u| u.id) {
+                                    Some(id) => id,
+                                    None => {
+                                        action_err.set("Not signed in.".to_string());
+                                        return;
+                                    }
+                                };
+                                is_submitting.set(true);
+                                let mut sr = summary_resource;
+                                spawn(async move {
+                                    #[cfg(feature = "web")]
+                                    {
+                                        let path = format!("/timesheets/{user_id}/{start}/submit");
+                                        match crate::hooks::fetch::api::post_authed::<
+                                            serde_json::Value,
+                                            _,
+                                        >(&path, &serde_json::json!({}))
+                                            .await
+                                        {
+                                            Ok(_) => {
+                                                action_msg
+                                                    .set("Timesheet submitted for approval.".to_string());
+                                                sr.restart();
+                                            }
+                                            Err(e) => {
+                                                action_err.set(format!("Could not submit timesheet: {e}"));
+                                            }
+                                        }
+                                    }
+                                    is_submitting.set(false);
+                                });
+                            },
+                            "Submit Timesheet"
+                        }
+                    }
+                },
+            }
+
+            if !msg.is_empty() {
+                div { class: "mb-4 rounded-md bg-green-50 dark:bg-green-900/20 p-3",
+                    p { class: "text-sm text-green-700 dark:text-green-400", "{msg}" }
+                }
+            }
+            if !err.is_empty() {
+                div { class: "mb-4 rounded-md bg-red-50 dark:bg-red-900/20 p-3",
+                    p { class: "text-sm text-red-600 dark:text-red-400", "{err}" }
+                }
             }
 
             // Week selector
@@ -495,18 +704,22 @@ pub fn TimesheetsPage() -> Element {
                         class: "p-2 text-gray-400 hover:text-gray-600",
                         title: "Previous week",
                         onclick: move |_| {
+                            action_msg.set(String::new());
+                            action_err.set(String::new());
                             week_start.set(week_start() - Duration::days(7));
                         },
                         ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
                     }
                     span { class: "text-lg font-medium text-gray-900 dark:text-white",
-                        "{label}"
+                        "{week_label}"
                     }
                     button {
                         r#type: "button",
                         class: "p-2 text-gray-400 hover:text-gray-600",
                         title: "Next week",
                         onclick: move |_| {
+                            action_msg.set(String::new());
+                            action_err.set(String::new());
                             week_start.set(week_start() + Duration::days(7));
                         },
                         ChevronRightIcon { class: "h-5 w-5".to_string() }
@@ -550,74 +763,76 @@ pub fn TimesheetsPage() -> Element {
                             }
                         }
                         tbody { class: "bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700",
-                            TimesheetRow {
-                                work_item: "TKT-1234: Email server",
-                                hours: vec!["2.0", "1.5", "", "", "", "", ""],
-                            }
-                            TimesheetRow {
-                                work_item: "TKT-1233: User setup",
-                                hours: vec!["", "2.0", "3.0", "", "", "", ""],
-                            }
-                            TimesheetRow {
-                                work_item: "PRJ-101: Network Upgrade",
-                                hours: vec!["4.0", "4.0", "4.0", "4.0", "4.0", "", ""],
-                            }
-                            TimesheetRow {
-                                work_item: "Internal",
-                                hours: vec!["1.0", "0.5", "1.0", "0.5", "1.0", "", ""],
-                            }
-                            // Totals row
-                            tr { class: "bg-gray-50 dark:bg-gray-800 font-medium",
-                                td { class: "px-6 py-3 text-sm text-gray-900 dark:text-white",
-                                    "Daily Total"
+                            if is_loading {
+                                tr {
+                                    td {
+                                        class: "px-6 py-8 text-center text-sm text-gray-500",
+                                        colspan: "9",
+                                        "Loading timesheet..."
+                                    }
                                 }
-                                td { class: "px-4 py-3 text-center text-sm text-gray-900 dark:text-white", "7.0" }
-                                td { class: "px-4 py-3 text-center text-sm text-gray-900 dark:text-white", "8.0" }
-                                td { class: "px-4 py-3 text-center text-sm text-gray-900 dark:text-white", "8.0" }
-                                td { class: "px-4 py-3 text-center text-sm text-gray-900 dark:text-white", "4.5" }
-                                td { class: "px-4 py-3 text-center text-sm text-gray-900 dark:text-white", "5.0" }
-                                td { class: "px-4 py-3 text-center text-sm text-gray-500", "0" }
-                                td { class: "px-4 py-3 text-center text-sm text-gray-500", "0" }
-                                td { class: "px-4 py-3 text-center text-sm font-bold text-blue-600", "32.5" }
+                            } else if load_failed {
+                                tr {
+                                    td {
+                                        class: "px-6 py-8 text-center text-sm text-red-500",
+                                        colspan: "9",
+                                        "Could not load timesheet. The time-tracking service may be unavailable."
+                                    }
+                                }
+                            } else if !has_entries {
+                                tr {
+                                    td {
+                                        class: "px-6 py-8 text-center text-sm text-gray-500",
+                                        colspan: "9",
+                                        "No time logged this week."
+                                    }
+                                }
+                            } else {
+                                for (label , buckets) in rows.iter() {
+                                    {
+                                        let row_total = buckets.iter().sum::<i64>();
+                                        rsx! {
+                                            tr {
+                                                td { class: "px-6 py-3 text-sm text-gray-900 dark:text-white",
+                                                    "{label}"
+                                                }
+                                                for m in buckets.iter() {
+                                                    td { class: "px-4 py-3 text-center text-sm",
+                                                        if *m == 0 {
+                                                            span { class: "text-gray-300 dark:text-gray-600", "-" }
+                                                        } else {
+                                                            span { class: "text-gray-900 dark:text-white", "{fmt_hours(*m)}" }
+                                                        }
+                                                    }
+                                                }
+                                                td { class: "px-4 py-3 text-center text-sm font-medium text-gray-900 dark:text-white",
+                                                    "{fmt_hours(row_total)}"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                tr { class: "bg-gray-50 dark:bg-gray-800 font-medium",
+                                    td { class: "px-6 py-3 text-sm text-gray-900 dark:text-white",
+                                        "Daily Total"
+                                    }
+                                    for m in daily_totals.iter() {
+                                        td { class: "px-4 py-3 text-center text-sm text-gray-900 dark:text-white",
+                                            if *m == 0 {
+                                                span { class: "text-gray-500", "0" }
+                                            } else {
+                                                "{fmt_hours(*m)}"
+                                            }
+                                        }
+                                    }
+                                    td { class: "px-4 py-3 text-center text-sm font-bold text-blue-600",
+                                        "{fmt_hours(grand_total)}"
+                                    }
+                                }
                             }
                         }
                     }
                 }
-            }
-        }
-    }
-}
-
-#[derive(Props, Clone, PartialEq)]
-struct TimesheetRowProps {
-    work_item: String,
-    hours: Vec<&'static str>,
-}
-
-#[component]
-fn TimesheetRow(props: TimesheetRowProps) -> Element {
-    let total: f32 = props
-        .hours
-        .iter()
-        .filter_map(|h| h.parse::<f32>().ok())
-        .sum();
-
-    rsx! {
-        tr {
-            td { class: "px-6 py-3 text-sm text-gray-900 dark:text-white",
-                "{props.work_item}"
-            }
-            for hours in props.hours.iter() {
-                td { class: "px-4 py-3 text-center text-sm",
-                    if hours.is_empty() {
-                        span { class: "text-gray-300 dark:text-gray-600", "-" }
-                    } else {
-                        span { class: "text-gray-900 dark:text-white", "{hours}" }
-                    }
-                }
-            }
-            td { class: "px-4 py-3 text-center text-sm font-medium text-gray-900 dark:text-white",
-                "{total}"
             }
         }
     }
