@@ -1,5 +1,5 @@
 # Development Dockerfile - dx serve with hot reload
-FROM ghcr.io/niceguyit/rust-builder-glibc:v1.0.0-rust1.94-trixie
+FROM ghcr.io/niceguyit/rust-builder-glibc:v1.0.1-rust1.94-trixie
 
 ARG UID=1000
 ARG GID=1000
