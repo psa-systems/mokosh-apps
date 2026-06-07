@@ -1,9 +1,100 @@
 //! Reports pages
 
 use dioxus::prelude::*;
+use serde::Deserialize;
 
 use crate::components::{AppLayout, Card, ChartIcon, IconSize, PageHeader};
 use crate::Route;
+
+#[derive(Clone, Debug, Deserialize)]
+struct Bucket {
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    count: i64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct IdCount {
+    #[serde(default)]
+    count: i64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct TicketsReport {
+    #[serde(default)]
+    closed_total: i64,
+    #[serde(default)]
+    opened_by_status: Vec<Bucket>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct TimeReport {
+    #[serde(default)]
+    minutes_by_user: Vec<IdCount>,
+    #[serde(default)]
+    minutes_by_work_type: Vec<IdCount>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct AgingBucket {
+    #[serde(default)]
+    bucket: String,
+    #[serde(default)]
+    total: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct BillingReport {
+    #[serde(default)]
+    invoiced: String,
+    #[serde(default)]
+    paid: String,
+    #[serde(default)]
+    outstanding: String,
+    #[serde(default)]
+    aging: Vec<AgingBucket>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct DashReport {
+    #[serde(default)]
+    sla_warnings: i64,
+    #[serde(default)]
+    sla_breached: i64,
+}
+
+/// Which backend report a `report_type` maps to. The reports landing page
+/// lists more report types than the backend (PMS-93) implements; the
+/// unmapped ones render an honest "not available yet" state.
+#[derive(Clone, Copy, PartialEq)]
+enum ReportKind {
+    Tickets,
+    Time,
+    Billing,
+    Unsupported,
+}
+
+fn report_kind(report_type: &str) -> ReportKind {
+    match report_type {
+        "ticket-volume" | "sla-performance" | "resolution-time" | "tech-performance" => {
+            ReportKind::Tickets
+        }
+        "utilization" | "billable-hours" | "timesheet-summary" => ReportKind::Time,
+        "revenue" | "ar-aging" | "profitability" => ReportKind::Billing,
+        _ => ReportKind::Unsupported,
+    }
+}
+
+/// Normalised view the detail page renders, built from whichever backend
+/// report the `report_type` maps to.
+#[derive(Clone, Debug, Default)]
+struct ReportView {
+    supported: bool,
+    summary: Vec<(String, String)>,
+    breakdown_title: String,
+    breakdown: Vec<(String, String)>,
+}
 
 /// Reports home page
 #[component]
@@ -119,131 +210,158 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
     let report_title = match props.report_type.as_str() {
         "ticket-volume" => "Ticket Volume Report",
         "sla-performance" => "SLA Performance Report",
+        "resolution-time" => "Resolution Time Report",
+        "tech-performance" => "Technician Performance Report",
         "utilization" => "Technician Utilization Report",
+        "billable-hours" => "Billable Hours Report",
+        "timesheet-summary" => "Timesheet Summary Report",
         "revenue" => "Revenue Summary Report",
+        "ar-aging" => "A/R Aging Report",
+        "profitability" => "Client Profitability Report",
         _ => "Report",
     };
 
+    let report_type = props.report_type.clone();
+    let view_resource = use_resource(move || {
+        let rt = report_type.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            build_view(&rt).await
+        }
+    });
+    let view = view_resource.read_unchecked().clone();
+    let is_loading = view.is_none();
+    let view = view.unwrap_or_default();
+
     rsx! {
         AppLayout { title: report_title,
-            PageHeader {
-                title: report_title,
-                // Audit P1-07: Export PDF / Export CSV / Schedule buttons
-                // were decorative (no onclick, no export endpoint, no
-                // schedule UI). Hidden until reports module ships exports.
-            }
+            PageHeader { title: report_title, subtitle: "Live figures from the reports service" }
 
-            // Date range filter
-            Card { class: "mb-6",
-                div { class: "flex flex-wrap gap-4 items-center",
-                    // P2-14: Dioxus 0.7 doesn't render `selected:` on a
-                    // bare `option`, so the user saw a blank input.
-                    // Drive the displayed text via the parent select's
-                    // `value:` attribute (which Dioxus 0.7 does honor).
-                    div { class: "flex items-center space-x-2",
-                        label { class: "text-sm text-gray-500", "Date Range:" }
-                        select {
-                            class: "rounded-md border-gray-300 text-sm",
-                            value: "30",
-                            option { value: "7", "Last 7 days" }
-                            option { value: "30", "Last 30 days" }
-                            option { value: "month", "This Month" }
-                            option { value: "last-month", "Last Month" }
-                            option { value: "quarter", "This Quarter" }
-                            option { value: "custom", "Custom" }
-                        }
+            if is_loading {
+                Card { p { class: "text-sm text-gray-400", "Loading report…" } }
+            } else if !view.supported {
+                Card {
+                    p { class: "text-sm text-gray-500 dark:text-gray-400",
+                        "This report isn't available yet. The reports service (PMS-93) currently powers the ticket, time, and billing reports."
                     }
-                    div { class: "flex items-center space-x-2",
-                        label { class: "text-sm text-gray-500", "Group By:" }
-                        select {
-                            class: "rounded-md border-gray-300 text-sm",
-                            value: "week",
-                            option { value: "day", "Day" }
-                            option { value: "week", "Week" }
-                            option { value: "month", "Month" }
-                        }
-                    }
-                    // Audit P1-07: Apply Filters button was decorative
-                    // (filters auto-render, no submit endpoint).
                 }
-            }
+            } else {
+                div { class: "grid grid-cols-1 lg:grid-cols-2 gap-6",
+                    Card { title: "Summary",
+                        if view.summary.is_empty() {
+                            p { class: "text-sm text-gray-400 italic", "No data for this period." }
+                        } else {
+                            div { class: "grid grid-cols-2 gap-4",
+                                for (label , value) in view.summary.iter() {
+                                    div { class: "text-center p-4 bg-gray-50 dark:bg-gray-800 rounded-lg",
+                                        p { class: "text-sm text-gray-500", "{label}" }
+                                        p { class: "text-3xl font-bold text-gray-900 dark:text-white", "{value}" }
+                                    }
+                                }
+                            }
+                        }
+                    }
 
-            // Report content (placeholder)
-            div { class: "grid grid-cols-1 lg:grid-cols-2 gap-6",
-                Card { title: "Summary",
-                    div { class: "grid grid-cols-2 gap-4",
-                        div { class: "text-center p-4 bg-gray-50 dark:bg-gray-800 rounded-lg",
-                            p { class: "text-sm text-gray-500", "Total Tickets" }
-                            p { class: "text-3xl font-bold text-gray-900 dark:text-white", "342" }
-                        }
-                        div { class: "text-center p-4 bg-gray-50 dark:bg-gray-800 rounded-lg",
-                            p { class: "text-sm text-gray-500", "Avg. Resolution Time" }
-                            p { class: "text-3xl font-bold text-gray-900 dark:text-white", "4.2h" }
-                        }
-                        div { class: "text-center p-4 bg-gray-50 dark:bg-gray-800 rounded-lg",
-                            p { class: "text-sm text-gray-500", "SLA Compliance" }
-                            p { class: "text-3xl font-bold text-green-600", "94%" }
-                        }
-                        div { class: "text-center p-4 bg-gray-50 dark:bg-gray-800 rounded-lg",
-                            p { class: "text-sm text-gray-500", "Customer Satisfaction" }
-                            p { class: "text-3xl font-bold text-blue-600", "4.7/5" }
-                        }
+                    Card { title: "Trend",
+                        ChartComingSoon { caption: "Time-series charts are coming soon" }
                     }
                 }
 
-                Card { title: "Trend",
-                    ChartComingSoon { caption: "Ticket volume over time" }
-                }
-
-                Card { title: "By Status",
-                    ChartComingSoon { caption: "Tickets by status" }
-                }
-
-                Card { title: "By Priority",
-                    ChartComingSoon { caption: "Tickets by priority" }
-                }
-            }
-
-            // Data table
-            Card { title: "Detailed Data", class: "mt-6",
-                div { class: "overflow-x-auto",
-                    table { class: "min-w-full divide-y divide-gray-200 dark:divide-gray-700",
-                        thead { class: "bg-gray-50 dark:bg-gray-800",
-                            tr {
-                                th { class: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase", "Week" }
-                                th { class: "px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase", "New" }
-                                th { class: "px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase", "Resolved" }
-                                th { class: "px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase", "Avg. Time" }
-                                th { class: "px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase", "SLA %" }
-                            }
-                        }
-                        tbody { class: "bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700",
-                            tr {
-                                td { class: "px-6 py-4 text-sm text-gray-900 dark:text-white", "Dec 30 - Jan 5" }
-                                td { class: "px-6 py-4 text-sm text-right", "85" }
-                                td { class: "px-6 py-4 text-sm text-right", "78" }
-                                td { class: "px-6 py-4 text-sm text-right", "3.8h" }
-                                td { class: "px-6 py-4 text-sm text-right text-green-600", "96%" }
-                            }
-                            tr {
-                                td { class: "px-6 py-4 text-sm text-gray-900 dark:text-white", "Jan 6 - Jan 12" }
-                                td { class: "px-6 py-4 text-sm text-right", "92" }
-                                td { class: "px-6 py-4 text-sm text-right", "88" }
-                                td { class: "px-6 py-4 text-sm text-right", "4.1h" }
-                                td { class: "px-6 py-4 text-sm text-right text-green-600", "94%" }
-                            }
-                            tr {
-                                td { class: "px-6 py-4 text-sm text-gray-900 dark:text-white", "Jan 13 - Jan 19" }
-                                td { class: "px-6 py-4 text-sm text-right", "78" }
-                                td { class: "px-6 py-4 text-sm text-right", "71" }
-                                td { class: "px-6 py-4 text-sm text-right", "4.5h" }
-                                td { class: "px-6 py-4 text-sm text-right text-yellow-600", "89%" }
+                if !view.breakdown.is_empty() {
+                    Card { title: "{view.breakdown_title}", class: "mt-6",
+                        div { class: "overflow-x-auto",
+                            table { class: "min-w-full divide-y divide-gray-200 dark:divide-gray-700",
+                                tbody { class: "bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700",
+                                    for (k , v) in view.breakdown.iter() {
+                                        tr {
+                                            td { class: "px-6 py-3 text-sm text-gray-900 dark:text-white", "{k}" }
+                                            td { class: "px-6 py-3 text-sm text-right font-medium", "{v}" }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
         }
+    }
+}
+
+/// Fetch the backend report a `report_type` maps to and normalise it into a
+/// `ReportView`. Each fetch is best-effort (`.ok()`); billing requires a
+/// manager role, so a lower-privilege session yields an empty billing view.
+async fn build_view(report_type: &str) -> ReportView {
+    match report_kind(report_type) {
+        ReportKind::Tickets => {
+            let tickets = crate::hooks::fetch::api::get_authed::<TicketsReport>("/reports/tickets")
+                .await
+                .unwrap_or_default();
+            let dash = crate::hooks::fetch::api::get_authed::<DashReport>("/reports/dashboard")
+                .await
+                .unwrap_or_default();
+            let open: i64 = tickets.opened_by_status.iter().map(|b| b.count).sum();
+            ReportView {
+                supported: true,
+                summary: vec![
+                    ("Tickets closed".into(), tickets.closed_total.to_string()),
+                    ("Opened (period)".into(), open.to_string()),
+                    ("SLA at-risk".into(), dash.sla_warnings.to_string()),
+                    ("SLA breached".into(), dash.sla_breached.to_string()),
+                ],
+                breakdown_title: "Opened by status".into(),
+                breakdown: tickets
+                    .opened_by_status
+                    .iter()
+                    .map(|b| (b.label.clone(), b.count.to_string()))
+                    .collect(),
+            }
+        }
+        ReportKind::Time => {
+            let time = crate::hooks::fetch::api::get_authed::<TimeReport>("/reports/time")
+                .await
+                .unwrap_or_default();
+            let total_min: i64 = time.minutes_by_user.iter().map(|u| u.count).sum();
+            ReportView {
+                supported: true,
+                summary: vec![
+                    (
+                        "Total hours".into(),
+                        format!("{:.1}", total_min as f64 / 60.0),
+                    ),
+                    (
+                        "Contributors".into(),
+                        time.minutes_by_user.len().to_string(),
+                    ),
+                    (
+                        "Work types".into(),
+                        time.minutes_by_work_type.len().to_string(),
+                    ),
+                ],
+                breakdown_title: String::new(),
+                breakdown: Vec::new(),
+            }
+        }
+        ReportKind::Billing => {
+            let billing = crate::hooks::fetch::api::get_authed::<BillingReport>("/reports/billing")
+                .await
+                .unwrap_or_default();
+            ReportView {
+                supported: true,
+                summary: vec![
+                    ("Invoiced".into(), format!("${}", billing.invoiced)),
+                    ("Paid".into(), format!("${}", billing.paid)),
+                    ("Outstanding".into(), format!("${}", billing.outstanding)),
+                ],
+                breakdown_title: "A/R aging".into(),
+                breakdown: billing
+                    .aging
+                    .iter()
+                    .map(|a| (a.bucket.clone(), format!("${}", a.total)))
+                    .collect(),
+            }
+        }
+        ReportKind::Unsupported => ReportView::default(),
     }
 }
 

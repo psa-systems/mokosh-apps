@@ -4,9 +4,9 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
-    PlusIcon, SearchInput, Select, SelectOption, Table, TableBody, TableCell, TableHead,
-    TableHeader, TableRow,
+    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, Modal,
+    PageHeader, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody, TableCell,
+    TableHead, TableHeader, TableRow,
 };
 use crate::Route;
 
@@ -395,6 +395,8 @@ pub fn ProjectNewPage() -> Element {
     let mut name = use_signal(String::new);
     let mut company = use_signal(String::new);
     let mut description = use_signal(String::new);
+    let mut budget_amount = use_signal(String::new);
+    let mut budget_hours = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
 
@@ -436,10 +438,35 @@ pub fn ProjectNewPage() -> Element {
                         let project_name = name.read().trim().to_string();
                         let company_id = company.read().clone();
                         let desc = description.read().clone();
+                        let amount_raw = budget_amount.read().trim().to_string();
+                        let hours_raw = budget_hours.read().trim().to_string();
                         if project_name.is_empty() {
                             error.set("Please enter a project name.".to_string());
                             return;
                         }
+                        // Budgets are optional, but if supplied must parse.
+                        let amount: Option<f64> = if amount_raw.is_empty() {
+                            None
+                        } else {
+                            match amount_raw.parse() {
+                                Ok(v) => Some(v),
+                                Err(_) => {
+                                    error.set("Budget amount must be a number.".to_string());
+                                    return;
+                                }
+                            }
+                        };
+                        let hours: Option<f64> = if hours_raw.is_empty() {
+                            None
+                        } else {
+                            match hours_raw.parse() {
+                                Ok(v) => Some(v),
+                                Err(_) => {
+                                    error.set("Budget hours must be a number.".to_string());
+                                    return;
+                                }
+                            }
+                        };
                         is_submitting.set(true);
                         spawn(async move {
                             #[cfg(feature = "web")]
@@ -450,6 +477,12 @@ pub fn ProjectNewPage() -> Element {
                                 });
                                 if !company_id.is_empty() {
                                     body["company_id"] = serde_json::json!(company_id);
+                                }
+                                if let Some(a) = amount {
+                                    body["budget_amount"] = serde_json::json!(a);
+                                }
+                                if let Some(h) = hours {
+                                    body["budget_hours"] = serde_json::json!(h);
                                 }
                                 match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
                                         "/projects",
@@ -500,6 +533,25 @@ pub fn ProjectNewPage() -> Element {
                         rows: 4,
                         value: description.read().clone(),
                         oninput: move |e: FormEvent| description.set(e.value()),
+                    }
+
+                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                        crate::components::Input {
+                            name: "budget_amount",
+                            label: "Budget Amount ($)",
+                            r#type: "number",
+                            placeholder: "0.00",
+                            value: budget_amount.read().clone(),
+                            oninput: move |e: FormEvent| budget_amount.set(e.value()),
+                        }
+                        crate::components::Input {
+                            name: "budget_hours",
+                            label: "Budget Hours",
+                            r#type: "number",
+                            placeholder: "0",
+                            value: budget_hours.read().clone(),
+                            oninput: move |e: FormEvent| budget_hours.set(e.value()),
+                        }
                     }
 
                     div { class: "flex justify-end space-x-3",
@@ -579,6 +631,38 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         .unwrap_or_default();
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
 
+    // Add Task modal state.
+    let mut show_task_modal = use_signal(|| false);
+    let mut t_title = use_signal(String::new);
+    let mut t_status = use_signal(String::new);
+    let mut t_priority = use_signal(|| "medium".to_string());
+    let mut t_estimated = use_signal(String::new);
+    let mut t_due = use_signal(String::new);
+    let mut t_assignee = use_signal(String::new);
+    let mut t_submitting = use_signal(|| false);
+    let mut t_error = use_signal(String::new);
+
+    let mut status_options = vec![SelectOption::new("", "Select a status")];
+    status_options.extend(
+        statuses
+            .iter()
+            .map(|s| SelectOption::new(s.id.to_string(), s.name.clone())),
+    );
+    let priority_options = vec![
+        SelectOption::new("low", "Low"),
+        SelectOption::new("medium", "Medium"),
+        SelectOption::new("high", "High"),
+        SelectOption::new("critical", "Critical"),
+    ];
+    let mut assignee_options = vec![SelectOption::new("", "Unassigned")];
+    assignee_options.extend(
+        users
+            .iter()
+            .map(|u| SelectOption::new(u.id.to_string(), u.full_name.clone())),
+    );
+    let t_err = t_error.read().clone();
+    let id_for_create = props.id.clone();
+
     let header_title = match project.as_ref() {
         Some(p) if !p.name.trim().is_empty() => p.name.clone(),
         Some(_) => format!("Project {}", props.id),
@@ -612,6 +696,15 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                     Link {
                         to: Route::ProjectTasks { id: props.id.clone() },
                         Button { variant: ButtonVariant::Secondary, "View Tasks" }
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        onclick: move |_| {
+                            t_error.set(String::new());
+                            show_task_modal.set(true);
+                        },
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "Add Task"
                     }
                 },
             }
@@ -740,6 +833,148 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+            }
+
+            Modal {
+                open: *show_task_modal.read(),
+                title: "Add Task",
+                size: crate::components::ModalSize::Medium,
+                onclose: move |_| show_task_modal.set(false),
+                footer: rsx! {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| show_task_modal.set(false),
+                        "Cancel"
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        loading: *t_submitting.read(),
+                        onclick: move |_| {
+                            t_error.set(String::new());
+                            let title = t_title.read().trim().to_string();
+                            let status_id = t_status.read().clone();
+                            let priority = t_priority.read().clone();
+                            let est_raw = t_estimated.read().trim().to_string();
+                            let due = t_due.read().clone();
+                            let assignee = t_assignee.read().clone();
+                            if title.is_empty() {
+                                t_error.set("Task title is required.".to_string());
+                                return;
+                            }
+                            if status_id.is_empty() {
+                                t_error.set("Please pick a status.".to_string());
+                                return;
+                            }
+                            let est: Option<f64> = if est_raw.is_empty() {
+                                None
+                            } else {
+                                match est_raw.parse() {
+                                    Ok(v) => Some(v),
+                                    Err(_) => {
+                                        t_error.set("Estimated hours must be a number.".to_string());
+                                        return;
+                                    }
+                                }
+                            };
+                            let id = id_for_create.clone();
+                            t_submitting.set(true);
+                            let mut tr = tasks_resource;
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    let mut body = serde_json::json!({
+                                        "title": title,
+                                        "status_id": status_id,
+                                        "priority": priority,
+                                    });
+                                    if let Some(e) = est {
+                                        body["estimated_hours"] = serde_json::json!(e);
+                                    }
+                                    if !due.is_empty() {
+                                        body["due_date"] = serde_json::json!(due);
+                                    }
+                                    if !assignee.is_empty() {
+                                        body["assigned_to_id"] = serde_json::json!(assignee);
+                                    }
+                                    let path = format!("/projects/{id}/tasks");
+                                    match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
+                                            &path,
+                                            &body,
+                                        )
+                                        .await
+                                    {
+                                        Ok(_) => {
+                                            t_title.set(String::new());
+                                            t_estimated.set(String::new());
+                                            t_due.set(String::new());
+                                            t_assignee.set(String::new());
+                                            show_task_modal.set(false);
+                                            tr.restart();
+                                        }
+                                        Err(e) => {
+                                            t_error.set(format!("Could not create task: {e}"));
+                                        }
+                                    }
+                                }
+                                t_submitting.set(false);
+                            });
+                        },
+                        "Create Task"
+                    }
+                },
+                div { class: "space-y-4",
+                    if !t_err.is_empty() {
+                        div { class: "rounded-md bg-red-50 dark:bg-red-900/20 p-3",
+                            p { class: "text-sm text-red-600 dark:text-red-400", "{t_err}" }
+                        }
+                    }
+                    crate::components::Input {
+                        name: "task_title",
+                        label: "Title",
+                        placeholder: "Task title",
+                        required: true,
+                        value: t_title.read().clone(),
+                        oninput: move |e: FormEvent| t_title.set(e.value()),
+                    }
+                    Select {
+                        name: "task_status",
+                        label: "Status",
+                        options: status_options,
+                        value: t_status.read().clone(),
+                        onchange: move |e: FormEvent| t_status.set(e.value()),
+                    }
+                    Select {
+                        name: "task_priority",
+                        label: "Priority",
+                        options: priority_options,
+                        value: t_priority.read().clone(),
+                        onchange: move |e: FormEvent| t_priority.set(e.value()),
+                    }
+                    Select {
+                        name: "task_assignee",
+                        label: "Assignee",
+                        options: assignee_options,
+                        value: t_assignee.read().clone(),
+                        onchange: move |e: FormEvent| t_assignee.set(e.value()),
+                    }
+                    div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
+                        crate::components::Input {
+                            name: "task_est",
+                            label: "Estimated Hours",
+                            r#type: "number",
+                            placeholder: "0",
+                            value: t_estimated.read().clone(),
+                            oninput: move |e: FormEvent| t_estimated.set(e.value()),
+                        }
+                        crate::components::Input {
+                            name: "task_due",
+                            label: "Due Date",
+                            r#type: "date",
+                            value: t_due.read().clone(),
+                            oninput: move |e: FormEvent| t_due.set(e.value()),
                         }
                     }
                 }
