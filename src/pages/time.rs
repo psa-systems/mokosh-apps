@@ -57,6 +57,26 @@ struct WorkTypeOption {
     name: String,
 }
 
+/// A project (`GET /api/v1/projects`) offered as a work item. Only
+/// projects with a `company_id` are pickable, since a time entry needs a
+/// company and a project's is optional.
+#[derive(Clone, Debug, Deserialize)]
+struct ProjectPick {
+    id: uuid::Uuid,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    company_id: Option<uuid::Uuid>,
+}
+
+/// A task within the selected project (`GET /api/v1/projects/:id/tasks`).
+#[derive(Clone, Debug, Deserialize)]
+struct TaskPick {
+    id: uuid::Uuid,
+    #[serde(default)]
+    title: String,
+}
+
 /// A project (`GET /api/v1/projects`), used to label project-linked time in
 /// the timesheet grid.
 #[derive(Clone, Debug, Deserialize)]
@@ -274,6 +294,7 @@ fn short_id(id: uuid::Uuid) -> String {
 pub fn TimeEntryNewPage() -> Element {
     let auth = crate::hooks::auth::use_auth();
     let mut work_item = use_signal(String::new);
+    let mut task = use_signal(String::new);
     let mut work_type = use_signal(String::new);
     let mut hours = use_signal(String::new);
     let mut description = use_signal(String::new);
@@ -281,11 +302,20 @@ pub fn TimeEntryNewPage() -> Element {
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
 
-    // Real pickers: a ticket supplies ticket_id + the required company_id; a
-    // work type supplies the required work_type_id.
+    // Work items come from two sources: tickets (supply ticket_id +
+    // company_id) and projects (supply project_id + their company_id). The
+    // select value is prefixed `ticket:` / `project:` to tell them apart.
     let tickets_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_authed::<Paginated<TicketOption>>("/tickets")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+    let projects_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<ProjectPick>>("/projects")
             .await
             .ok()
             .map(|p| p.data)
@@ -299,7 +329,32 @@ pub fn TimeEntryNewPage() -> Element {
             .map(|p| p.data)
             .unwrap_or_default()
     });
+    // Tasks for the selected project (only when a project work item is
+    // picked); re-runs when `work_item` changes.
+    let tasks_resource = use_resource(move || {
+        let wi = work_item();
+        async move {
+            if let Some(pid) = wi.strip_prefix("project:") {
+                let pid = pid.to_string();
+                let _gen = crate::hooks::fetch::active_tenant_generation();
+                crate::hooks::fetch::api::get_authed::<Paginated<TaskPick>>(&format!(
+                    "/projects/{pid}/tasks"
+                ))
+                .await
+                .ok()
+                .map(|p| p.data)
+                .unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        }
+    });
+
     let tickets = tickets_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    let projects = projects_resource
         .read_unchecked()
         .clone()
         .unwrap_or_default();
@@ -307,22 +362,38 @@ pub fn TimeEntryNewPage() -> Element {
         .read_unchecked()
         .clone()
         .unwrap_or_default();
+    let tasks = tasks_resource.read_unchecked().clone().unwrap_or_default();
 
-    let mut work_item_options = vec![SelectOption::new("", "Select a ticket")];
+    let mut work_item_options = vec![SelectOption::new("", "Select a work item")];
     work_item_options.extend(tickets.iter().map(|t| {
         SelectOption::new(
-            t.id.to_string(),
-            format!("{}: {}", t.ticket_number, t.title),
+            format!("ticket:{}", t.id),
+            format!("Ticket {}: {}", t.ticket_number, t.title),
         )
     }));
+    // Only projects with a company can take a time entry (company_id is
+    // required and a project's is optional).
+    work_item_options.extend(
+        projects.iter().filter(|p| p.company_id.is_some()).map(|p| {
+            SelectOption::new(format!("project:{}", p.id), format!("Project: {}", p.name))
+        }),
+    );
     let mut work_type_options = vec![SelectOption::new("", "Select a work type")];
     work_type_options.extend(
         work_types
             .iter()
             .map(|w| SelectOption::new(w.id.to_string(), w.name.clone())),
     );
+    let mut task_options = vec![SelectOption::new("", "No specific task")];
+    task_options.extend(
+        tasks
+            .iter()
+            .map(|t| SelectOption::new(t.id.to_string(), t.title.clone())),
+    );
 
+    let is_project_item = work_item.read().starts_with("project:");
     let tickets_for_submit = tickets.clone();
+    let projects_for_submit = projects.clone();
     let err = error.read().clone();
 
     rsx! {
@@ -335,16 +406,12 @@ pub fn TimeEntryNewPage() -> Element {
                     onsubmit: move |e: FormEvent| {
                         e.prevent_default();
                         error.set(String::new());
-                        let tid = work_item.read().clone();
+                        let wi = work_item.read().clone();
                         let wtid = work_type.read().clone();
                         let hrs = hours.read().clone();
                         let desc = description.read().clone();
                         let billable = *is_billable.read();
 
-                        if tid.is_empty() {
-                            error.set("Please pick a work item (ticket).".to_string());
-                            return;
-                        }
                         if wtid.is_empty() {
                             error.set("Please pick a work type.".to_string());
                             return;
@@ -356,12 +423,44 @@ pub fn TimeEntryNewPage() -> Element {
                                 return;
                             }
                         };
-                        let company_id = match tickets_for_submit.iter().find(|t| t.id.to_string() == tid) {
-                            Some(t) => t.company_id,
-                            None => {
-                                error.set("Could not resolve the ticket's company.".to_string());
-                                return;
+                        // Resolve the work item into (ticket_id, project_id,
+                        // task_id, company_id). A ticket carries its company;
+                        // a project carries its own (required, which is why the
+                        // picker only lists projects that have one).
+                        let (ticket_id, project_id, task_id, company_id) = if let Some(tid) =
+                            wi.strip_prefix("ticket:")
+                        {
+                            match tickets_for_submit.iter().find(|t| t.id.to_string() == tid) {
+                                Some(t) => (Some(tid.to_string()), None, None, t.company_id),
+                                None => {
+                                    error.set("Could not resolve the ticket.".to_string());
+                                    return;
+                                }
                             }
+                        } else if let Some(pid) = wi.strip_prefix("project:") {
+                            match projects_for_submit.iter().find(|p| p.id.to_string() == pid) {
+                                Some(p) => match p.company_id {
+                                    Some(cid) => {
+                                        let tk = task.read().clone();
+                                        let tk = if tk.is_empty() { None } else { Some(tk) };
+                                        (None, Some(pid.to_string()), tk, cid)
+                                    }
+                                    None => {
+                                        error.set(
+                                            "That project has no company; pick a ticket or a project with a company."
+                                                .to_string(),
+                                        );
+                                        return;
+                                    }
+                                },
+                                None => {
+                                    error.set("Could not resolve the project.".to_string());
+                                    return;
+                                }
+                            }
+                        } else {
+                            error.set("Please pick a work item.".to_string());
+                            return;
                         };
                         let user_id = match auth.read().user.as_ref().map(|u| u.id) {
                             Some(id) => id,
@@ -377,16 +476,24 @@ pub fn TimeEntryNewPage() -> Element {
                         spawn(async move {
                             #[cfg(feature = "web")]
                             {
-                                let body = serde_json::json!({
+                                let mut body = serde_json::json!({
                                     "user_id": user_id,
                                     "date": date,
                                     "duration_minutes": duration_minutes,
                                     "work_type_id": wtid,
-                                    "ticket_id": tid,
                                     "company_id": company_id,
                                     "notes": desc,
                                     "is_billable": billable,
                                 });
+                                if let Some(t) = ticket_id {
+                                    body["ticket_id"] = serde_json::json!(t);
+                                }
+                                if let Some(p) = project_id {
+                                    body["project_id"] = serde_json::json!(p);
+                                }
+                                if let Some(tk) = task_id {
+                                    body["task_id"] = serde_json::json!(tk);
+                                }
                                 match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
                                     "/time-entries",
                                     &body,
@@ -417,9 +524,14 @@ pub fn TimeEntryNewPage() -> Element {
                             label: "Work Item",
                             options: work_item_options,
                             value: work_item.read().clone(),
-                            placeholder: "Select ticket",
+                            placeholder: "Select work item",
                             required: true,
-                            onchange: move |e: FormEvent| work_item.set(e.value()),
+                            onchange: move |e: FormEvent| {
+                                work_item.set(e.value());
+                                // Reset the task when the work item changes so a
+                                // stale task from a previous project isn't kept.
+                                task.set(String::new());
+                            },
                         }
                         Select {
                             name: "work_type",
@@ -429,6 +541,16 @@ pub fn TimeEntryNewPage() -> Element {
                             placeholder: "Select work type",
                             required: true,
                             onchange: move |e: FormEvent| work_type.set(e.value()),
+                        }
+                    }
+
+                    if is_project_item {
+                        Select {
+                            name: "task",
+                            label: "Task (optional)",
+                            options: task_options,
+                            value: task.read().clone(),
+                            onchange: move |e: FormEvent| task.set(e.value()),
                         }
                     }
 
