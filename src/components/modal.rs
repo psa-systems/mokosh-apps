@@ -57,9 +57,11 @@ pub fn Modal(props: ModalProps) -> Element {
 
     rsx! {
         div { class: "fixed inset-0 z-50 overflow-y-auto",
-            // Backdrop
+            // Backdrop. Tailwind v4 removed `bg-opacity-*`; use the
+            // slash alpha syntax instead so the page stays visible
+            // through a 75% gray dim instead of being fully covered.
             div {
-                class: "fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity",
+                class: "fixed inset-0 bg-gray-500/75 transition-opacity",
                 onclick: move |_| props.onclose.call(()),
             }
 
@@ -352,9 +354,11 @@ pub fn SlideOver(props: SlideOverProps) -> Element {
 
     rsx! {
         div { class: "fixed inset-0 z-50 overflow-hidden",
-            // Backdrop
+            // Backdrop. Tailwind v4 removed `bg-opacity-*`; use the
+            // slash alpha syntax so the page stays visible through a
+            // 75% dim instead of being fully covered.
             div {
-                class: "absolute inset-0 bg-gray-500 bg-opacity-75 transition-opacity",
+                class: "absolute inset-0 bg-gray-500/75 transition-opacity",
                 onclick: move |_| props.onclose.call(()),
             }
 
