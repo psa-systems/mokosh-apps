@@ -45,7 +45,7 @@ pub fn AppLayout(props: AppLayoutProps) -> Element {
                 // Mobile sidebar backdrop
                 if *sidebar_open.read() {
                     div {
-                        class: "fixed inset-0 z-40 bg-gray-600 bg-opacity-75 lg:hidden",
+                        class: "fixed inset-0 z-40 bg-gray-600/75 lg:hidden",
                         onclick: move |_| sidebar_open.set(false),
                     }
                 }
@@ -722,7 +722,7 @@ pub fn EmptyState(props: EmptyStateProps) -> Element {
 #[component]
 pub fn LoadingOverlay() -> Element {
     rsx! {
-        div { class: "fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-50",
+        div { class: "fixed inset-0 z-50 flex items-center justify-center bg-gray-900/50",
             div { class: "bg-white dark:bg-gray-800 rounded-lg p-6 flex items-center space-x-3",
                 super::button::Spinner {}
                 span { class: "text-gray-700 dark:text-gray-300", "Loading..." }

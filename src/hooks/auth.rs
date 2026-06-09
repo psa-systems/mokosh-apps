@@ -193,15 +193,16 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
         .as_deref()
         .and_then(|s| s.parse::<uuid::Uuid>().ok())
         .unwrap_or_else(uuid::Uuid::nil);
+    // Parse via UserRole::from_str so every variant the server can
+    // return (super_admin / admin / manager / technician / dispatcher /
+    // sales / finance) round-trips. The inline match above missed
+    // super_admin + technician + dispatcher + sales and silently
+    // downgraded those users to the Technician default, which denied
+    // billing access to legitimate super_admins.
     let role = claims
         .role
         .as_deref()
-        .and_then(|s| match s {
-            "admin" => Some(crate::modules::auth::UserRole::Admin),
-            "manager" => Some(crate::modules::auth::UserRole::Manager),
-            "finance" => Some(crate::modules::auth::UserRole::Finance),
-            _ => None,
-        })
+        .and_then(crate::modules::auth::UserRole::from_str)
         .unwrap_or_default();
 
     let active_tenant_id = claims
@@ -400,12 +401,10 @@ async fn refresh_user_from_me(
             return;
         }
     };
-    let new_role = match me.role.as_str() {
-        "admin" => crate::modules::auth::UserRole::Admin,
-        "manager" => crate::modules::auth::UserRole::Manager,
-        "finance" => crate::modules::auth::UserRole::Finance,
-        _ => crate::modules::auth::UserRole::default(),
-    };
+    // See `rehydrate_from_storage`: parse via UserRole::from_str so
+    // super_admin / technician / dispatcher / sales survive the
+    // round-trip instead of being silently coerced to Technician.
+    let new_role = crate::modules::auth::UserRole::from_str(&me.role).unwrap_or_default();
     let mut a = auth.write();
     if let Some(u) = a.user.as_mut() {
         if let Ok(id) = me.id.parse::<uuid::Uuid>() {
