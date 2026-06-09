@@ -930,6 +930,7 @@ pub fn InvoiceNewPage() -> Element {
                             name: "invoice_date",
                             label: "Invoice Date",
                             r#type: "date",
+                            required: true,
                             value: invoice_date.read().clone(),
                             oninput: move |e: FormEvent| invoice_date.set(e.value()),
                         }
@@ -937,6 +938,7 @@ pub fn InvoiceNewPage() -> Element {
                             name: "due_date",
                             label: "Due Date",
                             r#type: "date",
+                            required: true,
                             value: due_date.read().clone(),
                             oninput: move |e: FormEvent| due_date.set(e.value()),
                         }
@@ -954,21 +956,27 @@ pub fn InvoiceNewPage() -> Element {
                         div { class: "grid grid-cols-1 gap-3 sm:grid-cols-[1fr_100px_140px]",
                             crate::components::Input {
                                 name: "line_description",
-                                placeholder: "Description",
+                                label: "Description",
+                                required: true,
+                                placeholder: "What was delivered",
                                 value: line_description.read().clone(),
                                 oninput: move |e: FormEvent| line_description.set(e.value()),
                             }
                             crate::components::Input {
                                 name: "line_quantity",
+                                label: "Quantity",
                                 r#type: "number",
+                                required: true,
                                 placeholder: "Qty",
                                 value: line_quantity.read().clone(),
                                 oninput: move |e: FormEvent| line_quantity.set(e.value()),
                             }
                             crate::components::Input {
                                 name: "line_unit_price",
+                                label: "Unit Price",
                                 r#type: "number",
-                                placeholder: "Unit price",
+                                required: true,
+                                placeholder: "0.00",
                                 value: line_unit_price.read().clone(),
                                 oninput: move |e: FormEvent| line_unit_price.set(e.value()),
                             }
