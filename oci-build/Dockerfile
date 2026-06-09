@@ -96,5 +96,11 @@ LABEL org.opencontainers.image.source=https://dev.a8n.run/psa-systems/mokosh-app
 LABEL org.opencontainers.image.description="Mokosh Platform Dioxus client"
 LABEL org.opencontainers.image.revision="${GIT_SHA}"
 
+# Expose GIT_SHA to the runtime so entrypoint.sh can emit it into
+# `_mokosh_config.js` as the `build_sha` field. The SPA polls this at
+# runtime and reloads on mismatch, so open tabs pick up new deploys
+# without users having to Ctrl+Shift+R.
+ENV GIT_SHA=${GIT_SHA}
+
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile"]

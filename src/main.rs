@@ -3,7 +3,7 @@
 use dioxus::prelude::*;
 use mokosh_apps::hooks::{
     use_apply_theme, use_auth_provider, use_bfcache_invalidator, use_memberships_loader,
-    use_sidebar_provider, use_token_refresh,
+    use_sidebar_provider, use_token_refresh, use_update_check,
 };
 use mokosh_apps::Route;
 
@@ -38,6 +38,11 @@ fn App() -> Element {
     // Apply the persisted theme preference on boot and follow system
     // dark-mode changes for `Theme::System` users.
     use_apply_theme();
+    // Background poll of `_mokosh_config.js` `build_sha`. Reloads the
+    // tab at the next visibility-hidden boundary when a new SPA build
+    // is detected, so users pick up deploys automatically (no
+    // Ctrl+Shift+R required).
+    use_update_check();
 
     rsx! {
         document::Stylesheet { href: asset!("/assets/styles.css") }

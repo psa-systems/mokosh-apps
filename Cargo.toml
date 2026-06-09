@@ -63,7 +63,7 @@ gloo-net = "0.6"
 gloo-timers = { version = "0.3", features = ["futures"] }
 futures-util = "0.3"
 wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "DomTokenList", "Storage", "Navigator", "Location", "UrlSearchParams", "MessageEvent", "EventTarget", "Event", "MediaQueryList"] }
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "DomTokenList", "Storage", "Navigator", "Location", "UrlSearchParams", "MessageEvent", "EventTarget", "Event", "MediaQueryList", "Performance"] }
 js-sys = "0.3"
 
 # OIDC / PKCE primitives (SPA public-client flow against mokosh-server)
