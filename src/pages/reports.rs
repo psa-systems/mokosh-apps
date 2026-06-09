@@ -64,6 +64,49 @@ struct DashReport {
     sla_breached: i64,
 }
 
+#[derive(Clone, Debug, Default, Deserialize)]
+struct ProjectsReport {
+    #[serde(default)]
+    by_status: Vec<Bucket>,
+    #[serde(default)]
+    budget_hours: String,
+    #[serde(default)]
+    budget_amount: String,
+    #[serde(default)]
+    actual_hours: String,
+    #[serde(default)]
+    actual_amount: String,
+    #[serde(default)]
+    tasks_total: i64,
+    #[serde(default)]
+    tasks_completed: i64,
+    #[serde(default)]
+    overdue: i64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct ClientsReport {
+    #[serde(default)]
+    companies_total: i64,
+    #[serde(default)]
+    companies_active: i64,
+    #[serde(default)]
+    assets_total: i64,
+    #[serde(default)]
+    assets_by_type: Vec<Bucket>,
+    #[serde(default)]
+    warranty_expiring_90d: i64,
+    #[serde(default)]
+    contracts_active: i64,
+    #[serde(default)]
+    contracts_renewing_90d: i64,
+}
+
+/// Parse a `Decimal`-as-string money/hours field for display.
+fn pf(s: &str) -> f64 {
+    s.parse().unwrap_or(0.0)
+}
+
 /// Which backend report a `report_type` maps to. The reports landing page
 /// lists more report types than the backend (PMS-93) implements; the
 /// unmapped ones render an honest "not available yet" state.
@@ -72,6 +115,8 @@ enum ReportKind {
     Tickets,
     Time,
     Billing,
+    Projects,
+    Clients,
     Unsupported,
 }
 
@@ -82,6 +127,8 @@ fn report_kind(report_type: &str) -> ReportKind {
         }
         "utilization" | "billable-hours" | "timesheet-summary" => ReportKind::Time,
         "revenue" | "ar-aging" | "profitability" => ReportKind::Billing,
+        "project-status" | "budget-tracking" | "milestone-tracking" => ReportKind::Projects,
+        "client-summary" | "asset-inventory" | "contract-renewals" => ReportKind::Clients,
         _ => ReportKind::Unsupported,
     }
 }
@@ -218,6 +265,12 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
         "revenue" => "Revenue Summary Report",
         "ar-aging" => "A/R Aging Report",
         "profitability" => "Client Profitability Report",
+        "project-status" => "Project Status Report",
+        "budget-tracking" => "Budget vs Actual Report",
+        "milestone-tracking" => "Milestone Tracking Report",
+        "client-summary" => "Client Summary Report",
+        "asset-inventory" => "Asset Inventory Report",
+        "contract-renewals" => "Contract Renewals Report",
         _ => "Report",
     };
 
@@ -242,7 +295,7 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
             } else if !view.supported {
                 Card {
                     p { class: "text-sm text-gray-500 dark:text-gray-400",
-                        "This report isn't available yet. The reports service (PMS-93) currently powers the ticket, time, and billing reports."
+                        "This report isn't available yet. The reports service powers the ticket, time, billing, project, and client reports. The custom report builder is planned but not implemented."
                     }
                 }
             } else {
@@ -358,6 +411,54 @@ async fn build_view(report_type: &str) -> ReportView {
                     .aging
                     .iter()
                     .map(|a| (a.bucket.clone(), format!("${}", a.total)))
+                    .collect(),
+            }
+        }
+        ReportKind::Projects => {
+            let p = crate::hooks::fetch::api::get_authed::<ProjectsReport>("/reports/projects")
+                .await
+                .unwrap_or_default();
+            let tasks = format!("{}/{}", p.tasks_completed, p.tasks_total);
+            ReportView {
+                supported: true,
+                summary: vec![
+                    ("Budget hours".into(), format!("{:.1}", pf(&p.budget_hours))),
+                    ("Actual hours".into(), format!("{:.1}", pf(&p.actual_hours))),
+                    ("Budget $".into(), format!("${:.0}", pf(&p.budget_amount))),
+                    ("Actual $".into(), format!("${:.0}", pf(&p.actual_amount))),
+                    ("Tasks done".into(), tasks),
+                    ("Overdue".into(), p.overdue.to_string()),
+                ],
+                breakdown_title: "Projects by status".into(),
+                breakdown: p
+                    .by_status
+                    .iter()
+                    .map(|b| (b.label.clone(), b.count.to_string()))
+                    .collect(),
+            }
+        }
+        ReportKind::Clients => {
+            let c = crate::hooks::fetch::api::get_authed::<ClientsReport>("/reports/clients")
+                .await
+                .unwrap_or_default();
+            let companies = format!("{}/{}", c.companies_active, c.companies_total);
+            ReportView {
+                supported: true,
+                summary: vec![
+                    ("Active companies".into(), companies),
+                    ("Assets".into(), c.assets_total.to_string()),
+                    ("Warranty < 90d".into(), c.warranty_expiring_90d.to_string()),
+                    ("Active contracts".into(), c.contracts_active.to_string()),
+                    (
+                        "Renewing < 90d".into(),
+                        c.contracts_renewing_90d.to_string(),
+                    ),
+                ],
+                breakdown_title: "Assets by type".into(),
+                breakdown: c
+                    .assets_by_type
+                    .iter()
+                    .map(|b| (b.label.clone(), b.count.to_string()))
                     .collect(),
             }
         }
