@@ -1023,6 +1023,8 @@ struct RemotePayment {
     #[serde(default)]
     invoice_id: Option<uuid::Uuid>,
     #[serde(default)]
+    invoice_number: Option<String>,
+    #[serde(default)]
     company_name: Option<String>,
     #[serde(default)]
     payment_date: Option<String>,
@@ -1134,6 +1136,7 @@ pub fn PaymentListPage() -> Element {
                                     id: payment.id.to_string(),
                                     company: payment.company_name.clone().unwrap_or_default(),
                                     invoice_id: payment.invoice_id.map(|i| i.to_string()).unwrap_or_default(),
+                                    invoice_number: payment.invoice_number.clone().unwrap_or_default(),
                                     date: payment.payment_date.unwrap_or_default(),
                                     method: humanize_payment_method(&payment.payment_method),
                                     reference: payment.reference_number.unwrap_or_default(),
@@ -1164,6 +1167,7 @@ struct PaymentRowProps {
     id: String,
     company: String,
     invoice_id: String,
+    invoice_number: String,
     date: String,
     method: String,
     reference: String,
@@ -1176,6 +1180,13 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
     let mut deleting = use_signal(|| false);
     let on_deleted = props.on_deleted;
     let delete_id = props.id.clone();
+    // Prefer the human invoice number; fall back to a generic label if the
+    // payment is applied but the number could not be resolved.
+    let invoice_label = if props.invoice_number.is_empty() {
+        "View invoice".to_string()
+    } else {
+        props.invoice_number.clone()
+    };
     rsx! {
         TableRow {
             TableCell {
@@ -1199,7 +1210,7 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
                     Link {
                         to: Route::InvoiceDetail { id: props.invoice_id.clone() },
                         class: "font-medium text-blue-600 hover:text-blue-500",
-                        "View invoice"
+                        "{invoice_label}"
                     }
                 }
             }
