@@ -107,6 +107,53 @@ fn pf(s: &str) -> f64 {
     s.parse().unwrap_or(0.0)
 }
 
+// --- Custom report builder (PMS-180) ----------------------------------------
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct FieldSchema {
+    key: String,
+    label: String,
+}
+
+/// One source in the builder catalog (`GET /reports/custom/schema`).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct SourceSchema {
+    key: String,
+    label: String,
+    #[serde(default)]
+    dimensions: Vec<FieldSchema>,
+    #[serde(default)]
+    measures: Vec<FieldSchema>,
+    #[serde(default)]
+    filters: Vec<FieldSchema>,
+    #[serde(default)]
+    has_date_range: bool,
+}
+
+/// Request body sent to `POST /reports/custom`.
+#[derive(Clone, Debug, serde::Serialize)]
+struct CustomSpec {
+    source: String,
+    dimensions: Vec<String>,
+    measures: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    to: Option<String>,
+    limit: i64,
+}
+
+/// Generic columns / rows / totals envelope returned by the builder.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+struct CustomResult {
+    #[serde(default)]
+    columns: Vec<String>,
+    #[serde(default)]
+    rows: Vec<Vec<Option<String>>>,
+    #[serde(default)]
+    totals: std::collections::BTreeMap<String, String>,
+}
+
 /// Which backend report a `report_type` maps to. The reports landing page
 /// lists more report types than the backend (PMS-93) implements; the
 /// unmapped ones render an honest "not available yet" state.
@@ -254,6 +301,21 @@ pub struct ReportDetailPageProps {
 
 #[component]
 pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
+    // The custom report builder is its own interactive surface, not a
+    // fixed report. `report_type` is a route param fixed for this mount, so
+    // returning before the hooks below keeps hook order stable.
+    if props.report_type == "report-builder" {
+        return rsx! {
+            AppLayout { title: "Report Builder",
+                PageHeader {
+                    title: "Custom Report Builder",
+                    subtitle: "Build a report from your own data",
+                }
+                CustomReportBuilder {}
+            }
+        };
+    }
+
     let report_title = match props.report_type.as_str() {
         "ticket-volume" => "Ticket Volume Report",
         "sla-performance" => "SLA Performance Report",
@@ -463,6 +525,276 @@ async fn build_view(report_type: &str) -> ReportView {
             }
         }
         ReportKind::Unsupported => ReportView::default(),
+    }
+}
+
+/// Interactive custom report builder. Fetches the whitelisted catalog from
+/// the backend, lets the user pick a source + dimensions + measures (+ an
+/// optional date range), then POSTs the spec and renders the returned
+/// columns / rows / totals table. No raw SQL is ever exposed (PMS-180).
+#[component]
+fn CustomReportBuilder() -> Element {
+    let schema_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Vec<SourceSchema>>("/reports/custom/schema").await
+    });
+
+    let mut source = use_signal(String::new);
+    let mut dims = use_signal(Vec::<String>::new);
+    let mut measures = use_signal(Vec::<String>::new);
+    let mut from = use_signal(String::new);
+    let mut to = use_signal(String::new);
+    let mut result = use_signal(|| Option::<Result<CustomResult, String>>::None);
+    let mut running = use_signal(|| false);
+
+    let schema_state = schema_resource.read_unchecked().clone();
+
+    // Default the source to the first catalog entry once it loads.
+    use_effect(move || {
+        if let Some(Ok(list)) = schema_resource.read_unchecked().as_ref() {
+            if source.peek().is_empty() {
+                if let Some(first) = list.first() {
+                    source.set(first.key.clone());
+                }
+            }
+        }
+    });
+
+    let sources: Vec<SourceSchema> = match &schema_state {
+        Some(Ok(list)) => list.clone(),
+        _ => Vec::new(),
+    };
+    let load_err = matches!(&schema_state, Some(Err(_)));
+    let loading = schema_state.is_none();
+    let current = sources.iter().find(|s| s.key == source()).cloned();
+
+    let run = move |_| {
+        let src = source();
+        let d = dims();
+        let m = measures();
+        if src.is_empty() || m.is_empty() {
+            return;
+        }
+        let f = from();
+        let t = to();
+        running.set(true);
+        spawn(async move {
+            let spec = CustomSpec {
+                source: src,
+                dimensions: d,
+                measures: m,
+                from: (!f.is_empty()).then_some(f),
+                to: (!t.is_empty()).then_some(t),
+                limit: 500,
+            };
+            let res =
+                crate::hooks::fetch::api::post_authed::<CustomResult, _>("/reports/custom", &spec)
+                    .await;
+            result.set(Some(res));
+            running.set(false);
+        });
+    };
+
+    let can_run = !measures().is_empty() && !running();
+
+    rsx! {
+        if load_err {
+            Card {
+                p { class: "text-sm text-red-600",
+                    "Could not load the report catalog. The reports service may be unavailable."
+                }
+            }
+        } else if loading {
+            Card { p { class: "text-sm text-gray-400", "Loading builder…" } }
+        } else {
+            div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
+                // Builder controls
+                Card { title: "Build",
+                    div { class: "space-y-5",
+                        // Source
+                        div {
+                            label { class: "block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1",
+                                "Data source"
+                            }
+                            select {
+                                class: "w-full rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2 text-sm",
+                                onchange: move |e| {
+                                    source.set(e.value());
+                                    dims.set(Vec::new());
+                                    measures.set(Vec::new());
+                                    result.set(None);
+                                },
+                                for s in sources.iter() {
+                                    option {
+                                        value: "{s.key}",
+                                        selected: s.key == source(),
+                                        "{s.label}"
+                                    }
+                                }
+                            }
+                        }
+
+                        if let Some(cur) = current.as_ref() {
+                            // Dimensions
+                            div {
+                                p { class: "text-sm font-medium text-gray-700 dark:text-gray-300 mb-2",
+                                    "Group by"
+                                }
+                                div { class: "space-y-1",
+                                    for d in cur.dimensions.iter() {
+                                        {
+                                            let key = d.key.clone();
+                                            let checked = dims().contains(&key);
+                                            rsx! {
+                                                label { class: "flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300",
+                                                    input {
+                                                        r#type: "checkbox",
+                                                        checked,
+                                                        onchange: move |_| {
+                                                            let mut v = dims();
+                                                            if v.contains(&key) { v.retain(|x| x != &key); }
+                                                            else { v.push(key.clone()); }
+                                                            dims.set(v);
+                                                        },
+                                                    }
+                                                    "{d.label}"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Measures
+                            div {
+                                p { class: "text-sm font-medium text-gray-700 dark:text-gray-300 mb-2",
+                                    "Measures"
+                                }
+                                div { class: "space-y-1",
+                                    for m in cur.measures.iter() {
+                                        {
+                                            let key = m.key.clone();
+                                            let checked = measures().contains(&key);
+                                            rsx! {
+                                                label { class: "flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300",
+                                                    input {
+                                                        r#type: "checkbox",
+                                                        checked,
+                                                        onchange: move |_| {
+                                                            let mut v = measures();
+                                                            if v.contains(&key) { v.retain(|x| x != &key); }
+                                                            else { v.push(key.clone()); }
+                                                            measures.set(v);
+                                                        },
+                                                    }
+                                                    "{m.label}"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Optional date range
+                            if cur.has_date_range {
+                                div { class: "grid grid-cols-2 gap-3",
+                                    div {
+                                        label { class: "block text-xs text-gray-500 mb-1", "From" }
+                                        input {
+                                            r#type: "date",
+                                            class: "w-full rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-2 py-1 text-sm",
+                                            value: "{from}",
+                                            onchange: move |e| from.set(e.value()),
+                                        }
+                                    }
+                                    div {
+                                        label { class: "block text-xs text-gray-500 mb-1", "To" }
+                                        input {
+                                            r#type: "date",
+                                            class: "w-full rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-2 py-1 text-sm",
+                                            value: "{to}",
+                                            onchange: move |e| to.set(e.value()),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        button {
+                            class: "w-full rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50",
+                            disabled: !can_run,
+                            onclick: run,
+                            if running() { "Running…" } else { "Run report" }
+                        }
+                        p { class: "text-xs text-gray-400",
+                            "Pick a source and at least one measure. Grouping is optional."
+                        }
+                    }
+                }
+
+                // Results
+                div { class: "lg:col-span-2",
+                    Card { title: "Result",
+                        match result() {
+                            None => rsx! {
+                                p { class: "text-sm text-gray-400 italic",
+                                    "Configure the report on the left and run it to see results."
+                                }
+                            },
+                            Some(Err(e)) => rsx! {
+                                p { class: "text-sm text-red-600", "Report failed: {e}" }
+                            },
+                            Some(Ok(r)) if r.rows.is_empty() => rsx! {
+                                p { class: "text-sm text-gray-400 italic", "No rows for this selection." }
+                            },
+                            Some(Ok(r)) => {
+                                let totals: Vec<(String, String)> =
+                                    r.totals.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                                rsx! {
+                                    div { class: "overflow-x-auto",
+                                        table { class: "min-w-full divide-y divide-gray-200 dark:divide-gray-700 text-sm",
+                                            thead {
+                                                tr {
+                                                    for col in r.columns.iter() {
+                                                        th { class: "px-4 py-2 text-left font-medium text-gray-500 dark:text-gray-400",
+                                                            "{col}"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            tbody { class: "divide-y divide-gray-200 dark:divide-gray-700",
+                                                for row in r.rows.iter() {
+                                                    tr {
+                                                        for cell in row.iter() {
+                                                            {
+                                                                let v = cell.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| "-".to_string());
+                                                                rsx! {
+                                                                    td { class: "px-4 py-2 text-gray-900 dark:text-white", "{v}" }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if !totals.is_empty() {
+                                        div { class: "mt-4 flex flex-wrap gap-4",
+                                            for (k , v) in totals.iter() {
+                                                div { class: "rounded-md bg-gray-50 dark:bg-gray-800 px-3 py-2",
+                                                    span { class: "text-xs text-gray-500", "Total {k}: " }
+                                                    span { class: "text-sm font-semibold text-gray-900 dark:text-white", "{v}" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
