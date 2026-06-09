@@ -512,9 +512,8 @@ struct NotificationPage {
 /// user's zone. Falls back to an explicit UTC string if the JS bridge
 /// yields nothing (e.g. a non-web build).
 fn format_local_datetime(dt: chrono::DateTime<chrono::Utc>) -> String {
-    let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(
-        dt.timestamp_millis() as f64,
-    ));
+    let date =
+        js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(dt.timestamp_millis() as f64));
     let formatted: String = date
         .to_locale_string("en-US", &wasm_bindgen::JsValue::UNDEFINED)
         .into();
