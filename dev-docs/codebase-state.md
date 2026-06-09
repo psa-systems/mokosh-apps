@@ -199,9 +199,10 @@ facing and should be fixed before any v1 ship; P2 / P3 are polish.
     (currently looks identical to the active ">").
 23. **Hover state on `clickable` rows** has no bg-color change,
     only cursor-pointer. Hover affordance is too subtle.
-24. **Notification bell** has a hidden state-toggle (red dot
-    appears/disappears) but no panel/dropdown anchored to it.
-    Either wire the panel or remove the state toggle.
+24. **Notification bell** is wired (MAPPS-132): it fetches the in-app
+    inbox from `GET /notifications`, shows a dropdown panel, drives the
+    red dot off the real unread count, and marks items read via
+    `POST /notifications/{id}/read`.
 25. **Top-bar search dropdown caret (▾)** is shown but no dropdown
     opens. Remove the caret or wire a results panel.
 26. **Avatar (top-right) has no dropdown** - most users will hunt

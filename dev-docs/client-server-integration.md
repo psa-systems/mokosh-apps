@@ -79,7 +79,7 @@ are listed in the router order
 | 14 | Admin (`/admin/tenants`) | mock list | real `/api/v1/tenants/*` (7 endpoints, super_admin gated) | yes | wire list + detail; disable for non-super_admin | nothing | P2 |
 | 15 | Portal (7 routes) | rich UI; **`/portal/tickets/new` has critical GET-leak P0 bug** (F8) | all `/api/v1/portal/*` 501 | n/a | fix client GET-leak first; everything else decorative | server F6 (portal contact-scoped session) | **P0** |
 | 16 | RMM (lives in `/settings/integrations`) | rich UI, stub | 501 | n/a | decorative | server `rmm` module | P3 |
-| 17 | Notifications (bell + `/settings/notifications`) | rich UI, stub | 501 | n/a | decorative; bell can stay hidden | server `notifications` module | P2 |
+| 17 | Notifications (bell + `/settings/notifications`) | bell wired to the in-app inbox (MAPPS-132); `/settings/notifications` prefs page still stub | `GET /notifications` + `POST /notifications/{id}/read` implemented and mounted (the prior "501" note was stale) | n/a | bell is live; settings-prefs page still decorative | server `notifications` module shipped | done (bell) |
 
 The "Wire-now action" column for sections 1, 3, 6, 14 is what the
 next mokosh-apps implementation pass should target. Everything
