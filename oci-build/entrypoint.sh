@@ -49,6 +49,14 @@ if ! {
     emit_field oidc_issuer "${MOKOSH_OIDC_ISSUER:-}"
     emit_field oidc_client_id "${MOKOSH_OIDC_CLIENT_ID:-}"
     emit_field hub_base_url "${MOKOSH_HUB_BASE_URL:-}"
+    # build_sha is the git revision the WASM bundle was built from.
+    # Baked into the image at build time via Dockerfile's GIT_SHA build
+    # arg. The SPA polls `_mokosh_config.js` and reloads when this
+    # changes, so a fresh deploy automatically propagates to open tabs
+    # without users having to Ctrl+Shift+R. Emitted even when other
+    # config fields are empty (operator-overridable fields stay opt-in,
+    # but the version field is always-on).
+    emit_field build_sha "${GIT_SHA:-}"
     echo '};'
 } > "$CONFIG_JS" 2>/dev/null; then
     echo "[entrypoint] WARN: could not write ${CONFIG_JS} (read-only fs?); SPA will fall back to compile-time config" >&2
