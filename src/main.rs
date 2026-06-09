@@ -2,8 +2,8 @@
 
 use dioxus::prelude::*;
 use mokosh_apps::hooks::{
-    use_apply_theme, use_auth_provider, use_bfcache_invalidator, use_memberships_loader,
-    use_sidebar_provider, use_token_refresh, use_update_check,
+    use_apply_theme, use_auth_provider, use_bfcache_invalidator, use_current_user_loader,
+    use_memberships_loader, use_sidebar_provider, use_token_refresh, use_update_check,
 };
 use mokosh_apps::Route;
 
@@ -30,6 +30,11 @@ fn App() -> Element {
     // Load /v1/auth/memberships after sign-in so AuthContext.memberships
     // is populated for the tenant switcher.
     use_memberships_loader();
+    // Fetch the authoritative current user (role, name, avatar) from
+    // mokosh-server /api/v1/auth/me on first authenticated mount, so the
+    // displayed role reflects the server-side (PMS-172) translation rather
+    // than the Technician default the id_token falls back to (PMS-158).
+    use_current_user_loader();
     // Force a full reload when the browser restores this page from
     // bfcache. Without this, hitting back after logout would restore
     // the dashboard's prior JS state (including populated auth) from
