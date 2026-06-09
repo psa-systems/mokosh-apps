@@ -351,7 +351,7 @@ pub fn use_token_refresh() {
                     // the life of the session if we don't actively
                     // re-fetch. Memberships are also cleared so the
                     // membership-loader effect re-runs.
-                    refresh_user_from_me(&cfg, &mut auth).await;
+                    refresh_user_from_me(&mut auth).await;
                 }
                 Err(e) => {
                     tracing::warn!("token refresh failed; signing out: {e}");
@@ -376,14 +376,19 @@ pub fn use_token_refresh() {
     });
 }
 
-/// Pull `/v1/auth/me` and merge fresh fields onto `auth.user`. Used by
-/// the background refresh loop so role/name/active-tenant updates from
-/// the OP land in the SPA without a full re-login. Best-effort: on
-/// error we leave the cached user as-is.
-async fn refresh_user_from_me(
-    cfg: &crate::modules::oidc::OidcConfig,
-    auth: &mut Signal<AuthContext>,
-) {
+/// Pull the authoritative current user from mokosh-server
+/// `GET /api/v1/auth/me` and merge fresh fields onto `auth.user`.
+///
+/// The role is sourced from the API on purpose. The OIDC id_token cannot
+/// be trusted for the *mokosh* role: bunyip mints its own `bunyip_role`
+/// (`subscriber` / `admin`), and the mapping to a mokosh role
+/// (`admin` -> `super_admin`, etc.) is applied server-side (PMS-172). So
+/// the id_token claim the SPA used to parse is absent and the user falls
+/// back to the Technician default (PMS-158). `/api/v1/auth/me` returns the
+/// already-translated role, so it is the single source of truth here.
+///
+/// Best-effort: on error we leave the cached user as-is.
+async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
     #[derive(serde::Deserialize)]
     struct MeBody {
         id: String,
@@ -394,17 +399,26 @@ async fn refresh_user_from_me(
         avatar_url: Option<String>,
         role: String,
     }
-    let me = match crate::modules::oidc::issuer_get_authed::<MeBody>(cfg, "/v1/auth/me").await {
+    let me = match crate::hooks::fetch::api::get_authed::<MeBody>("/auth/me").await {
         Ok(m) => m,
         Err(e) => {
-            tracing::warn!("post-refresh /v1/auth/me failed; keeping cached user: {e}");
+            tracing::warn!("/api/v1/auth/me failed; keeping cached user: {e}");
             return;
         }
     };
-    // See `rehydrate_from_storage`: parse via UserRole::from_str so
-    // super_admin / technician / dispatcher / sales survive the
-    // round-trip instead of being silently coerced to Technician.
-    let new_role = crate::modules::auth::UserRole::from_str(&me.role).unwrap_or_default();
+    // Parse via UserRole::from_str. An unrecognized value is handled
+    // explicitly (warn + keep the current role) rather than silently
+    // coerced to the Technician default (PMS-158).
+    let new_role = match crate::modules::auth::UserRole::from_str(&me.role) {
+        Some(r) => Some(r),
+        None => {
+            tracing::warn!(
+                "unrecognized role {:?} from /api/v1/auth/me; keeping cached role",
+                me.role
+            );
+            None
+        }
+    };
     let mut a = auth.write();
     if let Some(u) = a.user.as_mut() {
         if let Ok(id) = me.id.parse::<uuid::Uuid>() {
@@ -415,12 +429,33 @@ async fn refresh_user_from_me(
         u.last_name = me.last_name.unwrap_or_default();
         u.timezone = me.timezone;
         u.avatar_url = me.avatar_url;
-        u.role = new_role;
+        if let Some(role) = new_role {
+            u.role = role;
+        }
     }
     // Force the memberships loader to re-fetch by clearing the cached
     // list; the use_memberships_loader effect re-runs when
     // `memberships.is_empty()` and the user is authenticated.
     a.memberships.clear();
+}
+
+/// On first authenticated mount, fetch the authoritative user from
+/// mokosh-server `/api/v1/auth/me` so the displayed role (and name /
+/// avatar) is correct immediately, not only after the first token
+/// refresh. Sources the role from the API for the reasons in
+/// [`refresh_user_from_me`] (PMS-158). Mount once near the app root.
+pub fn use_current_user_loader() {
+    let mut auth = use_auth();
+    let mut loaded = use_signal(|| false);
+    use_effect(move || {
+        if !auth.read().is_authenticated() || *loaded.peek() {
+            return;
+        }
+        loaded.set(true);
+        spawn(async move {
+            refresh_user_from_me(&mut auth).await;
+        });
+    });
 }
 
 /// Defeat back-forward-cache (bfcache) restoration of authenticated
