@@ -19,9 +19,9 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, Modal,
-    ModalSize, PageHeader, PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty,
-    TableHead, TableHeader, TableLoading, TableRow,
+    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize,
+    InformationIcon, Modal, ModalSize, PageHeader, PlusIcon, Select, SelectOption, Table,
+    TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::Route;
 
@@ -129,18 +129,38 @@ struct RemoteInvoice {
     balance_due: String,
 }
 
-/// Shared "no finance permission" card rendered by every billing list page
+/// Shared "no finance permission" state rendered by every billing list page
 /// when the current user lacks the `can_manage_billing` role set
-/// (super_admin / admin / finance).
+/// (super_admin / admin / finance). A friendly locked state rather than a
+/// bare error sentence (MAPPS-133): an icon, a clear heading, who has
+/// access, and the viewer's current role for context.
 #[component]
 fn NoFinancePermission(title: String) -> Element {
+    let auth = crate::hooks::use_auth();
+    let role = auth
+        .read()
+        .user
+        .as_ref()
+        .map(|u| u.role.as_str().to_string())
+        .unwrap_or_default();
     rsx! {
         AppLayout { title: "{title}",
             PageHeader { title: "{title}" }
             Card {
-                div { class: "py-12 text-center",
-                    p { class: "text-sm text-gray-600 dark:text-gray-300",
-                        "You do not have permission to access billing pages. Ask an administrator for access."
+                div { class: "py-12 px-6 mx-auto flex max-w-md flex-col items-center text-center",
+                    div { class: "mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-gray-100 dark:bg-gray-800",
+                        InformationIcon { size: IconSize::Large, class: "text-gray-400".to_string() }
+                    }
+                    h3 { class: "text-base font-medium text-gray-900 dark:text-white",
+                        "Billing access required"
+                    }
+                    p { class: "mt-2 text-sm text-gray-500 dark:text-gray-400",
+                        "Invoices and payments are restricted to administrator and finance roles. Ask an administrator to grant you access."
+                    }
+                    if !role.is_empty() {
+                        p { class: "mt-4 text-xs text-gray-400 dark:text-gray-500",
+                            "Your current role: {role}"
+                        }
                     }
                 }
             }
