@@ -112,11 +112,46 @@ fn optional_string(value: &str) -> serde_json::Value {
 
 /// Subset of `InvoiceResponse` rendered in the list rollup. `lines` is
 /// omitted on the list endpoint, so it is not modelled here.
+/// A company option for the billing company pickers and for resolving a
+/// `company_id` to a display name (PMS-186). Sourced from
+/// `GET /api/v1/contacts/companies`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct CompanyOption {
+    id: uuid::Uuid,
+    #[serde(default)]
+    name: String,
+}
+
+/// Load the tenant's companies for the billing pickers (PMS-186).
+/// Best-effort: an empty list on error so a form still renders.
+async fn load_companies() -> Vec<CompanyOption> {
+    crate::hooks::fetch::api::get_authed::<Paginated<CompanyOption>>("/contacts/companies")
+        .await
+        .map(|p| p.data)
+        .unwrap_or_default()
+}
+
+/// Build `[("", placeholder), (id, name), ...]` select options from a
+/// loaded company list.
+fn company_select_options(companies: &[CompanyOption], placeholder: &str) -> Vec<SelectOption> {
+    let mut opts = vec![SelectOption::new("", placeholder)];
+    opts.extend(
+        companies
+            .iter()
+            .map(|c| SelectOption::new(c.id.to_string(), c.name.clone())),
+    );
+    opts
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct RemoteInvoice {
     id: uuid::Uuid,
     #[serde(default)]
     invoice_number: String,
+    /// Resolved company display name (PMS-186); the client never shows the
+    /// raw `company_id` UUID.
+    #[serde(default)]
+    company_name: Option<String>,
     #[serde(default)]
     status: String,
     #[serde(default)]
@@ -187,6 +222,18 @@ pub fn InvoiceListPage() -> Element {
     let mut company_filter = use_signal(String::new);
     let mut status_filter = use_signal(String::new);
     let mut page = use_signal(|| 1usize);
+
+    let companies_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        load_companies().await
+    });
+    let company_options = company_select_options(
+        &companies_resource
+            .read_unchecked()
+            .clone()
+            .unwrap_or_default(),
+        "All companies",
+    );
 
     let status_options = vec![
         SelectOption::new("", "All Statuses"),
@@ -264,11 +311,11 @@ pub fn InvoiceListPage() -> Element {
             Card { class: "mb-6",
                 div { class: "flex flex-col sm:flex-row gap-4",
                     div { class: "flex-1",
-                        crate::components::Input {
+                        Select {
                             name: "company_id",
-                            placeholder: "Filter by company ID (UUID)",
+                            options: company_options,
                             value: company_filter.read().clone(),
-                            oninput: move |e: FormEvent| {
+                            onchange: move |e: FormEvent| {
                                 company_filter.set(e.value());
                                 page.set(1);
                             },
@@ -298,12 +345,13 @@ pub fn InvoiceListPage() -> Element {
                 total_items: total as usize,
                 current_page,
                 per_page: PER_PAGE,
-                columns: 6,
+                columns: 7,
                 onpagechange: move |p| page.set(p),
                 Table {
                     TableHead {
                         TableRow {
                             TableHeader { "Invoice" }
+                            TableHeader { "Company" }
                             TableHeader { "Date" }
                             TableHeader { "Due Date" }
                             TableHeader { class: "text-right", "Total" }
@@ -312,10 +360,10 @@ pub fn InvoiceListPage() -> Element {
                         }
                     }
                     if is_loading {
-                        TableLoading { columns: 6, rows: 5 }
+                        TableLoading { columns: 7, rows: 5 }
                     } else if rows.is_empty() {
                         TableEmpty {
-                            columns: 6,
+                            columns: 7,
                             message: if has_filters {
                                 "No invoices match your filters.".to_string()
                             } else {
@@ -329,6 +377,7 @@ pub fn InvoiceListPage() -> Element {
                                     key: "{invoice.id}",
                                     id: invoice.id.to_string(),
                                     number: invoice.invoice_number,
+                                    company: invoice.company_name.clone().unwrap_or_default(),
                                     date: invoice.invoice_date.unwrap_or_default(),
                                     due_date: invoice.due_date.unwrap_or_default(),
                                     total: money(&invoice.total),
@@ -348,6 +397,7 @@ pub fn InvoiceListPage() -> Element {
 struct InvoiceRowProps {
     id: String,
     number: String,
+    company: String,
     date: String,
     due_date: String,
     total: String,
@@ -371,6 +421,13 @@ fn InvoiceRow(props: InvoiceRowProps) -> Element {
                     to: Route::InvoiceDetail { id: props.id.clone() },
                     class: "font-medium text-blue-600 hover:text-blue-500",
                     "{props.number}"
+                }
+            }
+            TableCell {
+                if props.company.is_empty() {
+                    span { class: "text-gray-400", "-" }
+                } else {
+                    "{props.company}"
                 }
             }
             TableCell {
@@ -401,6 +458,8 @@ struct InvoiceDetail {
     invoice_number: String,
     #[serde(default)]
     company_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    company_name: Option<String>,
     #[serde(default)]
     billing_contact_id: Option<uuid::Uuid>,
     #[serde(default)]
@@ -500,6 +559,11 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                     let po_number = inv.po_number.clone();
                     let payment_terms = inv.payment_terms.clone();
                     let company_id = inv.company_id.map(|c| c.to_string());
+                    let company_name = inv
+                        .company_name
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "View company".to_string());
                     let billing_contact_id = inv.billing_contact_id.map(|c| c.to_string());
                     let invoice_date = inv.invoice_date.clone().unwrap_or_default();
                     let due_date = inv.due_date.clone().unwrap_or_default();
@@ -650,7 +714,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                                     Link {
                                                         to: Route::CompanyDetail { id: cid.clone() },
                                                         class: "text-blue-600 hover:text-blue-500",
-                                                        "View company"
+                                                        "{company_name}"
                                                     }
                                                 }
                                             }
@@ -685,6 +749,17 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
 #[component]
 pub fn InvoiceNewPage() -> Element {
     let mut company_id = use_signal(String::new);
+    let companies_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        load_companies().await
+    });
+    let company_options = company_select_options(
+        &companies_resource
+            .read_unchecked()
+            .clone()
+            .unwrap_or_default(),
+        "Select a company",
+    );
     let mut invoice_date = use_signal(String::new);
     let mut due_date = use_signal(String::new);
     let mut po_number = use_signal(String::new);
@@ -840,13 +915,14 @@ pub fn InvoiceNewPage() -> Element {
                         }
                     }
 
-                    crate::components::Input {
+                    Select {
                         name: "company_id",
-                        label: "Company ID (UUID)",
-                        placeholder: "e.g. 00000000-0000-0000-0000-000000000000",
+                        label: "Company",
+                        options: company_options,
                         required: true,
+                        placeholder: "Select a company",
                         value: company_id.read().clone(),
-                        oninput: move |e: FormEvent| company_id.set(e.value()),
+                        onchange: move |e: FormEvent| company_id.set(e.value()),
                     }
 
                     div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
@@ -947,6 +1023,8 @@ struct RemotePayment {
     #[serde(default)]
     invoice_id: Option<uuid::Uuid>,
     #[serde(default)]
+    company_name: Option<String>,
+    #[serde(default)]
     payment_date: Option<String>,
     #[serde(default)]
     amount: String,
@@ -1027,12 +1105,13 @@ pub fn PaymentListPage() -> Element {
                 total_items: total as usize,
                 current_page,
                 per_page: PER_PAGE,
-                columns: 6,
+                columns: 7,
                 onpagechange: move |p| page.set(p),
                 Table {
                     TableHead {
                         TableRow {
                             TableHeader { "Date" }
+                            TableHeader { "Company" }
                             TableHeader { "Invoice" }
                             TableHeader { "Method" }
                             TableHeader { "Reference" }
@@ -1041,10 +1120,10 @@ pub fn PaymentListPage() -> Element {
                         }
                     }
                     if is_loading {
-                        TableLoading { columns: 6, rows: 5 }
+                        TableLoading { columns: 7, rows: 5 }
                     } else if rows.is_empty() {
                         TableEmpty {
-                            columns: 6,
+                            columns: 7,
                             message: "No payments recorded yet. Click Record Payment to add one.".to_string(),
                         }
                     } else {
@@ -1053,6 +1132,7 @@ pub fn PaymentListPage() -> Element {
                                 PaymentRow {
                                     key: "{payment.id}",
                                     id: payment.id.to_string(),
+                                    company: payment.company_name.clone().unwrap_or_default(),
                                     invoice_id: payment.invoice_id.map(|i| i.to_string()).unwrap_or_default(),
                                     date: payment.payment_date.unwrap_or_default(),
                                     method: humanize_payment_method(&payment.payment_method),
@@ -1082,6 +1162,7 @@ pub fn PaymentListPage() -> Element {
 #[derive(Props, Clone, PartialEq)]
 struct PaymentRowProps {
     id: String,
+    company: String,
     invoice_id: String,
     date: String,
     method: String,
@@ -1102,6 +1183,13 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
                     span { class: "text-gray-400", "-" }
                 } else {
                     "{props.date}"
+                }
+            }
+            TableCell {
+                if props.company.is_empty() {
+                    span { class: "text-gray-400", "-" }
+                } else {
+                    "{props.company}"
                 }
             }
             TableCell {
@@ -1168,6 +1256,17 @@ struct RecordPaymentModalProps {
 #[component]
 fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
     let mut company_id = use_signal(String::new);
+    let companies_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        load_companies().await
+    });
+    let company_options = company_select_options(
+        &companies_resource
+            .read_unchecked()
+            .clone()
+            .unwrap_or_default(),
+        "Select a company",
+    );
     let mut invoice_id = use_signal(String::new);
     let mut payment_date = use_signal(String::new);
     let mut amount = use_signal(String::new);
@@ -1272,12 +1371,14 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                         "{error.read()}"
                     }
                 }
-                crate::components::Input {
+                Select {
                     name: "payment_company_id",
-                    label: "Company ID (UUID)",
+                    label: "Company",
+                    options: company_options,
                     required: true,
+                    placeholder: "Select a company",
                     value: company_id.read().clone(),
-                    oninput: move |e: FormEvent| company_id.set(e.value()),
+                    onchange: move |e: FormEvent| company_id.set(e.value()),
                 }
                 crate::components::Input {
                     name: "payment_invoice_id",
