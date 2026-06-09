@@ -504,6 +504,27 @@ struct NotificationPage {
     data: Vec<NotificationItem>,
 }
 
+/// Render a UTC instant in the viewer's local timezone (e.g.
+/// "Jun 9, 2026, 2:30 PM").
+///
+/// The client has no `chrono-tz`, so timezone conversion is delegated
+/// to the browser's `Date.toLocaleString`, which already knows the
+/// user's zone. Falls back to an explicit UTC string if the JS bridge
+/// yields nothing (e.g. a non-web build).
+fn format_local_datetime(dt: chrono::DateTime<chrono::Utc>) -> String {
+    let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(
+        dt.timestamp_millis() as f64,
+    ));
+    let formatted: String = date
+        .to_locale_string("en-US", &wasm_bindgen::JsValue::UNDEFINED)
+        .into();
+    if formatted.is_empty() {
+        dt.format("%Y-%m-%d %H:%M UTC").to_string()
+    } else {
+        formatted
+    }
+}
+
 /// Top-bar notification bell with an inbox dropdown.
 ///
 /// Fetches the in-app inbox on mount (and after each mark-read) so the
@@ -547,6 +568,15 @@ fn NotificationBell() -> Element {
                 }
             }
             if *open.read() {
+                // Full-viewport click-catcher behind the panel. Sits
+                // below the panel's z-index so any click outside the
+                // dropdown (including a second click on the bell) closes
+                // it; clicks on the panel itself land above this and are
+                // unaffected.
+                div {
+                    class: "fixed inset-0 z-10",
+                    onclick: move |_| open.set(false),
+                }
                 div {
                     class: "absolute right-0 mt-2 w-80 max-h-96 overflow-y-auto rounded-md shadow-lg bg-white dark:bg-gray-800 ring-1 ring-black ring-opacity-5 z-20",
                     role: "menu",
@@ -575,7 +605,7 @@ fn NotificationRow(item: NotificationItem, on_read: EventHandler<()>) -> Element
     let is_unread = item.read_at.is_none();
     let id = item.id;
     let subject = item.subject.clone().unwrap_or_default();
-    let when = item.created_at.format("%Y-%m-%d %H:%M").to_string();
+    let when = format_local_datetime(item.created_at);
     let unread_bg = if is_unread {
         "bg-blue-50 dark:bg-gray-700/40"
     } else {
