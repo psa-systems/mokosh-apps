@@ -900,14 +900,14 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                         format!("{} by {}", fmt_datetime(t.created_at), t.created_by_name)
                                     };
                                     rsx! {
-                                        DetailItem { label: "Created", value: rsx!(span { "{created}" }) }
+                                        DetailItem { label: "Created", nowrap: true, value: rsx!(span { "{created}" }) }
                                     }
                                 }
                                 if let Some((variant , label)) = t.sla_status.badge() {
                                     DetailItem { label: "SLA Status", value: rsx!(Badge { variant, "{label}" }) }
                                 }
                                 if let Some(due) = t.sla_due_date.map(format_sla_due) {
-                                    DetailItem { label: "SLA Due", value: rsx!(span { "{due}" }) }
+                                    DetailItem { label: "SLA Due", nowrap: true, value: rsx!(span { "{due}" }) }
                                 }
                             }
                         } else {
@@ -1029,14 +1029,24 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
 struct DetailItemProps {
     label: String,
     value: Element,
+    /// Keep the value on a single line (no wrapping). Used for Created and
+    /// SLA Due, whose timestamps would otherwise wrap onto a second line
+    /// (PMS-181).
+    #[props(default = false)]
+    nowrap: bool,
 }
 
 #[component]
 fn DetailItem(props: DetailItemProps) -> Element {
+    let dd_class = if props.nowrap {
+        "text-sm text-gray-900 dark:text-white text-right whitespace-nowrap"
+    } else {
+        "text-sm text-gray-900 dark:text-white text-right"
+    };
     rsx! {
-        div { class: "flex justify-between",
-            dt { class: "text-sm text-gray-500 dark:text-gray-400", "{props.label}" }
-            dd { class: "text-sm text-gray-900 dark:text-white", {props.value} }
+        div { class: "flex justify-between items-baseline gap-3",
+            dt { class: "text-sm text-gray-500 dark:text-gray-400 flex-shrink-0", "{props.label}" }
+            dd { class: "{dd_class}", {props.value} }
         }
     }
 }
