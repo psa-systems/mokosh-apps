@@ -354,18 +354,9 @@ pub fn TopBar(props: TopBarProps) -> Element {
                     }
                 }
 
-                // Notifications - stubbed pending the notifications API.
-                // Keep visible as a roadmap signal; disabled state +
-                // tooltip makes it clear this isn't a silent no-op.
-                // TODO(notifications-api): wire to /v1/notifications.
-                button {
-                    r#type: "button",
-                    disabled: true,
-                    title: "Notifications coming soon",
-                    class: "p-2 rounded-full text-gray-400 hover:text-white hover:bg-gray-700 relative disabled:cursor-not-allowed",
-                    BellIcon {}
-                    span { class: "absolute top-1 right-1 block h-2 w-2 rounded-full bg-red-400" }
-                }
+                // Notifications bell + inbox dropdown, wired to the
+                // server `notifications` module (MAPPS-132).
+                NotificationBell {}
 
                 // User menu (P3-26 avatar dropdown)
                 UserMenu {}
@@ -483,6 +474,164 @@ fn UserMenu() -> Element {
                     }
                 }
             }
+        }
+    }
+}
+
+/// One in-app inbox item from `GET /api/v1/notifications`.
+///
+/// Mirrors the server `NotificationInboxItemResponse`, decoding only
+/// the fields the dropdown renders. The server already filters to the
+/// `in_app` channel and orders newest-first, so the client just shows
+/// the list as received.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct NotificationItem {
+    id: uuid::Uuid,
+    #[serde(default)]
+    subject: Option<String>,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    read_at: Option<chrono::DateTime<chrono::Utc>>,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Envelope for the paginated inbox response (`{ data, meta }`); the
+/// bell only needs the `data` array.
+#[derive(Clone, Debug, serde::Deserialize)]
+struct NotificationPage {
+    #[serde(default)]
+    data: Vec<NotificationItem>,
+}
+
+/// Render a UTC instant in the viewer's local timezone (e.g.
+/// "Jun 9, 2026, 2:30 PM").
+///
+/// The client has no `chrono-tz`, so timezone conversion is delegated
+/// to the browser's `Date.toLocaleString`, which already knows the
+/// user's zone. Falls back to an explicit UTC string if the JS bridge
+/// yields nothing (e.g. a non-web build).
+fn format_local_datetime(dt: chrono::DateTime<chrono::Utc>) -> String {
+    let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(
+        dt.timestamp_millis() as f64
+    ));
+    let formatted: String = date
+        .to_locale_string("en-US", &wasm_bindgen::JsValue::UNDEFINED)
+        .into();
+    if formatted.is_empty() {
+        dt.format("%Y-%m-%d %H:%M UTC").to_string()
+    } else {
+        formatted
+    }
+}
+
+/// Top-bar notification bell with an inbox dropdown.
+///
+/// Fetches the in-app inbox on mount (and after each mark-read) so the
+/// red unread dot reflects real state instead of the old hard-coded
+/// stub. Clicking an unread item POSTs `.../{id}/read` and refetches.
+#[component]
+fn NotificationBell() -> Element {
+    let mut open = use_signal(|| false);
+    // `use_resource` runs on mount and whenever `.restart()` is called
+    // (after marking an item read). A failed fetch degrades to an empty
+    // inbox rather than surfacing an error in the top bar.
+    let mut inbox = use_resource(|| async {
+        // Subscribe to the active-tenant generation so the inbox
+        // refetches when the user switches org (notifications are
+        // tenant-scoped), matching the dashboard/list pages.
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<NotificationPage>("/notifications")
+            .await
+            .ok()
+            .map(|page| page.data)
+            .unwrap_or_default()
+    });
+
+    let items = inbox.read_unchecked().clone().unwrap_or_default();
+    let unread = items.iter().filter(|i| i.read_at.is_none()).count();
+
+    rsx! {
+        div { class: "relative",
+            button {
+                r#type: "button",
+                aria_label: "Notifications",
+                class: "p-2 rounded-full text-gray-400 hover:text-white hover:bg-gray-700 relative",
+                onclick: move |_| {
+                    let next = !*open.read();
+                    open.set(next);
+                },
+                BellIcon {}
+                // Red dot only when something is actually unread.
+                if unread > 0 {
+                    span { class: "absolute top-1 right-1 block h-2 w-2 rounded-full bg-red-400" }
+                }
+            }
+            if *open.read() {
+                // Full-viewport click-catcher behind the panel. Sits
+                // below the panel's z-index so any click outside the
+                // dropdown (including a second click on the bell) closes
+                // it; clicks on the panel itself land above this and are
+                // unaffected.
+                div {
+                    class: "fixed inset-0 z-10",
+                    onclick: move |_| open.set(false),
+                }
+                div {
+                    class: "absolute right-0 mt-2 w-80 max-h-96 overflow-y-auto rounded-md shadow-lg bg-white dark:bg-gray-800 ring-1 ring-black ring-opacity-5 z-20",
+                    role: "menu",
+                    div { class: "px-4 py-2 border-b border-gray-200 dark:border-gray-700 text-sm font-semibold text-gray-700 dark:text-gray-200",
+                        "Notifications"
+                    }
+                    if items.is_empty() {
+                        div { class: "px-4 py-6 text-sm text-gray-500 dark:text-gray-400 text-center",
+                            "No notifications yet"
+                        }
+                    } else {
+                        for item in items.iter().cloned() {
+                            NotificationRow { item, on_read: move |_| inbox.restart() }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A single inbox row. Unread rows are tinted and, on click, POST a
+/// mark-read then ask the parent to refetch via `on_read`.
+#[component]
+fn NotificationRow(item: NotificationItem, on_read: EventHandler<()>) -> Element {
+    let is_unread = item.read_at.is_none();
+    let id = item.id;
+    let subject = item.subject.clone().unwrap_or_default();
+    let when = format_local_datetime(item.created_at);
+    let unread_bg = if is_unread {
+        "bg-blue-50 dark:bg-gray-700/40"
+    } else {
+        ""
+    };
+
+    rsx! {
+        button {
+            r#type: "button",
+            class: "block w-full text-left px-4 py-3 border-b border-gray-100 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700 {unread_bg}",
+            onclick: move |_| {
+                if is_unread {
+                    spawn(async move {
+                        let _ = crate::hooks::fetch::api::post_authed_no_content(
+                                &format!("/notifications/{id}/read"),
+                            )
+                            .await;
+                        on_read.call(());
+                    });
+                }
+            },
+            if !subject.is_empty() {
+                div { class: "text-sm font-medium text-gray-900 dark:text-gray-100", "{subject}" }
+            }
+            div { class: "text-sm text-gray-600 dark:text-gray-300", "{item.body}" }
+            div { class: "mt-1 text-xs text-gray-400", "{when}" }
         }
     }
 }

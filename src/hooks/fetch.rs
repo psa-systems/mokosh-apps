@@ -377,6 +377,28 @@ pub mod api {
         }
     }
 
+    /// Post request with auth token for endpoints that return an empty
+    /// body (e.g. `POST /notifications/{id}/read`, which responds 200
+    /// with no JSON). The body-parsing `post_with_auth` would fail on
+    /// the empty payload, so this variant only checks the status, like
+    /// `delete_with_auth`. No request body is sent.
+    #[cfg(feature = "web")]
+    pub async fn post_no_content_with_auth(path: &str, token: &str) -> Result<(), String> {
+        let url = format!("{}{}", api_base(), path);
+
+        let response = Request::post(&url)
+            .header("Authorization", &format!("Bearer {}", token))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if response.ok() {
+            Ok(())
+        } else {
+            Err(format!("Request failed with status: {}", response.status()))
+        }
+    }
+
     // --- Auto-authed wrappers --------------------------------------------
     //
     // These read the current access token from the thread-local holder so
@@ -417,6 +439,14 @@ pub mod api {
     pub async fn delete_authed(path: &str) -> Result<(), String> {
         let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
         delete_with_auth(path, &t).await
+    }
+
+    /// Auto-authed POST for empty-body endpoints (see
+    /// `post_no_content_with_auth`).
+    #[cfg(feature = "web")]
+    pub async fn post_authed_no_content(path: &str) -> Result<(), String> {
+        let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
+        post_no_content_with_auth(path, &t).await
     }
 
     // --- Typed error layer ----------------------------------------------
