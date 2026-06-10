@@ -174,6 +174,16 @@ pub struct CurrentUser {
     pub role: UserRole,
     pub timezone: String,
     pub avatar_url: Option<String>,
+    /// Server-side flag: `false` for freshly JIT-created Bunyip users
+    /// until they've confirmed first + last name through
+    /// `/onboarding/profile`. Defaults to `true` on deserialise so a
+    /// legacy server response (no field) doesn't surprise-trap users.
+    #[serde(default = "default_true")]
+    pub profile_completed: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl CurrentUser {
@@ -231,6 +241,11 @@ impl User {
             role: self.role,
             timezone: self.timezone.clone(),
             avatar_url: self.avatar_url.clone(),
+            // Client-side `User` is a legacy snapshot type with no
+            // profile_completed_at column; mirror the server's "default
+            // true on legacy paths" so a code path that touches this
+            // conversion never traps a user in onboarding.
+            profile_completed: true,
         }
     }
 }
@@ -314,10 +329,6 @@ pub struct CreateUserRequest {
     /// If true, send welcome email with password setup link
     #[serde(default = "default_true")]
     pub send_welcome_email: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 /// Update user request
@@ -518,6 +529,7 @@ mod tests {
             role: UserRole::Admin,
             timezone: "UTC".to_string(),
             avatar_url: None,
+            profile_completed: true,
         };
         let tenant_id = user.tenant_id;
 
@@ -538,6 +550,7 @@ mod tests {
             role: UserRole::Admin,
             timezone: "UTC".to_string(),
             avatar_url: None,
+            profile_completed: true,
         };
         let tenant_id = user.tenant_id;
         let state = AuthState::authenticated(user, tenant_id);
@@ -558,6 +571,7 @@ mod tests {
             role: UserRole::Technician,
             timezone: "America/New_York".to_string(),
             avatar_url: None,
+            profile_completed: true,
         };
 
         assert_eq!(user.full_name(), "John Doe");
@@ -574,6 +588,7 @@ mod tests {
             role: UserRole::Technician,
             timezone: "UTC".to_string(),
             avatar_url: None,
+            profile_completed: true,
         };
 
         assert_eq!(user.initials(), "JD");
@@ -593,6 +608,7 @@ mod tests {
             role: UserRole::Admin,
             timezone: "UTC".to_string(),
             avatar_url: None,
+            profile_completed: true,
         };
         let tenant_id = user.tenant_id;
         let auth_state = AuthState::authenticated(user, tenant_id);
@@ -613,6 +629,7 @@ mod tests {
             role: UserRole::Admin,
             timezone: "UTC".to_string(),
             avatar_url: None,
+            profile_completed: true,
         };
         let tenant_id = user.tenant_id;
         let auth_state = AuthState::authenticated(user, tenant_id);

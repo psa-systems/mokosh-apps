@@ -27,6 +27,7 @@ pub use utils::error::{AppError, AppResult};
 #[component]
 pub fn AuthGuard() -> Element {
     let auth = hooks::use_auth();
+    let nav = use_navigator();
     let auth_state = auth.read();
     if auth_state.is_loading {
         // Still hydrating tokens from sessionStorage. Render a
@@ -61,6 +62,35 @@ pub fn AuthGuard() -> Element {
                 "Signing you in..."
             }
         };
+    }
+    // Forced onboarding for new Bunyip-JIT users: redirect to
+    // /onboarding/profile whenever the server reports
+    // profile_completed = false (first + last name still synthetic
+    // placeholders). Bypass when the user is already on the
+    // onboarding route itself, otherwise the AuthGuard would re-fire
+    // its own redirect every render and loop. Reads the pathname out
+    // of `window.location` rather than the router's current Route
+    // because we need to make the comparison synchronously inside
+    // render; pulling from web_sys avoids a re-entrant signal read.
+    let needs_onboarding = auth_state
+        .user
+        .as_ref()
+        .is_some_and(|u| !u.profile_completed);
+    if needs_onboarding {
+        #[cfg(target_arch = "wasm32")]
+        let on_onboarding_route = web_sys::window()
+            .and_then(|w| w.location().pathname().ok())
+            .is_some_and(|p| p == "/onboarding/profile");
+        #[cfg(not(target_arch = "wasm32"))]
+        let on_onboarding_route = false;
+        if !on_onboarding_route {
+            nav.replace(Route::Onboarding {});
+            return rsx! {
+                div { class: "min-h-screen flex items-center justify-center text-sm text-gray-500",
+                    "Setting up your profile..."
+                }
+            };
+        }
     }
     rsx! { Outlet::<Route> {} }
 }
@@ -105,6 +135,13 @@ pub enum Route {
     // pages still runs but is now a redundant safety net.
     // ======================================================================
     #[layout(AuthGuard)]
+
+      // Forced-onboarding for new Bunyip-JIT users. Sits inside
+      // AuthGuard (the user MUST be authenticated to reach it) but
+      // the guard exempts it from its own redirect; see the
+      // pathname check in AuthGuard above.
+      #[route("/onboarding/profile")]
+      Onboarding {},
 
       // Dashboard
       #[route("/dashboard")]
@@ -403,6 +440,11 @@ fn SignupComplete(token: String) -> Element {
 #[component]
 fn Dashboard() -> Element {
     rsx! { dashboard::DashboardPage {} }
+}
+
+#[component]
+fn Onboarding() -> Element {
+    rsx! { onboarding::Onboarding {} }
 }
 
 #[component]

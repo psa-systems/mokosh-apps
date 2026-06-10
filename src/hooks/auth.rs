@@ -147,6 +147,7 @@ fn initial_auth_context() -> AuthContext {
                 role: crate::modules::auth::UserRole::Admin,
                 timezone: "UTC".to_string(),
                 avatar_url: None,
+                profile_completed: true,
             }),
             is_loading: false,
             error: None,
@@ -221,6 +222,9 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
             role,
             timezone: "UTC".to_string(),
             avatar_url: None,
+            // Optimistic default; /me reconciles within one tick. See
+            // matching note in pages/auth_callback.rs.
+            profile_completed: true,
         }),
         is_loading: false,
         error: None,
@@ -398,6 +402,14 @@ async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
         timezone: String,
         avatar_url: Option<String>,
         role: String,
+        // `false` until the user confirms first + last name via the
+        // onboarding screen. Default `true` for backwards-compat with
+        // older server builds.
+        #[serde(default = "default_true_me")]
+        profile_completed: bool,
+    }
+    fn default_true_me() -> bool {
+        true
     }
     let me = match crate::hooks::fetch::api::get_authed::<MeBody>("/auth/me").await {
         Ok(m) => m,
@@ -432,6 +444,7 @@ async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
         if let Some(role) = new_role {
             u.role = role;
         }
+        u.profile_completed = me.profile_completed;
     }
     // Force the memberships loader to re-fetch by clearing the cached
     // list; the use_memberships_loader effect re-runs when
