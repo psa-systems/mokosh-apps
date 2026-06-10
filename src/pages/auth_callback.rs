@@ -91,6 +91,13 @@ pub fn AuthCallbackPage() -> Element {
                         role,
                         timezone: "UTC".to_string(),
                         avatar_url: None,
+                        // Optimistic default: the post-login /me fetch
+                        // (use_memberships_loader / use_token_refresh)
+                        // overwrites this with the authoritative value
+                        // within a tick. New Bunyip-JIT users land with
+                        // `profile_completed: false` from /me and the
+                        // onboarding gate redirects them.
+                        profile_completed: true,
                     });
                     a.is_loading = false;
                     a.error = None;
