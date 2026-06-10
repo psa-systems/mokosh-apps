@@ -303,7 +303,7 @@ fn AuditLogContent() -> Element {
                             TableHeader { "Timestamp" }
                             TableHeader { "Action" }
                             TableHeader { "Entity" }
-                            TableHeader { "Entity ID" }
+                            TableHeader { "Record" }
                             TableHeader { "User" }
                             TableHeader { "IP" }
                             TableHeader { "Details" }
@@ -353,8 +353,6 @@ fn AuditRow(props: AuditRowProps) -> Element {
     let action = entry.action.clone();
     let variant = action_variant(&action);
     let entity_type = entry.entity_type.clone();
-    let entity_id_short = short_uuid(entry.entity_id);
-    let user_id_short = short_uuid(entry.user_id);
     let ip = entry.ip_address.clone().unwrap_or_else(|| "-".to_string());
 
     let old_json = pretty_json(&entry.old_values);
@@ -369,6 +367,22 @@ fn AuditRow(props: AuditRowProps) -> Element {
         .map(|u| u.to_string())
         .unwrap_or_else(|| "-".to_string());
 
+    // Resolved labels with sensible fallbacks. Server-side LEFT JOIN +
+    // CASE-per-entity-type populates the name fields whenever it can;
+    // when it can't (entity deleted, new entity_type with no resolver
+    // yet) we render the short UUID prefix so the row still says
+    // SOMETHING the reader can correlate with logs.
+    let entity_label = entry
+        .entity_name
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| short_uuid(entry.entity_id));
+    let user_label = entry
+        .user_name
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "System".to_string());
+
     let is_open = *expanded.read();
 
     rsx! {
@@ -378,8 +392,8 @@ fn AuditRow(props: AuditRowProps) -> Element {
                 Badge { variant, "{action}" }
             }
             TableCell { "{entity_type}" }
-            TableCell { class: "font-mono text-xs text-gray-500", "{entity_id_short}" }
-            TableCell { class: "font-mono text-xs text-gray-500", "{user_id_short}" }
+            TableCell { "{entity_label}" }
+            TableCell { "{user_label}" }
             TableCell { class: "text-gray-500", "{ip}" }
             TableCell {
                 if has_detail {
@@ -403,13 +417,25 @@ fn AuditRow(props: AuditRowProps) -> Element {
                     colspan: "7",
                     class: "px-6 py-4 bg-gray-50 dark:bg-gray-800/50",
                     dl { class: "grid grid-cols-1 gap-3 sm:grid-cols-2 text-xs",
+                        // Detail view shows the resolved name as the
+                        // primary value; the raw UUID drops to a muted
+                        // sub-line for traceability when chasing rows
+                        // across logs / DB queries. When no UUID exists
+                        // (system-issued or null fields) the sub-line is
+                        // suppressed entirely.
                         div {
-                            dt { class: "font-medium text-gray-500 dark:text-gray-400 mb-1", "Entity ID" }
-                            dd { class: "font-mono text-gray-900 dark:text-gray-100 break-all", "{entity_id_full}" }
+                            dt { class: "font-medium text-gray-500 dark:text-gray-400 mb-1", "Record" }
+                            dd { class: "text-gray-900 dark:text-gray-100 break-all", "{entity_label}" }
+                            if entry.entity_id.is_some() {
+                                dd { class: "font-mono text-gray-400 dark:text-gray-500 text-[10px] mt-0.5 break-all", "{entity_id_full}" }
+                            }
                         }
                         div {
-                            dt { class: "font-medium text-gray-500 dark:text-gray-400 mb-1", "User ID" }
-                            dd { class: "font-mono text-gray-900 dark:text-gray-100 break-all", "{user_id_full}" }
+                            dt { class: "font-medium text-gray-500 dark:text-gray-400 mb-1", "User" }
+                            dd { class: "text-gray-900 dark:text-gray-100 break-all", "{user_label}" }
+                            if entry.user_id.is_some() {
+                                dd { class: "font-mono text-gray-400 dark:text-gray-500 text-[10px] mt-0.5 break-all", "{user_id_full}" }
+                            }
                         }
                         if !user_agent.is_empty() {
                             div { class: "sm:col-span-2",
