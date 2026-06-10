@@ -17,12 +17,24 @@ pub struct AuditLogEntry {
     pub tenant_id: Uuid,
     #[serde(default)]
     pub user_id: Option<Uuid>,
+    /// Resolved actor name from the server's LEFT JOIN against `users`.
+    /// `None` for system-issued rows or rows whose user is gone; the UI
+    /// renders "System" in that case instead of the bare UUID.
+    #[serde(default)]
+    pub user_name: Option<String>,
     #[serde(default)]
     pub action: String,
     #[serde(default)]
     pub entity_type: String,
     #[serde(default)]
     pub entity_id: Option<Uuid>,
+    /// Resolved display name for the audited row, computed server-side
+    /// per entity_type (`name` / `invoice_number` / `T<ticket_number>`
+    /// / etc.). `None` when the entity row was deleted, the entity_type
+    /// has no client-side label rule yet, or the column is empty; the
+    /// UI falls back to the short UUID prefix in that case.
+    #[serde(default)]
+    pub entity_name: Option<String>,
     #[serde(default)]
     pub old_values: Option<serde_json::Value>,
     #[serde(default)]
