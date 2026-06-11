@@ -6,8 +6,9 @@ use serde::Deserialize;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ClockIcon, DataTable, IconSize,
-    Modal, PageHeader, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody, TableCell,
-    TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea, UserCircleIcon,
+    Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody,
+    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea,
+    UserCircleIcon,
 };
 use crate::Route;
 
@@ -85,6 +86,27 @@ struct RemoteNote {
     #[serde(default)]
     created_by_name: String,
     created_at: DateTime<Utc>,
+}
+
+/// One change-history entry (`GET /audit-log/entity/tickets/:id`, PMS-182).
+/// `changed_fields` is the set of columns the edit touched.
+#[derive(Clone, Debug, Deserialize)]
+struct HistoryEntry {
+    #[serde(default)]
+    action: String,
+    #[serde(default)]
+    user_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    changed_fields: Vec<String>,
+    timestamp: DateTime<Utc>,
+}
+
+/// User option for resolving history actor ids to names (`/auth/users`).
+#[derive(Clone, Debug, Deserialize)]
+struct UserOpt {
+    id: uuid::Uuid,
+    #[serde(default)]
+    full_name: String,
 }
 
 /// A time entry (`GET /time-entries?ticket_id=:id`), summed into Time Logged.
@@ -254,6 +276,45 @@ fn priority_badge_variant(label: &str) -> BadgeVariant {
 /// Absolute timestamp for created / activity lines, e.g. "Jun 05, 2026 14:30".
 fn fmt_datetime(dt: DateTime<Utc>) -> String {
     dt.format("%b %d, %Y %H:%M").to_string()
+}
+
+/// Resolve a history actor id to a display name; "-" when unknown so the
+/// change-history feed never shows a bare UUID (PMS-182).
+fn actor_name(users: &[UserOpt], id: &Option<uuid::Uuid>) -> String {
+    match id {
+        Some(uid) => users
+            .iter()
+            .find(|u| &u.id == uid)
+            .map(|u| u.full_name.clone())
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| "-".to_string()),
+        None => "-".to_string(),
+    }
+}
+
+/// Humanize an audit action code for the change-history feed.
+fn action_label(action: &str) -> &'static str {
+    match action {
+        "create" => "Created",
+        "update" => "Updated",
+        "delete" => "Deleted",
+        _ => "Changed",
+    }
+}
+
+/// "description, status" to "Description, Status" for the change summary.
+fn fields_label(fields: &[String]) -> String {
+    fields
+        .iter()
+        .map(|f| {
+            let mut s = f.replace('_', " ");
+            if let Some(first) = s.get_mut(0..1) {
+                first.make_ascii_uppercase();
+            }
+            s
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Ticket list page
@@ -744,8 +805,56 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             .ok()
         }
     });
+    let id_for_history = props.id.clone();
+    let history_resource = use_resource(move || {
+        let id = id_for_history.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<Paginated<HistoryEntry>>(&format!(
+                "/audit-log/entity/tickets/{id}"
+            ))
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+        }
+    });
+    let users_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<UserOpt>>("/auth/users")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+
+    // PMS-182 description edit state.
+    let mut editing_desc = use_signal(|| false);
+    let mut e_desc = use_signal(String::new);
+    let mut e_submitting = use_signal(|| false);
+    let mut e_error = use_signal(String::new);
+    let id_for_save = props.id.clone();
 
     let ticket = ticket_resource.read_unchecked().clone().flatten();
+    let history = history_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    let users = users_resource.read_unchecked().clone().unwrap_or_default();
+    // "Edited" marker for the description: most recent history entry that
+    // touched the description column.
+    let desc_edited = history
+        .iter()
+        .find(|e| e.action == "update" && e.changed_fields.iter().any(|f| f == "description"))
+        .map(|e| {
+            let who = actor_name(&users, &e.user_id);
+            let when = fmt_datetime(e.timestamp);
+            if who == "-" {
+                format!("Edited {when}")
+            } else {
+                format!("Edited {when} by {who}")
+            }
+        });
     // Prefer the ticket's human label (number + title) over the raw UUID. Fall
     // back to "Ticket <id>" only if the title is missing, "Loading…" in flight.
     let header_title = match ticket.as_ref() {
@@ -800,16 +909,47 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
                 // Main content
                 div { class: "lg:col-span-2 space-y-6",
-                    // Description (real ticket description)
-                    Card { title: "Description",
-                        if let Some(t) = ticket.as_ref() {
-                            if let Some(desc) = t.description.as_ref().filter(|d| !d.trim().is_empty()) {
-                                p { class: "text-gray-700 dark:text-gray-300 whitespace-pre-wrap", "{desc}" }
-                            } else {
-                                p { class: "text-sm text-gray-400 italic", "No description provided." }
+                    // Description (real ticket description, editable - PMS-182)
+                    {
+                        let ticket_loaded = ticket.is_some();
+                        let cur_desc = ticket
+                            .as_ref()
+                            .and_then(|t| t.description.clone())
+                            .unwrap_or_default();
+                        let open_edit = move |_| {
+                            e_desc.set(cur_desc.clone());
+                            e_error.set(String::new());
+                            editing_desc.set(true);
+                        };
+                        let marker = desc_edited.clone();
+                        rsx! {
+                            Card {
+                                title: "Description",
+                                actions: if ticket_loaded {
+                                    Some(rsx! {
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            onclick: open_edit,
+                                            PencilIcon { size: IconSize::Small, class: "mr-1.5".to_string() }
+                                            "Edit"
+                                        }
+                                    })
+                                } else {
+                                    None
+                                },
+                                if let Some(t) = ticket.as_ref() {
+                                    if let Some(desc) = t.description.as_ref().filter(|d| !d.trim().is_empty()) {
+                                        p { class: "text-gray-700 dark:text-gray-300 whitespace-pre-wrap", "{desc}" }
+                                    } else {
+                                        p { class: "text-sm text-gray-400 italic", "No description provided." }
+                                    }
+                                    if let Some(m) = marker {
+                                        p { class: "text-xs text-gray-400 italic mt-3", "{m}" }
+                                    }
+                                } else {
+                                    p { class: "text-sm text-gray-400", "Loading…" }
+                                }
                             }
-                        } else {
-                            p { class: "text-sm text-gray-400", "Loading…" }
                         }
                     }
 
@@ -940,6 +1080,109 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                         }
                                     }
                                 }
+                            }
+                        }
+                    }
+
+                    // Change history (PMS-182) - field-level edits to the ticket.
+                    Card { title: "Change History",
+                        if history.is_empty() {
+                            p { class: "text-sm text-gray-400 italic", "No edits yet." }
+                        } else {
+                            div { class: "space-y-3 text-sm",
+                                for e in history.iter().take(20) {
+                                    {
+                                        let label = action_label(&e.action);
+                                        let fields = fields_label(&e.changed_fields);
+                                        let who = actor_name(&users, &e.user_id);
+                                        let when = fmt_datetime(e.timestamp);
+                                        rsx! {
+                                            div { class: "flex justify-between gap-2",
+                                                div { class: "min-w-0",
+                                                    p { class: "text-gray-700 dark:text-gray-300",
+                                                        if fields.is_empty() {
+                                                            "{label}"
+                                                        } else {
+                                                            "{label}: {fields}"
+                                                        }
+                                                    }
+                                                    if who != "-" {
+                                                        p { class: "text-xs text-gray-400", "by {who}" }
+                                                    }
+                                                }
+                                                span { class: "text-gray-400 whitespace-nowrap", "{when}" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // PMS-182 description edit modal.
+            {
+                let mut ticket_res = ticket_resource;
+                let mut history_res = history_resource;
+                let save_id = id_for_save.clone();
+                let on_save = move |_| {
+                    if e_submitting() {
+                        return;
+                    }
+                    let save_id = save_id.clone();
+                    spawn(async move {
+                        e_submitting.set(true);
+                        e_error.set(String::new());
+                        let body = serde_json::json!({ "description": e_desc() });
+                        match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
+                            &format!("/tickets/{save_id}"),
+                            &body,
+                        )
+                        .await
+                        {
+                            Ok(_) => {
+                                e_submitting.set(false);
+                                editing_desc.set(false);
+                                ticket_res.restart();
+                                history_res.restart();
+                            }
+                            Err(err) => {
+                                e_submitting.set(false);
+                                e_error.set(err);
+                            }
+                        }
+                    });
+                };
+                rsx! {
+                    Modal {
+                        open: editing_desc(),
+                        title: "Edit Description",
+                        size: crate::components::ModalSize::Large,
+                        onclose: move |_| editing_desc.set(false),
+                        footer: rsx! {
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                onclick: move |_| editing_desc.set(false),
+                                "Cancel"
+                            }
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                loading: e_submitting(),
+                                onclick: on_save,
+                                "Save Changes"
+                            }
+                        },
+                        div { class: "space-y-3",
+                            if !e_error().is_empty() {
+                                p { class: "text-sm text-red-600 dark:text-red-400", "{e_error}" }
+                            }
+                            Textarea {
+                                name: "edit-description",
+                                label: "Description",
+                                rows: 8,
+                                value: "{e_desc}",
+                                oninput: move |e: FormEvent| e_desc.set(e.value()),
                             }
                         }
                     }
