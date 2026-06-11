@@ -6,9 +6,9 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, Input,
-    PageHeader, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody, TableCell,
-    TableHead, TableHeader, TableRow,
+    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, Input, Modal,
+    PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody,
+    TableCell, TableHead, TableHeader, TableRow,
 };
 use crate::Route;
 
@@ -42,6 +42,10 @@ struct RemoteAsset {
     warranty_expiry: Option<String>,
     #[serde(default)]
     purchase_date: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
+    updated_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -113,7 +117,17 @@ struct AuditEntry {
     #[serde(default)]
     performed_at: Option<String>,
     #[serde(default)]
+    performed_by_id: Option<uuid::Uuid>,
+    #[serde(default)]
     changes: Option<serde_json::Value>,
+}
+
+/// User option for resolving audit actor ids to display names (`/auth/users`).
+#[derive(Clone, Debug, Deserialize)]
+struct UserOpt {
+    id: uuid::Uuid,
+    #[serde(default)]
+    full_name: String,
 }
 
 /// (badge colour, label) for an asset status.
@@ -125,6 +139,63 @@ fn status_badge(status: &str) -> (BadgeVariant, &'static str) {
         "retired" => (BadgeVariant::Red, "Retired"),
         "inactive" => (BadgeVariant::Gray, "Inactive"),
         _ => (BadgeVariant::Gray, "Unknown"),
+    }
+}
+
+/// "Feb 28, 2025 3:45 PM" from an ISO datetime; falls back to the date-only
+/// formatter, then the raw string. Used for audit timestamps.
+fn fmt_datetime(s: &Option<String>) -> String {
+    match s {
+        Some(ts) => chrono::DateTime::parse_from_rfc3339(ts)
+            .map(|dt| dt.format("%b %-d, %Y %-I:%M %p").to_string())
+            .unwrap_or_else(|_| fmt_date(s)),
+        None => "-".to_string(),
+    }
+}
+
+/// Resolve an actor id to a display name via the loaded user list; "-" when
+/// unknown so the audit/edited markers never show a bare UUID.
+fn actor_name(users: &[UserOpt], id: &Option<uuid::Uuid>) -> String {
+    match id {
+        Some(uid) => users
+            .iter()
+            .find(|u| &u.id == uid)
+            .map(|u| u.full_name.clone())
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| "-".to_string()),
+        None => "-".to_string(),
+    }
+}
+
+/// Humanize an asset audit `action` code for display.
+fn action_label(action: &str) -> String {
+    match action {
+        "created" => "Created".to_string(),
+        "updated" => "Updated".to_string(),
+        "status_changed" => "Status changed".to_string(),
+        "credential_created" => "Credential added".to_string(),
+        "credential_deleted" => "Credential removed".to_string(),
+        "credential_revealed" => "Credential revealed".to_string(),
+        "configuration_revealed" => "Configuration revealed".to_string(),
+        other => {
+            // snake_case to Sentence case fallback.
+            let mut s = other.replace('_', " ");
+            if let Some(first) = s.get_mut(0..1) {
+                first.make_ascii_uppercase();
+            }
+            s
+        }
+    }
+}
+
+/// `""` to `None`, otherwise `Some(trimmed)`. Lets an edit form send `null`
+/// for a cleared optional field instead of an empty string.
+fn opt_str(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
     }
 }
 
@@ -592,10 +663,34 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
             .map(|p| p.data)
             .unwrap_or_default()
     });
+    let users_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<UserOpt>>("/auth/users")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
 
     // On-demand audited reveals, keyed by item id.
     let revealed_creds = use_signal(HashMap::<uuid::Uuid, RevealedCred>::new);
     let revealed_cfgs = use_signal(HashMap::<uuid::Uuid, String>::new);
+
+    // PMS-185 edit state. `editing` drives the modal; the field signals are
+    // populated from the loaded asset when the user opens it.
+    let mut editing = use_signal(|| false);
+    let mut e_name = use_signal(String::new);
+    let mut e_tag = use_signal(String::new);
+    let mut e_type = use_signal(String::new);
+    let mut e_status = use_signal(String::new);
+    let mut e_manufacturer = use_signal(String::new);
+    let mut e_model = use_signal(String::new);
+    let mut e_serial = use_signal(String::new);
+    let mut e_warranty = use_signal(String::new);
+    let mut e_purchase = use_signal(String::new);
+    let mut e_submitting = use_signal(|| false);
+    let mut e_error = use_signal(String::new);
+    let id_for_save = props.id.clone();
 
     let snapshot = asset_resource.read_unchecked().clone();
     let is_loading = snapshot.is_none();
@@ -609,6 +704,31 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         .read_unchecked()
         .clone()
         .unwrap_or_default();
+    let users = users_resource.read_unchecked().clone().unwrap_or_default();
+
+    // "Edited" marker: only when the asset has actually changed since
+    // creation (updated_at strictly after created_at). The who/when comes
+    // from the most recent audit entry, which `update_asset` writes.
+    let was_edited = match (
+        asset.as_ref().and_then(|a| a.created_at.as_ref()),
+        asset.as_ref().and_then(|a| a.updated_at.as_ref()),
+    ) {
+        (Some(c), Some(u)) => u > c,
+        _ => false,
+    };
+    let edited_label = if was_edited {
+        audit.first().map(|e| {
+            let who = actor_name(&users, &e.performed_by_id);
+            let when = fmt_datetime(&e.performed_at);
+            if who == "-" {
+                format!("Edited {when}")
+            } else {
+                format!("Edited {when} by {who}")
+            }
+        })
+    } else {
+        None
+    };
 
     let header_title = match asset.as_ref() {
         Some(a) if !a.name.trim().is_empty() => a.name.clone(),
@@ -650,11 +770,40 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     let tag = a.asset_tag.clone().unwrap_or_else(dash);
                     let warranty = fmt_date(&a.warranty_expiry);
                     let purchased = fmt_date(&a.purchase_date);
+                    // Snapshot used to seed the edit form when opened.
+                    let a_edit = a.clone();
+                    let open_edit = move |_| {
+                        e_name.set(a_edit.name.clone());
+                        e_tag.set(a_edit.asset_tag.clone().unwrap_or_default());
+                        e_type
+                            .set(a_edit.asset_type_id.map(|t| t.to_string()).unwrap_or_default());
+                        e_status.set(a_edit.status.clone());
+                        e_manufacturer.set(a_edit.manufacturer.clone().unwrap_or_default());
+                        e_model.set(a_edit.model.clone().unwrap_or_default());
+                        e_serial.set(a_edit.serial_number.clone().unwrap_or_default());
+                        e_warranty.set(a_edit.warranty_expiry.clone().unwrap_or_default());
+                        e_purchase.set(a_edit.purchase_date.clone().unwrap_or_default());
+                        e_error.set(String::new());
+                        editing.set(true);
+                    };
+                    let edited_marker = edited_label.clone();
                     rsx! {
                         div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
                             // Main content
                             div { class: "lg:col-span-2 space-y-6",
-                                Card { title: "Asset Information",
+                                Card {
+                                    title: "Asset Information",
+                                    actions: rsx! {
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            onclick: open_edit,
+                                            PencilIcon { size: IconSize::Small, class: "mr-1.5".to_string() }
+                                            "Edit"
+                                        }
+                                    },
+                                    if let Some(marker) = edited_marker {
+                                        p { class: "text-xs text-gray-400 italic mb-3", "{marker}" }
+                                    }
                                     dl { class: "grid grid-cols-2 gap-4",
                                         div {
                                             dt { class: "text-sm text-gray-500", "Type" }
@@ -832,11 +981,11 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     }
                                 }
 
-                                Card { title: "Audit Log",
+                                Card { title: "Change History",
                                     if audit.is_empty() {
-                                        p { class: "text-sm text-gray-400 italic", "No audit entries." }
+                                        p { class: "text-sm text-gray-400 italic", "No history yet." }
                                     } else {
-                                        div { class: "space-y-2 text-sm",
+                                        div { class: "space-y-3 text-sm",
                                             for e in audit.iter().take(15) {
                                                 {
                                                     let event = e
@@ -846,14 +995,21 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                         .and_then(|v| v.as_str())
                                                         .unwrap_or("")
                                                         .to_string();
-                                                    let when = fmt_date(&e.performed_at);
+                                                    let label = action_label(&e.action);
+                                                    let when = fmt_datetime(&e.performed_at);
+                                                    let who = actor_name(&users, &e.performed_by_id);
                                                     rsx! {
                                                         div { class: "flex justify-between gap-2",
-                                                            span { class: "text-gray-700 dark:text-gray-300",
-                                                                if event.is_empty() {
-                                                                    "{e.action}"
-                                                                } else {
-                                                                    "{e.action}: {event}"
+                                                            div { class: "min-w-0",
+                                                                p { class: "text-gray-700 dark:text-gray-300",
+                                                                    if event.is_empty() {
+                                                                        "{label}"
+                                                                    } else {
+                                                                        "{label}: {event}"
+                                                                    }
+                                                                }
+                                                                if who != "-" {
+                                                                    p { class: "text-xs text-gray-400", "by {who}" }
                                                                 }
                                                             }
                                                             span { class: "text-gray-400 whitespace-nowrap", "{when}" }
@@ -863,6 +1019,162 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                             }
                                         }
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // PMS-185 edit modal.
+            {
+                let mut asset_res = asset_resource;
+                let mut audit_res = audit_resource;
+                let status_opts = vec![
+                    SelectOption::new("active", "Active"),
+                    SelectOption::new("in_stock", "In Stock"),
+                    SelectOption::new("in_repair", "In Repair"),
+                    SelectOption::new("retired", "Retired"),
+                    SelectOption::new("inactive", "Inactive"),
+                ];
+                let type_opts: Vec<SelectOption> = types
+                    .iter()
+                    .map(|t| SelectOption::new(t.id.to_string(), t.name.clone()))
+                    .collect();
+                let save_id = id_for_save.clone();
+                let on_save = move |_| {
+                    if e_submitting() {
+                        return;
+                    }
+                    let save_id = save_id.clone();
+                    spawn(async move {
+                        e_submitting.set(true);
+                        e_error.set(String::new());
+                        let mut body = serde_json::Map::new();
+                        body.insert("name".into(), serde_json::json!(e_name().trim()));
+                        body.insert("asset_tag".into(), serde_json::json!(opt_str(&e_tag())));
+                        body.insert("asset_type_id".into(), serde_json::json!(opt_str(&e_type())));
+                        body.insert("status".into(), serde_json::json!(e_status()));
+                        body.insert(
+                            "manufacturer".into(),
+                            serde_json::json!(opt_str(&e_manufacturer())),
+                        );
+                        body.insert("model".into(), serde_json::json!(opt_str(&e_model())));
+                        body.insert("serial_number".into(), serde_json::json!(opt_str(&e_serial())));
+                        body.insert(
+                            "warranty_expiry".into(),
+                            serde_json::json!(opt_str(&e_warranty())),
+                        );
+                        body.insert(
+                            "purchase_date".into(),
+                            serde_json::json!(opt_str(&e_purchase())),
+                        );
+                        let body = serde_json::Value::Object(body);
+                        match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
+                            &format!("/assets/{save_id}"),
+                            &body,
+                        )
+                        .await
+                        {
+                            Ok(_) => {
+                                e_submitting.set(false);
+                                editing.set(false);
+                                asset_res.restart();
+                                audit_res.restart();
+                            }
+                            Err(err) => {
+                                e_submitting.set(false);
+                                e_error.set(err);
+                            }
+                        }
+                    });
+                };
+                rsx! {
+                    Modal {
+                        open: editing(),
+                        title: "Edit Asset",
+                        onclose: move |_| editing.set(false),
+                        footer: rsx! {
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                onclick: move |_| editing.set(false),
+                                "Cancel"
+                            }
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                disabled: e_submitting(),
+                                onclick: on_save,
+                                if e_submitting() { "Saving…" } else { "Save Changes" }
+                            }
+                        },
+                        div { class: "space-y-4",
+                            if !e_error().is_empty() {
+                                p { class: "text-sm text-red-600 dark:text-red-400", "{e_error}" }
+                            }
+                            Input {
+                                name: "edit-name",
+                                label: "Name",
+                                required: true,
+                                value: "{e_name}",
+                                oninput: move |e: FormEvent| e_name.set(e.value()),
+                            }
+                            div { class: "grid grid-cols-2 gap-4",
+                                Select {
+                                    name: "edit-type",
+                                    label: "Type",
+                                    options: type_opts.clone(),
+                                    value: "{e_type}",
+                                    placeholder: "Select type",
+                                    onchange: move |e: FormEvent| e_type.set(e.value()),
+                                }
+                                Select {
+                                    name: "edit-status",
+                                    label: "Status",
+                                    options: status_opts.clone(),
+                                    value: "{e_status}",
+                                    onchange: move |e: FormEvent| e_status.set(e.value()),
+                                }
+                            }
+                            Input {
+                                name: "edit-tag",
+                                label: "Asset Tag",
+                                value: "{e_tag}",
+                                oninput: move |e: FormEvent| e_tag.set(e.value()),
+                            }
+                            div { class: "grid grid-cols-2 gap-4",
+                                Input {
+                                    name: "edit-manufacturer",
+                                    label: "Manufacturer",
+                                    value: "{e_manufacturer}",
+                                    oninput: move |e: FormEvent| e_manufacturer.set(e.value()),
+                                }
+                                Input {
+                                    name: "edit-model",
+                                    label: "Model",
+                                    value: "{e_model}",
+                                    oninput: move |e: FormEvent| e_model.set(e.value()),
+                                }
+                            }
+                            Input {
+                                name: "edit-serial",
+                                label: "Serial Number",
+                                value: "{e_serial}",
+                                oninput: move |e: FormEvent| e_serial.set(e.value()),
+                            }
+                            div { class: "grid grid-cols-2 gap-4",
+                                Input {
+                                    name: "edit-purchase",
+                                    label: "Purchase Date",
+                                    r#type: "date".to_string(),
+                                    value: "{e_purchase}",
+                                    oninput: move |e: FormEvent| e_purchase.set(e.value()),
+                                }
+                                Input {
+                                    name: "edit-warranty",
+                                    label: "Warranty Expiry",
+                                    r#type: "date".to_string(),
+                                    value: "{e_warranty}",
+                                    oninput: move |e: FormEvent| e_warranty.set(e.value()),
                                 }
                             }
                         }
