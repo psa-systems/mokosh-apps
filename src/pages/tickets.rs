@@ -89,7 +89,8 @@ struct RemoteNote {
 }
 
 /// One change-history entry (`GET /audit-log/entity/tickets/:id`, PMS-182).
-/// `changed_fields` is the set of columns the edit touched.
+/// `changed_fields` is the set of columns the edit touched; `changes` carries
+/// their before/after values (PMS-204).
 #[derive(Clone, Debug, Deserialize)]
 struct HistoryEntry {
     #[serde(default)]
@@ -98,7 +99,20 @@ struct HistoryEntry {
     user_id: Option<uuid::Uuid>,
     #[serde(default)]
     changed_fields: Vec<String>,
+    #[serde(default)]
+    changes: Vec<FieldChange>,
     timestamp: DateTime<Utc>,
+}
+
+/// The before/after value of one changed column (PMS-204).
+#[derive(Clone, Debug, Deserialize)]
+struct FieldChange {
+    #[serde(default)]
+    field: String,
+    #[serde(default)]
+    old: Option<serde_json::Value>,
+    #[serde(default)]
+    new: Option<serde_json::Value>,
 }
 
 /// User option for resolving history actor ids to names (`/auth/users`).
@@ -306,15 +320,53 @@ fn action_label(action: &str) -> &'static str {
 fn fields_label(fields: &[String]) -> String {
     fields
         .iter()
-        .map(|f| {
-            let mut s = f.replace('_', " ");
-            if let Some(first) = s.get_mut(0..1) {
-                first.make_ascii_uppercase();
-            }
-            s
-        })
+        .map(|f| title_field(f))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// "due_date" to "Due date" for a single field name.
+fn title_field(f: &str) -> String {
+    let mut s = f.replace('_', " ");
+    if let Some(first) = s.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    s
+}
+
+/// A 36-char hyphenated UUID, which is not worth showing as before/after text.
+fn looks_like_uuid(s: &str) -> bool {
+    s.len() == 36
+        && s.as_bytes().iter().enumerate().all(|(i, b)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                *b == b'-'
+            } else {
+                b.is_ascii_hexdigit()
+            }
+        })
+}
+
+/// Render an audit value for display: "(empty)" for null/blank, the trimmed
+/// text (truncated) for strings, a coarse marker for references/objects.
+fn fmt_change_value(v: &Option<serde_json::Value>) -> String {
+    match v {
+        None | Some(serde_json::Value::Null) => "(empty)".to_string(),
+        Some(serde_json::Value::String(s)) => {
+            let t = s.trim();
+            if t.is_empty() {
+                "(empty)".to_string()
+            } else if looks_like_uuid(t) {
+                "(reference)".to_string()
+            } else if t.chars().count() > 160 {
+                format!("{}…", t.chars().take(160).collect::<String>())
+            } else {
+                t.to_string()
+            }
+        }
+        Some(serde_json::Value::Bool(b)) => b.to_string(),
+        Some(serde_json::Value::Number(n)) => n.to_string(),
+        Some(_) => "(updated)".to_string(),
+    }
 }
 
 /// Ticket list page
@@ -1108,6 +1160,26 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                                     }
                                                     if who != "-" {
                                                         p { class: "text-xs text-gray-400", "by {who}" }
+                                                    }
+                                                    // PMS-204: actual before/after content.
+                                                    for c in e.changes.iter() {
+                                                        {
+                                                            let old = fmt_change_value(&c.old);
+                                                            let new = fmt_change_value(&c.new);
+                                                            let fname = title_field(&c.field);
+                                                            if old == "(reference)" && new == "(reference)" {
+                                                                rsx! {}
+                                                            } else {
+                                                                rsx! {
+                                                                    p { class: "text-xs text-gray-500 dark:text-gray-400 mt-1",
+                                                                        span { class: "font-medium", "{fname}: " }
+                                                                        span { class: "line-through text-gray-400", "{old}" }
+                                                                        " → "
+                                                                        span { "{new}" }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
                                                     }
                                                 }
                                                 span { class: "text-gray-400 whitespace-nowrap", "{when}" }

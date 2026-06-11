@@ -130,6 +130,18 @@ struct UserOpt {
     full_name: String,
 }
 
+/// The before/after value of one changed column (PMS-204). `update_asset`
+/// stores these as an array in the audit row's `changes` column.
+#[derive(Clone, Debug, Deserialize)]
+struct FieldChange {
+    #[serde(default)]
+    field: String,
+    #[serde(default)]
+    old: Option<serde_json::Value>,
+    #[serde(default)]
+    new: Option<serde_json::Value>,
+}
+
 /// (badge colour, label) for an asset status.
 fn status_badge(status: &str) -> (BadgeVariant, &'static str) {
     match status {
@@ -185,6 +197,50 @@ fn action_label(action: &str) -> String {
             }
             s
         }
+    }
+}
+
+/// "warranty_expiry" to "Warranty expiry" for a single field name.
+fn title_field(f: &str) -> String {
+    let mut s = f.replace('_', " ");
+    if let Some(first) = s.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    s
+}
+
+/// A 36-char hyphenated UUID, not worth showing as before/after text.
+fn looks_like_uuid(s: &str) -> bool {
+    s.len() == 36
+        && s.as_bytes().iter().enumerate().all(|(i, b)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                *b == b'-'
+            } else {
+                b.is_ascii_hexdigit()
+            }
+        })
+}
+
+/// Render an audit value for display: "(empty)" for null/blank, the trimmed
+/// text (truncated) for strings, a coarse marker for references/objects.
+fn fmt_change_value(v: &Option<serde_json::Value>) -> String {
+    match v {
+        None | Some(serde_json::Value::Null) => "(empty)".to_string(),
+        Some(serde_json::Value::String(s)) => {
+            let t = s.trim();
+            if t.is_empty() {
+                "(empty)".to_string()
+            } else if looks_like_uuid(t) {
+                "(reference)".to_string()
+            } else if t.chars().count() > 160 {
+                format!("{}…", t.chars().take(160).collect::<String>())
+            } else {
+                t.to_string()
+            }
+        }
+        Some(serde_json::Value::Bool(b)) => b.to_string(),
+        Some(serde_json::Value::Number(n)) => n.to_string(),
+        Some(_) => "(updated)".to_string(),
     }
 }
 
@@ -988,6 +1044,8 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                         div { class: "space-y-3 text-sm",
                                             for e in audit.iter().take(15) {
                                                 {
+                                                    // `changes` is an object {event:...} for reveal ops,
+                                                    // or an array of {field, old, new} for edits (PMS-204).
                                                     let event = e
                                                         .changes
                                                         .as_ref()
@@ -995,6 +1053,13 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                         .and_then(|v| v.as_str())
                                                         .unwrap_or("")
                                                         .to_string();
+                                                    let field_changes: Vec<FieldChange> = e
+                                                        .changes
+                                                        .as_ref()
+                                                        .and_then(|c| {
+                                                            serde_json::from_value::<Vec<FieldChange>>(c.clone()).ok()
+                                                        })
+                                                        .unwrap_or_default();
                                                     let label = action_label(&e.action);
                                                     let when = fmt_datetime(&e.performed_at);
                                                     let who = actor_name(&users, &e.performed_by_id);
@@ -1010,6 +1075,25 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                                 }
                                                                 if who != "-" {
                                                                     p { class: "text-xs text-gray-400", "by {who}" }
+                                                                }
+                                                                for c in field_changes.iter() {
+                                                                    {
+                                                                        let old = fmt_change_value(&c.old);
+                                                                        let new = fmt_change_value(&c.new);
+                                                                        let fname = title_field(&c.field);
+                                                                        if old == "(reference)" && new == "(reference)" {
+                                                                            rsx! {}
+                                                                        } else {
+                                                                            rsx! {
+                                                                                p { class: "text-xs text-gray-500 dark:text-gray-400 mt-1",
+                                                                                    span { class: "font-medium", "{fname}: " }
+                                                                                    span { class: "line-through text-gray-400", "{old}" }
+                                                                                    " → "
+                                                                                    span { "{new}" }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
                                                                 }
                                                             }
                                                             span { class: "text-gray-400 whitespace-nowrap", "{when}" }
