@@ -5,9 +5,9 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ChevronRightIcon, DataTable,
-    IconSize, PageHeader, PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableHead,
-    TableHeader, TableRow,
+    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, Checkbox, ChevronRightIcon,
+    DataTable, IconSize, Modal, PageHeader, PlusIcon, Select, SelectOption, Table, TableBody,
+    TableCell, TableHead, TableHeader, TableRow,
 };
 use crate::Route;
 
@@ -618,6 +618,10 @@ pub fn TimesheetsPage() -> Element {
     let mut is_submitting = use_signal(|| false);
     let mut action_msg = use_signal(String::new);
     let mut action_err = use_signal(String::new);
+    // PMS-183 submit-confirmation modal + certification gate, and withdraw.
+    let mut show_submit_modal = use_signal(|| false);
+    let mut certified = use_signal(|| false);
+    let mut is_withdrawing = use_signal(|| false);
 
     // The selected week's entries, scoped to the signed-in user. Reading
     // `week_start`/`auth` inside makes the resource re-run when they change.
@@ -745,11 +749,15 @@ pub fn TimesheetsPage() -> Element {
     let (status_variant, status_text) = match approval.as_str() {
         "approved" => (BadgeVariant::Green, "Approved"),
         "rejected" => (BadgeVariant::Red, "Rejected"),
-        _ if has_entries => (BadgeVariant::Yellow, "Pending approval"),
+        "pending" => (BadgeVariant::Yellow, "Pending approval"),
         _ => (BadgeVariant::Gray, "Not submitted"),
     };
     let already_approved = approval == "approved";
+    // A week that has been submitted (pending) can be withdrawn; one that is
+    // draft/rejected can be (re)submitted.
+    let is_pending = approval == "pending";
     let submitting = *is_submitting.read();
+    let withdrawing = *is_withdrawing.read();
     let msg = action_msg.read().clone();
     let err = action_err.read().clone();
 
@@ -761,47 +769,65 @@ pub fn TimesheetsPage() -> Element {
                 actions: rsx! {
                     div { class: "flex items-center gap-3",
                         Badge { variant: status_variant, "{status_text}" }
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            loading: submitting,
-                            disabled: already_approved || !has_entries,
-                            onclick: move |_| {
-                                action_msg.set(String::new());
-                                action_err.set(String::new());
-                                let start = week_start();
-                                let user_id = match auth.read().user.as_ref().map(|u| u.id) {
-                                    Some(id) => id,
-                                    None => {
-                                        action_err.set("Not signed in.".to_string());
-                                        return;
-                                    }
-                                };
-                                is_submitting.set(true);
-                                let mut sr = summary_resource;
-                                spawn(async move {
-                                    #[cfg(feature = "web")]
-                                    {
-                                        let path = format!("/timesheets/{user_id}/{start}/submit");
-                                        match crate::hooks::fetch::api::post_authed::<
-                                            serde_json::Value,
-                                            _,
-                                        >(&path, &serde_json::json!({}))
-                                            .await
+                        if is_pending {
+                            // Submitted, not yet approved: allow withdrawal.
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                loading: withdrawing,
+                                onclick: move |_| {
+                                    action_msg.set(String::new());
+                                    action_err.set(String::new());
+                                    let start = week_start();
+                                    let user_id = match auth.read().user.as_ref().map(|u| u.id) {
+                                        Some(id) => id,
+                                        None => {
+                                            action_err.set("Not signed in.".to_string());
+                                            return;
+                                        }
+                                    };
+                                    is_withdrawing.set(true);
+                                    let mut sr = summary_resource;
+                                    let mut er = entries_resource;
+                                    spawn(async move {
+                                        #[cfg(feature = "web")]
                                         {
-                                            Ok(_) => {
-                                                action_msg
-                                                    .set("Timesheet submitted for approval.".to_string());
-                                                sr.restart();
-                                            }
-                                            Err(e) => {
-                                                action_err.set(format!("Could not submit timesheet: {e}"));
+                                            let path = format!("/timesheets/{user_id}/{start}/withdraw");
+                                            match crate::hooks::fetch::api::post_authed::<
+                                                serde_json::Value,
+                                                _,
+                                            >(&path, &serde_json::json!({}))
+                                                .await
+                                            {
+                                                Ok(_) => {
+                                                    action_msg
+                                                        .set("Timesheet withdrawn back to draft.".to_string());
+                                                    sr.restart();
+                                                    er.restart();
+                                                }
+                                                Err(e) => {
+                                                    action_err
+                                                        .set(format!("Could not withdraw timesheet: {e}"));
+                                                }
                                             }
                                         }
-                                    }
-                                    is_submitting.set(false);
-                                });
-                            },
-                            "Submit Timesheet"
+                                        is_withdrawing.set(false);
+                                    });
+                                },
+                                "Withdraw"
+                            }
+                        } else {
+                            // Draft / rejected: open the submit confirmation modal.
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                disabled: already_approved || !has_entries,
+                                onclick: move |_| {
+                                    action_msg.set(String::new());
+                                    action_err.set(String::new());
+                                    certified.set(false);
+                                    show_submit_modal.set(true);
+                                },
+                                "Submit Timesheet"
+                            }
                         }
                     }
                 },
@@ -951,6 +977,83 @@ pub fn TimesheetsPage() -> Element {
                                         "{fmt_hours(grand_total)}"
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // PMS-183 submit confirmation with required certification.
+            {
+                let do_submit = move |_| {
+                    if !certified() || submitting {
+                        return;
+                    }
+                    let start = week_start();
+                    let user_id = match auth.read().user.as_ref().map(|u| u.id) {
+                        Some(id) => id,
+                        None => {
+                            action_err.set("Not signed in.".to_string());
+                            return;
+                        }
+                    };
+                    is_submitting.set(true);
+                    let mut sr = summary_resource;
+                    let mut er = entries_resource;
+                    spawn(async move {
+                        #[cfg(feature = "web")]
+                        {
+                            let path = format!("/timesheets/{user_id}/{start}/submit");
+                            match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
+                                &path,
+                                &serde_json::json!({}),
+                            )
+                            .await
+                            {
+                                Ok(_) => {
+                                    action_msg
+                                        .set("Timesheet submitted for approval.".to_string());
+                                    show_submit_modal.set(false);
+                                    sr.restart();
+                                    er.restart();
+                                }
+                                Err(e) => {
+                                    action_err.set(format!("Could not submit timesheet: {e}"));
+                                }
+                            }
+                        }
+                        is_submitting.set(false);
+                    });
+                };
+                rsx! {
+                    Modal {
+                        open: show_submit_modal(),
+                        title: "Submit Timesheet",
+                        size: crate::components::ModalSize::Medium,
+                        onclose: move |_| show_submit_modal.set(false),
+                        footer: rsx! {
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                onclick: move |_| show_submit_modal.set(false),
+                                "Cancel"
+                            }
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                loading: submitting,
+                                disabled: !certified(),
+                                onclick: do_submit,
+                                "Submit for Approval"
+                            }
+                        },
+                        div { class: "space-y-4",
+                            p { class: "text-sm text-gray-600 dark:text-gray-300",
+                                "Once submitted, this timesheet goes to your manager for approval. You can withdraw it back to draft until it is approved."
+                            }
+                            Checkbox {
+                                name: "certify",
+                                label: "I certify that the timesheet I am submitting is correct.",
+                                checked: certified(),
+                                onchange: move |e: FormEvent| certified.set(e.checked()),
                             }
                         }
                     }
