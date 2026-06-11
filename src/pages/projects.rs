@@ -812,6 +812,21 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
             None => Vec::new(),
         }
     });
+    // PMS-205: the project's own change history (who/when + before/after).
+    let id_for_proj_history = props.id.clone();
+    let project_history_resource = use_resource(move || {
+        let id = id_for_proj_history.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<Paginated<HistoryEntry>>(&format!(
+                "/audit-log/entity/projects/{id}"
+            ))
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+        }
+    });
 
     let snapshot = project_resource.read_unchecked().clone();
     let is_loading = snapshot.is_none();
@@ -836,6 +851,23 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
             format!("Edited {when} by {who}")
         }
     });
+    let project_history = project_history_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    // "Edited" marker for the project Overview: most recent recorded edit.
+    let project_edited = project_history
+        .iter()
+        .find(|e| e.action == "update")
+        .map(|e| {
+            let who = actor_name(&users, &e.user_id);
+            let when = fmt_history_dt(e.timestamp);
+            if who.is_empty() {
+                format!("Edited {when}")
+            } else {
+                format!("Edited {when} by {who}")
+            }
+        });
     let proj_status_options = vec![
         SelectOption::new("planning", "Planning"),
         SelectOption::new("active", "Active"),
@@ -986,6 +1018,9 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     } else {
                                         p { class: "text-sm text-gray-400 italic", "No description provided." }
                                     }
+                                    if let Some(m) = project_edited.clone() {
+                                        p { class: "text-xs text-gray-400 italic mt-3", "{m}" }
+                                    }
                                 }
                                 Card { title: "Tasks",
                                     if tasks.is_empty() {
@@ -1100,6 +1135,59 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                         div { class: "flex justify-between",
                                             span { class: "text-sm text-gray-500", "Remaining" }
                                             span { class: "font-medium", "{remaining_h:.1} h" }
+                                        }
+                                    }
+                                }
+                                // PMS-205: the project's own change history.
+                                Card { title: "Change History",
+                                    if project_history.is_empty() {
+                                        p { class: "text-sm text-gray-400 italic", "No edits yet." }
+                                    } else {
+                                        div { class: "space-y-3 text-sm",
+                                            for e in project_history.iter().take(20) {
+                                                {
+                                                    let label = action_label(&e.action);
+                                                    let fields = fields_label(&e.changed_fields);
+                                                    let who = actor_name(&users, &e.user_id);
+                                                    let when = fmt_history_dt(e.timestamp);
+                                                    rsx! {
+                                                        div { class: "flex justify-between gap-2",
+                                                            div { class: "min-w-0",
+                                                                p { class: "text-gray-700 dark:text-gray-300",
+                                                                    if fields.is_empty() {
+                                                                        "{label}"
+                                                                    } else {
+                                                                        "{label}: {fields}"
+                                                                    }
+                                                                }
+                                                                if !who.is_empty() {
+                                                                    p { class: "text-xs text-gray-400", "by {who}" }
+                                                                }
+                                                                for c in e.changes.iter() {
+                                                                    {
+                                                                        let old = fmt_change_value(&c.old);
+                                                                        let new = fmt_change_value(&c.new);
+                                                                        let fname = title_field(&c.field);
+                                                                        if old == "(reference)" && new == "(reference)" {
+                                                                            rsx! {}
+                                                                        } else {
+                                                                            rsx! {
+                                                                                p { class: "text-xs text-gray-500 dark:text-gray-400 mt-1",
+                                                                                    span { class: "font-medium", "{fname}: " }
+                                                                                    span { class: "line-through text-gray-400", "{old}" }
+                                                                                    " → "
+                                                                                    span { "{new}" }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            span { class: "text-gray-400 whitespace-nowrap", "{when}" }
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1254,6 +1342,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
             // PMS-184 project-edit modal.
             {
                 let mut proj_res = project_resource;
+                let mut proj_hist_res = project_history_resource;
                 let save_id = props.id.clone();
                 let on_save = move |_| {
                     if pe_submitting() {
@@ -1287,6 +1376,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 pe_submitting.set(false);
                                 show_proj_modal.set(false);
                                 proj_res.restart();
+                                proj_hist_res.restart();
                             }
                             Err(err) => {
                                 pe_submitting.set(false);
