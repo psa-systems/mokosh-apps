@@ -310,6 +310,8 @@ pub enum Route {
     AuditLog {},
     #[route("/admin/sla")]
     SlaManagement {},
+    #[route("/admin/team")]
+    Team {},
 
     // Admin (multi-tenant only)
     #[cfg(feature = "multi-tenant")]
@@ -678,6 +680,11 @@ fn AuditLog() -> Element {
 #[component]
 fn SlaManagement() -> Element {
     rsx! { sla::SlaManagementPage {} }
+}
+
+#[component]
+fn Team() -> Element {
+    rsx! { team::TeamPage {} }
 }
 
 #[cfg(feature = "multi-tenant")]

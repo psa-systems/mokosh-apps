@@ -182,6 +182,7 @@ fn SidebarContent() -> Element {
 
             if is_admin {
                 NavSection { title: "Admin",
+                    NavItem { to: Route::Team {}, icon: rsx!(UsersIcon {}), label: "Team" }
                     NavItem { to: Route::AuditLog {}, icon: rsx!(DocumentIcon {}), label: "Audit Log" }
                     NavItem { to: Route::SlaManagement {}, icon: rsx!(DocumentIcon {}), label: "SLA Management" }
                 }
