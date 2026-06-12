@@ -13,6 +13,11 @@ pub struct InputProps {
     /// Input type (text, email, password, etc.)
     #[props(default = "text".to_string())]
     r#type: String,
+    /// `step` attribute for `type="number"` inputs. Without it the browser
+    /// defaults to `step=1` and rejects fractional values (e.g. `2.5`).
+    /// No-op for non-number inputs.
+    #[props(default)]
+    step: Option<String>,
     /// Placeholder text
     #[props(default)]
     placeholder: String,
@@ -69,6 +74,7 @@ pub fn Input(props: InputProps) -> Element {
                 id: "{props.name}",
                 name: "{props.name}",
                 r#type: "{props.r#type}",
+                step: props.step.as_deref(),
                 class: "{class}",
                 placeholder: "{props.placeholder}",
                 value: "{props.value}",
