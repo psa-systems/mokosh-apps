@@ -26,6 +26,7 @@ pub mod profile;
 pub mod projects;
 pub mod reports;
 pub mod sla;
+pub mod system_status;
 pub mod team;
 pub mod tickets;
 pub mod time;
