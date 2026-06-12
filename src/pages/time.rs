@@ -147,7 +147,7 @@ pub fn TimeEntryListPage() -> Element {
     // Stat cards computed from the fetched entries (no hardcoded totals).
     let today = Utc::now().date_naive();
     let week_start = monday_of_week(today);
-    let hours = |m: i64| format!("{:.1}h", m as f64 / 60.0);
+    let hours = crate::utils::duration::fmt_duration;
     let today_h = hours(sum_minutes(&entries, |e| e.date == today));
     let week_h = hours(sum_minutes(&entries, |e| e.date >= week_start));
     let billable_h = hours(sum_minutes(&entries, |e| e.is_billable));
@@ -279,9 +279,10 @@ fn sum_minutes(entries: &[RemoteTimeEntry], pred: impl Fn(&RemoteTimeEntry) -> b
         .sum()
 }
 
-/// Minutes rendered as a one-decimal hour figure (e.g. 90 -> "1.5").
+/// Minutes rendered using the user's chosen duration format (decimal
+/// "1.5h" or H:MM "1:30"); see `crate::utils::duration` (PMS-265).
 fn fmt_hours(minutes: i64) -> String {
-    format!("{:.1}", minutes as f64 / 60.0)
+    crate::utils::duration::fmt_duration(minutes)
 }
 
 /// First 8 chars of a UUID, for a compact label when a name isn't loaded.
