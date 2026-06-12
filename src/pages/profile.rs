@@ -764,6 +764,12 @@ fn PreferencesCard() -> Element {
     let mut theme_value = use_signal(theme::current);
     let mut time_format = use_signal(|| prefs::get_str(PREF_TIME_FORMAT, "12h"));
     let mut first_day = use_signal(|| prefs::get_str(PREF_FIRST_DAY, "sunday"));
+    let mut duration_format = use_signal(|| {
+        prefs::get_str(
+            crate::utils::duration::PREF_DURATION_FORMAT,
+            crate::utils::duration::DEFAULT_DURATION_FORMAT,
+        )
+    });
 
     rsx! {
         Card {
@@ -844,6 +850,31 @@ fn PreferencesCard() -> Element {
                                     onchange: move |_| {
                                         first_day.set(val.to_string());
                                         prefs::set_str(PREF_FIRST_DAY, val);
+                                    },
+                                }
+                                "{label}"
+                            }
+                        }
+                    }
+
+                    // Duration format: how logged time is displayed
+                    // across timesheets, the time list, and the
+                    // dashboard (PMS-265).
+                    fieldset { class: "space-y-2",
+                        legend { class: "text-sm font-medium text-gray-700 dark:text-gray-300",
+                            "Duration format"
+                        }
+                        for (val , label) in [("decimal", "Decimal (1.5h)"), ("hm", "Hours:minutes (1:30)")] {
+                            label {
+                                class: "flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300",
+                                input {
+                                    r#type: "radio",
+                                    name: "duration_format",
+                                    value: "{val}",
+                                    checked: duration_format() == val,
+                                    onchange: move |_| {
+                                        duration_format.set(val.to_string());
+                                        prefs::set_str(crate::utils::duration::PREF_DURATION_FORMAT, val);
                                     },
                                 }
                                 "{label}"

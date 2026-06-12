@@ -313,7 +313,7 @@ pub fn DashboardPage() -> Element {
                             } else {
                                 for e in recent_time.iter() {
                                     {
-                                        let hrs = format!("{:.1}h", e.duration_minutes as f64 / 60.0);
+                                        let hrs = crate::utils::duration::fmt_duration(e.duration_minutes);
                                         let note = e
                                             .notes
                                             .clone()
