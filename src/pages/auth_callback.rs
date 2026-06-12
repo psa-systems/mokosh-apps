@@ -98,6 +98,7 @@ pub fn AuthCallbackPage() -> Element {
                         // `profile_completed: false` from /me and the
                         // onboarding gate redirects them.
                         profile_completed: true,
+                        date_format_string: None,
                     });
                     a.is_loading = false;
                     a.error = None;

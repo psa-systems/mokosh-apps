@@ -169,8 +169,13 @@ impl SlaStatus {
 
 /// Format an SLA due date as an absolute timestamp plus a coarse
 /// remaining/overdue hint, e.g. "Jan 15, 2025 5:00 PM (2 hours left)".
+/// PMS-253: honours the per-user format pref for the absolute part.
 fn format_sla_due(due: DateTime<Utc>) -> String {
-    let absolute = due.format("%b %-d, %Y %-I:%M %p").to_string();
+    let pref = crate::utils::datetime::user_format_pref();
+    let absolute = match pref.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(fmt) => crate::utils::datetime::format_user_datetime(due, Some(fmt)),
+        None => due.format("%b %-d, %Y %-I:%M %p").to_string(),
+    };
     let now = Utc::now();
     let delta = due.signed_duration_since(now);
     let secs = delta.num_seconds();
@@ -288,8 +293,13 @@ fn priority_badge_variant(label: &str) -> BadgeVariant {
 }
 
 /// Absolute timestamp for created / activity lines, e.g. "Jun 05, 2026 14:30".
+/// PMS-253: honours the per-user format pref when set.
 fn fmt_datetime(dt: DateTime<Utc>) -> String {
-    dt.format("%b %d, %Y %H:%M").to_string()
+    let pref = crate::utils::datetime::user_format_pref();
+    match pref.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(fmt) => crate::utils::datetime::format_user_datetime(dt, Some(fmt)),
+        None => dt.format("%b %d, %Y %H:%M").to_string(),
+    }
 }
 
 /// Resolve a history actor id to a display name; "-" when unknown so the

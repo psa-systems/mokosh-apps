@@ -29,6 +29,7 @@ use crate::components::{
     AppLayout, Button, ButtonVariant, Card, Input, PageHeader, Select, SelectOption,
 };
 use crate::hooks::theme::{self, Theme};
+use crate::utils::datetime::{format_user_datetime, PRESET_FORMATS};
 use crate::utils::prefs;
 
 /// Subset of mokosh-server's `UserResponse` the profile screen reads.
@@ -48,6 +49,10 @@ struct MeResponse {
     title: Option<String>,
     #[serde(default)]
     timezone: String,
+    /// PMS-253: per-user date/time format string. None means "use the
+    /// browser locale" (the legacy rendering behaviour).
+    #[serde(default)]
+    date_format_string: Option<String>,
 }
 
 /// Body sent on `PUT /api/v1/auth/me`. Matches mokosh-server's
@@ -63,6 +68,9 @@ struct UpdateMeRequest {
     mobile: Option<String>,
     title: Option<String>,
     timezone: Option<String>,
+    /// PMS-253: send the picked preset back as a non-empty string, or
+    /// `None` to clear the pref and fall back to the browser locale.
+    date_format_string: Option<String>,
 }
 
 fn optional_field(s: &str) -> Option<String> {
@@ -341,6 +349,9 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
             saved
         }
     });
+    // PMS-253: per-user date/time format. Empty string = "Browser
+    // default" sentinel, sent to the server as None on save.
+    let date_format = use_signal(|| props.initial.date_format_string.clone().unwrap_or_default());
 
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -360,6 +371,7 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
             mobile: optional_field(&mobile()),
             title: optional_field(&title()),
             timezone: optional_field(&timezone()),
+            date_format_string: optional_field(&date_format()),
         };
         spawn(async move {
             #[cfg(feature = "web")]
@@ -430,6 +442,7 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
                         help: "Affects appointment + dispatch grid times. Auto-detected from your browser when unset.",
                         onchange: move |e: FormEvent| timezone.set(e.value()),
                     }
+                    DateFormatField { value: date_format }
                     Input {
                         name: "phone",
                         label: "Work phone",
@@ -453,6 +466,66 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
                         disabled: saving(),
                         if saving() { "Saving..." } else { "Save changes" }
                     }
+                }
+            }
+        }
+    }
+}
+
+/// PMS-253: date/time format picker that sits next to the timezone
+/// dropdown. Slice 1 ships the preset list + a "Custom..." button that
+/// is disabled with a "coming soon" tooltip pointing at PMS-254 (the
+/// custom-format builder follow-up). The matching token grammar +
+/// renderer live in [`crate::utils::datetime`].
+#[component]
+fn DateFormatField(value: Signal<String>) -> Element {
+    let mut value = value;
+    let preview_now = chrono::Utc::now();
+    let current = value();
+    let preview = if current.trim().is_empty() {
+        "Browser default".to_string()
+    } else {
+        format_user_datetime(preview_now, Some(&current))
+    };
+
+    let mut opts: Vec<SelectOption> = vec![SelectOption::new("", "Browser default (locale)")];
+    for (label, fmt) in PRESET_FORMATS {
+        opts.push(SelectOption::new(*fmt, *label));
+    }
+    // If the user already has a custom format that isn't in the preset
+    // list (saved via slice 2 once it ships), surface it as the active
+    // option so saving doesn't silently overwrite it.
+    if !current.is_empty() && !PRESET_FORMATS.iter().any(|(_, f)| *f == current) {
+        opts.push(SelectOption::new(
+            current.clone(),
+            format!("{current} (custom)"),
+        ));
+    }
+
+    rsx! {
+        div { class: "space-y-2",
+            Select {
+                name: "date_format_string",
+                label: "Date & time format",
+                options: opts,
+                value: current.clone(),
+                help: "Applied everywhere a timestamp is shown. \"Browser default\" follows your system locale.",
+                onchange: move |e: FormEvent| value.set(e.value()),
+            }
+            div { class: "flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400",
+                span { class: "font-medium text-gray-600 dark:text-gray-300",
+                    "Preview:"
+                }
+                span { "{preview}" }
+            }
+            div { class: "flex items-center gap-2",
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    disabled: true,
+                    "Custom\u{2026}"
+                }
+                span { class: "text-xs text-gray-500 dark:text-gray-400",
+                    "Custom format builder lands in a follow-up PR (PMS-254)."
                 }
             }
         }

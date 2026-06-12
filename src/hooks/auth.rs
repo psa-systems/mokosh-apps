@@ -148,6 +148,7 @@ fn initial_auth_context() -> AuthContext {
                 timezone: "UTC".to_string(),
                 avatar_url: None,
                 profile_completed: true,
+                date_format_string: None,
             }),
             is_loading: false,
             error: None,
@@ -225,6 +226,7 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
             // Optimistic default; /me reconciles within one tick. See
             // matching note in pages/auth_callback.rs.
             profile_completed: true,
+            date_format_string: None,
         }),
         is_loading: false,
         error: None,
@@ -407,6 +409,8 @@ async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
         // older server builds.
         #[serde(default = "default_true_me")]
         profile_completed: bool,
+        #[serde(default)]
+        date_format_string: Option<String>,
     }
     fn default_true_me() -> bool {
         true
@@ -445,6 +449,7 @@ async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
             u.role = role;
         }
         u.profile_completed = me.profile_completed;
+        u.date_format_string = me.date_format_string;
     }
     // Force the memberships loader to re-fetch by clearing the cached
     // list; the use_memberships_loader effect re-runs when
