@@ -303,6 +303,11 @@ pub enum Route {
     #[route("/profile")]
     Profile {},
 
+    // Build versions + live API/dependency health. Reachable by any
+    // authenticated user from the user menu (PMS-237).
+    #[route("/system-status")]
+    SystemStatus {},
+
     // Admin surfaces under /admin/*, gated at runtime by the user's role
     // inside each page (matching the server's RequireAdmin), available in
     // every build since the server endpoints exist regardless of tenancy.
@@ -670,6 +675,11 @@ fn ActiveTenant() -> Element {
 #[component]
 fn Profile() -> Element {
     rsx! { profile::ProfilePage {} }
+}
+
+#[component]
+fn SystemStatus() -> Element {
+    rsx! { system_status::SystemStatusPage {} }
 }
 
 #[component]

@@ -201,7 +201,7 @@ pub mod api {
     ///      any host that doesn't start with `msp.`) so the Dioxus dev
     ///      server can proxy to a local backend.
     #[cfg(feature = "web")]
-    fn api_base() -> String {
+    pub fn api_base() -> String {
         if let Some(injected) = crate::modules::runtime_config::get("api_base") {
             return injected;
         }
@@ -264,6 +264,22 @@ pub mod api {
         } else {
             Err(format!("Request failed with status: {}", response.status()))
         }
+    }
+
+    /// Tolerant GET that returns the HTTP status and raw body together,
+    /// instead of collapsing any non-2xx into an `Err`. Used by the
+    /// System Status page (PMS-237) to read diagnostic endpoints like
+    /// `/ready`, which deliberately answers `503` with a JSON breakdown
+    /// when a dependency is down. A transport-level failure (server
+    /// unreachable, DNS, CORS) is still an `Err`.
+    #[cfg(feature = "web")]
+    pub async fn probe(path: &str) -> Result<(u16, String), String> {
+        let url = format!("{}{}", api_base(), path);
+
+        let response = Request::get(&url).send().await.map_err(|e| e.to_string())?;
+        let status = response.status();
+        let body = response.text().await.map_err(|e| e.to_string())?;
+        Ok((status, body))
     }
 
     /// Get request with auth token
