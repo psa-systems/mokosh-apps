@@ -558,6 +558,7 @@ pub fn TimeEntryNewPage() -> Element {
                         name: "hours",
                         label: "Hours",
                         r#type: "number",
+                        step: "0.25",
                         placeholder: "0.00",
                         required: true,
                         value: hours.read().clone(),
