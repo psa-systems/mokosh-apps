@@ -74,7 +74,11 @@ fn humanize_status(raw: &str) -> String {
 
 #[cfg(feature = "multi-tenant")]
 fn format_created(when: chrono::DateTime<chrono::Utc>) -> String {
-    when.format("%b %-d, %Y").to_string()
+    let pref = crate::utils::datetime::user_format_pref();
+    match pref.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(fmt) => crate::utils::datetime::format_user_datetime(when, Some(fmt)),
+        None => when.format("%b %-d, %Y").to_string(),
+    }
 }
 
 /// Tenant management page (multi-tenant mode only)

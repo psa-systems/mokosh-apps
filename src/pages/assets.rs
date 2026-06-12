@@ -156,10 +156,18 @@ fn status_badge(status: &str) -> (BadgeVariant, &'static str) {
 
 /// "Feb 28, 2025 3:45 PM" from an ISO datetime; falls back to the date-only
 /// formatter, then the raw string. Used for audit timestamps.
+/// PMS-253: honours the per-user format pref when set.
 fn fmt_datetime(s: &Option<String>) -> String {
     match s {
         Some(ts) => chrono::DateTime::parse_from_rfc3339(ts)
-            .map(|dt| dt.format("%b %-d, %Y %-I:%M %p").to_string())
+            .map(|dt| {
+                let utc = dt.with_timezone(&chrono::Utc);
+                let pref = crate::utils::datetime::user_format_pref();
+                match pref.as_deref().filter(|p| !p.trim().is_empty()) {
+                    Some(fmt) => crate::utils::datetime::format_user_datetime(utc, Some(fmt)),
+                    None => dt.format("%b %-d, %Y %-I:%M %p").to_string(),
+                }
+            })
             .unwrap_or_else(|_| fmt_date(s)),
         None => "-".to_string(),
     }

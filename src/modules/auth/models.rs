@@ -180,6 +180,11 @@ pub struct CurrentUser {
     /// legacy server response (no field) doesn't surprise-trap users.
     #[serde(default = "default_true")]
     pub profile_completed: bool,
+    /// PMS-253: per-user date/time format string consumed by
+    /// `crate::utils::datetime::format_user_datetime`. `None` means
+    /// "use the browser locale" (the legacy rendering behaviour).
+    #[serde(default)]
+    pub date_format_string: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -216,6 +221,9 @@ pub struct User {
     pub avatar_url: Option<String>,
     pub timezone: String,
     pub locale: String,
+    /// PMS-253: per-user date/time format string. See [`CurrentUser::date_format_string`].
+    #[serde(default)]
+    pub date_format_string: Option<String>,
     pub role: UserRole,
     pub status: UserStatus,
     pub email_verified_at: Option<DateTime<Utc>>,
@@ -246,6 +254,7 @@ impl User {
             // true on legacy paths" so a code path that touches this
             // conversion never traps a user in onboarding.
             profile_completed: true,
+            date_format_string: self.date_format_string.clone(),
         }
     }
 }
@@ -530,6 +539,7 @@ mod tests {
             timezone: "UTC".to_string(),
             avatar_url: None,
             profile_completed: true,
+            date_format_string: None,
         };
         let tenant_id = user.tenant_id;
 
@@ -551,6 +561,7 @@ mod tests {
             timezone: "UTC".to_string(),
             avatar_url: None,
             profile_completed: true,
+            date_format_string: None,
         };
         let tenant_id = user.tenant_id;
         let state = AuthState::authenticated(user, tenant_id);
@@ -572,6 +583,7 @@ mod tests {
             timezone: "America/New_York".to_string(),
             avatar_url: None,
             profile_completed: true,
+            date_format_string: None,
         };
 
         assert_eq!(user.full_name(), "John Doe");
@@ -589,6 +601,7 @@ mod tests {
             timezone: "UTC".to_string(),
             avatar_url: None,
             profile_completed: true,
+            date_format_string: None,
         };
 
         assert_eq!(user.initials(), "JD");
@@ -609,6 +622,7 @@ mod tests {
             timezone: "UTC".to_string(),
             avatar_url: None,
             profile_completed: true,
+            date_format_string: None,
         };
         let tenant_id = user.tenant_id;
         let auth_state = AuthState::authenticated(user, tenant_id);
@@ -630,6 +644,7 @@ mod tests {
             timezone: "UTC".to_string(),
             avatar_url: None,
             profile_completed: true,
+            date_format_string: None,
         };
         let tenant_id = user.tenant_id;
         let auth_state = AuthState::authenticated(user, tenant_id);

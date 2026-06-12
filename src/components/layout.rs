@@ -514,25 +514,16 @@ struct NotificationPage {
     data: Vec<NotificationItem>,
 }
 
-/// Render a UTC instant in the viewer's local timezone (e.g.
-/// "Jun 9, 2026, 2:30 PM").
+/// Render a UTC instant in the viewer's local timezone, honouring the
+/// per-user `date_format_string` preference when set (PMS-253).
 ///
-/// The client has no `chrono-tz`, so timezone conversion is delegated
-/// to the browser's `Date.toLocaleString`, which already knows the
-/// user's zone. Falls back to an explicit UTC string if the JS bridge
-/// yields nothing (e.g. a non-web build).
+/// Thin wrapper around [`crate::utils::datetime::format_user_datetime`]:
+/// pulls the active user's format pref off the AuthContext, then
+/// delegates. Users without a preference get the legacy browser-locale
+/// rendering.
 fn format_local_datetime(dt: chrono::DateTime<chrono::Utc>) -> String {
-    let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(
-        dt.timestamp_millis() as f64
-    ));
-    let formatted: String = date
-        .to_locale_string("en-US", &wasm_bindgen::JsValue::UNDEFINED)
-        .into();
-    if formatted.is_empty() {
-        dt.format("%Y-%m-%d %H:%M UTC").to_string()
-    } else {
-        formatted
-    }
+    let pref = crate::utils::datetime::user_format_pref();
+    crate::utils::datetime::format_user_datetime(dt, pref.as_deref())
 }
 
 /// Top-bar notification bell with an inbox dropdown.
