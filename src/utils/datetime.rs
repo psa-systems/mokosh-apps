@@ -225,6 +225,55 @@ fn browser_locale_fallback(dt: DateTime<Utc>) -> String {
     }
 }
 
+/// PMS-254: collect alphabetic runs in the format string that the
+/// tokenizer leaves unconsumed. The custom-format builder surfaces the
+/// returned strings as a yellow warning so a typo (e.g. lowercase
+/// `yyyy`) is visible immediately, even though the render path silently
+/// passes the bad bytes through as literal text.
+///
+/// Non-alphabetic bytes (separators, punctuation, whitespace) are NOT
+/// flagged: the grammar deliberately lets the user mix in arbitrary
+/// punctuation, so flagging it would generate constant false positives.
+pub fn token_warnings(format: &str) -> Vec<String> {
+    let bytes = format.as_bytes();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Skip non-alphabetic bytes (separators, digits, punctuation).
+        // The grammar deliberately passes them through, so they cannot
+        // be "unrecognized".
+        if !bytes[i].is_ascii_alphabetic() {
+            i += 1;
+            continue;
+        }
+        // Find the end of this contiguous alphabetic run.
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+            i += 1;
+        }
+        let run = &format[start..i];
+        // Walk the run with the tokenizer. If every byte gets consumed
+        // by a token (mm + YYYY, MMM + DD, etc.) the run is silently
+        // fine; otherwise the user typed something the renderer will
+        // pass through as literal text and we warn for the entire run.
+        let mut j = 0;
+        let mut fully_consumed = true;
+        while j < run.len() {
+            match longest_token_at(run, j) {
+                Some(tok) => j += tok.len(),
+                None => {
+                    fully_consumed = false;
+                    break;
+                }
+            }
+        }
+        if !fully_consumed {
+            warnings.push(run.to_string());
+        }
+    }
+    warnings
+}
+
 /// Read the active user's date_format_string off the AuthContext
 /// without forcing every caller to thread the value through their
 /// signature. Use this from any handler component that already
@@ -350,6 +399,44 @@ mod tests {
                 "preset {fmt:?} produced no token substitutions",
             );
         }
+    }
+
+    #[test]
+    fn token_warnings_flags_unknown_alpha_runs() {
+        assert!(token_warnings("").is_empty(), "empty input");
+        assert!(
+            token_warnings("MMM-DD-YYYY HH:mm").is_empty(),
+            "all-valid format",
+        );
+        assert!(
+            token_warnings("YYYY/MM/DD, HH:mm:ss A").is_empty(),
+            "punctuation is fine",
+        );
+        assert_eq!(
+            token_warnings("yyyy"),
+            vec!["yyyy".to_string()],
+            "lowercase y is not a token",
+        );
+        assert_eq!(
+            token_warnings("MMM-Z-YYYY"),
+            vec!["Z".to_string()],
+            "stray uppercase letter",
+        );
+        assert_eq!(
+            token_warnings("garbageMMM"),
+            vec!["garbageMMM".to_string()],
+            "the full alpha run is flagged so the user can see context, even if part of it tokenizes",
+        );
+        assert_eq!(
+            token_warnings("MMM garbage YYYY"),
+            vec!["garbage".to_string()],
+            "alpha runs separated by whitespace are evaluated independently",
+        );
+        // Adjacent valid tokens (mm then YYYY) do not warn even when
+        // the user might have meant otherwise: the renderer expands
+        // them both correctly and the grammar has no notion of
+        // "intended group".
+        assert!(token_warnings("HH:mmYYYY").is_empty());
     }
 
     #[test]

@@ -26,10 +26,11 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{
-    AppLayout, Button, ButtonVariant, Card, Input, PageHeader, Select, SelectOption,
+    AppLayout, Button, ButtonVariant, Card, Input, Modal, ModalSize, PageHeader, Select,
+    SelectOption,
 };
 use crate::hooks::theme::{self, Theme};
-use crate::utils::datetime::{format_user_datetime, PRESET_FORMATS};
+use crate::utils::datetime::{format_user_datetime, token_warnings, PRESET_FORMATS};
 use crate::utils::prefs;
 
 /// Subset of mokosh-server's `UserResponse` the profile screen reads.
@@ -473,13 +474,13 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
 }
 
 /// PMS-253: date/time format picker that sits next to the timezone
-/// dropdown. Slice 1 ships the preset list + a "Custom..." button that
-/// is disabled with a "coming soon" tooltip pointing at PMS-254 (the
-/// custom-format builder follow-up). The matching token grammar +
-/// renderer live in [`crate::utils::datetime`].
+/// dropdown. Ships the preset list + a "Custom..." button that opens
+/// the [`CustomFormatBuilder`] modal (PMS-254). The matching token
+/// grammar + renderer live in [`crate::utils::datetime`].
 #[component]
 fn DateFormatField(value: Signal<String>) -> Element {
     let mut value = value;
+    let mut show_builder = use_signal(|| false);
     let preview_now = chrono::Utc::now();
     let current = value();
     let preview = if current.trim().is_empty() {
@@ -493,7 +494,7 @@ fn DateFormatField(value: Signal<String>) -> Element {
         opts.push(SelectOption::new(*fmt, *label));
     }
     // If the user already has a custom format that isn't in the preset
-    // list (saved via slice 2 once it ships), surface it as the active
+    // list (saved via the Custom builder), surface it as the active
     // option so saving doesn't silently overwrite it.
     if !current.is_empty() && !PRESET_FORMATS.iter().any(|(_, f)| *f == current) {
         opts.push(SelectOption::new(
@@ -518,14 +519,237 @@ fn DateFormatField(value: Signal<String>) -> Element {
                 }
                 span { "{preview}" }
             }
-            div { class: "flex items-center gap-2",
+            div {
                 Button {
                     variant: ButtonVariant::Secondary,
-                    disabled: true,
+                    onclick: move |_| show_builder.set(true),
                     "Custom\u{2026}"
                 }
-                span { class: "text-xs text-gray-500 dark:text-gray-400",
-                    "Custom format builder lands in a follow-up PR (PMS-254)."
+            }
+            CustomFormatBuilder { value: value, open: show_builder }
+        }
+    }
+}
+
+/// PMS-254: token pill grouped by the component it sets.
+#[derive(PartialEq)]
+struct TokenGroup {
+    label: &'static str,
+    items: &'static [(&'static str, &'static str)], // (token, descriptor)
+}
+
+const TOKEN_GROUPS: &[TokenGroup] = &[
+    TokenGroup {
+        label: "Year",
+        items: &[("YYYY", "4-digit"), ("YY", "2-digit")],
+    },
+    TokenGroup {
+        label: "Month",
+        items: &[
+            ("MM", "padded"),
+            ("M", "short"),
+            ("MMM", "abbr"),
+            ("MMMM", "full"),
+        ],
+    },
+    TokenGroup {
+        label: "Day",
+        items: &[("DD", "padded"), ("D", "short"), ("Do", "ordinal")],
+    },
+    TokenGroup {
+        label: "Weekday",
+        items: &[("ddd", "abbr"), ("dddd", "full")],
+    },
+    TokenGroup {
+        label: "Hour",
+        items: &[
+            ("HH", "24h pad"),
+            ("H", "24h"),
+            ("hh", "12h pad"),
+            ("h", "12h"),
+        ],
+    },
+    TokenGroup {
+        label: "Minute",
+        items: &[("mm", "padded"), ("m", "short")],
+    },
+    TokenGroup {
+        label: "Second",
+        items: &[("ss", "padded"), ("s", "short")],
+    },
+    TokenGroup {
+        label: "AM/PM",
+        items: &[("A", "upper"), ("a", "lower"), ("a.m.", "dots")],
+    },
+    TokenGroup {
+        label: "Separators",
+        items: &[
+            ("-", "dash"),
+            ("/", "slash"),
+            (".", "dot"),
+            (",", "comma"),
+            (" ", "space"),
+            (":", "colon"),
+        ],
+    },
+];
+
+/// PMS-254: free-form custom date/time format builder.
+///
+/// Opens in a modal triggered by the "Custom..." button under the
+/// preset dropdown. The user picks tokens via the pill grid or types
+/// directly into the format string input; either path keeps the live
+/// preview at the top in sync. Unrecognized alphabetic runs (e.g. a
+/// typo'd `yyyy`) light up as a yellow warning so the user knows the
+/// renderer will pass that text through verbatim.
+///
+/// Saving from the modal just writes the format back into the parent
+/// signal; the actual persistence happens when the user clicks Save
+/// changes on the Profile page, sharing the same /me PUT round-trip
+/// the preset slice already uses.
+#[component]
+fn CustomFormatBuilder(value: Signal<String>, open: Signal<bool>) -> Element {
+    let mut value = value;
+    let mut open = open;
+    // Local draft so cancelling the modal does not stomp the parent's
+    // saved value (e.g. the user opens the builder, makes a mess, hits
+    // Cancel: the previously-saved preset survives).
+    let initial = value();
+    let mut draft = use_signal(|| initial.clone());
+    // Reseed the draft each time the modal opens so a reopened builder
+    // starts from the currently-saved value, not the last cancelled
+    // edit. `open` flipping to true is the trigger.
+    use_effect(move || {
+        if open() {
+            draft.set(value());
+        }
+    });
+
+    let draft_str = draft();
+    let preview_now = chrono::Utc::now();
+    let preview = if draft_str.trim().is_empty() {
+        "Browser default".to_string()
+    } else {
+        format_user_datetime(preview_now, Some(&draft_str))
+    };
+    let warnings = token_warnings(&draft_str);
+    let preset_value = if PRESET_FORMATS.iter().any(|(_, f)| *f == draft_str) {
+        draft_str.clone()
+    } else {
+        String::new()
+    };
+
+    let mut preset_opts: Vec<SelectOption> = vec![SelectOption::new("", "(none -- custom format)")];
+    for (label, fmt) in PRESET_FORMATS {
+        preset_opts.push(SelectOption::new(*fmt, *label));
+    }
+
+    rsx! {
+        Modal {
+            open: open(),
+            title: "Custom date & time format".to_string(),
+            size: ModalSize::XLarge,
+            onclose: move |_| open.set(false),
+            footer: rsx! {
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| open.set(false),
+                    "Cancel"
+                }
+                Button {
+                    variant: ButtonVariant::Primary,
+                    disabled: !warnings.is_empty(),
+                    onclick: move |_| {
+                        value.set(draft());
+                        open.set(false);
+                    },
+                    "Apply"
+                }
+            },
+            div { class: "space-y-4 p-4",
+                Select {
+                    name: "preset_seed",
+                    label: "Start from a preset",
+                    options: preset_opts,
+                    value: preset_value,
+                    help: "Pick a preset to populate the format string below, then tweak.",
+                    onchange: move |e: FormEvent| {
+                        let v = e.value();
+                        if !v.is_empty() {
+                            draft.set(v);
+                        }
+                    },
+                }
+                Input {
+                    name: "format_string",
+                    label: "Format string",
+                    value: draft_str.clone(),
+                    oninput: move |e: FormEvent| draft.set(e.value()),
+                }
+                div { class: "rounded-md bg-gray-50 dark:bg-gray-900/60 px-3 py-2 text-sm",
+                    span { class: "font-medium text-gray-600 dark:text-gray-300", "Preview: " }
+                    span { class: "text-gray-900 dark:text-white", "{preview}" }
+                }
+                if !warnings.is_empty() {
+                    div { class: "rounded-md bg-yellow-50 dark:bg-yellow-900/40 px-3 py-2 text-sm text-yellow-700 dark:text-yellow-200",
+                        "\u{26A0} Unrecognized tokens: "
+                        span { class: "font-mono", "{warnings.join(\", \")}" }
+                        " -- these will appear as literal text. Fix or remove them to apply."
+                    }
+                }
+                div { class: "rounded-md border border-gray-200 dark:border-gray-700 p-3 space-y-2",
+                    div { class: "text-sm font-medium text-gray-700 dark:text-gray-200",
+                        "Date Builder"
+                    }
+                    for group in TOKEN_GROUPS.iter() {
+                        TokenGroupRow { group: group, draft: draft }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One row of the Date Builder grid: a label on the left, pill buttons
+/// on the right. Clicking a pill appends its token to the draft format
+/// string (caret-aware insertion is a future polish; v1 appends at the
+/// end which preserves typed prefix and is predictable).
+#[component]
+fn TokenGroupRow(group: &'static TokenGroup, draft: Signal<String>) -> Element {
+    let mut draft = draft;
+    let preview_now = chrono::Utc::now();
+    rsx! {
+        div { class: "flex items-start gap-3 py-1",
+            div { class: "w-20 shrink-0 text-xs text-gray-500 dark:text-gray-400 pt-1.5",
+                "{group.label}"
+            }
+            div { class: "flex flex-wrap gap-1.5",
+                for (token, descriptor) in group.items.iter() {
+                    {
+                        let token = *token;
+                        let descriptor = *descriptor;
+                        let rendered = if token.chars().all(|c| !c.is_ascii_alphabetic()) {
+                            // Separator tokens render as themselves; the
+                            // tokenizer would just pass them through.
+                            if token == " " { "\u{2423}".to_string() } else { token.to_string() }
+                        } else {
+                            format_user_datetime(preview_now, Some(token))
+                        };
+                        rsx! {
+                            button {
+                                key: "{group.label}-{token}-{descriptor}",
+                                class: "inline-flex items-center gap-1 rounded border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/40 px-2 py-1 text-xs text-blue-700 dark:text-blue-200 hover:bg-blue-100 dark:hover:bg-blue-900/60",
+                                title: "Token: {token}",
+                                onclick: move |_| {
+                                    let mut cur = draft();
+                                    cur.push_str(token);
+                                    draft.set(cur);
+                                },
+                                span { class: "font-mono font-medium", "{rendered}" }
+                                span { class: "text-blue-500 dark:text-blue-300", "{descriptor}" }
+                            }
+                        }
+                    }
                 }
             }
         }
