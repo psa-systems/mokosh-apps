@@ -324,6 +324,7 @@ impl TimeTrackingService {
         &self,
         tenant_id: Uuid,
         id: Uuid,
+        owner: Option<Uuid>,
         request: &UpdateTimeEntryRequest,
     ) -> AppResult<TimeEntryResponse> {
         let current = self.get_time_entry(tenant_id, id).await?;
@@ -360,7 +361,7 @@ impl TimeTrackingService {
                 hourly_rate       = $12,
                 total_amount      = $13,
                 updated_at        = NOW()
-            WHERE tenant_id = $1 AND id = $2
+            WHERE tenant_id = $1 AND id = $2 AND ($14::uuid IS NULL OR user_id = $14)
             "#,
         )
         .bind(tenant_id)
@@ -376,6 +377,7 @@ impl TimeTrackingService {
         .bind(request.is_billable)
         .bind(hourly_rate)
         .bind(total)
+        .bind(owner)
         .execute(self.db.pool())
         .await?
         .rows_affected();
@@ -385,13 +387,22 @@ impl TimeTrackingService {
         self.get_time_entry(tenant_id, id).await
     }
 
-    pub async fn delete_time_entry(&self, tenant_id: Uuid, id: Uuid) -> AppResult<()> {
-        let affected = sqlx::query("DELETE FROM time_entries WHERE tenant_id = $1 AND id = $2")
-            .bind(tenant_id)
-            .bind(id)
-            .execute(self.db.pool())
-            .await?
-            .rows_affected();
+    pub async fn delete_time_entry(
+        &self,
+        tenant_id: Uuid,
+        id: Uuid,
+        owner: Option<Uuid>,
+    ) -> AppResult<()> {
+        let affected = sqlx::query(
+            "DELETE FROM time_entries \
+             WHERE tenant_id = $1 AND id = $2 AND ($3::uuid IS NULL OR user_id = $3)",
+        )
+        .bind(tenant_id)
+        .bind(id)
+        .bind(owner)
+        .execute(self.db.pool())
+        .await?
+        .rows_affected();
         if affected == 0 {
             return Err(AppError::NotFound("TimeEntry".to_string()));
         }
@@ -715,14 +726,19 @@ impl TimeTrackingService {
         &self,
         tenant_id: Uuid,
         timer_id: Uuid,
+        owner: Option<Uuid>,
     ) -> AppResult<TimeEntryResponse> {
         let mut tx = self.db.pool().begin().await?;
+        // `owner` is Some(user.id) for non-admins, enforcing ownership;
+        // None for admins, who may stop any timer in the tenant.
         let timer: Option<ActiveTimerRow> = sqlx::query_as(
             "SELECT id, user_id, ticket_id, project_id, company_id, work_type_id, notes, started_at \
-             FROM active_timers WHERE tenant_id = $1 AND id = $2",
+             FROM active_timers \
+             WHERE tenant_id = $1 AND id = $2 AND ($3::uuid IS NULL OR user_id = $3)",
         )
         .bind(tenant_id)
         .bind(timer_id)
+        .bind(owner)
         .fetch_optional(&mut *tx)
         .await?;
         let Some(timer) = timer else {
