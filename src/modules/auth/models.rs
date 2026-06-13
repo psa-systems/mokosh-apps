@@ -273,86 +273,10 @@ pub struct LoginRequest {
     pub mfa_code: Option<String>,
 }
 
-/// Login response
-#[derive(Debug, Clone, Serialize)]
-pub struct LoginResponse {
-    pub access_token: String,
-    pub refresh_token: String,
-    pub expires_at: DateTime<Utc>,
-    pub user: CurrentUser,
-    /// Whether MFA is required to complete login
-    pub mfa_required: bool,
-}
-
 /// Refresh token request
 #[derive(Debug, Clone, Deserialize)]
 pub struct RefreshTokenRequest {
     pub refresh_token: String,
-}
-
-/// Refresh token response
-#[derive(Debug, Clone, Serialize)]
-pub struct RefreshTokenResponse {
-    pub access_token: String,
-    pub refresh_token: String,
-    pub expires_at: DateTime<Utc>,
-}
-
-/// Password reset request
-#[derive(Debug, Clone, Deserialize, Validate)]
-pub struct ForgotPasswordRequest {
-    #[validate(email(message = "Invalid email address"))]
-    pub email: String,
-}
-
-/// Password reset completion
-#[derive(Debug, Clone, Deserialize, Validate)]
-pub struct ResetPasswordRequest {
-    pub token: String,
-    #[validate(length(min = 8, message = "Password must be at least 8 characters"))]
-    pub new_password: String,
-    pub confirm_password: String,
-}
-
-/// Change password request (when logged in)
-#[derive(Debug, Clone, Deserialize, Validate)]
-pub struct ChangePasswordRequest {
-    pub current_password: String,
-    #[validate(length(min = 8, message = "Password must be at least 8 characters"))]
-    pub new_password: String,
-    pub confirm_password: String,
-}
-
-/// Create user request
-#[derive(Debug, Clone, Deserialize, Validate)]
-pub struct CreateUserRequest {
-    #[validate(email(message = "Invalid email address"))]
-    pub email: String,
-    pub first_name: String,
-    pub last_name: String,
-    pub phone: Option<String>,
-    pub mobile: Option<String>,
-    pub title: Option<String>,
-    pub role: UserRole,
-    pub timezone: Option<String>,
-    /// If true, send welcome email with password setup link
-    #[serde(default = "default_true")]
-    pub send_welcome_email: bool,
-}
-
-/// Update user request
-#[derive(Debug, Clone, Deserialize, Validate)]
-pub struct UpdateUserRequest {
-    #[validate(email(message = "Invalid email address"))]
-    pub email: Option<String>,
-    pub first_name: Option<String>,
-    pub last_name: Option<String>,
-    pub phone: Option<String>,
-    pub mobile: Option<String>,
-    pub title: Option<String>,
-    pub role: Option<UserRole>,
-    pub status: Option<UserStatus>,
-    pub timezone: Option<String>,
 }
 
 /// User list response (for API)
@@ -395,56 +319,6 @@ impl From<User> for UserResponse {
             created_at: user.created_at,
         }
     }
-}
-
-/// MFA setup request
-#[derive(Debug, Clone, Deserialize)]
-pub struct MfaSetupRequest {
-    /// The TOTP code to verify setup
-    pub code: String,
-}
-
-/// MFA setup response
-#[derive(Debug, Clone, Serialize)]
-pub struct MfaSetupResponse {
-    /// The secret to add to authenticator app
-    pub secret: String,
-    /// QR code data URL
-    pub qr_code: String,
-    /// Recovery codes
-    pub recovery_codes: Vec<String>,
-}
-
-/// Session information
-#[derive(Debug, Clone, Serialize)]
-pub struct SessionInfo {
-    pub id: Uuid,
-    pub ip_address: Option<String>,
-    pub user_agent: Option<String>,
-    pub last_activity_at: DateTime<Utc>,
-    pub created_at: DateTime<Utc>,
-    pub is_current: bool,
-}
-
-/// JWT claims structure
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JwtClaims {
-    /// Subject (user ID)
-    pub sub: Uuid,
-    /// Tenant ID
-    pub tid: Uuid,
-    /// User email
-    pub email: String,
-    /// User role
-    pub role: String,
-    /// Issued at
-    pub iat: i64,
-    /// Expiration
-    pub exp: i64,
-    /// Token type (access/refresh)
-    pub typ: String,
-    /// Session ID
-    pub sid: Uuid,
 }
 
 #[cfg(test)]

@@ -227,7 +227,19 @@ impl From<AppError> for ErrorResponse {
     }
 }
 
-// Server-side conversions
+// Server-side conversions.
+//
+// This block stays in the client crate deliberately. `AppError` is a
+// shared type whose server-only conversions (axum `IntoResponse`, plus
+// `From` impls for sqlx / jsonwebtoken / argon2 / lettre / reqwest) are
+// kept here as a byte-identical mirror of mokosh-server's `error.rs`,
+// the same shared-copy convention the `modules/*` server halves follow.
+// It never compiles in this repo: the SPA never enables the `server`
+// feature and none of those crates are client dependencies, so the
+// `#[cfg(feature = "server")]` gate excludes the whole module from every
+// build mokosh-apps actually runs. Relocating it to a dedicated server
+// crate is owned by mokosh-server and is out of scope for this
+// client-only repository (MAPPS-141).
 #[cfg(feature = "server")]
 mod server_impl {
     use super::*;

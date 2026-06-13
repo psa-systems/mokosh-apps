@@ -12,7 +12,6 @@ pub mod auth;
 // to set/clear the global access-token holder. Keep this `pub` form
 // when merging from main.
 pub mod fetch;
-mod google_oauth;
 mod sidebar;
 pub mod theme;
 pub mod toast;
@@ -20,7 +19,6 @@ pub mod update_check;
 
 pub use auth::*;
 pub use fetch::*;
-pub use google_oauth::*;
 pub use sidebar::*;
 pub use theme::use_apply_theme;
 pub use toast::*;

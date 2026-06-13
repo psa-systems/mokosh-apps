@@ -58,14 +58,6 @@ impl AuthContext {
             .unwrap_or(false)
     }
 
-    /// Check if user has any of the specified roles
-    pub fn has_any_role(&self, roles: &[&str]) -> bool {
-        self.user
-            .as_ref()
-            .map(|u| roles.contains(&u.role.as_str()))
-            .unwrap_or(false)
-    }
-
     /// Return the membership matching `active_tenant_id` so callers can
     /// pull a display-ready tenant name or role for the current scope
     /// without re-walking the membership list. None before sign-in or
@@ -98,25 +90,6 @@ pub fn use_require_auth() -> Signal<AuthContext> {
         let auth_state = auth.read();
         if !auth_state.is_loading && !auth_state.is_authenticated() {
             navigator.push(Route::Login {});
-        }
-    });
-
-    auth
-}
-
-/// Hook to require a specific role
-pub fn use_require_role(required_role: &'static str) -> Signal<AuthContext> {
-    let auth = use_require_auth();
-    let navigator = use_navigator();
-
-    use_effect(move || {
-        let auth_state = auth.read();
-        if !auth_state.is_loading
-            && auth_state.is_authenticated()
-            && !auth_state.has_role(required_role)
-        {
-            // Redirect to dashboard if user doesn't have required role
-            navigator.push(Route::Dashboard {});
         }
     });
 
@@ -511,48 +484,4 @@ pub fn use_bfcache_invalidator() {
         // Listener must outlive its registration; SPA root, fires once.
         handler.forget();
     });
-}
-
-/// Hook for logout.
-///
-/// Order matters here: the call to `location.replace("/login")` MUST
-/// run before any write to the auth signal. Otherwise:
-///   - `auth.write(user=None)` schedules a Dioxus re-render
-///   - the microtask fires, route guards see an unauthenticated user
-///     on `/dashboard` and call `navigator.push(Login)`, which adds
-///     `/login` on TOP of `/dashboard` in history
-///   - by the time we navigate away, `/dashboard` is still at
-///     `history[-1]` and the back button puts the user right back
-///     onto an authenticated-looking page
-///
-/// Doing the navigation first avoids the re-render entirely: the
-/// page is already on its way to a full reload, which will reset all
-/// in-memory state from scratch. The refresh-token revoke is
-/// fire-and-forget; modern browsers complete in-flight fetches even
-/// after the document starts unloading.
-pub fn use_logout() -> impl FnMut() {
-    let auth = use_auth();
-
-    move || {
-        let refresh = auth
-            .read()
-            .tokens
-            .as_ref()
-            .and_then(|t| t.refresh_token.clone());
-
-        if let Some(rt) = refresh {
-            let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
-            spawn(async move {
-                let _ = crate::modules::oidc::revoke_refresh_token(&cfg, &rt).await;
-            });
-        }
-
-        // Drop the persisted bundle so a reload after logout does
-        // not silently re-authenticate from a stale id_token.
-        crate::modules::oidc::storage::clear_auth();
-
-        if let Some(win) = web_sys::window() {
-            let _ = win.location().replace("/login");
-        }
-    }
 }
