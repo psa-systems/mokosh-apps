@@ -8,6 +8,7 @@
 //! guards every optional/collection field so the server adding columns
 //! never breaks decoding.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -62,13 +63,13 @@ pub struct KbArticle {
     #[serde(default)]
     pub not_helpful_count: i32,
     #[serde(default)]
-    pub published_at: Option<String>,
+    pub published_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
-    pub created_at: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
     #[serde(default)]
-    pub updated_at: Option<String>,
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 /// `KbArticleVersionResponse` subset for the version-history list.
@@ -82,7 +83,7 @@ pub struct KbArticleVersion {
     #[serde(default)]
     pub content: String,
     #[serde(default)]
-    pub created_at: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 /// `KbArticleFeedbackResponse`: returned by the helpful / not_helpful

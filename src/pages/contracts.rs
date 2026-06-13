@@ -20,6 +20,8 @@ use crate::modules::contracts::{
     ContractHourBalanceResponse, ContractItemResponse, ContractResponse, CreateContractRequest,
     RateCardItemResponse, RateCardResponse, UpdateContractRequest,
 };
+use crate::utils::url::urlencoding_minimal;
+use crate::utils::Paginated;
 use crate::Route;
 
 /// Rows per page for the contract list (mirrors `contacts.rs` PER_PAGE).
@@ -29,42 +31,6 @@ const PER_PAGE: usize = 25;
 /// paginated in the UI; request a large page so a single fetch covers
 /// every row a contract or rate card realistically has.
 const SUBLIST_PER_PAGE: usize = 100;
-
-/// Server-side paginated envelope (`PaginatedResponse<T>`). Mirrors the
-/// `PaginatedCompanies` / `meta.total` pattern in `contacts.rs`; generic
-/// here because four endpoints share the shape.
-#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
-struct Paginated<T> {
-    data: Vec<T>,
-    #[serde(default)]
-    meta: PaginationMeta,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
-struct PaginationMeta {
-    #[serde(default)]
-    total: u64,
-}
-
-/// Tiny percent-encoder for query-string values (same set as
-/// `contacts.rs::urlencoding_minimal`). Kept local so the contracts page
-/// builds filter paths without pulling in `urlencoding`.
-fn urlencoding_minimal(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            ' ' => out.push_str("%20"),
-            '&' => out.push_str("%26"),
-            '#' => out.push_str("%23"),
-            '?' => out.push_str("%3F"),
-            '+' => out.push_str("%2B"),
-            '=' => out.push_str("%3D"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("%{:02X}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
-}
 
 /// Contract-type enum tags (`managed`, `block_hours`, `time_materials`,
 /// `fixed_price`, ...) to a title-case label. Unknown tags pass through.
@@ -91,7 +57,7 @@ fn contract_type_variant(raw: &str) -> BadgeVariant {
 
 /// Status tags (`draft`, `active`, `expired`, `cancelled`, ...) to a
 /// title-case label.
-fn humanize_status(raw: &str) -> String {
+fn humanize_contract_status(raw: &str) -> String {
     match raw {
         "draft" => "Draft".to_string(),
         "active" => "Active".to_string(),
@@ -395,7 +361,7 @@ fn ContractRow(props: ContractRowProps) -> Element {
             TableCell { "{props.start}" }
             TableCell { "{props.expires}" }
             TableCell {
-                Badge { variant: status_variant(&props.status), "{humanize_status(&props.status)}" }
+                Badge { variant: status_variant(&props.status), "{humanize_contract_status(&props.status)}" }
             }
         }
     }
@@ -1175,7 +1141,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                 },
                 Some(Some(contract)) => {
                     let type_label = humanize_contract_type(&contract.contract_type);
-                    let status_label = humanize_status(&contract.status);
+                    let status_label = humanize_contract_status(&contract.status);
                     let billing_cycle = contract.billing_cycle.clone();
                     let billing_amount = format_money_opt(contract.billing_amount);
                     let start = contract.start_date.format("%b %-d, %Y").to_string();

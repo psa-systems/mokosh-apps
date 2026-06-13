@@ -9,14 +9,8 @@ use crate::components::{
     DataTable, IconSize, Modal, PageHeader, PlusIcon, Select, SelectOption, Table, TableBody,
     TableCell, TableHead, TableHeader, TableRow,
 };
+use crate::utils::Paginated;
 use crate::Route;
-
-/// `PaginatedResponse<T>` envelope (`{ "data": [...], "meta": {...} }`);
-/// serde drops `meta`.
-#[derive(Clone, Debug, Deserialize)]
-struct Paginated<T> {
-    data: Vec<T>,
-}
 
 /// A time entry (`GET /api/v1/time-entries`). Names aren't joined into the
 /// response, so the list renders ids/links rather than ticket titles.
@@ -107,24 +101,6 @@ fn monday_of_week(date: NaiveDate) -> NaiveDate {
         Weekday::Sun => 6,
     };
     date - Duration::days(offset)
-}
-
-fn month_name(month: u32) -> &'static str {
-    match month {
-        1 => "January",
-        2 => "February",
-        3 => "March",
-        4 => "April",
-        5 => "May",
-        6 => "June",
-        7 => "July",
-        8 => "August",
-        9 => "September",
-        10 => "October",
-        11 => "November",
-        12 => "December",
-        _ => "",
-    }
 }
 
 /// Time entry list page
@@ -735,7 +711,7 @@ pub fn TimesheetsPage() -> Element {
 
     let week_label = format!(
         "Week of {} {}-{}, {}",
-        month_name(start.month()),
+        crate::utils::datetime::month_name(start.month()),
         start.day(),
         end.day(),
         start.year()

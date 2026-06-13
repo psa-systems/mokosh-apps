@@ -13,27 +13,10 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-// --- Pagination envelope -------------------------------------------------
-//
 // Every SLA list endpoint returns `PaginatedResponse<T>` =
-// `{ "data": [...], "meta": { "total", "page", "per_page", ... } }`
-// (see `crate::utils::pagination` server-side). We read `meta.total`
-// for the DataTable pager; the rest of `meta` is ignored.
-
-/// Server-side paginated envelope for any SLA list response.
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-pub struct SlaPaginated<T> {
-    #[serde(default = "Vec::new")]
-    pub data: Vec<T>,
-    #[serde(default)]
-    pub meta: SlaPaginationMeta,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
-pub struct SlaPaginationMeta {
-    #[serde(default)]
-    pub total: u64,
-}
+// `{ "data": [...], "meta": { "total", ... } }`, decoded via the shared
+// `crate::utils::Paginated` envelope. We read `meta.total` for the
+// DataTable pager; the rest of `meta` is ignored.
 
 // --- Policies (PMS-108) --------------------------------------------------
 

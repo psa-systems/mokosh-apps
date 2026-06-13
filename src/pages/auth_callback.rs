@@ -38,20 +38,14 @@ pub fn AuthCallbackPage() -> Element {
                     .as_deref()
                     .and_then(|s| s.parse::<uuid::Uuid>().ok())
                     .unwrap_or_else(uuid::Uuid::nil);
-                // Map mokosh-server's role enum onto the client's
-                // (the client has different "Technician/Dispatcher/Sales"
-                // axes that the server-side IdP doesn't model). Unknown
-                // values fall back to Technician (the default service
-                // role) so a fresh user still gets a usable session.
+                // Map mokosh-server's role enum onto the client's via the
+                // single canonical parser. Unknown / unset values fall
+                // back to Technician (the default service role) so a fresh
+                // user still gets a usable session.
                 let role = claims
                     .role
                     .as_deref()
-                    .and_then(|s| match s {
-                        "admin" => Some(UserRole::Admin),
-                        "manager" => Some(UserRole::Manager),
-                        "finance" => Some(UserRole::Finance),
-                        _ => None,
-                    })
+                    .map(UserRole::parse_role)
                     .unwrap_or_default();
                 // Make the access token available to api::*_authed
                 // helpers across the app. Stored in the same in-memory

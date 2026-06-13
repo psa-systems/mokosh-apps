@@ -54,18 +54,30 @@ impl PaginationParams {
         self.sort_dir.to_lowercase() == "asc"
     }
 
-    /// Get SQL ORDER BY clause
+    /// Get SQL ORDER BY clause.
+    ///
+    /// When an explicit, allow-listed `sort` is supplied, the requested
+    /// `sort_dir` is appended (`field ASC|DESC`). Otherwise the caller's
+    /// `default_field` is used: a bare column name gets the default
+    /// direction appended, but a default that already encodes its own
+    /// ordering (a multi-column clause, or one with an explicit
+    /// `ASC`/`DESC`) is emitted verbatim. Emitting compound defaults
+    /// verbatim is what stops the old `"field DESC" -> "field DESC DESC"`
+    /// double-append that produced invalid SQL on the no-`?sort=` path.
     pub fn order_by(&self, default_field: &str, allowed_fields: &[&str]) -> String {
-        let field = self
+        let direction = if self.is_ascending() { "ASC" } else { "DESC" };
+
+        match self
             .sort
             .as_ref()
             .filter(|f| allowed_fields.contains(&f.as_str()))
-            .map(|s| s.as_str())
-            .unwrap_or(default_field);
-
-        let direction = if self.is_ascending() { "ASC" } else { "DESC" };
-
-        format!("{} {}", field, direction)
+        {
+            Some(field) => format!("{field} {direction}"),
+            // A compound or already-directional default is emitted as-is;
+            // appending a direction here would corrupt it.
+            None if default_field.contains([' ', ',']) => default_field.to_string(),
+            None => format!("{default_field} {direction}"),
+        }
     }
 }
 
@@ -256,6 +268,43 @@ mod tests {
         assert_eq!(
             invalid_sort.order_by("created_at", allowed),
             "created_at DESC"
+        );
+    }
+
+    #[test]
+    fn test_order_by_no_double_direction() {
+        // A default that already embeds a direction must be emitted
+        // verbatim on the no-sort path, never "... DESC DESC".
+        let no_sort = PaginationParams::default();
+        let allowed = &["invoice_date", "due_date"];
+        assert_eq!(
+            no_sort.order_by("invoice_date DESC", allowed),
+            "invoice_date DESC"
+        );
+
+        // A multi-column default is emitted verbatim too.
+        let allowed_te = &["date", "duration_minutes", "created_at"];
+        assert_eq!(
+            no_sort.order_by("date DESC, start_time DESC", allowed_te),
+            "date DESC, start_time DESC"
+        );
+
+        // A bare default field still gets the configured direction.
+        assert_eq!(
+            no_sort.order_by("payment_date", &["payment_date"]),
+            "payment_date DESC"
+        );
+
+        // An explicit allow-listed sort overrides the default and gets
+        // exactly one direction.
+        let sorted = PaginationParams {
+            sort: Some("due_date".to_string()),
+            sort_dir: "asc".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            sorted.order_by("invoice_date DESC", allowed),
+            "due_date ASC"
         );
     }
 

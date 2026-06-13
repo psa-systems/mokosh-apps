@@ -103,24 +103,6 @@ struct PaginatedUsers {
     data: Vec<RemoteUser>,
 }
 
-fn month_name(month: u32) -> &'static str {
-    match month {
-        1 => "January",
-        2 => "February",
-        3 => "March",
-        4 => "April",
-        5 => "May",
-        6 => "June",
-        7 => "July",
-        8 => "August",
-        9 => "September",
-        10 => "October",
-        11 => "November",
-        12 => "December",
-        _ => "",
-    }
-}
-
 /// Add `delta` months to `date`, anchored on day 1 of the result (the
 /// grid is regenerated from the month, so the day-of-month is moot).
 fn shift_months(date: NaiveDate, delta: i32) -> NaiveDate {
@@ -388,7 +370,11 @@ pub fn CalendarPage() -> Element {
     let header_label = {
         let d = active_date();
         match view() {
-            CalendarView::Month => format!("{} {}", month_name(d.month()), d.year()),
+            CalendarView::Month => format!(
+                "{} {}",
+                crate::utils::datetime::month_name(d.month()),
+                d.year()
+            ),
             CalendarView::Week => {
                 let dates = week_dates(d);
                 let (first, last) = (
@@ -397,9 +383,9 @@ pub fn CalendarPage() -> Element {
                 );
                 format!(
                     "{} {} - {} {}, {}",
-                    month_name(first.month()),
+                    crate::utils::datetime::month_name(first.month()),
                     first.day(),
-                    month_name(last.month()),
+                    crate::utils::datetime::month_name(last.month()),
                     last.day(),
                     last.year()
                 )
