@@ -45,21 +45,3 @@ pub struct AuditLogEntry {
     pub user_agent: Option<String>,
     pub timestamp: DateTime<Utc>,
 }
-
-/// Server-side paginated envelope (`PaginatedResponse<AuditLogEntryResponse>`).
-///
-/// Matches the contacts/tenants convention: `data` plus a `meta` object
-/// holding the totals. `meta` is `#[serde(default)]` so a malformed or
-/// absent block decodes to zeroed totals instead of erroring.
-#[derive(Clone, Debug, Deserialize)]
-pub struct Paginated<T> {
-    pub data: Vec<T>,
-    #[serde(default)]
-    pub meta: PaginationMeta,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct PaginationMeta {
-    #[serde(default)]
-    pub total: u64,
-}

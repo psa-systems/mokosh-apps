@@ -23,26 +23,11 @@ use crate::components::{
     InformationIcon, Modal, ModalSize, PageHeader, PlusIcon, Select, SelectOption, Table,
     TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
+use crate::utils::Paginated;
 use crate::Route;
 
 /// Rows per page for the paginated billing list views.
 const PER_PAGE: usize = 25;
-
-/// Server-side pagination envelope (`PaginatedResponse<T>`): `{ data,
-/// meta: { total } }`. Generic over the row type so invoices, payments,
-/// tax rates, and gateways all share it.
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-struct Paginated<T> {
-    data: Vec<T>,
-    #[serde(default)]
-    meta: PaginationMeta,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
-struct PaginationMeta {
-    #[serde(default)]
-    total: u64,
-}
 
 /// Render a money string (the server sends decimals as JSON strings,
 /// e.g. `"2500.00"`) with a leading `$`. Empty / missing values render
