@@ -1,5 +1,5 @@
 # Mokosh Platform client - Dioxus WASM web bundle.
-# Base image bundles Rust 1.93 + WASM target + bun + cargo-binstall + dioxus-cli
+# Base image bundles Rust 1.94 + WASM target + bun + cargo-binstall + dioxus-cli
 # (pinned). See niceguyit/oci-images/rust-builder.
 #
 # BUILDPLATFORM pins the builder stage to the runner's native arch.
@@ -53,7 +53,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # resolved at the build target platform (i.e. per-arch) instead of
 # the default-for-`COPY --from=image:tag`, which resolves at the
 # build platform.
-FROM caddy:alpine AS caddy-bin
+FROM caddy:2-alpine AS caddy-bin
 
 # Runtime stage - serve static assets via Caddy. Each output image
 # in a multi-arch build picks up the matching alpine variant.

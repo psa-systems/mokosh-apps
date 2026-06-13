@@ -24,14 +24,20 @@ install-hooks:
 pre-commit:
     #!/usr/bin/env nu
     let img = "{{ dev_image }}"
+    # Share the cargo target cache with `just dev`/compose. compose.yml
+    # names this volume `dev-mokosh-apps-target-${USER}`; matching it here
+    # (per-user, not the old shared `dev-mokosh-apps-cargo-target`) means
+    # the pre-commit build reuses the dev container's compiled artifacts.
+    let user_name = (^whoami | str trim)
+    let target_vol = $"dev-mokosh-apps-target-($user_name)"
     print "\n[pre-commit] cargo fmt --all --check"
-    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume dev-mokosh-apps-cargo-target:/build/target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo fmt --all --check
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/build/target" --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo fmt --all --check
     print "\n[pre-commit] cargo clippy --all-targets -- -D warnings"
-    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume dev-mokosh-apps-cargo-target:/build/target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo clippy --all-targets -- -D warnings
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/build/target" --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo clippy --all-targets -- -D warnings
     print "\n[pre-commit] cargo check --target wasm32-unknown-unknown"
-    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume dev-mokosh-apps-cargo-target:/build/target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo check --target wasm32-unknown-unknown
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/build/target" --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo check --target wasm32-unknown-unknown
     print "\n[pre-commit] cargo test --lib"
-    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume dev-mokosh-apps-cargo-target:/build/target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo test --lib
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/build/target" --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo test --lib
     print "\n[pre-commit] all checks passed"
 
 # Install JS dependencies
@@ -54,7 +60,15 @@ css-watch: ensure-npm
 [group: 'dev']
 dev:
     #!/usr/bin/env nu
-    let host_ip = (sys net | where name =~ 'eth0|br0' | get ip | flatten | where protocol == 'ipv4' and loop == false | get 0.address)
+    # Pick the first non-loopback IPv4 on a physical/bridge interface.
+    # Match common modern names too (ens3/enp* predictable names, wlan*)
+    # instead of only eth0/br0, and fail with a clear message rather than
+    # panicking on `.get 0` when nothing matches.
+    let candidates = (sys net | where name =~ '^(en|eth|br|wlan)' | get ip | flatten | where protocol == 'ipv4' and loop == false)
+    if ($candidates | is-empty) {
+        error make { msg: "Could not detect a host LAN IP: no non-loopback IPv4 found on an en*/eth*/br*/wlan* interface. Check `sys net` output and widen the interface filter in the `dev` recipe if your NIC uses a different name." }
+    }
+    let host_ip = ($candidates | get 0.address)
     let uid = (^id --user | str trim)
     let gid = (^id --group | str trim)
     let user_name = (^whoami | str trim)
@@ -112,12 +126,6 @@ down:
         docker compose --file compose.yml --file compose.dev-sso.yml down --remove-orphans
     }
 
-# Stop the SSO dev stack.
-[doc("Stop the SSO dev stack")]
-[group: 'dev']
-dev-sso-down:
-    docker compose --file compose.yml --file compose.dev-sso.yml down
-
 # Bring the SSO dev stack down and back up. Useful after pulling a
 # code change or editing compose env vars: `down` waits for containers
 # to fully terminate before `dev-sso` starts the fresh ones, so the
@@ -140,7 +148,7 @@ check-web:
 # Run clippy lints
 [group: 'check']
 check-clippy:
-    cargo clippy --all-targets
+    cargo clippy --all-targets -- -D warnings
 
 # Check formatting
 [group: 'check']

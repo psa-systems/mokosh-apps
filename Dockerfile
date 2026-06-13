@@ -8,17 +8,6 @@ RUN apt-get update && apt-get install --yes --no-install-recommends \
     pkg-config libssl-dev curl unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# WASM target
-
-# Install Bun (Tailwind v4 CSS)
-RUN curl --location --silent --show-error --fail https://bun.sh/install \
-    | env BUN_INSTALL=/usr/local bash
-
-# Install dioxus-cli via pre-built binary
-RUN curl --location --silent --show-error \
-    https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-x86_64-unknown-linux-gnu.tgz \
-    | tar --extract --gzip --directory /usr/local/cargo/bin
-
 # Create non-root user matching host UID/GID so bind-mounted files stay host-owned
 RUN groupadd --gid ${GID} dev \
     && useradd --uid ${UID} --gid ${GID} --create-home --shell /bin/bash dev \
