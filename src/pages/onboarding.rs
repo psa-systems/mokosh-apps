@@ -45,12 +45,8 @@ struct OnboardingResponse {
     /// `true` once the server has stamped `profile_completed_at`.
     /// Default `true` for backward-compat with older server builds
     /// that omit the field.
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::utils::default_true")]
     profile_completed: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 #[component]

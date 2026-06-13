@@ -69,6 +69,15 @@ impl UserRole {
         }
     }
 
+    /// Parse a server role string into a `UserRole`, falling back to the
+    /// default ([`UserRole::Technician`]) for unknown / unset values. This
+    /// is the single canonical role parser; every sign-in path routes
+    /// through it so no caller re-implements a partial match that silently
+    /// downgrades super_admin / dispatcher / sales (PMS-158).
+    pub fn parse_role(s: &str) -> Self {
+        Self::from_str(s).unwrap_or_default()
+    }
+
     /// Convert to string
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -178,17 +187,13 @@ pub struct CurrentUser {
     /// until they've confirmed first + last name through
     /// `/onboarding/profile`. Defaults to `true` on deserialise so a
     /// legacy server response (no field) doesn't surprise-trap users.
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::utils::default_true")]
     pub profile_completed: bool,
     /// PMS-253: per-user date/time format string consumed by
     /// `crate::utils::datetime::format_user_datetime`. `None` means
     /// "use the browser locale" (the legacy rendering behaviour).
     #[serde(default)]
     pub date_format_string: Option<String>,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 impl CurrentUser {

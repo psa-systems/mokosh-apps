@@ -5,8 +5,10 @@
 //! `Clone, Debug, PartialEq` Dioxus Props require; request types add
 //! `Serialize`. Optional fields carry `#[serde(default)]` so a response
 //! that omits a column still decodes. `Decimal` fields are bare (no
-//! `serde(with)`) to match the server, which serializes `rust_decimal`
-//! as a JSON number via the `serde` feature.
+//! `serde(with)`) to match the server, which under the `rust_decimal`
+//! `serde` feature serializes `rust_decimal` as a JSON *string* (not a
+//! number). The client enables the same `serde` feature, so a string
+//! decodes losslessly into `Decimal` (MAPPS-138).
 
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;

@@ -8,6 +8,7 @@
 //! guards every optional/collection field so the server adding columns
 //! never breaks decoding.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -32,6 +33,12 @@ pub struct KbCategory {
 /// `KbArticleResponse` subset. Shared by the agent article views and the
 /// portal feed (the server returns the same DTO from
 /// `GET /api/v1/portal/kb`).
+///
+/// The server's `KbArticleResponse` also carries `author_id`. This client
+/// omits it on purpose: serde drops the unknown key, nothing here displays
+/// the author, so there is no fix to make. Add
+/// `#[serde(default)] pub author_id: Option<Uuid>` only if author display
+/// is wanted later (MAPPS-138, recorded no-fix).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct KbArticle {
     pub id: Uuid,
@@ -56,13 +63,13 @@ pub struct KbArticle {
     #[serde(default)]
     pub not_helpful_count: i32,
     #[serde(default)]
-    pub published_at: Option<String>,
+    pub published_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
-    pub created_at: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
     #[serde(default)]
-    pub updated_at: Option<String>,
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 /// `KbArticleVersionResponse` subset for the version-history list.
@@ -76,7 +83,7 @@ pub struct KbArticleVersion {
     #[serde(default)]
     pub content: String,
     #[serde(default)]
-    pub created_at: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 /// `KbArticleFeedbackResponse`: returned by the helpful / not_helpful

@@ -120,6 +120,16 @@ pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowEr
     let search = current_search();
     let params = web_sys::UrlSearchParams::new_with_str(&search)
         .map_err(|_| FlowError::Redirect("UrlSearchParams".into()))?;
+    // Surface an OP error response before extracting code/state. An error
+    // redirect carries no `code`, so checking code first masks the real
+    // error as a generic "missing code".
+    if let Some(err) = params.get("error") {
+        return Err(FlowError::TokenEndpoint {
+            error: err,
+            description: params.get("error_description").unwrap_or_default(),
+        });
+    }
+
     let code = params.get("code").ok_or_else(|| FlowError::TokenEndpoint {
         error: "invalid_request".into(),
         description: "missing code".into(),
@@ -130,13 +140,6 @@ pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowEr
             error: "invalid_request".into(),
             description: "missing state".into(),
         })?;
-
-    if let Some(err) = params.get("error") {
-        return Err(FlowError::TokenEndpoint {
-            error: err,
-            description: params.get("error_description").unwrap_or_default(),
-        });
-    }
 
     let pending = take_pending().map_err(FlowError::Storage)?;
     if pending.state != state {

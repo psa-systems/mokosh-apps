@@ -7,7 +7,7 @@ edition = "2021"
 authors = ["Mokosh Platform Team"]
 description = "Mokosh Platform - Cross-platform Dioxus client"
 license = "Proprietary"
-repository = "https://github.com/your-org/mokosh-platform"
+repository = "https://dev.a8n.run/psa-systems/mokosh-apps"
 
 [[bin]]
 name = "mokosh-apps"

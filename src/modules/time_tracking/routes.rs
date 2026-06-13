@@ -183,10 +183,12 @@ async fn update_time_entry(
     Json(request): Json<UpdateTimeEntryRequest>,
 ) -> AppResult<Json<TimeEntryResponse>> {
     request.validate()?;
+    // Non-admins may only touch their own entry; admins (None) are exempt.
+    let owner = (!user.role.is_admin()).then_some(user.id);
     Ok(Json(
         state
             .service
-            .update_time_entry(user.tenant_id, id, &request)
+            .update_time_entry(user.tenant_id, id, owner, &request)
             .await?,
     ))
 }
@@ -196,7 +198,12 @@ async fn delete_time_entry(
     RequireAuth(user): RequireAuth,
     Path(id): Path<Uuid>,
 ) -> AppResult<()> {
-    state.service.delete_time_entry(user.tenant_id, id).await
+    // Non-admins may only delete their own entry; admins (None) are exempt.
+    let owner = (!user.role.is_admin()).then_some(user.id);
+    state
+        .service
+        .delete_time_entry(user.tenant_id, id, owner)
+        .await
 }
 
 // ============================================================================
@@ -318,7 +325,11 @@ async fn stop_timer(
     RequireAuth(user): RequireAuth,
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<TimeEntryResponse>> {
-    Ok(Json(state.service.stop_timer(user.tenant_id, id).await?))
+    // Non-admins may only stop their own timer; admins (None) are exempt.
+    let owner = (!user.role.is_admin()).then_some(user.id);
+    Ok(Json(
+        state.service.stop_timer(user.tenant_id, id, owner).await?,
+    ))
 }
 
 // ============================================================================

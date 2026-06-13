@@ -15,6 +15,7 @@ on:
       - "input.css"
       - "index.html"
       - "Dioxus.toml"
+      - "build.rs"
       - "Cargo.toml"
       - "Cargo.lock"
       - "package.json"

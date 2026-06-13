@@ -93,6 +93,7 @@ impl Address {
             && self.city.is_none()
             && self.state.is_none()
             && self.postal_code.is_none()
+            && self.country.is_none()
     }
 
     pub fn formatted(&self) -> String {
@@ -184,12 +185,8 @@ pub struct CreateCompanyRequest {
     #[serde(default)]
     pub tags: Vec<String>,
     pub notes: Option<String>,
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::utils::default_true")]
     pub portal_enabled: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 /// Update company request

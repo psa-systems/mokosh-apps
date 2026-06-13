@@ -13,6 +13,7 @@ use crate::components::{
     TableLoading, TableRow,
 };
 use crate::hooks::auth::use_auth;
+use crate::modules::auth::UserRole;
 
 /// Subset of mokosh-server's `InvitationResponse` rendered here.
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -33,7 +34,7 @@ pub fn TeamPage() -> Element {
     let auth = use_auth();
     let is_admin = {
         let a = auth.read();
-        a.has_role("admin") || a.has_role("super_admin")
+        a.has_role(UserRole::Admin) || a.has_role(UserRole::SuperAdmin)
     };
 
     let mut email = use_signal(String::new);

@@ -32,7 +32,7 @@ just dev
 
 This recipe:
 
-1. Detects the host LAN IP from `br0` or `eth0` via `sys net`.
+1. Detects the host LAN IP from the first non-loopback IPv4 interface (`en*`/`eth*`/`br*`/`wlan*`) via `sys net`.
 2. Exports it as `HOST_IP`.
 3. Runs `docker compose up --build`, which starts `dev-mokosh-apps` and binds port `4301` to `${HOST_IP}:4301`.
 
@@ -45,7 +45,7 @@ Binding to the LAN IP rather than `0.0.0.0` keeps the dev server off the public 
 Either:
 
 - Use the host LAN IP: `http://${HOST_IP}:4301`.
-- Or join the `dev-mokosh-private` Docker network and use `http://dev-mokosh-apps:4301`.
+- Or join the `dev-mokosh-private-${USER}` Docker network and use `http://dev-mokosh-apps-${USER}:4301`.
 
 ## Justfile recipes
 

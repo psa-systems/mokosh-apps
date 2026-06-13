@@ -95,6 +95,14 @@ pub struct CreateAppointmentRequest {
     pub appointment_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ticket_id: Option<Uuid>,
+    // The server's `CreateAppointmentRequest` also accepts `task_id` and
+    // `site_id` foreign keys; carry them so the SPA can link an
+    // appointment to a task or site (MAPPS-138). Omitted from the JSON
+    // when empty, like the other optional FKs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub site_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]

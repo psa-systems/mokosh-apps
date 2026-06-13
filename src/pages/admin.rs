@@ -56,7 +56,7 @@ fn humanize_plan(raw: &Option<String>) -> String {
 }
 
 #[cfg(feature = "multi-tenant")]
-fn humanize_status(raw: &str) -> String {
+fn humanize_tenant_status(raw: &str) -> String {
     match raw {
         "active" => "Active".into(),
         "suspended" => "Suspended".into(),
@@ -180,7 +180,7 @@ pub fn TenantManagementPage() -> Element {
                                         plan: humanize_plan(&tenant.subscription_plan),
                                         users: 0,
                                         mrr: "-".to_string(),
-                                        status: humanize_status(&tenant.status),
+                                        status: humanize_tenant_status(&tenant.status),
                                         created: format_created(tenant.created_at),
                                     }
                                 }

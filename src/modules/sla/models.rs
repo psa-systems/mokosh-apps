@@ -13,27 +13,10 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-// --- Pagination envelope -------------------------------------------------
-//
 // Every SLA list endpoint returns `PaginatedResponse<T>` =
-// `{ "data": [...], "meta": { "total", "page", "per_page", ... } }`
-// (see `crate::utils::pagination` server-side). We read `meta.total`
-// for the DataTable pager; the rest of `meta` is ignored.
-
-/// Server-side paginated envelope for any SLA list response.
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-pub struct SlaPaginated<T> {
-    #[serde(default = "Vec::new")]
-    pub data: Vec<T>,
-    #[serde(default)]
-    pub meta: SlaPaginationMeta,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
-pub struct SlaPaginationMeta {
-    #[serde(default)]
-    pub total: u64,
-}
+// `{ "data": [...], "meta": { "total", ... } }`, decoded via the shared
+// `crate::utils::Paginated` envelope. We read `meta.total` for the
+// DataTable pager; the rest of `meta` is ignored.
 
 // --- Policies (PMS-108) --------------------------------------------------
 
@@ -65,8 +48,10 @@ pub struct UpsertSlaPolicyRequest {
 // --- Targets (PMS-109) ---------------------------------------------------
 
 /// Mirror of the server `SlaTargetResponse`. `first_response_hours` /
-/// `resolution_hours` are `Decimal` server-side; we keep `Decimal` so the
-/// JSON number decodes losslessly.
+/// `resolution_hours` are `Decimal` server-side. Under the `rust_decimal`
+/// `serde` feature these serialize as a JSON *string* (not a number); we
+/// keep `Decimal` with the same feature enabled so the string decodes
+/// losslessly (MAPPS-138).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct SlaTarget {
     pub id: Uuid,

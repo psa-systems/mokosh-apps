@@ -3,7 +3,7 @@
 use dioxus::prelude::*;
 use wasm_bindgen::JsCast;
 
-use crate::modules::auth::CurrentUser;
+use crate::modules::auth::{CurrentUser, UserRole};
 use crate::modules::oidc::Tokens;
 use crate::Route;
 
@@ -51,11 +51,8 @@ impl AuthContext {
     }
 
     /// Check if user has a specific role
-    pub fn has_role(&self, role: &str) -> bool {
-        self.user
-            .as_ref()
-            .map(|u| u.role.as_str() == role)
-            .unwrap_or(false)
+    pub fn has_role(&self, role: UserRole) -> bool {
+        self.user.as_ref().is_some_and(|u| u.role == role)
     }
 
     /// Return the membership matching `active_tenant_id` so callers can

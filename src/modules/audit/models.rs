@@ -5,6 +5,10 @@
 //! fields, so the server can add columns without breaking decoding here;
 //! optional fields carry `#[serde(default)]` so a missing key decodes to
 //! `None`/empty rather than failing the whole response.
+//!
+//! Verified-clean baseline (MAPPS-138): this DTO and `pages/audit_log.rs`
+//! match the server audit contract 1:1 as of mokosh-server @ 9cd4103. No
+//! drift; recorded for completeness, no change required.
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -44,22 +48,4 @@ pub struct AuditLogEntry {
     #[serde(default)]
     pub user_agent: Option<String>,
     pub timestamp: DateTime<Utc>,
-}
-
-/// Server-side paginated envelope (`PaginatedResponse<AuditLogEntryResponse>`).
-///
-/// Matches the contacts/tenants convention: `data` plus a `meta` object
-/// holding the totals. `meta` is `#[serde(default)]` so a malformed or
-/// absent block decodes to zeroed totals instead of erroring.
-#[derive(Clone, Debug, Deserialize)]
-pub struct Paginated<T> {
-    pub data: Vec<T>,
-    #[serde(default)]
-    pub meta: PaginationMeta,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct PaginationMeta {
-    #[serde(default)]
-    pub total: u64,
 }

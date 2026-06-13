@@ -13,10 +13,12 @@
 //!  3. The `/auth/callback` route page calls [`complete_login`], which
 //!     verifies `state`, POSTs the code + verifier to `/oauth2/token`,
 //!     and returns parsed [`Tokens`].
-//!  4. Tokens live in memory only (in [`AuthContext`]). They are NEVER
-//!     written to localStorage: that would expose them to XSS. On page
-//!     reload the user is redirected to authorize again (a silent prompt
-//!     with `prompt=none` is a future iteration).
+//!  4. Tokens live in memory (in [`AuthContext`]) and are also persisted
+//!     to `sessionStorage` via [`storage`] so a page reload rehydrates the
+//!     session rather than redirecting to authorize again. They are NEVER
+//!     written to `localStorage`: `sessionStorage` is tab-scoped and
+//!     cleared on tab close, which narrows the XSS exposure window while
+//!     still surviving an in-tab reload.
 
 pub mod config;
 pub mod flow;
