@@ -137,13 +137,14 @@ impl TimeTrackingService {
             return Ok(m);
         }
         if let (Some(s), Some(e)) = (request.start_time, request.end_time) {
-            let secs = (e - s).num_minutes();
-            if secs < 0 {
-                return Err(AppError::BadRequest(
-                    "end_time must be after start_time".to_string(),
-                ));
+            let mut minutes = (e - s).num_minutes();
+            if minutes < 0 {
+                // end_time earlier than start_time means the entry crosses
+                // midnight (e.g. an overnight shift); wrap by a full day so
+                // it computes a positive duration instead of being rejected.
+                minutes += 24 * 60;
             }
-            return Ok(secs as i32);
+            return Ok(minutes as i32);
         }
         Err(AppError::BadRequest(
             "Either duration_minutes or (start_time, end_time) must be supplied".to_string(),
@@ -158,28 +159,45 @@ impl TimeTrackingService {
     ) -> AppResult<(Vec<TimeEntryResponse>, u64)> {
         let offset = pagination.offset() as i64;
         let limit = pagination.limit() as i64;
+        // The list query binds $1=tenant_id, $2=limit, $3=offset, so filter
+        // placeholders start at $4. The count query has no limit/offset, so
+        // its filter placeholders start at $2. Build both clauses in lockstep
+        // off separate counters; binding them in the same order keeps the
+        // chains aligned.
         let mut conditions = vec!["tenant_id = $1".to_string()];
+        let mut count_conditions = vec!["tenant_id = $1".to_string()];
         let mut idx = 4;
+        let mut cidx = 2;
         if filter.user_id.is_some() {
             conditions.push(format!("user_id = ${idx}"));
+            count_conditions.push(format!("user_id = ${cidx}"));
             idx += 1;
+            cidx += 1;
         }
         if filter.ticket_id.is_some() {
             conditions.push(format!("ticket_id = ${idx}"));
+            count_conditions.push(format!("ticket_id = ${cidx}"));
             idx += 1;
+            cidx += 1;
         }
         if filter.project_id.is_some() {
             conditions.push(format!("project_id = ${idx}"));
+            count_conditions.push(format!("project_id = ${cidx}"));
             idx += 1;
+            cidx += 1;
         }
         if filter.date_from.is_some() {
             conditions.push(format!("date >= ${idx}"));
+            count_conditions.push(format!("date >= ${cidx}"));
             idx += 1;
+            cidx += 1;
         }
         if filter.date_to.is_some() {
             conditions.push(format!("date <= ${idx}"));
+            count_conditions.push(format!("date <= ${cidx}"));
         }
         let where_clause = conditions.join(" AND ");
+        let count_where = count_conditions.join(" AND ");
         let order_by = pagination.order_by(
             "date DESC, start_time DESC",
             &["date", "duration_minutes", "created_at"],
@@ -196,7 +214,7 @@ impl TimeTrackingService {
             LIMIT $2 OFFSET $3
             "#
         );
-        let count_query = format!("SELECT COUNT(*) FROM time_entries WHERE {where_clause}");
+        let count_query = format!("SELECT COUNT(*) FROM time_entries WHERE {count_where}");
         let mut q = sqlx::query_as::<_, TimeEntryRow>(&query)
             .bind(tenant_id)
             .bind(limit)
@@ -306,6 +324,7 @@ impl TimeTrackingService {
         &self,
         tenant_id: Uuid,
         id: Uuid,
+        owner: Option<Uuid>,
         request: &UpdateTimeEntryRequest,
     ) -> AppResult<TimeEntryResponse> {
         let current = self.get_time_entry(tenant_id, id).await?;
@@ -342,7 +361,7 @@ impl TimeTrackingService {
                 hourly_rate       = $12,
                 total_amount      = $13,
                 updated_at        = NOW()
-            WHERE tenant_id = $1 AND id = $2
+            WHERE tenant_id = $1 AND id = $2 AND ($14::uuid IS NULL OR user_id = $14)
             "#,
         )
         .bind(tenant_id)
@@ -358,6 +377,7 @@ impl TimeTrackingService {
         .bind(request.is_billable)
         .bind(hourly_rate)
         .bind(total)
+        .bind(owner)
         .execute(self.db.pool())
         .await?
         .rows_affected();
@@ -367,13 +387,22 @@ impl TimeTrackingService {
         self.get_time_entry(tenant_id, id).await
     }
 
-    pub async fn delete_time_entry(&self, tenant_id: Uuid, id: Uuid) -> AppResult<()> {
-        let affected = sqlx::query("DELETE FROM time_entries WHERE tenant_id = $1 AND id = $2")
-            .bind(tenant_id)
-            .bind(id)
-            .execute(self.db.pool())
-            .await?
-            .rows_affected();
+    pub async fn delete_time_entry(
+        &self,
+        tenant_id: Uuid,
+        id: Uuid,
+        owner: Option<Uuid>,
+    ) -> AppResult<()> {
+        let affected = sqlx::query(
+            "DELETE FROM time_entries \
+             WHERE tenant_id = $1 AND id = $2 AND ($3::uuid IS NULL OR user_id = $3)",
+        )
+        .bind(tenant_id)
+        .bind(id)
+        .bind(owner)
+        .execute(self.db.pool())
+        .await?
+        .rows_affected();
         if affected == 0 {
             return Err(AppError::NotFound("TimeEntry".to_string()));
         }
@@ -697,14 +726,19 @@ impl TimeTrackingService {
         &self,
         tenant_id: Uuid,
         timer_id: Uuid,
+        owner: Option<Uuid>,
     ) -> AppResult<TimeEntryResponse> {
         let mut tx = self.db.pool().begin().await?;
+        // `owner` is Some(user.id) for non-admins, enforcing ownership;
+        // None for admins, who may stop any timer in the tenant.
         let timer: Option<ActiveTimerRow> = sqlx::query_as(
             "SELECT id, user_id, ticket_id, project_id, company_id, work_type_id, notes, started_at \
-             FROM active_timers WHERE tenant_id = $1 AND id = $2",
+             FROM active_timers \
+             WHERE tenant_id = $1 AND id = $2 AND ($3::uuid IS NULL OR user_id = $3)",
         )
         .bind(tenant_id)
         .bind(timer_id)
+        .bind(owner)
         .fetch_optional(&mut *tx)
         .await?;
         let Some(timer) = timer else {

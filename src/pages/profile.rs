@@ -30,7 +30,7 @@ use crate::components::{
     SelectOption,
 };
 use crate::hooks::theme::{self, Theme};
-use crate::utils::datetime::{format_user_datetime, token_warnings, PRESET_FORMATS};
+use crate::utils::datetime::{format_user_datetime, preset_label, token_warnings, PRESET_FORMATS};
 use crate::utils::prefs;
 
 /// Subset of mokosh-server's `UserResponse` the profile screen reads.
@@ -258,6 +258,11 @@ pub fn ProfilePage() -> Element {
 /// then refreshed against bunyip's `/v1/auth/me`, so Bunyip stays
 /// authoritative for who the user is. Links over to the Bunyip
 /// Account Settings page where these fields are actually editable.
+///
+/// Confirmed MAPPS-138: mokosh-server's full settings surface
+/// (`src/modules/settings/routes.rs`) is intentionally hub-only and is
+/// not consumed by this SPA; profile editing redirects to the Bunyip hub
+/// rather than rendering an in-app settings UI.
 #[component]
 fn IdentityStrip() -> Element {
     let auth = crate::hooks::use_auth();
@@ -490,8 +495,12 @@ fn DateFormatField(value: Signal<String>) -> Element {
     };
 
     let mut opts: Vec<SelectOption> = vec![SelectOption::new("", "Browser default (locale)")];
-    for (label, fmt) in PRESET_FORMATS {
-        opts.push(SelectOption::new(*fmt, *label));
+    // MAPPS-144: prefill each preset with a live example rendered
+    // against the current instant so the option reads as
+    // `Jun-11-2026 08:40 (MMM-DD-YYYY HH:mm)` instead of the bare
+    // token string.
+    for (_label, fmt) in PRESET_FORMATS {
+        opts.push(SelectOption::new(*fmt, preset_label(preview_now, fmt)));
     }
     // If the user already has a custom format that isn't in the preset
     // list (saved via the Custom builder), surface it as the active
@@ -499,7 +508,7 @@ fn DateFormatField(value: Signal<String>) -> Element {
     if !current.is_empty() && !PRESET_FORMATS.iter().any(|(_, f)| *f == current) {
         opts.push(SelectOption::new(
             current.clone(),
-            format!("{current} (custom)"),
+            format!("{} (custom)", preset_label(preview_now, &current)),
         ));
     }
 
@@ -640,8 +649,9 @@ fn CustomFormatBuilder(value: Signal<String>, open: Signal<bool>) -> Element {
     };
 
     let mut preset_opts: Vec<SelectOption> = vec![SelectOption::new("", "(none -- custom format)")];
-    for (label, fmt) in PRESET_FORMATS {
-        preset_opts.push(SelectOption::new(*fmt, *label));
+    // MAPPS-144: same prefilled example labels as the main picker.
+    for (_label, fmt) in PRESET_FORMATS {
+        preset_opts.push(SelectOption::new(*fmt, preset_label(preview_now, fmt)));
     }
 
     rsx! {
