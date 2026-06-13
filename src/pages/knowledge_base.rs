@@ -264,8 +264,10 @@ pub fn KBHomePage() -> Element {
     let recent_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        let path =
-            format!("/kb/articles?page=1&per_page={RECENT_LIMIT}&sort=updated_at&sort_dir=desc");
+        // No `sort`/`sort_dir`: the server `KbService::list_articles`
+        // hardcodes its ORDER BY and silently ignores those params, so
+        // sending them was a no-op (MAPPS-138).
+        let path = format!("/kb/articles?page=1&per_page={RECENT_LIMIT}");
         crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(&path, &token)
             .await
             .ok()

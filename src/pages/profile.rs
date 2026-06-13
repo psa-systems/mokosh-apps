@@ -258,6 +258,11 @@ pub fn ProfilePage() -> Element {
 /// then refreshed against bunyip's `/v1/auth/me`, so Bunyip stays
 /// authoritative for who the user is. Links over to the Bunyip
 /// Account Settings page where these fields are actually editable.
+///
+/// Confirmed MAPPS-138: mokosh-server's full settings surface
+/// (`src/modules/settings/routes.rs`) is intentionally hub-only and is
+/// not consumed by this SPA; profile editing redirects to the Bunyip hub
+/// rather than rendering an in-app settings UI.
 #[component]
 fn IdentityStrip() -> Element {
     let auth = crate::hooks::use_auth();

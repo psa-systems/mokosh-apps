@@ -1122,6 +1122,8 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                             description: desc,
                             appointment_type: type_val,
                             ticket_id: None,
+                            task_id: None,
+                            site_id: None,
                             project_id: None,
                             company_id: None,
                             contact_id: None,

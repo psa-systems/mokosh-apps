@@ -2,6 +2,11 @@
 //! `/rate-cards` endpoints. Patterns (resource + `active_tenant_generation`,
 //! loading/empty/error states, `serde`-typed request bodies, the minimal
 //! query-string encoder) mirror `src/pages/contacts.rs`.
+//!
+//! The server also exposes contract-item edit/delete and rate-card-item
+//! upsert/delete routes (mokosh-server `src/modules/contracts/routes.rs`).
+//! These are intentionally NOT wired in this UI yet: the routes are ahead
+//! of the frontend. Wire them when item-level editing lands (MAPPS-138).
 
 use dioxus::prelude::*;
 use rust_decimal::Decimal;
