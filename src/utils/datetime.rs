@@ -153,6 +153,16 @@ fn render_token(tok: &str, local: DateTime<Local>) -> String {
     }
 }
 
+/// Full English month name for `1..=12`; empty string for out-of-range
+/// input. The single shared copy for headers that render a month label
+/// (the calendar and timesheet pages previously each kept their own).
+pub fn month_name(month: u32) -> &'static str {
+    match month {
+        1..=12 => month_full(month),
+        _ => "",
+    }
+}
+
 fn month_full(m: u32) -> &'static str {
     [
         "January",

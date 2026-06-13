@@ -24,8 +24,9 @@ use crate::components::{
     TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::modules::sla::{
-    BusinessHours, HolidayCalendar, SlaPaginated, SlaPolicy, SlaTarget, TicketPriorityOption,
+    BusinessHours, HolidayCalendar, SlaPolicy, SlaTarget, TicketPriorityOption,
 };
+use crate::utils::Paginated;
 
 /// Rows per page for the SLA list views. SLA config sets are small, so a
 /// single page is almost always enough; the pager still appears if a
@@ -142,7 +143,7 @@ fn SlaPoliciesTab() -> Element {
     let mut policies = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_authed_typed::<SlaPaginated<SlaPolicy>>(&format!(
+        crate::hooks::fetch::api::get_authed_typed::<Paginated<SlaPolicy>>(&format!(
             "/sla/policies?page=1&per_page={PER_PAGE}"
         ))
         .await
@@ -336,7 +337,7 @@ fn PolicyFormModal(props: PolicyFormModalProps) -> Element {
     let bh_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_authed_typed::<SlaPaginated<BusinessHours>>(&format!(
+        crate::hooks::fetch::api::get_authed_typed::<Paginated<BusinessHours>>(&format!(
             "/sla/business-hours?page=1&per_page={PER_PAGE}"
         ))
         .await
@@ -505,14 +506,14 @@ fn TargetsModal(props: TargetsModalProps) -> Element {
             #[cfg(feature = "web")]
             {
                 let path = format!("/sla/policies/{pid}/targets?page=1&per_page={PER_PAGE}");
-                crate::hooks::fetch::api::get_authed_typed::<SlaPaginated<SlaTarget>>(&path)
+                crate::hooks::fetch::api::get_authed_typed::<Paginated<SlaTarget>>(&path)
                     .await
                     .ok()
             }
             #[cfg(not(feature = "web"))]
             {
                 let _ = pid;
-                None::<SlaPaginated<SlaTarget>>
+                None::<Paginated<SlaTarget>>
             }
         }
     });
@@ -522,15 +523,15 @@ fn TargetsModal(props: TargetsModalProps) -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         #[cfg(feature = "web")]
         {
-            crate::hooks::fetch::api::get_authed_typed::<SlaPaginated<TicketPriorityOption>>(
-                &format!("/tickets/priorities?page=1&per_page={PER_PAGE}"),
-            )
+            crate::hooks::fetch::api::get_authed_typed::<Paginated<TicketPriorityOption>>(&format!(
+                "/tickets/priorities?page=1&per_page={PER_PAGE}"
+            ))
             .await
             .ok()
         }
         #[cfg(not(feature = "web"))]
         {
-            None::<SlaPaginated<TicketPriorityOption>>
+            None::<Paginated<TicketPriorityOption>>
         }
     });
 
@@ -821,7 +822,7 @@ fn BusinessHoursTab() -> Element {
         #[cfg(feature = "web")]
         {
             let _token = crate::hooks::fetch::api::current_access_token()?;
-            crate::hooks::fetch::api::get_authed_typed::<SlaPaginated<BusinessHours>>(&format!(
+            crate::hooks::fetch::api::get_authed_typed::<Paginated<BusinessHours>>(&format!(
                 "/sla/business-hours?page=1&per_page={PER_PAGE}"
             ))
             .await
@@ -829,7 +830,7 @@ fn BusinessHoursTab() -> Element {
         }
         #[cfg(not(feature = "web"))]
         {
-            None::<SlaPaginated<BusinessHours>>
+            None::<Paginated<BusinessHours>>
         }
     });
 
@@ -1154,7 +1155,7 @@ fn HolidayCalendarsTab() -> Element {
         #[cfg(feature = "web")]
         {
             let _token = crate::hooks::fetch::api::current_access_token()?;
-            crate::hooks::fetch::api::get_authed_typed::<SlaPaginated<HolidayCalendar>>(&format!(
+            crate::hooks::fetch::api::get_authed_typed::<Paginated<HolidayCalendar>>(&format!(
                 "/sla/holiday-calendars?page=1&per_page={PER_PAGE}"
             ))
             .await
@@ -1162,7 +1163,7 @@ fn HolidayCalendarsTab() -> Element {
         }
         #[cfg(not(feature = "web"))]
         {
-            None::<SlaPaginated<HolidayCalendar>>
+            None::<Paginated<HolidayCalendar>>
         }
     });
 
