@@ -342,14 +342,10 @@ pub struct UpsertPaymentGatewayConfigRequest {
     pub provider: GatewayProvider,
     #[serde(default)]
     pub is_active: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::utils::default_true")]
     pub is_test_mode: bool,
     /// Plaintext config; encrypted at rest before persisting.
     pub config: serde_json::Value,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 // ============================================================================
@@ -372,6 +368,6 @@ pub struct UpsertTaxRateRequest {
     pub rate: Decimal,
     #[serde(default)]
     pub is_default: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::utils::default_true")]
     pub is_active: bool,
 }

@@ -137,13 +137,14 @@ impl TimeTrackingService {
             return Ok(m);
         }
         if let (Some(s), Some(e)) = (request.start_time, request.end_time) {
-            let secs = (e - s).num_minutes();
-            if secs < 0 {
-                return Err(AppError::BadRequest(
-                    "end_time must be after start_time".to_string(),
-                ));
+            let mut minutes = (e - s).num_minutes();
+            if minutes < 0 {
+                // end_time earlier than start_time means the entry crosses
+                // midnight (e.g. an overnight shift); wrap by a full day so
+                // it computes a positive duration instead of being rejected.
+                minutes += 24 * 60;
             }
-            return Ok(secs as i32);
+            return Ok(minutes as i32);
         }
         Err(AppError::BadRequest(
             "Either duration_minutes or (start_time, end_time) must be supplied".to_string(),
@@ -158,28 +159,45 @@ impl TimeTrackingService {
     ) -> AppResult<(Vec<TimeEntryResponse>, u64)> {
         let offset = pagination.offset() as i64;
         let limit = pagination.limit() as i64;
+        // The list query binds $1=tenant_id, $2=limit, $3=offset, so filter
+        // placeholders start at $4. The count query has no limit/offset, so
+        // its filter placeholders start at $2. Build both clauses in lockstep
+        // off separate counters; binding them in the same order keeps the
+        // chains aligned.
         let mut conditions = vec!["tenant_id = $1".to_string()];
+        let mut count_conditions = vec!["tenant_id = $1".to_string()];
         let mut idx = 4;
+        let mut cidx = 2;
         if filter.user_id.is_some() {
             conditions.push(format!("user_id = ${idx}"));
+            count_conditions.push(format!("user_id = ${cidx}"));
             idx += 1;
+            cidx += 1;
         }
         if filter.ticket_id.is_some() {
             conditions.push(format!("ticket_id = ${idx}"));
+            count_conditions.push(format!("ticket_id = ${cidx}"));
             idx += 1;
+            cidx += 1;
         }
         if filter.project_id.is_some() {
             conditions.push(format!("project_id = ${idx}"));
+            count_conditions.push(format!("project_id = ${cidx}"));
             idx += 1;
+            cidx += 1;
         }
         if filter.date_from.is_some() {
             conditions.push(format!("date >= ${idx}"));
+            count_conditions.push(format!("date >= ${cidx}"));
             idx += 1;
+            cidx += 1;
         }
         if filter.date_to.is_some() {
             conditions.push(format!("date <= ${idx}"));
+            count_conditions.push(format!("date <= ${cidx}"));
         }
         let where_clause = conditions.join(" AND ");
+        let count_where = count_conditions.join(" AND ");
         let order_by = pagination.order_by(
             "date DESC, start_time DESC",
             &["date", "duration_minutes", "created_at"],
@@ -196,7 +214,7 @@ impl TimeTrackingService {
             LIMIT $2 OFFSET $3
             "#
         );
-        let count_query = format!("SELECT COUNT(*) FROM time_entries WHERE {where_clause}");
+        let count_query = format!("SELECT COUNT(*) FROM time_entries WHERE {count_where}");
         let mut q = sqlx::query_as::<_, TimeEntryRow>(&query)
             .bind(tenant_id)
             .bind(limit)

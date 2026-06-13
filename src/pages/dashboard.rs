@@ -5,15 +5,11 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Card, ClockIcon, FolderIcon, PageHeader, StatCard, Table,
-    TableBody, TableCell, TableHead, TableHeader, TableRow, TicketIcon,
+    ticket_status_badge, AppLayout, Badge, BadgeVariant, Card, ClockIcon, FolderIcon, PageHeader,
+    StatCard, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TicketIcon,
 };
+use crate::utils::Paginated;
 use crate::Route;
-
-#[derive(Clone, Debug, Deserialize)]
-struct Paginated<T> {
-    data: Vec<T>,
-}
 
 /// `GET /api/v1/reports/dashboard`.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -79,16 +75,6 @@ fn monday_of_week(date: NaiveDate) -> NaiveDate {
         Weekday::Sun => 6,
     };
     date - Duration::days(offset)
-}
-
-fn status_badge(name: &str) -> BadgeVariant {
-    match name.to_lowercase().as_str() {
-        "open" => BadgeVariant::Blue,
-        "in_progress" | "in progress" => BadgeVariant::Yellow,
-        "resolved" => BadgeVariant::Green,
-        "closed" => BadgeVariant::Gray,
-        _ => BadgeVariant::Gray,
-    }
 }
 
 fn priority_badge(name: &str) -> BadgeVariant {
@@ -223,7 +209,7 @@ pub fn DashboardPage() -> Element {
                             } else {
                                 for t in recent_tickets.iter() {
                                     {
-                                        let sv = status_badge(&t.status.name);
+                                        let sv = ticket_status_badge(&t.status.name);
                                         let pv = priority_badge(&t.priority.name);
                                         let tid = t.id.to_string();
                                         let snap = if t.status.name.is_empty() { "-".to_string() } else { t.status.name.clone() };
