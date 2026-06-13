@@ -253,17 +253,13 @@ pub struct CreateTicketRequest {
     pub scheduled_start: Option<DateTime<Utc>>,
     pub scheduled_end: Option<DateTime<Utc>>,
     pub estimated_hours: Option<f64>,
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::utils::default_true")]
     pub is_billable: bool,
     pub asset_id: Option<Uuid>,
     #[serde(default)]
     pub custom_fields: serde_json::Value,
     #[serde(default)]
     pub tags: Vec<String>,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 /// Update ticket request

@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build:css": "tailwindcss -i ./input.css -o ./assets/styles.css --minify",
-    "watch:css": "tailwindcss -i ./input.css -o ./assets/styles.css --watch",
-    "dev": "concurrently \"Tail\" \"dx serve\"",
+    "build:css": "bun x @tailwindcss/cli -i ./input.css -o ./assets/styles.css --minify",
+    "watch:css": "bun x @tailwindcss/cli -i ./input.css -o ./assets/styles.css --watch",
+    "dev": "concurrently \"bun x @tailwindcss/cli -i ./input.css -o ./assets/styles.css --watch\" \"dx serve\"",
     "build": "bun run build:css && dx build --release"
   },
   "devDependencies": {

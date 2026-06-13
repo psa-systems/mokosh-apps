@@ -444,6 +444,22 @@ impl BadgeVariant {
     }
 }
 
+/// Badge color for a ticket status. Accepts either the raw server status
+/// name (`open`, `in_progress`) or its humanized label (`Open`, `In
+/// Progress`) by normalizing case and spaces. This is the single source
+/// for the dashboard, ticket-list, and portal ticket tables, which each
+/// previously kept a divergent copy (some omitted the `closed` arm).
+pub fn ticket_status_badge(status: &str) -> BadgeVariant {
+    match status.to_lowercase().replace(' ', "_").as_str() {
+        "open" => BadgeVariant::Blue,
+        "in_progress" => BadgeVariant::Yellow,
+        "pending" => BadgeVariant::Gray,
+        "resolved" => BadgeVariant::Green,
+        "closed" => BadgeVariant::Gray,
+        _ => BadgeVariant::Gray,
+    }
+}
+
 #[derive(Props, Clone, PartialEq)]
 pub struct BadgeProps {
     children: Element,

@@ -16,6 +16,7 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::Input;
+use crate::utils::url::urlencoding_minimal;
 
 #[derive(Clone, Debug, Deserialize)]
 struct PickerCompany {
@@ -185,26 +186,4 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
             }
         }
     }
-}
-
-/// Tiny percent-encoder for the few characters that actually break URL
-/// query strings. The server-side ILIKE comparison tolerates trimmed
-/// raw text, so the only chars we need to escape are `&`, `#`, `?`,
-/// `+`, space, and a couple of control bytes. Avoids pulling in a full
-/// `urlencoding` crate just for the picker.
-fn urlencoding_minimal(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            ' ' => out.push_str("%20"),
-            '&' => out.push_str("%26"),
-            '#' => out.push_str("%23"),
-            '?' => out.push_str("%3F"),
-            '+' => out.push_str("%2B"),
-            '=' => out.push_str("%3D"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("%{:02X}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
 }
