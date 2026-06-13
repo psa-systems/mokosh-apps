@@ -33,6 +33,12 @@ pub struct KbCategory {
 /// `KbArticleResponse` subset. Shared by the agent article views and the
 /// portal feed (the server returns the same DTO from
 /// `GET /api/v1/portal/kb`).
+///
+/// The server's `KbArticleResponse` also carries `author_id`. This client
+/// omits it on purpose: serde drops the unknown key, nothing here displays
+/// the author, so there is no fix to make. Add
+/// `#[serde(default)] pub author_id: Option<Uuid>` only if author display
+/// is wanted later (MAPPS-138, recorded no-fix).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct KbArticle {
     pub id: Uuid,

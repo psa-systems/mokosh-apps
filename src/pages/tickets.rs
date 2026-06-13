@@ -123,8 +123,11 @@ struct UserOpt {
 #[derive(Clone, Debug, Deserialize)]
 struct RemoteTimeEntry {
     date: NaiveDate,
+    // `i32` to match the server `TimeEntryResponse.duration_minutes`
+    // (mokosh-types::time_tracking, MAPPS-138). Was `i64`; harmless over
+    // JSON but the types disagreed.
     #[serde(default)]
-    duration_minutes: i64,
+    duration_minutes: i32,
     #[serde(default)]
     notes: Option<String>,
     #[serde(default)]
@@ -916,7 +919,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
         .flatten()
         .map(|p| p.data)
         .unwrap_or_default();
-    let total_minutes: i64 = time_entries.iter().map(|e| e.duration_minutes).sum();
+    let total_minutes: i32 = time_entries.iter().map(|e| e.duration_minutes).sum();
     let total_hours_label = format!("{:.1} hours", total_minutes as f64 / 60.0);
 
     rsx! {

@@ -48,8 +48,10 @@ pub struct UpsertSlaPolicyRequest {
 // --- Targets (PMS-109) ---------------------------------------------------
 
 /// Mirror of the server `SlaTargetResponse`. `first_response_hours` /
-/// `resolution_hours` are `Decimal` server-side; we keep `Decimal` so the
-/// JSON number decodes losslessly.
+/// `resolution_hours` are `Decimal` server-side. Under the `rust_decimal`
+/// `serde` feature these serialize as a JSON *string* (not a number); we
+/// keep `Decimal` with the same feature enabled so the string decodes
+/// losslessly (MAPPS-138).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct SlaTarget {
     pub id: Uuid,

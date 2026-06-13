@@ -85,6 +85,11 @@ impl OidcConfig {
     /// bunyip-api itself, NOT mokosh-server. A `msp.<tld>` deploy resolves to
     /// issuer `https://api.<tld>` (bunyip-api) and hub `https://<tld>`
     /// (bunyip-web), so one SPA image targets staging and prod identically.
+    ///
+    /// Consequence (confirmed MAPPS-138): mokosh-server's own
+    /// `/api/v1/auth/*` surface (LoginRequest/LoginResponse/
+    /// RefreshTokenResponse) is intentionally NOT consumed by this SPA. It
+    /// is backend-only; this client authenticates exclusively via bunyip.
     fn resolve() -> Self {
         let mut cfg = Self::from_env();
 

@@ -5,6 +5,10 @@
 //! fields, so the server can add columns without breaking decoding here;
 //! optional fields carry `#[serde(default)]` so a missing key decodes to
 //! `None`/empty rather than failing the whole response.
+//!
+//! Verified-clean baseline (MAPPS-138): this DTO and `pages/audit_log.rs`
+//! match the server audit contract 1:1 as of mokosh-server @ 9cd4103. No
+//! drift; recorded for completeness, no change required.
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
