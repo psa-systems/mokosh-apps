@@ -406,8 +406,8 @@ fn UserMenu() -> Element {
 
     let logout = move |_| {
         open.set(false);
-        // Order matters here, see the same warning on `hooks::use_logout`:
-        // any write to the auth signal BEFORE `location.replace` schedules
+        // Order matters here: any write to the auth signal BEFORE
+        // `location.replace` schedules
         // a Dioxus re-render. On that re-render `use_require_auth` (the
         // route guard) sees `user = None` on `/dashboard` and calls
         // `navigator.push(Route::Login {})`, which puts `/login` on TOP
@@ -676,7 +676,7 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
 
                         // User menu
                         div { class: "flex items-center",
-                            UserCircleIcon { size: IconSize::Large, class: "text-gray-400".to_string() }
+                            PortalUserMenu {}
                         }
                     }
                 }
@@ -701,6 +701,76 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
                         "Powered by Mokosh Platform"
                     }
                     VersionFooter {}
+                }
+            }
+        }
+    }
+}
+
+/// Portal top-bar user menu: avatar button + dropdown. The portal header
+/// previously rendered a bare avatar icon with no way to reach account
+/// settings or sign out (MAPPS-140); this mirrors the app-side
+/// [`UserMenu`] with the entries that apply to a portal (client) user.
+#[component]
+fn PortalUserMenu() -> Element {
+    let mut open = use_signal(|| false);
+    let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
+    // Account Settings lives on the bunyip hub (cross-origin identity:
+    // email, password, MFA), so it is a top-level `<a>` rather than an
+    // in-SPA `Link`.
+    let hub_account_settings = cfg.hub_url("/settings");
+    // RP-initiated logout, identical to the app-side `UserMenu`: bunyip's
+    // `GET /v1/auth/logout?url=<absolute>` clears the shared cookies and
+    // 302s back to this SPA's origin root, signed out.
+    let issuer = cfg.issuer.trim_end_matches('/');
+    let post_logout_target = web_sys::window()
+        .and_then(|w| w.location().origin().ok())
+        .map(|origin| format!("{}/", origin.trim_end_matches('/')))
+        .unwrap_or_else(|| cfg.hub_url("/"));
+    let hub_logout = format!(
+        "{issuer}/v1/auth/logout?url={}",
+        js_sys::encode_uri_component(&post_logout_target)
+            .as_string()
+            .unwrap_or(post_logout_target)
+    );
+
+    let logout = move |_| {
+        open.set(false);
+        // Same ordering rule as `UserMenu::logout`: clear storage, then
+        // hard-navigate so the full reload resets in-memory auth state
+        // without a router re-render racing the redirect.
+        crate::modules::oidc::storage::clear_auth();
+        if let Some(win) = web_sys::window() {
+            let _ = win.location().replace(&hub_logout);
+        }
+    };
+
+    rsx! {
+        div { class: "relative",
+            button {
+                class: "flex items-center focus:outline-none",
+                aria_label: "User menu",
+                onclick: move |_| {
+                    let next = !*open.read();
+                    open.set(next);
+                },
+                UserCircleIcon { size: IconSize::Large, class: "text-gray-400".to_string() }
+            }
+            if *open.read() {
+                div {
+                    class: "absolute right-0 mt-2 w-52 rounded-md shadow-lg bg-white dark:bg-gray-800 ring-1 ring-black ring-opacity-5 z-20 p-1",
+                    role: "menu",
+                    a {
+                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
+                        href: "{hub_account_settings}",
+                        "Account Settings"
+                    }
+                    div { class: "border-t border-gray-200 dark:border-gray-700 my-1" }
+                    button {
+                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-700",
+                        onclick: logout,
+                        "Logout"
+                    }
                 }
             }
         }

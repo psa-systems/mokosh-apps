@@ -13,6 +13,7 @@ use crate::components::{
     TableLoading, TableRow,
 };
 use crate::hooks::auth::use_auth;
+use crate::modules::auth::UserRole;
 
 /// Subset of mokosh-server's `InvitationResponse` rendered here.
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -31,7 +32,10 @@ struct PaginatedInvitations {
 #[component]
 pub fn TeamPage() -> Element {
     let auth = use_auth();
-    let is_admin = auth.read().has_any_role(&["admin", "super_admin"]);
+    let is_admin = {
+        let a = auth.read();
+        a.has_role(UserRole::Admin) || a.has_role(UserRole::SuperAdmin)
+    };
 
     let mut email = use_signal(String::new);
     let mut role = use_signal(|| "technician".to_string());

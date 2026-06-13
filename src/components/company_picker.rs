@@ -1,7 +1,8 @@
 //! Reusable Company picker.
 //!
-//! Hits `GET /v1/companies?q=...&per_page=20` with a small debounce
-//! and renders the matches in a click-to-select dropdown. The selected
+//! Hits `GET /contacts/companies?q=...&per_page=20` on each keystroke
+//! (no debounce) and renders the matches in a click-to-select dropdown.
+//! The selected
 //! company's UUID is reported back via the `onselect` callback; the
 //! displayed name is reported via the `value` signal so the calling
 //! form can persist the human label across renders.
@@ -15,6 +16,7 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::Input;
+use crate::utils::url::urlencoding_minimal;
 
 #[derive(Clone, Debug, Deserialize)]
 struct PickerCompany {
@@ -123,6 +125,13 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                 },
             }
             if *show_dropdown.read() {
+                // Transparent full-viewport backdrop: a click anywhere outside
+                // the dropdown dismisses it. Sits below the dropdown (z-10 vs
+                // z-20) so the rows stay clickable.
+                div {
+                    class: "fixed inset-0 z-10",
+                    onclick: move |_| show_dropdown.set(false),
+                }
                 div {
                     class: "absolute z-20 left-0 right-0 mt-1 max-h-72 overflow-y-auto rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg",
                     match &*snap {
@@ -177,26 +186,4 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
             }
         }
     }
-}
-
-/// Tiny percent-encoder for the few characters that actually break URL
-/// query strings. The server-side ILIKE comparison tolerates trimmed
-/// raw text, so the only chars we need to escape are `&`, `#`, `?`,
-/// `+`, space, and a couple of control bytes. Avoids pulling in a full
-/// `urlencoding` crate just for the picker.
-fn urlencoding_minimal(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            ' ' => out.push_str("%20"),
-            '&' => out.push_str("%26"),
-            '#' => out.push_str("%23"),
-            '?' => out.push_str("%3F"),
-            '+' => out.push_str("%2B"),
-            '=' => out.push_str("%3D"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("%{:02X}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
 }

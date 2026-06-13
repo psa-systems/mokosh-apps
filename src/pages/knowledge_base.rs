@@ -16,8 +16,8 @@
 //! string-returning `*_authed` API helpers carry the bearer token, and
 //! loading / empty / error states match the contacts pages.
 
+use chrono::{DateTime, Utc};
 use dioxus::prelude::*;
-use serde::Deserialize;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ChevronRightIcon, CollapsibleRail,
@@ -29,6 +29,8 @@ use crate::modules::kb::{
     CreateKbArticleRequest, KbArticle, KbArticleFeedback, KbArticleVersion, KbCategory,
     UpdateKbArticleRequest,
 };
+use crate::utils::url::urlencoding_minimal;
+use crate::utils::Paginated;
 use crate::Route;
 
 /// Rows per page for the article list (mirrors contacts `PER_PAGE`).
@@ -36,41 +38,6 @@ const PER_PAGE: usize = 25;
 
 /// How many recent articles the home page surfaces.
 const RECENT_LIMIT: usize = 5;
-
-/// Server-side paginated envelope (`PaginatedResponse<T>`): `{ data, meta }`.
-#[derive(Clone, Debug, Deserialize)]
-struct Paginated<T> {
-    data: Vec<T>,
-    #[serde(default)]
-    meta: PaginationMeta,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-struct PaginationMeta {
-    #[serde(default)]
-    total: u64,
-}
-
-/// Tiny percent-encoder for query-string values, copied from
-/// `contacts.rs` so the two pages stay consistent without pulling in the
-/// full `urlencoding` crate. The server ILIKE / similarity-matches the
-/// result so non-ASCII passes straight through.
-fn urlencoding_minimal(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            ' ' => out.push_str("%20"),
-            '&' => out.push_str("%26"),
-            '#' => out.push_str("%23"),
-            '?' => out.push_str("%3F"),
-            '+' => out.push_str("%2B"),
-            '=' => out.push_str("%3D"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("%{:02X}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
-}
 
 /// Derive a URL slug from a title: lowercase, non-alphanumerics collapse
 /// to single hyphens, trimmed. Mirrors the obvious server expectation
@@ -232,10 +199,9 @@ fn status_variant(raw: &str) -> BadgeVariant {
 /// Truncate an ISO timestamp to its date portion for compact display.
 /// The server returns RFC 3339 (`2026-06-05T12:34:56Z`); we show the
 /// leading `YYYY-MM-DD`. Falls back to the raw string if it is shorter.
-fn date_only(ts: &Option<String>) -> String {
+fn date_only(ts: &Option<DateTime<Utc>>) -> String {
     match ts {
-        Some(s) if s.len() >= 10 => s[..10].to_string(),
-        Some(s) => s.clone(),
+        Some(dt) => dt.format("%Y-%m-%d").to_string(),
         None => "-".to_string(),
     }
 }
@@ -264,8 +230,10 @@ pub fn KBHomePage() -> Element {
     let recent_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        let path =
-            format!("/kb/articles?page=1&per_page={RECENT_LIMIT}&sort=updated_at&sort_dir=desc");
+        // No `sort`/`sort_dir`: the server `KbService::list_articles`
+        // hardcodes its ORDER BY and silently ignores those params, so
+        // sending them was a no-op (MAPPS-138).
+        let path = format!("/kb/articles?page=1&per_page={RECENT_LIMIT}");
         crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(&path, &token)
             .await
             .ok()
@@ -287,12 +255,12 @@ pub fn KBHomePage() -> Element {
     };
 
     // Submitting the home search jumps to the full article list, which
-    // owns the live `?q=` filter against the server. Routes carry no
-    // query string, so the term is not forwarded; the list's own search
-    // box is the canonical filter entry point.
+    // owns the live `?q=` filter against the server. The typed term is
+    // forwarded via the route's `?q=` query so the list opens pre-filtered.
     let go_search = move |e: FormEvent| {
         e.prevent_default();
-        navigator.push(Route::KBArticleList {});
+        let q = search.read().trim().to_string();
+        navigator.push(Route::KBArticleList { q });
     };
 
     rsx! {
@@ -402,7 +370,7 @@ fn CategoryCard(props: CategoryCardProps) -> Element {
             r#type: "button",
             class: "block w-full text-left",
             onclick: move |_| {
-                navigator.push(Route::KBArticleList {});
+                navigator.push(Route::KBArticleList { q: String::new() });
             },
             Card { class: "hover:shadow-lg transition-shadow cursor-pointer",
                 div { class: "flex items-start",
@@ -453,9 +421,12 @@ fn ArticleItem(props: ArticleItemProps) -> Element {
 // ============================================================================
 
 /// Article list page: search box + category filter, server-paginated.
+///
+/// `initial_q` seeds the search box from the `?q=` route query so the KB
+/// home search carries the typed term through to this list.
 #[component]
-pub fn KBArticleListPage() -> Element {
-    let mut search = use_signal(String::new);
+pub fn KBArticleListPage(#[props(default)] initial_q: String) -> Element {
+    let mut search = use_signal(|| initial_q.clone());
     let mut category_filter = use_signal(String::new);
     let mut page = use_signal(|| 1usize);
 
@@ -1384,7 +1355,7 @@ fn KbBreadcrumb(path: Vec<KbCategory>, title: String) -> Element {
             for cat in path.iter() {
                 ChevronRightIcon { size: IconSize::Small }
                 Link {
-                    to: Route::KBArticleList {},
+                    to: Route::KBArticleList { q: String::new() },
                     class: "hover:text-gray-700 dark:hover:text-gray-200",
                     "{cat.name}"
                 }

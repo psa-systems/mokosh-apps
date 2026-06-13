@@ -120,6 +120,7 @@ struct LookupQuery {
 async fn lookup_tax_rate(
     State(state): State<BillingRouterState>,
     RequireAuth(user): RequireAuth,
+    _finance: RequireFinance,
     Query(q): Query<LookupQuery>,
 ) -> AppResult<Json<TaxRateResponse>> {
     let r = state

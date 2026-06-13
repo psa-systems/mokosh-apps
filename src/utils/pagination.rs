@@ -54,18 +54,30 @@ impl PaginationParams {
         self.sort_dir.to_lowercase() == "asc"
     }
 
-    /// Get SQL ORDER BY clause
+    /// Get SQL ORDER BY clause.
+    ///
+    /// When an explicit, allow-listed `sort` is supplied, the requested
+    /// `sort_dir` is appended (`field ASC|DESC`). Otherwise the caller's
+    /// `default_field` is used: a bare column name gets the default
+    /// direction appended, but a default that already encodes its own
+    /// ordering (a multi-column clause, or one with an explicit
+    /// `ASC`/`DESC`) is emitted verbatim. Emitting compound defaults
+    /// verbatim is what stops the old `"field DESC" -> "field DESC DESC"`
+    /// double-append that produced invalid SQL on the no-`?sort=` path.
     pub fn order_by(&self, default_field: &str, allowed_fields: &[&str]) -> String {
-        let field = self
+        let direction = if self.is_ascending() { "ASC" } else { "DESC" };
+
+        match self
             .sort
             .as_ref()
             .filter(|f| allowed_fields.contains(&f.as_str()))
-            .map(|s| s.as_str())
-            .unwrap_or(default_field);
-
-        let direction = if self.is_ascending() { "ASC" } else { "DESC" };
-
-        format!("{} {}", field, direction)
+        {
+            Some(field) => format!("{field} {direction}"),
+            // A compound or already-directional default is emitted as-is;
+            // appending a direction here would corrupt it.
+            None if default_field.contains([' ', ',']) => default_field.to_string(),
+            None => format!("{default_field} {direction}"),
+        }
     }
 }
 
@@ -127,46 +139,6 @@ impl<T> PaginatedResponse<T> {
             data: self.data.into_iter().map(f).collect(),
             meta: self.meta,
         }
-    }
-}
-
-/// Filter parameters that can be combined with pagination
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct FilterParams {
-    /// Search query
-    pub q: Option<String>,
-    /// Filter by status
-    pub status: Option<String>,
-    /// Filter by company ID
-    pub company_id: Option<uuid::Uuid>,
-    /// Filter by assigned user ID
-    pub assigned_to: Option<uuid::Uuid>,
-    /// Filter by date range start
-    pub from_date: Option<chrono::NaiveDate>,
-    /// Filter by date range end
-    pub to_date: Option<chrono::NaiveDate>,
-    /// Filter by tags (comma-separated)
-    pub tags: Option<String>,
-}
-
-impl FilterParams {
-    /// Get tags as a vector
-    pub fn tags_vec(&self) -> Vec<String> {
-        self.tags
-            .as_ref()
-            .map(|t| t.split(',').map(|s| s.trim().to_string()).collect())
-            .unwrap_or_default()
-    }
-
-    /// Check if any filter is active
-    pub fn has_filters(&self) -> bool {
-        self.q.is_some()
-            || self.status.is_some()
-            || self.company_id.is_some()
-            || self.assigned_to.is_some()
-            || self.from_date.is_some()
-            || self.to_date.is_some()
-            || self.tags.is_some()
     }
 }
 
@@ -260,6 +232,43 @@ mod tests {
     }
 
     #[test]
+    fn test_order_by_no_double_direction() {
+        // A default that already embeds a direction must be emitted
+        // verbatim on the no-sort path, never "... DESC DESC".
+        let no_sort = PaginationParams::default();
+        let allowed = &["invoice_date", "due_date"];
+        assert_eq!(
+            no_sort.order_by("invoice_date DESC", allowed),
+            "invoice_date DESC"
+        );
+
+        // A multi-column default is emitted verbatim too.
+        let allowed_te = &["date", "duration_minutes", "created_at"];
+        assert_eq!(
+            no_sort.order_by("date DESC, start_time DESC", allowed_te),
+            "date DESC, start_time DESC"
+        );
+
+        // A bare default field still gets the configured direction.
+        assert_eq!(
+            no_sort.order_by("payment_date", &["payment_date"]),
+            "payment_date DESC"
+        );
+
+        // An explicit allow-listed sort overrides the default and gets
+        // exactly one direction.
+        let sorted = PaginationParams {
+            sort: Some("due_date".to_string()),
+            sort_dir: "asc".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            sorted.order_by("invoice_date DESC", allowed),
+            "due_date ASC"
+        );
+    }
+
+    #[test]
     fn test_paginated_response() {
         let data = vec![1, 2, 3, 4, 5];
         let response = PaginatedResponse::new(data, 1, 5, 20);
@@ -292,35 +301,5 @@ mod tests {
 
         assert_eq!(mapped.data, vec![2, 4, 6]);
         assert_eq!(mapped.meta.total, 3);
-    }
-
-    #[test]
-    fn test_filter_params_tags() {
-        let params = FilterParams {
-            tags: Some("tag1, tag2, tag3".to_string()),
-            ..Default::default()
-        };
-        assert_eq!(params.tags_vec(), vec!["tag1", "tag2", "tag3"]);
-
-        let empty = FilterParams::default();
-        assert!(empty.tags_vec().is_empty());
-    }
-
-    #[test]
-    fn test_filter_params_has_filters() {
-        let empty = FilterParams::default();
-        assert!(!empty.has_filters());
-
-        let with_query = FilterParams {
-            q: Some("search".to_string()),
-            ..Default::default()
-        };
-        assert!(with_query.has_filters());
-
-        let with_status = FilterParams {
-            status: Some("active".to_string()),
-            ..Default::default()
-        };
-        assert!(with_status.has_filters());
     }
 }

@@ -267,9 +267,14 @@ pub struct PaginationProps {
 
 #[component]
 pub fn Pagination(props: PaginationProps) -> Element {
-    let total_pages = props.total_items.div_ceil(props.per_page);
-    let start_item = (props.current_page - 1) * props.per_page + 1;
-    let end_item = std::cmp::min(props.current_page * props.per_page, props.total_items);
+    // Guard zero inputs so a direct caller cannot panic: per_page=0 would
+    // divide-by-zero in div_ceil and current_page=0 would underflow the usize
+    // subtraction. DataTable always passes >=1, but clamp defensively.
+    let per_page = props.per_page.max(1);
+    let current_page = props.current_page.max(1);
+    let total_pages = props.total_items.div_ceil(per_page);
+    let start_item = (current_page - 1) * per_page + 1;
+    let end_item = std::cmp::min(current_page * per_page, props.total_items);
 
     if total_pages <= 1 {
         return rsx! {};
@@ -436,6 +441,22 @@ impl BadgeVariant {
                 "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300"
             }
         }
+    }
+}
+
+/// Badge color for a ticket status. Accepts either the raw server status
+/// name (`open`, `in_progress`) or its humanized label (`Open`, `In
+/// Progress`) by normalizing case and spaces. This is the single source
+/// for the dashboard, ticket-list, and portal ticket tables, which each
+/// previously kept a divergent copy (some omitted the `closed` arm).
+pub fn ticket_status_badge(status: &str) -> BadgeVariant {
+    match status.to_lowercase().replace(' ', "_").as_str() {
+        "open" => BadgeVariant::Blue,
+        "in_progress" => BadgeVariant::Yellow,
+        "pending" => BadgeVariant::Gray,
+        "resolved" => BadgeVariant::Green,
+        "closed" => BadgeVariant::Gray,
+        _ => BadgeVariant::Gray,
     }
 }
 

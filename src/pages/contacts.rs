@@ -8,6 +8,8 @@ use crate::components::{
     PageHeader, PlusIcon, SearchInput, Select, SelectOption, SortDirection, Table, TableBody,
     TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
+use crate::modules::contacts::Address;
+use crate::utils::url::urlencoding_minimal;
 use crate::Route;
 
 /// Rows per page for the client-side paginated list views (F3).
@@ -78,28 +80,6 @@ fn contact_sort_query(
         SortDirection::Descending => "desc",
     };
     Some((field, dir))
-}
-
-/// Tiny percent-encoder for query-string values: spaces, `&`, `#`, `?`,
-/// `+`, `=`, and control bytes. Avoids pulling in the full `urlencoding`
-/// crate for the handful of places we build paths inline. The server's
-/// validators ILIKE / exact-match the result so non-ASCII passes
-/// straight through.
-fn urlencoding_minimal(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            ' ' => out.push_str("%20"),
-            '&' => out.push_str("%26"),
-            '#' => out.push_str("%23"),
-            '?' => out.push_str("%3F"),
-            '+' => out.push_str("%2B"),
-            '=' => out.push_str("%3D"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("%{:02X}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 /// Map the server's lowercased `CompanyType` enum tag (`"client"`,
@@ -487,7 +467,7 @@ struct CompanyEditPayload {
     #[serde(default)]
     phone: Option<String>,
     #[serde(default)]
-    address: CompanyAddress,
+    address: Address,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1005,7 +985,7 @@ struct CompanyDetail {
     #[serde(default)]
     phone: Option<String>,
     #[serde(default)]
-    address: CompanyAddress,
+    address: Address,
     #[serde(default)]
     account_manager_name: Option<String>,
     #[serde(default)]
@@ -1016,28 +996,12 @@ struct CompanyDetail {
     open_ticket_count: Option<i64>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
-struct CompanyAddress {
-    #[serde(default)]
-    line1: Option<String>,
-    #[serde(default)]
-    line2: Option<String>,
-    #[serde(default)]
-    city: Option<String>,
-    #[serde(default)]
-    state: Option<String>,
-    #[serde(default)]
-    postal_code: Option<String>,
-    #[serde(default)]
-    country: Option<String>,
-}
-
 #[derive(Clone, Debug, Deserialize)]
 struct SiteSummary {
     id: uuid::Uuid,
     name: String,
     #[serde(default)]
-    address: CompanyAddress,
+    address: Address,
     #[serde(default)]
     is_primary: bool,
     #[serde(default)]

@@ -10,7 +10,7 @@ pub mod modules;
 pub mod pages;
 pub mod utils;
 
-pub use modules::auth::{AuthState, CurrentUser};
+pub use modules::auth::CurrentUser;
 pub use utils::error::{AppError, AppResult};
 
 /// Layout component that gates all authenticated routes (declared
@@ -265,8 +265,8 @@ pub enum Route {
     #[route("/kb")]
     KBHome {},
 
-    #[route("/kb/articles")]
-    KBArticleList {},
+    #[route("/kb/articles?:q")]
+    KBArticleList { q: String },
 
     #[route("/kb/articles/new")]
     KBArticleNew {},
@@ -635,8 +635,8 @@ fn KBHome() -> Element {
 }
 
 #[component]
-fn KBArticleList() -> Element {
-    rsx! { knowledge_base::KBArticleListPage {} }
+fn KBArticleList(q: String) -> Element {
+    rsx! { knowledge_base::KBArticleListPage { initial_q: q } }
 }
 
 #[component]
@@ -745,7 +745,7 @@ fn NotFound(route: Vec<String>) -> Element {
 
 /// Prelude module for common imports
 pub mod prelude {
-    pub use crate::modules::auth::{AuthState, CurrentUser};
+    pub use crate::modules::auth::CurrentUser;
     pub use crate::utils::error::{AppError, AppResult};
     pub use crate::Route;
     pub use chrono::{DateTime, NaiveDate, NaiveTime, Utc};

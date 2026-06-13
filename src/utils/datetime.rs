@@ -76,6 +76,16 @@ pub fn format_user_datetime(dt: DateTime<Utc>, format: Option<&str>) -> String {
     }
 }
 
+/// MAPPS-144: build the picker label for a date/time format. Prefills
+/// the dropdown option with a live example rendered against `now`,
+/// followed by the raw token string in parentheses, e.g.
+/// `Jun-11-2026 08:40 (MMM-DD-YYYY HH:mm)`. Showing the rendered result
+/// next to the grammar means a user recognizes the format they want
+/// without decoding the tokens in their head.
+pub fn preset_label(now: DateTime<Utc>, fmt: &str) -> String {
+    format!("{} ({})", format_user_datetime(now, Some(fmt)), fmt)
+}
+
 /// Walk the format string left to right; replace the longest matching
 /// token at each position, copy any other byte verbatim.
 fn render_format(local: DateTime<Local>, format: &str) -> String {
@@ -140,6 +150,16 @@ fn render_token(tok: &str, local: DateTime<Local>) -> String {
         "a" => if is_pm { "pm" } else { "am" }.to_string(),
         "a.m." => if is_pm { "p.m." } else { "a.m." }.to_string(),
         _ => tok.to_string(),
+    }
+}
+
+/// Full English month name for `1..=12`; empty string for out-of-range
+/// input. The single shared copy for headers that render a month label
+/// (the calendar and timesheet pages previously each kept their own).
+pub fn month_name(month: u32) -> &'static str {
+    match month {
+        1..=12 => month_full(month),
+        _ => "",
     }
 }
 
@@ -437,6 +457,29 @@ mod tests {
         // them both correctly and the grammar has no notion of
         // "intended group".
         assert!(token_warnings("HH:mmYYYY").is_empty());
+    }
+
+    #[test]
+    fn preset_label_prefills_example_and_keeps_grammar() {
+        // 11 June 2026 08:40:49 in whatever the test host's local zone
+        // is; assert on the parts that do not depend on the offset
+        // (the bracketed token string) plus the fact that the rendered
+        // half differs from the raw format (tokens actually expanded).
+        let now = Utc
+            .with_ymd_and_hms(2026, 6, 11, 8, 40, 49)
+            .single()
+            .unwrap();
+        let label = preset_label(now, "YYYY-MM-DD");
+        assert!(
+            label.ends_with(" (YYYY-MM-DD)"),
+            "label keeps the token string in parens: {label:?}",
+        );
+        let rendered = label.trim_end_matches(" (YYYY-MM-DD)");
+        assert_ne!(rendered, "YYYY-MM-DD", "example half is rendered, not raw");
+        assert!(
+            rendered.contains("2026"),
+            "example carries the year: {label:?}"
+        );
     }
 
     #[test]

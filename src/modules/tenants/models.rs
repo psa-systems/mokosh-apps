@@ -132,23 +132,3 @@ impl From<Tenant> for TenantResponse {
         }
     }
 }
-
-/// Tenant usage statistics
-#[derive(Debug, Clone, Serialize)]
-pub struct TenantUsage {
-    pub tenant_id: Uuid,
-    pub user_count: i64,
-    pub company_count: i64,
-    pub contact_count: i64,
-    pub ticket_count: i64,
-    pub asset_count: i64,
-    pub storage_bytes: i64,
-}
-
-/// Module configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModuleConfig {
-    pub module_name: String,
-    pub is_enabled: bool,
-    pub config: serde_json::Value,
-}

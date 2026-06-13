@@ -51,29 +51,45 @@ impl BillingService {
         let offset = pagination.offset() as i64;
         let limit = pagination.limit() as i64;
 
+        // The list query binds $1=tenant_id, $2=limit, $3=offset, so filter
+        // placeholders start at $4. The count query omits limit/offset, so
+        // its filter placeholders start at $2. Build both clauses together
+        // and bind them in the same order to keep the chains aligned.
         let mut conditions = vec!["tenant_id = $1".to_string()];
+        let mut count_conditions = vec!["tenant_id = $1".to_string()];
         let mut param_idx = 4;
+        let mut count_idx = 2;
         if filter.company_id.is_some() {
             conditions.push(format!("company_id = ${param_idx}"));
+            count_conditions.push(format!("company_id = ${count_idx}"));
             param_idx += 1;
+            count_idx += 1;
         }
         if filter.status.is_some() {
             conditions.push(format!("status = ${param_idx}"));
+            count_conditions.push(format!("status = ${count_idx}"));
             param_idx += 1;
+            count_idx += 1;
         }
         if filter.contract_id.is_some() {
             conditions.push(format!("contract_id = ${param_idx}"));
+            count_conditions.push(format!("contract_id = ${count_idx}"));
             param_idx += 1;
+            count_idx += 1;
         }
         if filter.q.is_some() {
             conditions.push(format!(
                 "(invoice_number ILIKE ${param_idx} OR po_number ILIKE ${param_idx})"
             ));
+            count_conditions.push(format!(
+                "(invoice_number ILIKE ${count_idx} OR po_number ILIKE ${count_idx})"
+            ));
         }
 
         let where_clause = conditions.join(" AND ");
+        let count_where = count_conditions.join(" AND ");
         let order_by = pagination.order_by(
-            "invoice_date DESC",
+            "invoice_date",
             &["invoice_date", "due_date", "total", "created_at"],
         );
         let query = format!(
@@ -89,7 +105,7 @@ impl BillingService {
             LIMIT $2 OFFSET $3
             "#
         );
-        let count_query = format!("SELECT COUNT(*) FROM invoices WHERE {where_clause}");
+        let count_query = format!("SELECT COUNT(*) FROM invoices WHERE {count_where}");
 
         let mut q = sqlx::query_as::<_, InvoiceRow>(&query)
             .bind(tenant_id)
@@ -116,7 +132,11 @@ impl BillingService {
 
         let rows = q.fetch_all(self.db.pool()).await?;
         let total = cq.fetch_one(self.db.pool()).await?;
-        Ok((rows.into_iter().map(Into::into).collect(), total as u64))
+        let data = rows
+            .into_iter()
+            .map(InvoiceResponse::try_from)
+            .collect::<AppResult<Vec<_>>>()?;
+        Ok((data, total as u64))
     }
 
     /// PMS-37: create an invoice with its line items in one
@@ -668,8 +688,9 @@ impl BillingService {
                     serde_json::from_str(&decrypted).unwrap_or(serde_json::Value::Null);
                 Ok(PaymentGatewayConfigResponse {
                     id: r.id,
-                    provider: GatewayProvider::from_str(&r.provider)
-                        .unwrap_or(GatewayProvider::Stripe),
+                    provider: GatewayProvider::from_str(&r.provider).ok_or_else(|| {
+                        AppError::Database(format!("unknown gateway provider '{}'", r.provider))
+                    })?,
                     is_active: r.is_active,
                     is_test_mode: r.is_test_mode,
                     config,
@@ -749,20 +770,27 @@ impl BillingService {
     ) -> AppResult<(Vec<PaymentResponse>, u64)> {
         let offset = pagination.offset() as i64;
         let limit = pagination.limit() as i64;
+        // List binds $1=tenant_id, $2=limit, $3=offset (filters from $4);
+        // count omits limit/offset (filters from $2). Keep the two clauses
+        // in lockstep so the bind chains line up.
         let mut conditions = vec!["tenant_id = $1".to_string()];
+        let mut count_conditions = vec!["tenant_id = $1".to_string()];
         let mut param_idx = 4;
+        let mut count_idx = 2;
         if filter.invoice_id.is_some() {
             conditions.push(format!("invoice_id = ${param_idx}"));
+            count_conditions.push(format!("invoice_id = ${count_idx}"));
             param_idx += 1;
+            count_idx += 1;
         }
         if filter.company_id.is_some() {
             conditions.push(format!("company_id = ${param_idx}"));
+            count_conditions.push(format!("company_id = ${count_idx}"));
         }
         let where_clause = conditions.join(" AND ");
-        let order_by = pagination.order_by(
-            "payment_date DESC",
-            &["payment_date", "amount", "created_at"],
-        );
+        let count_where = count_conditions.join(" AND ");
+        let order_by =
+            pagination.order_by("payment_date", &["payment_date", "amount", "created_at"]);
         let query = format!(
             r#"
             SELECT id, tenant_id, invoice_id, company_id, payment_date, amount,
@@ -774,7 +802,7 @@ impl BillingService {
             LIMIT $2 OFFSET $3
             "#
         );
-        let count_query = format!("SELECT COUNT(*) FROM payments WHERE {where_clause}");
+        let count_query = format!("SELECT COUNT(*) FROM payments WHERE {count_where}");
         let mut q = sqlx::query_as::<_, PaymentRow>(&query)
             .bind(tenant_id)
             .bind(limit)
@@ -790,7 +818,11 @@ impl BillingService {
         }
         let rows = q.fetch_all(self.db.pool()).await?;
         let total = cq.fetch_one(self.db.pool()).await?;
-        Ok((rows.into_iter().map(Into::into).collect(), total as u64))
+        let data = rows
+            .into_iter()
+            .map(PaymentResponse::try_from)
+            .collect::<AppResult<Vec<_>>>()?;
+        Ok((data, total as u64))
     }
 
     /// PMS-39: record a payment. When `invoice_id` is set, the linked
@@ -830,17 +862,30 @@ impl BillingService {
         .await?;
 
         if let Some(invoice_id) = request.invoice_id {
-            // Pull the current totals + tenant guard.
-            let current: Option<(Decimal, Decimal)> = sqlx::query_as(
-                "SELECT total, amount_paid FROM invoices WHERE id = $1 AND tenant_id = $2",
+            // Pull the current status + totals + tenant guard.
+            let current: Option<(String, Decimal, Decimal)> = sqlx::query_as(
+                "SELECT status, total, amount_paid FROM invoices WHERE id = $1 AND tenant_id = $2",
             )
             .bind(invoice_id)
             .bind(tenant_id)
             .fetch_optional(&mut *tx)
             .await?;
-            let Some((total, prior_paid)) = current else {
+            let Some((status_raw, total, prior_paid)) = current else {
                 return Err(AppError::NotFound("Invoice".to_string()));
             };
+            let status = InvoiceStatus::from_str(&status_raw).ok_or_else(|| {
+                AppError::Database(format!("unknown invoice status '{status_raw}'"))
+            })?;
+            // A payment must never resurrect a cancelled invoice by
+            // overwriting its status. `is_frozen()` also covers the normal
+            // payment targets (sent / paid / partially_paid), so the gate
+            // here is the terminal cancelled subset of the frozen states.
+            if matches!(status, InvoiceStatus::Void | InvoiceStatus::WrittenOff) {
+                return Err(AppError::Conflict(format!(
+                    "Invoice in status '{}' cannot accept payments",
+                    status.as_str()
+                )));
+            }
             let new_paid = prior_paid + request.amount;
             let new_balance = total - new_paid;
             let new_status = if new_balance <= Decimal::ZERO {
@@ -1110,8 +1155,13 @@ impl BillingService {
         .fetch_all(self.db.pool())
         .await?;
 
-        let mut resp: InvoiceResponse = row.into();
-        resp.lines = Some(line_rows.into_iter().map(Into::into).collect());
+        let mut resp = InvoiceResponse::try_from(row)?;
+        resp.lines = Some(
+            line_rows
+                .into_iter()
+                .map(InvoiceLineResponse::try_from)
+                .collect::<AppResult<Vec<_>>>()?,
+        );
         Ok(resp)
     }
 }
@@ -1173,22 +1223,25 @@ struct PaymentRow {
     created_at: chrono::DateTime<Utc>,
 }
 
-impl From<PaymentRow> for PaymentResponse {
-    fn from(r: PaymentRow) -> Self {
-        Self {
+impl TryFrom<PaymentRow> for PaymentResponse {
+    type Error = AppError;
+
+    fn try_from(r: PaymentRow) -> Result<Self, Self::Error> {
+        Ok(Self {
             id: r.id,
             tenant_id: r.tenant_id,
             invoice_id: r.invoice_id,
             company_id: r.company_id,
             payment_date: r.payment_date,
             amount: r.amount,
-            payment_method: PaymentMethod::from_str(&r.payment_method)
-                .unwrap_or(PaymentMethod::Other),
+            payment_method: PaymentMethod::from_str(&r.payment_method).ok_or_else(|| {
+                AppError::Database(format!("unknown payment_method '{}'", r.payment_method))
+            })?,
             reference_number: r.reference_number,
             gateway_transaction_id: r.gateway_transaction_id,
             notes: r.notes,
             created_at: r.created_at,
-        }
+        })
     }
 }
 
@@ -1205,11 +1258,15 @@ struct InvoiceLineRow {
     sort_order: i32,
 }
 
-impl From<InvoiceLineRow> for InvoiceLineResponse {
-    fn from(r: InvoiceLineRow) -> Self {
-        Self {
+impl TryFrom<InvoiceLineRow> for InvoiceLineResponse {
+    type Error = AppError;
+
+    fn try_from(r: InvoiceLineRow) -> Result<Self, Self::Error> {
+        Ok(Self {
             id: r.id,
-            line_type: InvoiceLineType::from_str(&r.line_type).unwrap_or(InvoiceLineType::Service),
+            line_type: InvoiceLineType::from_str(&r.line_type).ok_or_else(|| {
+                AppError::Database(format!("unknown invoice line_type '{}'", r.line_type))
+            })?,
             description: r.description,
             quantity: r.quantity,
             unit_price: r.unit_price,
@@ -1217,7 +1274,7 @@ impl From<InvoiceLineRow> for InvoiceLineResponse {
             ticket_id: r.ticket_id,
             project_id: r.project_id,
             sort_order: r.sort_order,
-        }
+        })
     }
 }
 
@@ -1248,16 +1305,20 @@ struct InvoiceRow {
     updated_at: chrono::DateTime<Utc>,
 }
 
-impl From<InvoiceRow> for InvoiceResponse {
-    fn from(r: InvoiceRow) -> Self {
-        Self {
+impl TryFrom<InvoiceRow> for InvoiceResponse {
+    type Error = AppError;
+
+    fn try_from(r: InvoiceRow) -> Result<Self, Self::Error> {
+        let status = InvoiceStatus::from_str(&r.status)
+            .ok_or_else(|| AppError::Database(format!("unknown invoice status '{}'", r.status)))?;
+        Ok(Self {
             id: r.id,
             tenant_id: r.tenant_id,
             invoice_number: r.invoice_number,
             company_id: r.company_id,
             billing_contact_id: r.billing_contact_id,
             contract_id: r.contract_id,
-            status: InvoiceStatus::from_str(&r.status).unwrap_or(InvoiceStatus::Draft),
+            status,
             invoice_date: r.invoice_date,
             due_date: r.due_date,
             payment_terms: r.payment_terms,
@@ -1275,9 +1336,6 @@ impl From<InvoiceRow> for InvoiceResponse {
             created_at: r.created_at,
             updated_at: r.updated_at,
             lines: None,
-        }
+        })
     }
 }
-
-#[allow(dead_code)]
-fn _force_use(_: &AppError) {}

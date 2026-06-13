@@ -26,17 +26,13 @@ pub struct UpsertWorkTypeRequest {
     #[validate(length(min = 1, max = 100))]
     pub name: String,
     pub description: Option<String>,
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::utils::default_true")]
     pub default_billable: bool,
     pub default_rate: Option<Decimal>,
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::utils::default_true")]
     pub is_active: bool,
     #[serde(default)]
     pub sort_order: i32,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 // ============================================================================
@@ -91,7 +87,7 @@ pub struct CreateTimeEntryRequest {
     pub project_id: Option<Uuid>,
     pub company_id: Uuid,
     pub notes: Option<String>,
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::utils::default_true")]
     pub is_billable: bool,
     pub hourly_rate: Option<Decimal>,
 }

@@ -3,8 +3,9 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    Badge, BadgeVariant, BookIcon, Button, ButtonVariant, Card, CurrencyIcon, IconSize, PlusIcon,
-    PortalLayout, SearchInput, Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+    ticket_status_badge, Badge, BadgeVariant, BookIcon, Button, ButtonVariant, Card, CurrencyIcon,
+    IconSize, PlusIcon, PortalLayout, SearchInput, Table, TableBody, TableCell, TableHead,
+    TableHeader, TableRow,
 };
 use crate::Route;
 
@@ -139,13 +140,7 @@ struct PortalTicketItemProps {
 
 #[component]
 fn PortalTicketItem(props: PortalTicketItemProps) -> Element {
-    let status_variant = match props.status.as_str() {
-        "Open" => BadgeVariant::Blue,
-        "In Progress" => BadgeVariant::Yellow,
-        "Pending" => BadgeVariant::Gray,
-        "Resolved" => BadgeVariant::Green,
-        _ => BadgeVariant::Gray,
-    };
+    let status_variant = ticket_status_badge(&props.status);
 
     rsx! {
         div { class: "flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg",
@@ -261,14 +256,7 @@ struct PortalTicketRowProps {
 
 #[component]
 fn PortalTicketRow(props: PortalTicketRowProps) -> Element {
-    let status_variant = match props.status.as_str() {
-        "Open" => BadgeVariant::Blue,
-        "In Progress" => BadgeVariant::Yellow,
-        "Pending" => BadgeVariant::Gray,
-        "Resolved" => BadgeVariant::Green,
-        "Closed" => BadgeVariant::Gray,
-        _ => BadgeVariant::Gray,
-    };
+    let status_variant = ticket_status_badge(&props.status);
     let navigator = use_navigator();
     let id_for_click = props.id.clone();
     rsx! {
