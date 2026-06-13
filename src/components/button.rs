@@ -106,44 +106,6 @@ pub fn Button(props: ButtonProps) -> Element {
     }
 }
 
-/// Icon button for toolbar/action items
-#[derive(Props, Clone, PartialEq)]
-pub struct IconButtonProps {
-    /// Icon element
-    children: Element,
-    /// Tooltip/title
-    #[props(default)]
-    title: String,
-    /// Additional CSS classes
-    #[props(default)]
-    class: String,
-    /// Whether button is disabled
-    #[props(default = false)]
-    disabled: bool,
-    /// Click handler
-    #[props(default)]
-    onclick: EventHandler<MouseEvent>,
-}
-
-#[component]
-pub fn IconButton(props: IconButtonProps) -> Element {
-    let class = format!(
-        "p-2 rounded-md text-gray-500 hover:text-gray-700 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-800 {}",
-        props.class
-    );
-
-    rsx! {
-        button {
-            class: "{class}",
-            r#type: "button",
-            title: "{props.title}",
-            disabled: props.disabled,
-            onclick: move |e| props.onclick.call(e),
-            {props.children}
-        }
-    }
-}
-
 /// Small loading spinner
 #[component]
 pub fn Spinner() -> Element {
@@ -166,25 +128,6 @@ pub fn Spinner() -> Element {
                 fill: "currentColor",
                 d: "M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z",
             }
-        }
-    }
-}
-
-/// Button group for related actions
-#[derive(Props, Clone, PartialEq)]
-pub struct ButtonGroupProps {
-    children: Element,
-    #[props(default)]
-    class: String,
-}
-
-#[component]
-pub fn ButtonGroup(props: ButtonGroupProps) -> Element {
-    let class = format!("inline-flex rounded-md shadow-sm {}", props.class);
-
-    rsx! {
-        div { class: "{class}",
-            {props.children}
         }
     }
 }

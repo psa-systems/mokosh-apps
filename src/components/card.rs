@@ -62,8 +62,6 @@ pub fn Card(props: CardProps) -> Element {
 #[derive(Props, Clone, PartialEq)]
 pub struct CardHeaderProps {
     title: String,
-    #[props(default)]
-    subtitle: String,
     actions: Option<Element>,
     #[props(default)]
     class: String,
@@ -81,11 +79,6 @@ pub fn CardHeader(props: CardHeaderProps) -> Element {
             div {
                 h3 { class: "text-lg font-medium text-gray-900 dark:text-white",
                     "{props.title}"
-                }
-                if !props.subtitle.is_empty() {
-                    p { class: "mt-1 text-sm text-gray-500 dark:text-gray-400",
-                        "{props.subtitle}"
-                    }
                 }
             }
             div { class: "flex items-center space-x-2",
@@ -153,44 +146,6 @@ pub fn StatCard(props: StatCardProps) -> Element {
                                 "{props.change}"
                             }
                         }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Simple info card with icon
-#[derive(Props, Clone, PartialEq)]
-pub struct InfoCardProps {
-    title: String,
-    description: String,
-    icon: Option<Element>,
-    #[props(default)]
-    class: String,
-}
-
-#[component]
-pub fn InfoCard(props: InfoCardProps) -> Element {
-    let class = format!(
-        "bg-white dark:bg-gray-800 rounded-lg shadow border border-gray-200 dark:border-gray-700 p-6 {}",
-        props.class
-    );
-
-    rsx! {
-        div { class: "{class}",
-            div { class: "flex items-start",
-                if let Some(ref icon) = props.icon {
-                    div { class: "flex-shrink-0",
-                        {icon}
-                    }
-                }
-                div { class: if props.icon.is_some() { "ml-3" } else { "" },
-                    h4 { class: "text-sm font-medium text-gray-900 dark:text-white",
-                        "{props.title}"
-                    }
-                    p { class: "mt-1 text-sm text-gray-500 dark:text-gray-400",
-                        "{props.description}"
                     }
                 }
             }

@@ -661,7 +661,6 @@ pub fn TicketNewPage() -> Element {
         // Snapshot signals so the spawn doesn't need to read them.
         let title_v = title.read().clone();
         let description_v = description.read().clone();
-        let _priority_v = priority.read().clone();
 
         spawn(async move {
             #[cfg(feature = "web")]

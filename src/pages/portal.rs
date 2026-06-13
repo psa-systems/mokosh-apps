@@ -289,78 +289,23 @@ pub fn PortalTicketNewPage() -> Element {
         PortalLayout {
             h1 { class: "text-2xl font-bold text-gray-900 dark:text-white mb-6", "Submit a Ticket" }
 
+            // Honest "coming soon" state. The previous form's inputs were
+            // dead (no-op oninput handlers) and there is no `POST
+            // /portal/tickets` endpoint to submit to, so the page never
+            // created a ticket. Rather than present a form that silently
+            // discards input, tell the user the flow is not available yet
+            // and point them at a working channel.
             Card {
-                form {
-                    class: "space-y-6",
-                    // Without an explicit handler the browser default-submits
-                    // as GET, leaking subject/description/priority into the
-                    // URL and blanking the SPA. Stop that until a real
-                    // /portal/tickets POST endpoint exists (server F6).
-                    onsubmit: move |e: FormEvent| { e.prevent_default(); },
-
-                    crate::components::Input {
-                        name: "subject",
-                        label: "Subject",
-                        placeholder: "Brief description of your issue",
-                        required: true,
-                        oninput: |_| {},
+                div { class: "py-12 text-center",
+                    h2 { class: "text-lg font-medium text-gray-900 dark:text-white mb-2",
+                        "Coming soon"
                     }
-
-                    crate::components::Textarea {
-                        name: "description",
-                        label: "Description",
-                        placeholder: "Please provide as much detail as possible...",
-                        rows: 6,
-                        required: true,
-                        oninput: |_| {},
+                    p { class: "text-sm text-gray-500 dark:text-gray-400 mb-6 max-w-md mx-auto",
+                        "Submitting tickets from the portal is not available yet. In the meantime, please contact your account team to open a request."
                     }
-
-                    crate::components::Select {
-                        name: "priority",
-                        label: "Priority",
-                        options: vec![
-                            crate::components::SelectOption::new("low", "Low - General question or minor issue"),
-                            crate::components::SelectOption::new("medium", "Medium - Issue affecting work but has workaround"),
-                            crate::components::SelectOption::new("high", "High - Significant impact, no workaround"),
-                            crate::components::SelectOption::new("critical", "Critical - Complete outage or data loss"),
-                        ],
-                        value: "medium".to_string(),
-                        onchange: |_| {},
-                    }
-
-                    // Real file input (PMC-98). The previous drop-zone
-                    // was decorative - no <input type=file> meant the
-                    // click target did nothing and dropping a file did
-                    // nothing. A native multi-file input is the cheapest
-                    // honest thing here; styled drag-and-drop with
-                    // upload progress can land alongside the portal
-                    // attachments endpoint.
-                    div {
-                        label {
-                            r#for: "attachments",
-                            class: "block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1",
-                            "Attachments"
-                        }
-                        input {
-                            id: "attachments",
-                            name: "attachments",
-                            r#type: "file",
-                            multiple: true,
-                            class: "block w-full text-sm text-gray-700 dark:text-gray-300 file:mr-3 file:py-2 file:px-3 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 dark:file:bg-blue-900 dark:file:text-blue-200 hover:file:bg-blue-100",
-                        }
-                        p { class: "mt-1 text-xs text-gray-500", "Up to 10MB per file. Uploads activate once the portal attachments endpoint ships." }
-                    }
-
-                    div { class: "flex justify-end space-x-3",
-                        Link {
-                            to: Route::PortalTicketList {},
-                            Button { variant: ButtonVariant::Secondary, "Cancel" }
-                        }
-                        Button {
-                            r#type: "submit",
-                            variant: ButtonVariant::Primary,
-                            "Submit Ticket"
-                        }
+                    Link {
+                        to: Route::PortalTicketList {},
+                        Button { variant: ButtonVariant::Secondary, "Back to tickets" }
                     }
                 }
             }
@@ -374,10 +319,53 @@ pub struct PortalTicketDetailPageProps {
     pub id: String,
 }
 
+/// Subset of the server portal ticket response (`GET
+/// /api/v1/portal/tickets/{id}`) the detail page renders. Mirrors the
+/// agent-side `RemoteTicketDetail` shape; serde drops unknown fields and
+/// every field defaults so a thinner portal payload still decodes.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalTicketDetail {
+    #[serde(default)]
+    ticket_number: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    status: PortalSummary,
+    #[serde(default)]
+    created_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// A `{ id, name }`-style lookup value (status/priority). Only `name` is
+/// rendered here.
+#[derive(Clone, Debug, PartialEq, Default, serde::Deserialize)]
+struct PortalSummary {
+    #[serde(default)]
+    name: String,
+}
+
 #[component]
-#[allow(unused_variables)]
 pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
-    let header_title = format!("Ticket {}", props.id);
+    let id_for_resource = props.id.clone();
+    let ticket_resource = use_resource(move || {
+        let id = id_for_resource.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<PortalTicketDetail>(&format!(
+                "/portal/tickets/{id}"
+            ))
+            .await
+            .ok()
+        }
+    });
+
+    let snap = ticket_resource.read_unchecked();
+    let header_title = match &*snap {
+        Some(Some(t)) if !t.ticket_number.is_empty() => format!("Ticket {}", t.ticket_number),
+        _ => format!("Ticket {}", props.id),
+    };
+
     rsx! {
         PortalLayout { title: "{header_title}",
             div { class: "mb-6",
@@ -388,89 +376,67 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
                 }
             }
 
-            Card {
-                div { class: "flex items-start justify-between mb-6",
-                    div {
-                        h1 { class: "text-xl font-bold text-gray-900 dark:text-white",
-                            "{header_title}"
+            match &*snap {
+                None => rsx! {
+                    Card {
+                        div { class: "py-12 text-center text-sm text-gray-500", "Loading ticket..." }
+                    }
+                },
+                Some(None) => rsx! {
+                    Card {
+                        div { class: "py-8 text-center",
+                            p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load ticket." }
+                            Link {
+                                to: Route::PortalTicketList {},
+                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                "Back to tickets"
+                            }
                         }
-                        div { class: "flex items-center mt-2 space-x-4",
-                            Badge { variant: BadgeVariant::Yellow, "In Progress" }
-                            span { class: "text-sm text-gray-500", "Created: Jan 15, 2025" }
+                    }
+                },
+                Some(Some(ticket)) => {
+                    let status_label = if ticket.status.name.is_empty() {
+                        "Unknown".to_string()
+                    } else {
+                        ticket.status.name.clone()
+                    };
+                    let created = ticket
+                        .created_at
+                        .map(|d| d.format("Created %b %-d, %Y").to_string())
+                        .unwrap_or_default();
+                    let subject = if ticket.title.is_empty() {
+                        header_title.clone()
+                    } else {
+                        ticket.title.clone()
+                    };
+                    let description = ticket.description.clone().unwrap_or_default();
+                    rsx! {
+                        Card {
+                            div { class: "flex items-start justify-between mb-6",
+                                div {
+                                    h1 { class: "text-xl font-bold text-gray-900 dark:text-white",
+                                        "{subject}"
+                                    }
+                                    div { class: "flex items-center mt-2 space-x-4",
+                                        Badge { variant: BadgeVariant::Yellow, "{status_label}" }
+                                        if !created.is_empty() {
+                                            span { class: "text-sm text-gray-500", "{created}" }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if description.is_empty() {
+                                p { class: "text-sm text-gray-500", "No description provided." }
+                            } else {
+                                div { class: "prose dark:prose-invert max-w-none",
+                                    p { "{description}" }
+                                }
+                            }
                         }
-                    }
-                }
-
-                div { class: "prose dark:prose-invert max-w-none mb-6",
-                    p {
-                        "Users are reporting that they cannot send or receive emails. "
-                        "The issue started around 9:00 AM this morning."
-                    }
-                }
-
-                // Updates
-                h3 { class: "font-medium text-gray-900 dark:text-white mb-4", "Updates" }
-                div { class: "space-y-4",
-                    UpdateItem {
-                        author: "Support Team",
-                        time: "10 min ago",
-                        content: "We've identified the issue and are working on a fix. The Exchange services have been restarted and we're monitoring for stability.",
-                        is_staff: true,
-                    }
-                    UpdateItem {
-                        author: "You",
-                        time: "2 hours ago",
-                        content: "Users are still unable to send emails. This is affecting the entire office.",
-                        is_staff: false,
-                    }
-                }
-
-                // Reply form
-                div { class: "mt-6 pt-6 border-t border-gray-200 dark:border-gray-700",
-                    h4 { class: "font-medium text-gray-900 dark:text-white mb-3", "Add Reply" }
-                    crate::components::Textarea {
-                        name: "reply",
-                        placeholder: "Type your reply...",
-                        rows: 3,
-                        oninput: |_| {},
-                    }
-                    div { class: "mt-3 flex justify-end",
-                        Button { variant: ButtonVariant::Primary, "Send Reply" }
                     }
                 }
             }
-        }
-    }
-}
-
-#[derive(Props, Clone, PartialEq)]
-struct UpdateItemProps {
-    author: String,
-    time: String,
-    content: String,
-    is_staff: bool,
-}
-
-#[component]
-fn UpdateItem(props: UpdateItemProps) -> Element {
-    let bg_class = if props.is_staff {
-        "bg-blue-50 dark:bg-blue-900/20"
-    } else {
-        "bg-gray-50 dark:bg-gray-800"
-    };
-
-    rsx! {
-        div { class: "p-4 rounded-lg {bg_class}",
-            div { class: "flex items-center justify-between mb-2",
-                div { class: "flex items-center",
-                    span { class: "font-medium text-gray-900 dark:text-white", "{props.author}" }
-                    if props.is_staff {
-                        Badge { variant: BadgeVariant::Blue, class: "ml-2", "Staff" }
-                    }
-                }
-                span { class: "text-sm text-gray-500", "{props.time}" }
-            }
-            p { class: "text-gray-700 dark:text-gray-300", "{props.content}" }
         }
     }
 }
@@ -536,10 +502,76 @@ pub struct PortalInvoiceDetailPageProps {
     pub id: String,
 }
 
+/// Subset of the server portal invoice response (`GET
+/// /api/v1/portal/invoices/{id}`, company-scoped per PMS-25) the detail
+/// page renders. Mirrors the agent-side `InvoiceDetail`; amounts arrive
+/// as strings and every field defaults so a thinner payload still decodes.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalInvoiceDetail {
+    #[serde(default)]
+    invoice_number: String,
+    #[serde(default)]
+    company_name: Option<String>,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    invoice_date: Option<String>,
+    #[serde(default)]
+    due_date: Option<String>,
+    #[serde(default)]
+    subtotal: String,
+    #[serde(default)]
+    total: String,
+    #[serde(default)]
+    balance_due: String,
+    #[serde(default)]
+    lines: Option<Vec<PortalInvoiceLine>>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalInvoiceLine {
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    quantity: String,
+    #[serde(default)]
+    unit_price: String,
+    #[serde(default)]
+    total: String,
+}
+
+/// Render an amount string as currency, defaulting blanks to `$0.00`.
+fn portal_money(raw: &str) -> String {
+    if raw.trim().is_empty() {
+        "$0.00".to_string()
+    } else {
+        format!("${raw}")
+    }
+}
+
 #[component]
-#[allow(unused_variables)]
 pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
-    let header_title = format!("Invoice {}", props.id);
+    let id_for_resource = props.id.clone();
+    let invoice_resource = use_resource(move || {
+        let id = id_for_resource.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<PortalInvoiceDetail>(&format!(
+                "/portal/invoices/{id}"
+            ))
+            .await
+            .ok()
+        }
+    });
+
+    let snap = invoice_resource.read_unchecked();
+    let header_title = match &*snap {
+        Some(Some(inv)) if !inv.invoice_number.is_empty() => {
+            format!("Invoice {}", inv.invoice_number)
+        }
+        _ => format!("Invoice {}", props.id),
+    };
+
     rsx! {
         PortalLayout { title: "{header_title}",
             div { class: "mb-6",
@@ -550,66 +582,104 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                 }
             }
 
-            // Minimum-viable read-only invoice view (PMC-96). Once the
-            // portal billing endpoint ships, replace the placeholder
-            // bill-to / line items / payment status with real fetched
-            // data. The shape mirrors InvoiceDetailPage for consistency.
-            Card {
-                div { class: "flex justify-between items-start mb-6",
-                    div {
-                        h2 { class: "text-2xl font-bold text-gray-900 dark:text-white",
-                            "{header_title}"
-                        }
-                        p { class: "text-sm text-gray-500", "Issued Jan 5, 2025 - Due Feb 4, 2025" }
+            match &*snap {
+                None => rsx! {
+                    Card {
+                        div { class: "py-12 text-center text-sm text-gray-500", "Loading invoice..." }
                     }
-                    Badge { variant: BadgeVariant::Yellow, "Pending" }
-                }
-
-                div { class: "grid grid-cols-2 gap-6 mb-6",
-                    div {
-                        h3 { class: "text-xs font-medium text-gray-500 uppercase mb-1", "Bill To" }
-                        p { class: "font-medium", "Acme Corp" }
-                        p { class: "text-sm text-gray-600 dark:text-gray-400", "Bob Johnson" }
-                        p { class: "text-sm text-gray-600 dark:text-gray-400", "bob@acme.com" }
-                    }
-                    div {
-                        h3 { class: "text-xs font-medium text-gray-500 uppercase mb-1", "Amount Due" }
-                        p { class: "text-3xl font-bold text-gray-900 dark:text-white", "$1,850.00" }
-                    }
-                }
-
-                table { class: "min-w-full text-sm mb-6",
-                    thead { class: "border-b border-gray-200 dark:border-gray-700",
-                        tr {
-                            th { class: "text-left py-2 text-gray-500", "Description" }
-                            th { class: "text-right py-2 text-gray-500", "Qty" }
-                            th { class: "text-right py-2 text-gray-500", "Unit Price" }
-                            th { class: "text-right py-2 text-gray-500", "Total" }
+                },
+                Some(None) => rsx! {
+                    Card {
+                        div { class: "py-8 text-center",
+                            p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load invoice." }
+                            Link {
+                                to: Route::PortalInvoiceList {},
+                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                "Back to invoices"
+                            }
                         }
                     }
-                    tbody {
-                        tr {
-                            td { class: "py-3", "Managed Services - January 2025" }
-                            td { class: "py-3 text-right", "1" }
-                            td { class: "py-3 text-right", "$1,500.00" }
-                            td { class: "py-3 text-right", "$1,500.00" }
-                        }
-                        tr {
-                            td { class: "py-3", "Additional support hours" }
-                            td { class: "py-3 text-right", "3.5" }
-                            td { class: "py-3 text-right", "$100.00" }
-                            td { class: "py-3 text-right", "$350.00" }
+                },
+                Some(Some(inv)) => {
+                    let status_label = if inv.status.is_empty() {
+                        "Pending".to_string()
+                    } else {
+                        inv.status.clone()
+                    };
+                    let status_variant = match inv.status.as_str() {
+                        "paid" => BadgeVariant::Green,
+                        "overdue" | "void" => BadgeVariant::Red,
+                        _ => BadgeVariant::Yellow,
+                    };
+                    let issued = inv.invoice_date.clone().unwrap_or_default();
+                    let due = inv.due_date.clone().unwrap_or_default();
+                    let company_name = inv
+                        .company_name
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "-".to_string());
+                    let amount_due = portal_money(&inv.balance_due);
+                    let subtotal = portal_money(&inv.subtotal);
+                    let total = portal_money(&inv.total);
+                    let lines = inv.lines.clone().unwrap_or_default();
+                    rsx! {
+                        Card {
+                            div { class: "flex justify-between items-start mb-6",
+                                div {
+                                    h2 { class: "text-2xl font-bold text-gray-900 dark:text-white",
+                                        "{header_title}"
+                                    }
+                                    if !issued.is_empty() || !due.is_empty() {
+                                        p { class: "text-sm text-gray-500", "Issued {issued} - Due {due}" }
+                                    }
+                                }
+                                Badge { variant: status_variant, "{status_label}" }
+                            }
+
+                            div { class: "grid grid-cols-2 gap-6 mb-6",
+                                div {
+                                    h3 { class: "text-xs font-medium text-gray-500 uppercase mb-1", "Bill To" }
+                                    p { class: "font-medium", "{company_name}" }
+                                }
+                                div {
+                                    h3 { class: "text-xs font-medium text-gray-500 uppercase mb-1", "Amount Due" }
+                                    p { class: "text-3xl font-bold text-gray-900 dark:text-white", "{amount_due}" }
+                                }
+                            }
+
+                            table { class: "min-w-full text-sm mb-6",
+                                thead { class: "border-b border-gray-200 dark:border-gray-700",
+                                    tr {
+                                        th { class: "text-left py-2 text-gray-500", "Description" }
+                                        th { class: "text-right py-2 text-gray-500", "Qty" }
+                                        th { class: "text-right py-2 text-gray-500", "Unit Price" }
+                                        th { class: "text-right py-2 text-gray-500", "Total" }
+                                    }
+                                }
+                                tbody {
+                                    if lines.is_empty() {
+                                        tr {
+                                            td { class: "py-3 text-gray-500", colspan: "4", "No line items." }
+                                        }
+                                    } else {
+                                        for (idx, line) in lines.iter().enumerate() {
+                                            tr { key: "{idx}",
+                                                td { class: "py-3", "{line.description}" }
+                                                td { class: "py-3 text-right", "{line.quantity}" }
+                                                td { class: "py-3 text-right", {portal_money(&line.unit_price)} }
+                                                td { class: "py-3 text-right", {portal_money(&line.total)} }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            div { class: "border-t border-gray-200 dark:border-gray-700 pt-4 text-right space-y-1",
+                                p { class: "text-sm text-gray-500", "Subtotal {subtotal}" }
+                                p { class: "text-2xl font-bold text-gray-900 dark:text-white", "Total {total}" }
+                            }
                         }
                     }
-                }
-
-                div { class: "border-t border-gray-200 dark:border-gray-700 pt-4 text-right",
-                    p { class: "text-sm text-gray-500", "Total Due" }
-                    p { class: "text-2xl font-bold text-gray-900 dark:text-white", "$1,850.00" }
-                }
-
-                p { class: "mt-6 text-xs text-gray-500",
-                    "Online payment activates once the portal billing endpoint ships."
                 }
             }
         }

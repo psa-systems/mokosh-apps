@@ -717,7 +717,6 @@ pub struct CompanyDetailPageProps {
 }
 
 #[component]
-#[allow(unused_variables)]
 pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     let company_id_str = props.id.clone();
     let company_id_for_resource = company_id_str.clone();

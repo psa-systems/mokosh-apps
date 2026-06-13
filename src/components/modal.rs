@@ -268,24 +268,14 @@ pub fn Alert(props: AlertProps) -> Element {
 /// Toast notification position
 #[derive(Clone, Copy, PartialEq, Default)]
 pub enum ToastPosition {
-    TopRight,
     #[default]
     BottomRight,
-    TopLeft,
-    BottomLeft,
-    TopCenter,
-    BottomCenter,
 }
 
 impl ToastPosition {
     fn class(&self) -> &'static str {
         match self {
-            ToastPosition::TopRight => "top-4 right-4",
             ToastPosition::BottomRight => "bottom-4 right-4",
-            ToastPosition::TopLeft => "top-4 left-4",
-            ToastPosition::BottomLeft => "bottom-4 left-4",
-            ToastPosition::TopCenter => "top-4 left-1/2 -translate-x-1/2",
-            ToastPosition::BottomCenter => "bottom-4 left-1/2 -translate-x-1/2",
         }
     }
 }
@@ -327,71 +317,6 @@ pub fn ToastContainer(props: ToastContainerProps) -> Element {
                             let id = toast.id.clone();
                             move |_| props.ondismiss.call(id.clone())
                         },
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Slide-over panel props
-#[derive(Props, Clone, PartialEq)]
-pub struct SlideOverProps {
-    children: Element,
-    open: bool,
-    title: String,
-    #[props(default)]
-    subtitle: String,
-    onclose: EventHandler<()>,
-}
-
-/// Slide-over panel component (slides in from right)
-#[component]
-pub fn SlideOver(props: SlideOverProps) -> Element {
-    if !props.open {
-        return rsx! {};
-    }
-
-    rsx! {
-        div { class: "fixed inset-0 z-50 overflow-hidden",
-            // Backdrop. Tailwind v4 removed `bg-opacity-*`; use the
-            // slash alpha syntax so the page stays visible through a
-            // 75% dim instead of being fully covered.
-            div {
-                class: "absolute inset-0 bg-gray-500/75 transition-opacity",
-                onclick: move |_| props.onclose.call(()),
-            }
-
-            // Panel
-            div { class: "fixed inset-y-0 right-0 flex max-w-full pl-10",
-                div { class: "relative w-screen max-w-md",
-                    // Close button
-                    div { class: "absolute left-0 top-0 -ml-8 flex pr-2 pt-4 sm:-ml-10 sm:pr-4",
-                        button {
-                            class: "rounded-md text-gray-300 hover:text-white focus:outline-none focus:ring-2 focus:ring-white",
-                            onclick: move |_| props.onclose.call(()),
-                            XMarkIcon { class: "h-6 w-6".to_string() }
-                        }
-                    }
-
-                    // Panel content
-                    div { class: "flex h-full flex-col overflow-y-scroll bg-white dark:bg-gray-800 shadow-xl",
-                        // Header
-                        div { class: "px-4 py-6 sm:px-6 border-b border-gray-200 dark:border-gray-700",
-                            h2 { class: "text-lg font-medium text-gray-900 dark:text-white",
-                                "{props.title}"
-                            }
-                            if !props.subtitle.is_empty() {
-                                p { class: "mt-1 text-sm text-gray-500 dark:text-gray-400",
-                                    "{props.subtitle}"
-                                }
-                            }
-                        }
-
-                        // Body
-                        div { class: "relative flex-1 px-4 py-6 sm:px-6",
-                            {props.children}
-                        }
                     }
                 }
             }
