@@ -8,14 +8,8 @@ use crate::components::{
     PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody,
     TableCell, TableHead, TableHeader, TableRow, Textarea,
 };
+use crate::utils::Paginated;
 use crate::Route;
-
-/// `PaginatedResponse<T>` envelope (`{ "data": [...], "meta": {...} }`);
-/// serde drops `meta`.
-#[derive(Clone, Debug, Deserialize)]
-struct Paginated<T> {
-    data: Vec<T>,
-}
 
 /// A project (`GET /api/v1/projects`). Money/hours are decoded with a
 /// number-or-string tolerant reader because the server's `Decimal` wire
