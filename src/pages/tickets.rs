@@ -828,6 +828,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let mut note_type = use_signal(|| "internal".to_string());
     let mut note_content = use_signal(String::new);
     let mut note_submitting = use_signal(|| false);
+    let mut note_error = use_signal(String::new);
     let ticket_id_for_note = props.id.clone();
 
     // Drive the whole page off the real ticket, its notes, and its time
@@ -953,7 +954,10 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Secondary,
-                        onclick: move |_| show_note_modal.set(true),
+                        onclick: move |_| {
+                            note_error.set(String::new());
+                            show_note_modal.set(true);
+                        },
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "Add Note"
                     }
@@ -1287,6 +1291,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         variant: ButtonVariant::Primary,
                         loading: *note_submitting.read(),
                         onclick: move |_| {
+                            note_error.set(String::new());
                             note_submitting.set(true);
                             let id = ticket_id_for_note.clone();
                             let type_v = note_type.read().clone();
@@ -1295,7 +1300,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                 #[cfg(feature = "web")]
                                 {
                                     if content_v.trim().is_empty() {
-                                        web_sys::console::warn_1(&"Note content empty; not posting.".into());
+                                        note_error.set("Note content cannot be empty.".to_string());
                                         note_submitting.set(false);
                                         return;
                                     }
@@ -1307,15 +1312,14 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                     match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(&path, &body).await {
                                         Ok(_) => {
                                             note_content.set(String::new());
+                                            note_error.set(String::new());
                                             show_note_modal.set(false);
                                             // Refresh the Activity feed so the new note shows.
                                             let mut nr = notes_resource;
                                             nr.restart();
                                         }
                                         Err(err) => {
-                                            web_sys::console::error_1(
-                                                &format!("Could not add note: {err}").into(),
-                                            );
+                                            note_error.set(format!("Could not add note: {err}"));
                                         }
                                     }
                                 }
@@ -1326,6 +1330,12 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     }
                 },
                 div { class: "space-y-4",
+                    if !note_error.read().is_empty() {
+                        div {
+                            class: "rounded-md bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 px-3 py-2 text-sm text-red-700 dark:text-red-300",
+                            "{note_error}"
+                        }
+                    }
                     Select {
                         name: "note_type",
                         label: "Note Type",

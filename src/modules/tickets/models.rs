@@ -352,7 +352,9 @@ pub enum SlaStatus {
 impl Ticket {
     /// Calculate SLA status
     pub fn sla_status(&self) -> SlaStatus {
-        if self.closed_at.is_some() {
+        // A closed or resolved ticket has met (or stopped) its SLA clock; it
+        // can no longer breach, so it is never Breached/Warning.
+        if self.closed_at.is_some() || self.resolved_at.is_some() {
             return SlaStatus::NotApplicable;
         }
 
@@ -362,8 +364,15 @@ impl Ticket {
 
         let now = Utc::now();
         if now > due {
-            SlaStatus::Breached
-        } else if (due - now).num_hours() < 2 {
+            return SlaStatus::Breached;
+        }
+
+        // Warn inside the final quarter of the SLA target window (creation ->
+        // due) rather than a fixed 2h, so short SLAs still get a warning band
+        // before they breach instead of jumping straight from OnTrack.
+        let target = due - self.created_at;
+        let warn_window = target / 4;
+        if (due - now) < warn_window {
             SlaStatus::Warning
         } else {
             SlaStatus::OnTrack
@@ -411,7 +420,9 @@ pub struct TicketNoteResponse {
     pub content: String,
     pub is_email_sent: bool,
     pub created_by_id: Uuid,
-    pub created_by_name: String,
+    // Matches `TicketNote.created_by_name`: the join is nullable, so a NULL
+    // author name stays representable instead of panicking / coercing to "".
+    pub created_by_name: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -723,13 +734,21 @@ mod tests {
         ticket.sla_due_date = Some(Utc::now() + chrono::Duration::hours(3));
         assert_eq!(ticket.sla_status(), SlaStatus::OnTrack);
 
-        // Test warning (due date in less than 2 hours)
-        ticket.sla_due_date = Some(Utc::now() + chrono::Duration::hours(1));
+        // Test warning: inside the final quarter of the SLA window. With a 4h
+        // target window (created 3h ago, due in 1h) the warn band is the last
+        // hour, so 1h remaining trips Warning.
+        ticket.created_at = Utc::now() - chrono::Duration::hours(3);
+        ticket.sla_due_date = Some(Utc::now() + chrono::Duration::minutes(50));
         assert_eq!(ticket.sla_status(), SlaStatus::Warning);
 
         // Test breached (due date in past)
         ticket.sla_due_date = Some(Utc::now() - chrono::Duration::hours(2));
         assert_eq!(ticket.sla_status(), SlaStatus::Breached);
+
+        // Test resolved (but not closed) ticket is not breached.
+        ticket.resolved_at = Some(Utc::now());
+        assert_eq!(ticket.sla_status(), SlaStatus::NotApplicable);
+        ticket.resolved_at = None;
 
         // Test closed ticket (should be NotApplicable)
         ticket.closed_at = Some(Utc::now());

@@ -16,6 +16,7 @@
 //! string-returning `*_authed` API helpers carry the bearer token, and
 //! loading / empty / error states match the contacts pages.
 
+use chrono::{DateTime, Utc};
 use dioxus::prelude::*;
 use serde::Deserialize;
 
@@ -232,10 +233,9 @@ fn status_variant(raw: &str) -> BadgeVariant {
 /// Truncate an ISO timestamp to its date portion for compact display.
 /// The server returns RFC 3339 (`2026-06-05T12:34:56Z`); we show the
 /// leading `YYYY-MM-DD`. Falls back to the raw string if it is shorter.
-fn date_only(ts: &Option<String>) -> String {
+fn date_only(ts: &Option<DateTime<Utc>>) -> String {
     match ts {
-        Some(s) if s.len() >= 10 => s[..10].to_string(),
-        Some(s) => s.clone(),
+        Some(dt) => dt.format("%Y-%m-%d").to_string(),
         None => "-".to_string(),
     }
 }
@@ -287,12 +287,12 @@ pub fn KBHomePage() -> Element {
     };
 
     // Submitting the home search jumps to the full article list, which
-    // owns the live `?q=` filter against the server. Routes carry no
-    // query string, so the term is not forwarded; the list's own search
-    // box is the canonical filter entry point.
+    // owns the live `?q=` filter against the server. The typed term is
+    // forwarded via the route's `?q=` query so the list opens pre-filtered.
     let go_search = move |e: FormEvent| {
         e.prevent_default();
-        navigator.push(Route::KBArticleList {});
+        let q = search.read().trim().to_string();
+        navigator.push(Route::KBArticleList { q });
     };
 
     rsx! {
@@ -402,7 +402,7 @@ fn CategoryCard(props: CategoryCardProps) -> Element {
             r#type: "button",
             class: "block w-full text-left",
             onclick: move |_| {
-                navigator.push(Route::KBArticleList {});
+                navigator.push(Route::KBArticleList { q: String::new() });
             },
             Card { class: "hover:shadow-lg transition-shadow cursor-pointer",
                 div { class: "flex items-start",
@@ -453,9 +453,12 @@ fn ArticleItem(props: ArticleItemProps) -> Element {
 // ============================================================================
 
 /// Article list page: search box + category filter, server-paginated.
+///
+/// `initial_q` seeds the search box from the `?q=` route query so the KB
+/// home search carries the typed term through to this list.
 #[component]
-pub fn KBArticleListPage() -> Element {
-    let mut search = use_signal(String::new);
+pub fn KBArticleListPage(#[props(default)] initial_q: String) -> Element {
+    let mut search = use_signal(|| initial_q.clone());
     let mut category_filter = use_signal(String::new);
     let mut page = use_signal(|| 1usize);
 
@@ -1384,7 +1387,7 @@ fn KbBreadcrumb(path: Vec<KbCategory>, title: String) -> Element {
             for cat in path.iter() {
                 ChevronRightIcon { size: IconSize::Small }
                 Link {
-                    to: Route::KBArticleList {},
+                    to: Route::KBArticleList { q: String::new() },
                     class: "hover:text-gray-700 dark:hover:text-gray-200",
                     "{cat.name}"
                 }

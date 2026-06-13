@@ -265,8 +265,8 @@ pub enum Route {
     #[route("/kb")]
     KBHome {},
 
-    #[route("/kb/articles")]
-    KBArticleList {},
+    #[route("/kb/articles?:q")]
+    KBArticleList { q: String },
 
     #[route("/kb/articles/new")]
     KBArticleNew {},
@@ -635,8 +635,8 @@ fn KBHome() -> Element {
 }
 
 #[component]
-fn KBArticleList() -> Element {
-    rsx! { knowledge_base::KBArticleListPage {} }
+fn KBArticleList(q: String) -> Element {
+    rsx! { knowledge_base::KBArticleListPage { initial_q: q } }
 }
 
 #[component]
