@@ -1186,6 +1186,7 @@ struct PaymentRowProps {
 #[component]
 fn PaymentRow(props: PaymentRowProps) -> Element {
     let mut deleting = use_signal(|| false);
+    let mut error = use_signal(String::new);
     let on_deleted = props.on_deleted;
     let delete_id = props.id.clone();
     // Prefer the human invoice number; fall back to a generic label if the
@@ -1238,6 +1239,7 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
                     onclick: move |_| {
                         let id = delete_id.clone();
                         deleting.set(true);
+                        error.set(String::new());
                         spawn(async move {
                             #[cfg(feature = "web")]
                             {
@@ -1251,8 +1253,11 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
                                     .unwrap_or(false);
                                 if confirmed {
                                     let path = format!("/payments/{id}");
-                                    if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
-                                        on_deleted.call(());
+                                    match crate::hooks::fetch::api::delete_authed(&path).await {
+                                        Ok(()) => on_deleted.call(()),
+                                        Err(err) => {
+                                            error.set(format!("Could not delete payment: {err}"))
+                                        }
                                     }
                                 }
                             }
@@ -1260,6 +1265,9 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
                         });
                     },
                     "Delete"
+                }
+                if !error.read().is_empty() {
+                    p { class: "mt-1 text-xs text-red-600", "{error.read()}" }
                 }
             }
         }
