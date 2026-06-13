@@ -413,8 +413,8 @@ fn UserMenu() -> Element {
 
     let logout = move |_| {
         open.set(false);
-        // Order matters here, see the same warning on `hooks::use_logout`:
-        // any write to the auth signal BEFORE `location.replace` schedules
+        // Order matters here: any write to the auth signal BEFORE
+        // `location.replace` schedules
         // a Dioxus re-render. On that re-render `use_require_auth` (the
         // route guard) sees `user = None` on `/dashboard` and calls
         // `navigator.push(Route::Login {})`, which puts `/login` on TOP

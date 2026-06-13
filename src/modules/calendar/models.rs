@@ -168,23 +168,6 @@ pub struct UserAvailabilityResponse {
     pub is_available: bool,
 }
 
-/// One window in a `PUT .../availability` replace request. Mirrors the
-/// server's `AvailabilityWindow`; the whole weekly set is replaced at
-/// once.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AvailabilityWindow {
-    pub day_of_week: i32,
-    pub start_time: NaiveTime,
-    pub end_time: NaiveTime,
-    pub is_available: bool,
-}
-
-/// Body for `PUT /api/v1/users/{user_id}/availability` (full replace).
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct ReplaceAvailabilityRequest {
-    pub windows: Vec<AvailabilityWindow>,
-}
-
 // ============================================================================
 // Time off
 // ============================================================================
@@ -208,26 +191,6 @@ pub struct TimeOffResponse {
     pub notes: Option<String>,
     #[serde(default)]
     pub created_at: Option<DateTime<Utc>>,
-}
-
-/// Body for `POST /api/v1/time-off`. `kind` serializes as `type`.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct CreateTimeOffRequest {
-    pub user_id: Uuid,
-    pub start_date: NaiveDate,
-    pub end_date: NaiveDate,
-    /// "vacation" | "sick" | "personal" | "holiday" | "other"
-    #[serde(rename = "type")]
-    pub kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub notes: Option<String>,
-}
-
-/// Body for `POST /api/v1/time-off/{id}/approval` (manager only).
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct ApproveTimeOffRequest {
-    /// "approved" | "rejected"
-    pub status: String,
 }
 
 // ============================================================================

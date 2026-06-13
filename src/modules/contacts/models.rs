@@ -343,22 +343,18 @@ pub enum ContactStatus {
 }
 
 impl ContactStatus {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "active" => Some(Self::Active),
+            "inactive" => Some(Self::Inactive),
+            _ => None,
+        }
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             ContactStatus::Active => "active",
             ContactStatus::Inactive => "inactive",
-        }
-    }
-}
-
-impl std::str::FromStr for ContactStatus {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "active" => Ok(ContactStatus::Active),
-            "inactive" => Ok(ContactStatus::Inactive),
-            _ => Err(format!("Unknown contact status: {}", s)),
         }
     }
 }

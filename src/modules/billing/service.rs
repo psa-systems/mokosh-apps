@@ -1339,6 +1339,3 @@ impl TryFrom<InvoiceRow> for InvoiceResponse {
         })
     }
 }
-
-#[allow(dead_code)]
-fn _force_use(_: &AppError) {}
