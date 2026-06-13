@@ -1,9 +1,11 @@
 //! Token holder and ID-token claim parser.
 //!
-//! Tokens live ONLY in memory (inside Dioxus signals). They are not
-//! persisted across reloads: a refresh sends the user through authorize
-//! again. This is the OAuth 2.0 for Browser-Based Apps recommendation
-//! since localStorage is XSS-readable.
+//! Tokens live in memory (inside Dioxus signals) during a session and are
+//! also persisted to `sessionStorage` via [`super::storage`] so a page
+//! reload rehydrates the session instead of bouncing the user back through
+//! authorize. `sessionStorage` (not `localStorage`) scopes the bundle to
+//! the tab and clears it on close; it is still XSS-readable, so token
+//! lifetimes are kept short and rotated via the refresh token.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Utc};

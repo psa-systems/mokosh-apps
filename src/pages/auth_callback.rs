@@ -29,19 +29,29 @@ pub fn AuthCallbackPage() -> Element {
                         return;
                     }
                 };
-                let user_id = claims
-                    .sub
-                    .parse::<uuid::Uuid>()
-                    .unwrap_or_else(|_| uuid::Uuid::nil());
+                let user_id = match claims.sub.parse::<uuid::Uuid>() {
+                    Ok(id) => id,
+                    Err(e) => {
+                        // Reject an unparseable subject id rather than
+                        // substituting `Uuid::nil()`: a nil id can collide
+                        // or corrupt tenant-scoped writes silently.
+                        error_msg.set(Some(format!("invalid subject id: {e}")));
+                        return;
+                    }
+                };
                 let tenant_id = claims
                     .tenant_id
                     .as_deref()
                     .and_then(|s| s.parse::<uuid::Uuid>().ok())
                     .unwrap_or_else(uuid::Uuid::nil);
-                // Map mokosh-server's role enum onto the client's via the
-                // single canonical parser. Unknown / unset values fall
-                // back to Technician (the default service role) so a fresh
-                // user still gets a usable session.
+                // Map mokosh-server's role string onto the client enum via
+                // the single canonical `UserRole::parse_role` parser (PMS-158,
+                // same path used at auth.rs:206 / :424). The inline match it
+                // replaces only handled admin/manager/finance and silently
+                // downgraded super_admin/technician/dispatcher/sales to the
+                // default role on the OIDC-callback path. Unknown / unset
+                // values fall back to Technician (the default service role)
+                // so a fresh user still gets a usable session.
                 let role = claims
                     .role
                     .as_deref()
