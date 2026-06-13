@@ -6,6 +6,9 @@
 //! equals our own (the SPA and API share an origin in dev via the
 //! Dioxus `[[web.proxy]]` and in prod via an outer reverse proxy).
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use dioxus::prelude::*;
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -15,6 +18,10 @@ use web_sys::MessageEvent;
 
 use crate::modules::auth::CurrentUser;
 use crate::Route;
+
+/// Shared slot holding the `message` listener closure so the handler can
+/// deregister itself after consuming one valid message.
+type MessageHandlerSlot = Rc<RefCell<Option<Closure<dyn FnMut(MessageEvent)>>>>;
 
 const POPUP_NAME: &str = "mokosh-google";
 const POPUP_FEATURES: &str =
@@ -85,8 +92,14 @@ pub fn use_google_login() -> GoogleLoginHandle {
             while let Some(result) = rx.next().await {
                 match result {
                     GoogleAuthResult::Success(user) => {
-                        auth.write().user = Some(user);
-                        auth.write().is_loading = false;
+                        // Batch both AuthContext mutations into one write so
+                        // the render between them does not observe a torn
+                        // state (user set while `is_loading` still true).
+                        {
+                            let mut a = auth.write();
+                            a.user = Some(user);
+                            a.is_loading = false;
+                        }
                         *status.write() = GoogleLoginStatus::Idle;
                         navigator.push(Route::Dashboard {});
                     }
@@ -131,6 +144,14 @@ pub fn use_google_login() -> GoogleLoginHandle {
 
         let expected_origin = origin.clone();
         let tx = result_tx;
+        // Hold the closure in a shared slot so the handler can deregister
+        // itself once it has consumed a valid message. Without this, every
+        // sign-in click registers another permanent listener (the old
+        // `handler.forget()`), so a later message fans out to every prior
+        // closure and `tx.send` fires n times.
+        let win_for_removal = win.clone();
+        let handler_slot: MessageHandlerSlot = Rc::new(RefCell::new(None));
+        let handler_slot_inner = handler_slot.clone();
         let handler = Closure::wrap(Box::new(move |event: MessageEvent| {
             // Origin check: only accept messages from our own origin.
             if event.origin() != expected_origin {
@@ -150,6 +171,12 @@ pub fn use_google_login() -> GoogleLoginHandle {
             if msg.msg_type != MESSAGE_TYPE {
                 return;
             }
+            // Valid message for this flow: deregister this listener so a
+            // subsequent sign-in does not accumulate duplicate sends.
+            if let Some(cb) = handler_slot_inner.borrow().as_ref() {
+                let _ = win_for_removal
+                    .remove_event_listener_with_callback("message", cb.as_ref().unchecked_ref());
+            }
             match msg.payload {
                 GoogleAuthPayload::Success { data } => {
                     tx.send(GoogleAuthResult::Success(data.user));
@@ -168,11 +195,9 @@ pub fn use_google_login() -> GoogleLoginHandle {
                 GoogleLoginStatus::Error("failed to register message listener".to_string());
             return;
         }
-        // The closure must outlive its synchronous registration so we
-        // cannot let it drop here. `forget()` keeps it alive for the
-        // page lifetime - acceptable since the popup flow runs at most
-        // a handful of times per session.
-        handler.forget();
+        // Stash the closure so it outlives this synchronous registration
+        // and remains reachable for self-removal in the handler above.
+        *handler_slot.borrow_mut() = Some(handler);
     });
 
     GoogleLoginHandle { status, start }
