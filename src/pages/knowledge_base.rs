@@ -17,7 +17,6 @@
 //! loading / empty / error states match the contacts pages.
 
 use dioxus::prelude::*;
-use serde::Deserialize;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ChevronRightIcon, CollapsibleRail,
@@ -29,6 +28,8 @@ use crate::modules::kb::{
     CreateKbArticleRequest, KbArticle, KbArticleFeedback, KbArticleVersion, KbCategory,
     UpdateKbArticleRequest,
 };
+use crate::utils::url::urlencoding_minimal;
+use crate::utils::Paginated;
 use crate::Route;
 
 /// Rows per page for the article list (mirrors contacts `PER_PAGE`).
@@ -36,41 +37,6 @@ const PER_PAGE: usize = 25;
 
 /// How many recent articles the home page surfaces.
 const RECENT_LIMIT: usize = 5;
-
-/// Server-side paginated envelope (`PaginatedResponse<T>`): `{ data, meta }`.
-#[derive(Clone, Debug, Deserialize)]
-struct Paginated<T> {
-    data: Vec<T>,
-    #[serde(default)]
-    meta: PaginationMeta,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-struct PaginationMeta {
-    #[serde(default)]
-    total: u64,
-}
-
-/// Tiny percent-encoder for query-string values, copied from
-/// `contacts.rs` so the two pages stay consistent without pulling in the
-/// full `urlencoding` crate. The server ILIKE / similarity-matches the
-/// result so non-ASCII passes straight through.
-fn urlencoding_minimal(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            ' ' => out.push_str("%20"),
-            '&' => out.push_str("%26"),
-            '#' => out.push_str("%23"),
-            '?' => out.push_str("%3F"),
-            '+' => out.push_str("%2B"),
-            '=' => out.push_str("%3D"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("%{:02X}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
-}
 
 /// Derive a URL slug from a title: lowercase, non-alphanumerics collapse
 /// to single hyphens, trimmed. Mirrors the obvious server expectation

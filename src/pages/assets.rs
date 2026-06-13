@@ -10,13 +10,8 @@ use crate::components::{
     PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody,
     TableCell, TableHead, TableHeader, TableRow,
 };
+use crate::utils::Paginated;
 use crate::Route;
-
-/// `PaginatedResponse<T>` envelope; serde drops `meta`.
-#[derive(Clone, Debug, Deserialize)]
-struct Paginated<T> {
-    data: Vec<T>,
-}
 
 /// An asset (`GET /api/v1/assets`).
 #[derive(Clone, Debug, Deserialize)]
