@@ -348,13 +348,6 @@ pub fn TopBar(props: TopBarProps) -> Element {
 
             // Right side actions
             div { class: "flex items-center px-4 sm:px-6 lg:px-8 space-x-4",
-                // Search (desktop only)
-                div { class: "hidden md:block",
-                    super::form::SearchInput {
-                        placeholder: "Search...",
-                    }
-                }
-
                 // Notifications bell + inbox dropdown, wired to the
                 // server `notifications` module (MAPPS-132).
                 NotificationBell {}
@@ -863,19 +856,6 @@ pub fn EmptyState(props: EmptyStateProps) -> Element {
                 div { class: "mt-6",
                     {actions}
                 }
-            }
-        }
-    }
-}
-
-/// Loading spinner overlay
-#[component]
-pub fn LoadingOverlay() -> Element {
-    rsx! {
-        div { class: "fixed inset-0 z-50 flex items-center justify-center bg-gray-900/50",
-            div { class: "bg-white dark:bg-gray-800 rounded-lg p-6 flex items-center space-x-3",
-                super::button::Spinner {}
-                span { class: "text-gray-700 dark:text-gray-300", "Loading..." }
             }
         }
     }

@@ -109,6 +109,38 @@ pub fn TenantManagementPage() -> Element {
         None => (Vec::new(), TenantSource::Demo),
     };
 
+    // Stat-card counts are derived from the same data the table renders,
+    // so they stay in sync with the roster instead of the old hardcoded
+    // 42/38/4 literals. In demo mode they match the four seeded rows
+    // below. MRR has no source field on the tenants API (per-row MRR is
+    // "-" too), so it is shown as "-" rather than a fabricated dollar
+    // figure.
+    let (total_tenants, active_count, trial_count) = if source == TenantSource::Backend {
+        (
+            remote_tenants.len(),
+            remote_tenants
+                .iter()
+                .filter(|t| humanize_status(&t.status) == "Active")
+                .count(),
+            remote_tenants
+                .iter()
+                .filter(|t| humanize_plan(&t.subscription_plan) == "Trial")
+                .count(),
+        )
+    } else {
+        (4, 3, 1)
+    };
+    let stat = |n: usize| -> String {
+        if is_loading {
+            "-".to_string()
+        } else {
+            n.to_string()
+        }
+    };
+    let total_tenants_label = stat(total_tenants);
+    let active_label = stat(active_count);
+    let trial_label = stat(trial_count);
+
     rsx! {
         AppLayout { title: "Tenant Management",
             PageHeader {
@@ -125,19 +157,19 @@ pub fn TenantManagementPage() -> Element {
             div { class: "grid grid-cols-1 gap-5 sm:grid-cols-4 mb-6",
                 Card { class: "text-center",
                     p { class: "text-sm text-gray-500 dark:text-gray-400", "Total Tenants" }
-                    p { class: "text-2xl font-bold text-gray-900 dark:text-white", "42" }
+                    p { class: "text-2xl font-bold text-gray-900 dark:text-white", "{total_tenants_label}" }
                 }
                 Card { class: "text-center",
                     p { class: "text-sm text-gray-500 dark:text-gray-400", "Active" }
-                    p { class: "text-2xl font-bold text-green-600", "38" }
+                    p { class: "text-2xl font-bold text-green-600", "{active_label}" }
                 }
                 Card { class: "text-center",
                     p { class: "text-sm text-gray-500 dark:text-gray-400", "Trial" }
-                    p { class: "text-2xl font-bold text-blue-600", "4" }
+                    p { class: "text-2xl font-bold text-blue-600", "{trial_label}" }
                 }
                 Card { class: "text-center",
                     p { class: "text-sm text-gray-500 dark:text-gray-400", "MRR" }
-                    p { class: "text-2xl font-bold text-green-600", "$12,450" }
+                    p { class: "text-2xl font-bold text-gray-400", "-" }
                 }
             }
 

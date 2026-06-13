@@ -57,10 +57,10 @@ pub fn NotFoundPage(props: NotFoundPageProps) -> Element {
                 // Help text
                 p { class: "mt-8 text-sm text-gray-500 dark:text-gray-400",
                     "Need help? "
-                    a {
-                        href: "mailto:support@example.com",
+                    Link {
+                        to: Route::KBHome {},
                         class: "text-blue-600 hover:text-blue-500 dark:text-blue-400",
-                        "Contact support"
+                        "Browse the knowledge base"
                     }
                 }
             }

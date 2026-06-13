@@ -321,59 +321,6 @@ pub fn Checkbox(props: CheckboxProps) -> Element {
     }
 }
 
-/// Form field wrapper with consistent spacing
-#[derive(Props, Clone, PartialEq)]
-pub struct FormFieldProps {
-    children: Element,
-    #[props(default)]
-    class: String,
-}
-
-#[component]
-pub fn FormField(props: FormFieldProps) -> Element {
-    let class = format!("space-y-1 {}", props.class);
-
-    rsx! {
-        div { class: "{class}",
-            {props.children}
-        }
-    }
-}
-
-/// Form section with title and description
-#[derive(Props, Clone, PartialEq)]
-pub struct FormSectionProps {
-    children: Element,
-    title: String,
-    #[props(default)]
-    description: String,
-    #[props(default)]
-    class: String,
-}
-
-#[component]
-pub fn FormSection(props: FormSectionProps) -> Element {
-    let class = format!("space-y-6 {}", props.class);
-
-    rsx! {
-        div { class: "{class}",
-            div {
-                h3 { class: "text-lg font-medium text-gray-900 dark:text-white",
-                    "{props.title}"
-                }
-                if !props.description.is_empty() {
-                    p { class: "mt-1 text-sm text-gray-500 dark:text-gray-400",
-                        "{props.description}"
-                    }
-                }
-            }
-            div { class: "mt-6 grid grid-cols-1 gap-y-6 gap-x-4 sm:grid-cols-6",
-                {props.children}
-            }
-        }
-    }
-}
-
 /// Search input with icon
 #[derive(Props, Clone, PartialEq)]
 pub struct SearchInputProps {
