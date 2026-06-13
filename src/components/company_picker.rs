@@ -1,7 +1,8 @@
 //! Reusable Company picker.
 //!
-//! Hits `GET /v1/companies?q=...&per_page=20` with a small debounce
-//! and renders the matches in a click-to-select dropdown. The selected
+//! Hits `GET /contacts/companies?q=...&per_page=20` on each keystroke
+//! (no debounce) and renders the matches in a click-to-select dropdown.
+//! The selected
 //! company's UUID is reported back via the `onselect` callback; the
 //! displayed name is reported via the `value` signal so the calling
 //! form can persist the human label across renders.
@@ -124,6 +125,13 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                 },
             }
             if *show_dropdown.read() {
+                // Transparent full-viewport backdrop: a click anywhere outside
+                // the dropdown dismisses it. Sits below the dropdown (z-10 vs
+                // z-20) so the rows stay clickable.
+                div {
+                    class: "fixed inset-0 z-10",
+                    onclick: move |_| show_dropdown.set(false),
+                }
                 div {
                     class: "absolute z-20 left-0 right-0 mt-1 max-h-72 overflow-y-auto rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg",
                     match &*snap {
