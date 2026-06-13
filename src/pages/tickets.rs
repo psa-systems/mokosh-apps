@@ -5,11 +5,12 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ClockIcon, DataTable, IconSize,
-    Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody,
-    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea,
-    UserCircleIcon,
+    ticket_status_badge, AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ClockIcon,
+    DataTable, IconSize, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select,
+    SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
+    TableRow, Textarea, UserCircleIcon,
 };
+use crate::utils::Paginated;
 use crate::Route;
 
 /// Subset of mokosh-server's `TicketResponse` we render in the list. The
@@ -35,11 +36,6 @@ struct RemoteTicket {
 struct RemoteSummary {
     #[serde(default)]
     name: String,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct PaginatedTickets {
-    data: Vec<RemoteTicket>,
 }
 
 /// The fields of mokosh-server's `TicketResponse` the detail page renders.
@@ -133,13 +129,6 @@ struct RemoteTimeEntry {
     notes: Option<String>,
     #[serde(default)]
     is_billable: bool,
-}
-
-/// `PaginatedResponse<T>` envelope (`{ "data": [...], "meta": {...} }`);
-/// serde drops `meta`.
-#[derive(Clone, Debug, Deserialize)]
-struct Paginated<T> {
-    data: Vec<T>,
 }
 
 /// Mirror of the server `SlaStatus` enum (snake_case wire form). Defaults
@@ -236,7 +225,7 @@ fn relative_time(when: DateTime<Utc>) -> String {
 /// Convert the lowercase status name the server returns into the
 /// title-case label `TicketRow` keys its badge color on. Unknown
 /// values pass through so future statuses don't disappear.
-fn humanize_status(raw: &str) -> String {
+fn humanize_ticket_status(raw: &str) -> String {
     match raw {
         "" => "Open".into(),
         "open" => "Open".into(),
@@ -268,17 +257,6 @@ fn humanize_priority(raw: &str) -> String {
                 None => String::new(),
             }
         }
-    }
-}
-
-/// Badge colour for a humanized status label (shared by the list row and
-/// the detail Details card).
-fn status_badge_variant(label: &str) -> BadgeVariant {
-    match label {
-        "Open" => BadgeVariant::Blue,
-        "In Progress" => BadgeVariant::Yellow,
-        "Resolved" => BadgeVariant::Green,
-        _ => BadgeVariant::Gray,
     }
 }
 
@@ -395,7 +373,8 @@ pub fn TicketListPage() -> Element {
             Some(t) => t,
             None => return (Vec::<RemoteTicket>::new(), TicketSource::Demo),
         };
-        match crate::hooks::fetch::api::get_with_auth::<PaginatedTickets>("/tickets", &token).await
+        match crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteTicket>>("/tickets", &token)
+            .await
         {
             Ok(page) => (page.data, TicketSource::Backend),
             Err(_) => (Vec::new(), TicketSource::Demo),
@@ -511,7 +490,7 @@ pub fn TicketListPage() -> Element {
                                         number: ticket.ticket_number,
                                         title: ticket.title,
                                         company: ticket.company_name,
-                                        status: humanize_status(&ticket.status.name),
+                                        status: humanize_ticket_status(&ticket.status.name),
                                         priority: humanize_priority(&ticket.priority.name),
                                         assigned_to: ticket.assigned_to_name.unwrap_or_else(|| "Unassigned".to_string()),
                                         updated: relative_time(ticket.updated_at),
@@ -591,14 +570,7 @@ struct TicketRowProps {
 
 #[component]
 fn TicketRow(props: TicketRowProps) -> Element {
-    let status_variant = match props.status.as_str() {
-        "Open" => BadgeVariant::Blue,
-        "In Progress" => BadgeVariant::Yellow,
-        "Pending" => BadgeVariant::Gray,
-        "Resolved" => BadgeVariant::Green,
-        "Closed" => BadgeVariant::Gray,
-        _ => BadgeVariant::Gray,
-    };
+    let status_variant = ticket_status_badge(&props.status);
 
     let priority_variant = match props.priority.as_str() {
         "Critical" => BadgeVariant::Red,
@@ -1046,11 +1018,11 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         if let Some(t) = ticket.as_ref() {
                             dl { class: "space-y-4",
                                 {
-                                    let status_label = humanize_status(&t.status.name);
+                                    let status_label = humanize_ticket_status(&t.status.name);
                                     rsx! {
                                         DetailItem {
                                             label: "Status",
-                                            value: rsx!(Badge { variant: status_badge_variant(&status_label), "{status_label}" }),
+                                            value: rsx!(Badge { variant: ticket_status_badge(&status_label), "{status_label}" }),
                                         }
                                     }
                                 }
