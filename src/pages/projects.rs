@@ -8,14 +8,8 @@ use crate::components::{
     PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody,
     TableCell, TableHead, TableHeader, TableRow, Textarea,
 };
+use crate::utils::Paginated;
 use crate::Route;
-
-/// `PaginatedResponse<T>` envelope (`{ "data": [...], "meta": {...} }`);
-/// serde drops `meta`.
-#[derive(Clone, Debug, Deserialize)]
-struct Paginated<T> {
-    data: Vec<T>,
-}
 
 /// A project (`GET /api/v1/projects`). Money/hours are decoded with a
 /// number-or-string tolerant reader because the server's `Decimal` wire
@@ -377,6 +371,13 @@ pub fn ProjectListPage() -> Element {
     let on_hold = projects.iter().filter(|p| p.status == "on_hold").count();
     let completed = projects.iter().filter(|p| p.status == "completed").count();
     let total_value: f64 = projects.iter().filter_map(|p| p.budget_amount).sum();
+    // Normalize negative zero (and tiny negatives that round to zero) so the card
+    // shows "$0" instead of "$-0".
+    let total_value = if total_value.round() == 0.0 {
+        0.0
+    } else {
+        total_value
+    };
     let total_value_label = format!("${total_value:.0}");
 
     // Client-side search + status filter.

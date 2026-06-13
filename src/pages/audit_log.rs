@@ -14,32 +14,13 @@ use crate::components::{
     AppLayout, Badge, BadgeVariant, Card, DataTable, PageHeader, Select, SelectOption, Table,
     TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
-use crate::modules::audit::{AuditLogEntry, Paginated};
+use crate::modules::audit::AuditLogEntry;
+use crate::utils::url::urlencoding_minimal;
+use crate::utils::Paginated;
 
 /// Rows per page for the audit log. Matches the server's default
 /// `per_page` and the other list pages' `PER_PAGE`.
 const PER_PAGE: usize = 25;
-
-/// Tiny percent-encoder for query-string values. Mirrors the helper in
-/// `contacts.rs` so the audit page does not pull in the full
-/// `urlencoding` crate for the handful of inline path builds. The
-/// server exact-matches the result, so non-ASCII passes through.
-fn urlencoding_minimal(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            ' ' => out.push_str("%20"),
-            '&' => out.push_str("%26"),
-            '#' => out.push_str("%23"),
-            '?' => out.push_str("%3F"),
-            '+' => out.push_str("%2B"),
-            '=' => out.push_str("%3D"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("%{:02X}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
-}
 
 /// Badge color per audit action verb. Unknown verbs fall through to
 /// gray so future server-side actions still render legibly.
