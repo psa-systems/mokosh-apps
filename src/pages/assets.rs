@@ -751,6 +751,12 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     let mut e_error = use_signal(String::new);
     let id_for_save = props.id.clone();
 
+    // MAPPS-158: detail-page Delete, wired to the existing
+    // `DELETE /assets/{id}` endpoint (parity with Company/Contract).
+    let navigator = use_navigator();
+    let mut deleting = use_signal(|| false);
+    let id_for_delete = props.id.clone();
+
     let snapshot = asset_resource.read_unchecked().clone();
     let is_loading = snapshot.is_none();
     let asset = snapshot.flatten();
@@ -798,7 +804,41 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
 
     rsx! {
         AppLayout { title: "{header_title}",
-            PageHeader { title: "{header_title}", subtitle: "Configuration item" }
+            PageHeader {
+                title: "{header_title}",
+                subtitle: "Configuration item",
+                actions: rsx! {
+                    Button {
+                        variant: ButtonVariant::Danger,
+                        loading: *deleting.read(),
+                        onclick: move |_| {
+                            let id = id_for_delete.clone();
+                            deleting.set(true);
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    let confirmed = web_sys::window()
+                                        .and_then(|w| {
+                                            w.confirm_with_message(
+                                                "Delete this asset? This cannot be undone.",
+                                            )
+                                            .ok()
+                                        })
+                                        .unwrap_or(false);
+                                    if confirmed {
+                                        let path = format!("/assets/{id}");
+                                        if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
+                                            navigator.push(Route::AssetList {});
+                                        }
+                                    }
+                                }
+                                deleting.set(false);
+                            });
+                        },
+                        "Delete"
+                    }
+                },
+            }
 
             if is_loading {
                 Card { p { class: "text-sm text-gray-400", "Loading asset…" } }

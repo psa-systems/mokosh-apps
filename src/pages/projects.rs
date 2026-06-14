@@ -909,6 +909,12 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
     let t_err = t_error.read().clone();
     let id_for_create = props.id.clone();
 
+    // MAPPS-158: detail-page Delete, wired to the existing
+    // `DELETE /projects/{id}` endpoint (parity with Company/Contract).
+    let navigator = use_navigator();
+    let mut deleting = use_signal(|| false);
+    let id_for_delete = props.id.clone();
+
     let header_title = match project.as_ref() {
         Some(p) if !p.name.trim().is_empty() => p.name.clone(),
         Some(_) => format!("Project {}", props.id),
@@ -951,6 +957,35 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                         },
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "Add Task"
+                    }
+                    Button {
+                        variant: ButtonVariant::Danger,
+                        loading: *deleting.read(),
+                        onclick: move |_| {
+                            let id = id_for_delete.clone();
+                            deleting.set(true);
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    let confirmed = web_sys::window()
+                                        .and_then(|w| {
+                                            w.confirm_with_message(
+                                                "Delete this project? This cannot be undone.",
+                                            )
+                                            .ok()
+                                        })
+                                        .unwrap_or(false);
+                                    if confirmed {
+                                        let path = format!("/projects/{id}");
+                                        if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
+                                            navigator.push(Route::ProjectList {});
+                                        }
+                                    }
+                                }
+                                deleting.set(false);
+                            });
+                        },
+                        "Delete"
                     }
                 },
             }
