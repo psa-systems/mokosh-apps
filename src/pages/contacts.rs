@@ -9,7 +9,7 @@ use crate::components::{
     TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::modules::contacts::Address;
-use crate::utils::url::urlencoding_minimal;
+use crate::utils::url::{safe_href, urlencoding_minimal};
 use crate::Route;
 
 /// Rows per page for the client-side paginated list views (F3).
@@ -177,18 +177,21 @@ pub fn CompanyListPage() -> Element {
     let type_text = type_filter.read().clone();
     let current_page = (*page.read()).max(1);
     let sort_snapshot = *sort.read();
-    let sort_query = company_sort_query(sort_snapshot);
 
-    // F1: read the active-tenant generation so Dioxus re-runs this
-    // resource on an org switch / token swap. Filters + page + sort are
-    // captured by value so the resource also re-fetches on every change.
-    let q_for_resource = search_text.clone();
-    let type_for_resource = type_text.clone();
-    let sort_for_resource = sort_query;
+    // MAPPS-148: read every reactive input (page, search, type filter,
+    // sort) INSIDE the resource closure. Dioxus `use_resource` only
+    // re-runs when a signal read within the closure changes; values
+    // captured by value (the old `*_for_resource` snapshots) never
+    // subscribe the resource, so paging/filtering merely re-rendered the
+    // footer label while the resource kept serving page 1. Reading the
+    // signals here subscribes the resource so a page change fetches and
+    // binds the requested page. `active_tenant_generation` stays read so
+    // an org switch / token swap still re-fetches.
     let companies_resource = use_resource(move || {
-        let q = q_for_resource.clone();
-        let type_filter = type_for_resource.clone();
-        let sort = sort_for_resource;
+        let q = search.read().trim().to_string();
+        let type_filter = type_filter.read().clone();
+        let sort = company_sort_query(*sort.read());
+        let current_page = (*page.read()).max(1);
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let token = crate::hooks::fetch::api::current_access_token()?;
@@ -916,11 +919,19 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                                 div { class: "flex justify-between",
                                                     dt { class: "text-sm text-gray-500", "Website" }
                                                     dd {
-                                                        a {
-                                                            href: "{website}",
-                                                            target: "_blank",
-                                                            class: "text-sm text-blue-600 hover:text-blue-500",
-                                                            "{website}"
+                                                        // Only render a live link when the value carries a
+                                                        // safe URL scheme; `javascript:`/`data:`/`vbscript:`
+                                                        // values fall back to plain text (MAPPS-149).
+                                                        if let Some(href) = safe_href(&website) {
+                                                            a {
+                                                                href: "{href}",
+                                                                target: "_blank",
+                                                                rel: "noopener noreferrer",
+                                                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                                                "{website}"
+                                                            }
+                                                        } else {
+                                                            span { class: "text-sm", "{website}" }
                                                         }
                                                     }
                                                 }
@@ -1592,17 +1603,17 @@ pub fn ContactListPage() -> Element {
     let portal_text = portal_filter.read().clone();
     let current_page = (*page.read()).max(1);
     let sort_snapshot = *sort.read();
-    let sort_query = contact_sort_query(sort_snapshot);
 
-    let q_for_resource = search_text.clone();
-    let type_for_resource = type_text.clone();
-    let portal_for_resource = portal_text.clone();
-    let sort_for_resource = sort_query;
+    // MAPPS-148: read page/filters/sort INSIDE the resource closure so the
+    // resource subscribes to them and re-fetches when they change. Values
+    // captured by value never re-trigger a Dioxus resource, which is why
+    // paging only moved the footer label and never loaded the next page.
     let contacts_resource = use_resource(move || {
-        let q = q_for_resource.clone();
-        let contact_type = type_for_resource.clone();
-        let portal = portal_for_resource.clone();
-        let sort = sort_for_resource;
+        let q = search.read().trim().to_string();
+        let contact_type = contact_type_filter.read().clone();
+        let portal = portal_filter.read().clone();
+        let sort = contact_sort_query(*sort.read());
+        let current_page = (*page.read()).max(1);
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let token = crate::hooks::fetch::api::current_access_token()?;
