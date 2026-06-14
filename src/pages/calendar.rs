@@ -1364,11 +1364,18 @@ pub fn DispatchBoardPage() -> Element {
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
 
     let day = active_day();
-    let from_utc = local_date_start_utc(day);
-    let to_utc = local_date_start_utc(day + Duration::days(1));
 
     let mut dispatch_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // Read the `active_day` signal INSIDE the resource closure so the
+        // resource subscribes to it and refetches when the next/previous/
+        // Today controls change the date. Computing the range outside the
+        // closure (from a value-captured `DateTime`) advanced the header
+        // but never re-ran the fetch, so the board stayed on the first
+        // day it loaded (MAPPS-153).
+        let day = active_day();
+        let from_utc = local_date_start_utc(day);
+        let to_utc = local_date_start_utc(day + Duration::days(1));
         #[cfg(feature = "web")]
         {
             // Emit the UTC offset as `Z`, not `+00:00`. A literal `+` in
