@@ -2,7 +2,7 @@
 
 [package]
 name = "mokosh-apps"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Mokosh Platform Team"]
 description = "Mokosh Platform - Cross-platform Dioxus client"
@@ -14,16 +14,13 @@ name = "mokosh-apps"
 path = "src/main.rs"
 
 [features]
-default = ["web", "multi-tenant"]
+default = [
+    "web",
+    "multi-tenant",
+]
 web = []
 multi-tenant = []
 single-tenant = []
-# `server` is intentionally unset on the client. Several modules under
-# src/modules/* are shared in shape with the server side and gate their
-# server-only code (routes, services, sqlx) behind `#[cfg(feature =
-# "server")]`. Declaring the feature here (without enabling it) tells
-# rustc the name is known so the cfg checks pass silently rather than
-# emitting `unexpected cfg condition value: server` for every gate.
 server = []
 
 [lib]
@@ -31,49 +28,79 @@ name = "mokosh_apps"
 path = "src/lib.rs"
 
 [dependencies]
-# Dioxus framework
-dioxus = { version = "0.7.7", features = ["router", "web"] }
-
-# Serialization
-serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-
-# UUID
-uuid = { version = "1.11", features = ["v4", "v7", "serde", "js"] }
-getrandom = { version = "0.3", features = ["wasm_js"] }
-
-# Date/Time
-chrono = { version = "0.4", features = ["serde", "wasmbind"] }
-
-# Decimal (time-tracking money/rate DTO fields). `db-postgres` is the
-# server-only feature and is intentionally omitted on the WASM client.
-rust_decimal = { version = "1", features = ["serde"] }
-
-# Validation
-validator = { version = "0.19", features = ["derive"] }
-
-# Error handling
 thiserror = "2"
-
-# Logging/Tracing
 tracing = "0.1"
-
-# WASM-friendly HTTP client
 gloo-net = "0.6"
-gloo-timers = { version = "0.3", features = ["futures"] }
 futures-util = "0.3"
 wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "DomTokenList", "Storage", "Navigator", "Location", "UrlSearchParams", "MessageEvent", "EventTarget", "Event", "MediaQueryList", "Performance"] }
 js-sys = "0.3"
-
-# OIDC / PKCE primitives (SPA public-client flow against mokosh-server)
 sha2 = "0.10"
 base64 = "0.22"
 rand = "0.9"
-
-# Markdown rendering
 pulldown-cmark = "0.12"
 ammonia = "4"
+
+[dependencies.dioxus]
+version = "0.7.7"
+features = [
+    "router",
+    "web",
+]
+
+[dependencies.serde]
+version = "1.0"
+features = ["derive"]
+
+[dependencies.uuid]
+version = "1.11"
+features = [
+    "v4",
+    "v7",
+    "serde",
+    "js",
+]
+
+[dependencies.getrandom]
+version = "0.3"
+features = ["wasm_js"]
+
+[dependencies.chrono]
+version = "0.4"
+features = [
+    "serde",
+    "wasmbind",
+]
+
+[dependencies.rust_decimal]
+version = "1"
+features = ["serde"]
+
+[dependencies.validator]
+version = "0.19"
+features = ["derive"]
+
+[dependencies.gloo-timers]
+version = "0.3"
+features = ["futures"]
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+    "Window",
+    "Document",
+    "Element",
+    "DomTokenList",
+    "Storage",
+    "Navigator",
+    "Location",
+    "UrlSearchParams",
+    "MessageEvent",
+    "EventTarget",
+    "Event",
+    "MediaQueryList",
+    "Performance",
+]
 
 [profile.release]
 lto = true
