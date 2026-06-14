@@ -190,8 +190,14 @@ pub struct TableCellProps {
 
 #[component]
 pub fn TableCell(props: TableCellProps) -> Element {
+    // MAPPS-152: use `break-words` instead of `whitespace-nowrap` so a long
+    // value (e.g. a 255-char company name, including an unbroken single token)
+    // wraps and lets its column shrink, rather than forcing the whole table to
+    // overflow horizontally and push other columns off-screen. Callers that
+    // need single-line cells opt back in via `class` (e.g. `whitespace-nowrap`
+    // or `truncate`), which is appended last and wins.
     let class = format!(
-        "px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100 {}",
+        "px-6 py-4 break-words text-sm text-gray-900 dark:text-gray-100 {}",
         props.class
     );
 
