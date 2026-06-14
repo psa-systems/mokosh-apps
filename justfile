@@ -122,7 +122,9 @@ down:
     if (do { ^docker network inspect $net } | complete | get exit_code) != 0 {
         ^docker network create $net out> /dev/null
     }
-    with-env { HOST_IP: "127.0.0.1", USER: $user_name } {
+    # MOKOSH_OIDC_CLIENT_ID is a `${...:?}` required var in compose.yml; supply a
+    # harmless placeholder so teardown interpolates even before it is set in .env.
+    with-env { HOST_IP: "127.0.0.1", USER: $user_name, MOKOSH_OIDC_CLIENT_ID: "teardown-placeholder" } {
         docker compose --file compose.yml --file compose.dev-sso.yml down --remove-orphans
     }
 
