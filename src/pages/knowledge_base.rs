@@ -36,6 +36,12 @@ use crate::Route;
 /// Rows per page for the article list (mirrors contacts `PER_PAGE`).
 const PER_PAGE: usize = 25;
 
+/// How many articles to pull when a tag filter is active. The server
+/// cannot narrow on tags (its `q` filter ignores them), so the list fetches
+/// a broad page and filters by tag client-side. Matches the tree rail's
+/// broad fetch cap.
+const TAG_FETCH_LIMIT: usize = 200;
+
 /// How many recent articles the home page surfaces.
 const RECENT_LIMIT: usize = 5;
 
@@ -260,7 +266,10 @@ pub fn KBHomePage() -> Element {
     let go_search = move |e: FormEvent| {
         e.prevent_default();
         let q = search.read().trim().to_string();
-        navigator.push(Route::KBArticleList { q });
+        navigator.push(Route::KBArticleList {
+            q,
+            tag: String::new(),
+        });
     };
 
     rsx! {
@@ -370,7 +379,10 @@ fn CategoryCard(props: CategoryCardProps) -> Element {
             r#type: "button",
             class: "block w-full text-left",
             onclick: move |_| {
-                navigator.push(Route::KBArticleList { q: String::new() });
+                navigator.push(Route::KBArticleList {
+                    q: String::new(),
+                    tag: String::new(),
+                });
             },
             Card { class: "hover:shadow-lg transition-shadow cursor-pointer",
                 div { class: "flex items-start",
@@ -423,12 +435,30 @@ fn ArticleItem(props: ArticleItemProps) -> Element {
 /// Article list page: search box + category filter, server-paginated.
 ///
 /// `initial_q` seeds the search box from the `?q=` route query so the KB
-/// home search carries the typed term through to this list.
+/// home search carries the typed term through to this list. `initial_tag`
+/// seeds the tag filter from the `?tag=` route query so clicking a tag chip
+/// (on a row or the detail view) lands on the list filtered to that tag.
 #[component]
-pub fn KBArticleListPage(#[props(default)] initial_q: String) -> Element {
+pub fn KBArticleListPage(
+    #[props(default)] initial_q: String,
+    #[props(default)] initial_tag: String,
+) -> Element {
     let mut search = use_signal(|| initial_q.clone());
     let mut category_filter = use_signal(String::new);
+    let mut tag_filter = use_signal(|| initial_tag.clone());
     let mut page = use_signal(|| 1usize);
+
+    // Keep the tag filter in sync with the `?tag=` route query: navigating
+    // from one tag chip to another re-renders this component with a new
+    // `initial_tag` prop without remounting, so seeding the signal once is
+    // not enough. `use_reactive` re-runs the effect whenever the prop
+    // changes; `peek` reads the signal without subscribing the effect to it.
+    use_effect(use_reactive!(|initial_tag| {
+        if *tag_filter.peek() != initial_tag {
+            tag_filter.set(initial_tag.clone());
+            page.set(1);
+        }
+    }));
 
     // Rail collapse state, persisted under the same key as the detail view.
     let left_collapsed = use_signal(|| crate::utils::prefs::get_bool("kb_left_rail", false));
@@ -471,19 +501,26 @@ pub fn KBArticleListPage(#[props(default)] initial_q: String) -> Element {
         _ => Vec::new(),
     };
 
-    let search_text = search.read().trim().to_string();
-    let category_text = category_filter.read().clone();
-    let current_page = (*page.read()).max(1);
-
-    let q_for_resource = search_text.clone();
-    let cat_for_resource = category_text.clone();
+    // Read every reactive input (search, category, tag, page) INSIDE the
+    // resource closure so a change to any of them re-runs the fetch. Dioxus
+    // `use_resource` only subscribes to signals read within the closure;
+    // values captured by value never subscribe (mirrors the contacts list,
+    // MAPPS-148). When a tag filter is active the server cannot narrow on
+    // tags, so we pull a broad page and filter client-side below.
     let articles_resource = use_resource(move || {
-        let q = q_for_resource.clone();
-        let category_id = cat_for_resource.clone();
+        let q = search.read().trim().to_string();
+        let category_id = category_filter.read().clone();
+        let tag = tag_filter.read().trim().to_string();
+        let current_page = (*page.read()).max(1);
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let token = crate::hooks::fetch::api::current_access_token()?;
-            let mut path = format!("/kb/articles?page={current_page}&per_page={PER_PAGE}");
+            let (page_param, per_page) = if tag.is_empty() {
+                (current_page, PER_PAGE)
+            } else {
+                (1, TAG_FETCH_LIMIT)
+            };
+            let mut path = format!("/kb/articles?page={page_param}&per_page={per_page}");
             if !q.is_empty() {
                 path.push_str(&format!("&q={}", urlencoding_minimal(&q)));
             }
@@ -499,14 +536,37 @@ pub fn KBArticleListPage(#[props(default)] initial_q: String) -> Element {
         }
     });
 
+    let search_text = search.read().trim().to_string();
+    let category_text = category_filter.read().clone();
+    let tag_text = tag_filter.read().trim().to_string();
+    let tag_active = !tag_text.is_empty();
+    let req_page = (*page.read()).max(1);
+
     let resource_snapshot = articles_resource.read_unchecked();
     let is_loading = resource_snapshot.is_none();
     let fetch_failed = matches!(*resource_snapshot, Some(None));
-    let (page_rows, total): (Vec<KbArticle>, u64) = match &*resource_snapshot {
+    let (fetched_rows, fetched_total): (Vec<KbArticle>, u64) = match &*resource_snapshot {
         Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
         _ => (Vec::new(), 0),
     };
-    let has_filters = !search_text.is_empty() || !category_text.is_empty();
+
+    // With a tag filter active the fetch is broad and unpaginated by the
+    // server, so filter by tag and paginate client-side here.
+    let (page_rows, total, current_page): (Vec<KbArticle>, u64, usize) = if tag_active {
+        let matching: Vec<KbArticle> = fetched_rows
+            .into_iter()
+            .filter(|a| a.tags.iter().any(|t| t.eq_ignore_ascii_case(&tag_text)))
+            .collect();
+        let matched = matching.len();
+        let page_count = matched.div_ceil(PER_PAGE).max(1);
+        let clamped = req_page.min(page_count);
+        let start = (clamped - 1) * PER_PAGE;
+        let rows: Vec<KbArticle> = matching.into_iter().skip(start).take(PER_PAGE).collect();
+        (rows, matched as u64, clamped)
+    } else {
+        (fetched_rows, fetched_total, req_page)
+    };
+    let has_filters = !search_text.is_empty() || !category_text.is_empty() || tag_active;
 
     rsx! {
         AppLayout { title: "Articles",
@@ -558,6 +618,18 @@ pub fn KBArticleListPage(#[props(default)] initial_q: String) -> Element {
                         }
                     }
 
+                    if tag_active {
+                        div { class: "mb-4 flex items-center flex-wrap gap-2 text-sm",
+                            span { class: "text-gray-500 dark:text-gray-400", "Filtered by tag:" }
+                            Badge { variant: BadgeVariant::Blue, "#{tag_text}" }
+                            Link {
+                                to: Route::KBArticleList { q: search_text.clone(), tag: String::new() },
+                                class: "text-blue-600 hover:text-blue-500",
+                                "Clear filter"
+                            }
+                        }
+                    }
+
                     if fetch_failed {
                         div {
                             class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
@@ -602,6 +674,7 @@ pub fn KBArticleListPage(#[props(default)] initial_q: String) -> Element {
                                             status: article.status,
                                             visibility: article.visibility,
                                             updated: date_only(&article.updated_at),
+                                            tags: article.tags,
                                         }
                                     }
                                 }
@@ -621,6 +694,8 @@ struct ArticleRowProps {
     status: String,
     visibility: String,
     updated: String,
+    #[props(default)]
+    tags: Vec<String>,
 }
 
 #[component]
@@ -648,10 +723,36 @@ fn ArticleRow(props: ArticleRowProps) -> Element {
                     class: "font-medium text-blue-600 hover:text-blue-500",
                     "{props.title}"
                 }
+                if !props.tags.is_empty() {
+                    TagChips { tags: props.tags.clone(), class: "mt-1".to_string() }
+                }
             }
             TableCell { Badge { variant: status_var, "{status_label}" } }
             TableCell { Badge { variant: vis_variant, "{vis_label}" } }
             TableCell { class: "text-gray-500", "{props.updated}" }
+        }
+    }
+}
+
+/// Clickable tag chips. Each chip links to the article list filtered to that
+/// tag (`?tag=`), so tags are visible and clickable wherever an article is
+/// shown (rows and the detail view). The container stops click propagation so
+/// a chip click inside a clickable table row filters by the tag rather than
+/// opening the row's article.
+#[component]
+fn TagChips(tags: Vec<String>, #[props(default)] class: String) -> Element {
+    rsx! {
+        div {
+            class: "flex flex-wrap gap-1.5 {class}",
+            onclick: move |e| e.stop_propagation(),
+            for tag in tags.iter().cloned() {
+                Link {
+                    key: "{tag}",
+                    to: Route::KBArticleList { q: String::new(), tag: tag.clone() },
+                    class: "inline-flex items-center rounded-full bg-blue-50 dark:bg-blue-900/40 px-2 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/70",
+                    "#{tag}"
+                }
+            }
         }
     }
 }
@@ -840,6 +941,9 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                     }
                                 }
                                 p { class: "mt-1 text-xs text-gray-400", "Updated {updated}" }
+                                if !article.tags.is_empty() {
+                                    TagChips { tags: article.tags.clone(), class: "mt-3".to_string() }
+                                }
                                 article {
                                     class: "mt-4 prose dark:prose-invert max-w-none {prose_density}",
                                     dangerous_inner_html: crate::utils::markdown::render_markdown(&content),
@@ -1355,7 +1459,7 @@ fn KbBreadcrumb(path: Vec<KbCategory>, title: String) -> Element {
             for cat in path.iter() {
                 ChevronRightIcon { size: IconSize::Small }
                 Link {
-                    to: Route::KBArticleList { q: String::new() },
+                    to: Route::KBArticleList { q: String::new(), tag: String::new() },
                     class: "hover:text-gray-700 dark:hover:text-gray-200",
                     "{cat.name}"
                 }
