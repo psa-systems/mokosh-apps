@@ -1,33 +1,41 @@
-//! System-level introspection: version + update-available.
+//! System-level introspection: client-vs-server version skew.
 //!
-//! Mirrors the planned `GET /api/v1/system/version` endpoint on
-//! mokosh-server. The server polls the OCI registry on a timer and
-//! caches the latest tag for both the server image and the SPA
-//! image; this client deserialises the response and pairs the
-//! `client.latest` with the SPA's own compile-time version (the
-//! server cannot know what bundle a given browser actually has
-//! loaded - the user might be on a stale cached copy).
+//! Reads the server's running build from the public
+//! `GET /api/v1/version` endpoint mokosh-server actually serves, then
+//! pairs that with the SPA's own compile-time `CARGO_PKG_VERSION`.
+//! mokosh-server and mokosh-www are released together, so the version
+//! the server reports is the version the matching client bundle should
+//! also be on; when the loaded bundle is older (the user is on a stale
+//! cached copy, or the client image has not been pulled) the update
+//! banner surfaces a prompt to pull the new images.
 //!
-//! Progressive enablement: until the endpoint ships on mokosh-server,
-//! [`get_version`] returns `Err` and callers (the update banner)
-//! render nothing. There is no hard dependency in this direction.
+//! `GET /api/v1/version` reports only the server's own build, with no
+//! registry "latest available" poll, so server-side update detection
+//! cannot be driven from this endpoint: `server.latest` is always
+//! `None` and the banner's server line stays hidden until such an
+//! endpoint ships. On any fetch error [`get_version`] returns `Err`
+//! and callers (the update banner) render nothing.
 
 use serde::{Deserialize, Deserializer};
 
-/// API path for the version endpoint. Resolved against the API base
-/// URL by `crate::hooks::fetch::api`.
-pub const VERSION_PATH: &str = "/system/version";
+/// API path for the server version endpoint. Resolved against the API
+/// base URL by `crate::hooks::fetch::api`. This is the public build-info
+/// endpoint mokosh-server serves (the same one the System Status page
+/// probes); the previously-used `/system/version` was never deployed
+/// and 404'd on every poll (MAPPS-151).
+pub const VERSION_PATH: &str = "/version";
 
-/// Server-side response shape for `GET /api/v1/system/version`.
-/// `server.running` is the version mokosh-server is itself executing;
-/// `server.latest` and `client_latest` come from the registry poll.
+/// Server-side response shape for `GET /api/v1/version`. Mirrors
+/// mokosh-server's `VersionInfo`; only `version` is consumed here (the
+/// remaining build-info fields are rendered by the System Status page
+/// through its own struct), and unlisted fields are dropped at
+/// deserialise time.
 #[derive(Clone, Debug, Deserialize)]
-pub struct SystemVersionResponse {
-    pub server: VersionPair,
-    /// Latest published mokosh-www tag. `None` until the registry
-    /// poll succeeds at least once (cold cache, registry unreachable).
-    #[serde(default, deserialize_with = "deserialize_optional_semver")]
-    pub client_latest: Option<String>,
+pub struct ServerVersionResponse {
+    /// The semver mokosh-server is currently running, normalised to
+    /// plain semver without the leading `v`.
+    #[serde(deserialize_with = "deserialize_semver")]
+    pub version: String,
 }
 
 /// One running-vs-latest pair. Both fields are normalised to plain
@@ -64,17 +72,28 @@ pub struct SystemVersion {
     pub client: VersionPair,
 }
 
-/// Fetch the server's view of running + latest versions, then combine
-/// with the SPA's own running version (compile-time).
+/// Fetch the server's running version and pair it with the SPA's own
+/// compile-time version to detect a stale client bundle.
 #[cfg(feature = "web")]
 pub async fn get_version() -> Result<SystemVersion, String> {
     let response =
-        crate::hooks::fetch::api::get_authed::<SystemVersionResponse>(VERSION_PATH).await?;
+        crate::hooks::fetch::api::get_authed::<ServerVersionResponse>(VERSION_PATH).await?;
+    let server_running = response.version;
     Ok(SystemVersion {
-        server: response.server,
+        // This endpoint reports only what the server is running, not a
+        // registry "latest available" tag, so there is no server-side
+        // update signal to surface.
+        server: VersionPair {
+            running: server_running.clone(),
+            latest: None,
+        },
+        // The matching client bundle should be on the same version the
+        // server runs (the two images are released together), so treat
+        // the server's version as the client's "latest": a bundle that
+        // differs is stale and flags an update.
         client: VersionPair {
             running: env!("CARGO_PKG_VERSION").to_string(),
-            latest: response.client_latest,
+            latest: Some(server_running),
         },
     })
 }
@@ -146,5 +165,18 @@ mod tests {
             serde_json::from_str(r#"{"running": "v0.2.0", "latest": "v0.3.0"}"#).unwrap();
         assert_eq!(pair.running, "0.2.0");
         assert_eq!(pair.latest, Some("0.3.0".to_string()));
+    }
+
+    #[test]
+    fn server_version_response_parses_real_endpoint_shape() {
+        // The live `GET /api/v1/version` body carries extra build-info
+        // fields the banner does not need; they must be dropped, and a
+        // `v`-prefixed tag normalised, so the result compares equal to
+        // the SPA's clean `CARGO_PKG_VERSION`.
+        let resp: ServerVersionResponse = serde_json::from_str(
+            r#"{"name": "mokosh-server", "version": "v0.2.0", "git_describe": "v0.2.0-3-gabc1234", "git_hash": "abc1234", "build_date": "2026-06-14"}"#,
+        )
+        .unwrap();
+        assert_eq!(resp.version, "0.2.0");
     }
 }
