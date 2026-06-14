@@ -393,10 +393,15 @@ pub fn TimeEntryNewPage() -> Element {
                             error.set("Please pick a work type.".to_string());
                             return;
                         }
+                        // Mirror the input's min/max bounds so a value that
+                        // slips past browser validation (or non-browser submit)
+                        // is still rejected: positive, decimal, at most 24h.
                         let hours_val: f64 = match hrs.trim().parse() {
-                            Ok(h) if h > 0.0 => h,
+                            Ok(h) if h > 0.0 && h <= 24.0 => h,
                             _ => {
-                                error.set("Enter hours greater than 0.".to_string());
+                                error.set(
+                                    "Enter hours greater than 0 and no more than 24.".to_string(),
+                                );
                                 return;
                             }
                         };
@@ -535,7 +540,13 @@ pub fn TimeEntryNewPage() -> Element {
                         name: "hours",
                         label: "Hours",
                         r#type: "number",
+                        // Decimal hours only; HH:MM (e.g. "0:30") is not
+                        // supported. step/min keep 0.25, 0.5, ... valid while
+                        // the browser rejects negatives and zero; max caps
+                        // absurd magnitudes (e.g. 1000h) at a single day.
                         step: "0.25",
+                        min: "0.25",
+                        max: "24",
                         placeholder: "0.00",
                         required: true,
                         value: hours.read().clone(),
