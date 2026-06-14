@@ -391,8 +391,53 @@ pub fn TicketListPage() -> Element {
         None => (Vec::new(), TicketSource::Demo),
     };
 
+    // Apply search + status/priority filters to the loaded set client-side.
+    // The controls previously only updated signals and never narrowed the
+    // list (MAPPS-154); filtering here makes them functional. Comparisons go
+    // through the same humanize helpers the rows use, so the raw server status
+    // ("open", "new", ...) and the option value ("open", "new", ...) normalize
+    // to the same label regardless of casing. An empty selection matches all.
+    let search_term = search.read().trim().to_lowercase();
+    let status_label_sel = match status_filter.read().as_str() {
+        "" => String::new(),
+        raw => humanize_ticket_status(raw),
+    };
+    let priority_label_sel = match priority_filter.read().as_str() {
+        "" => String::new(),
+        raw => humanize_priority(raw),
+    };
+    let filtered_tickets: Vec<RemoteTicket> = remote_tickets
+        .iter()
+        .filter(|t| {
+            if !search_term.is_empty() {
+                let assigned = t.assigned_to_name.as_deref().unwrap_or("");
+                let haystack = format!(
+                    "{} {} {} {}",
+                    t.ticket_number, t.title, t.company_name, assigned
+                )
+                .to_lowercase();
+                if !haystack.contains(&search_term) {
+                    return false;
+                }
+            }
+            if !status_label_sel.is_empty()
+                && humanize_ticket_status(&t.status.name) != status_label_sel
+            {
+                return false;
+            }
+            if !priority_label_sel.is_empty()
+                && humanize_priority(&t.priority.name) != priority_label_sel
+            {
+                return false;
+            }
+            true
+        })
+        .cloned()
+        .collect();
+
     let status_options = vec![
         SelectOption::new("", "All Statuses"),
+        SelectOption::new("new", "New"),
         SelectOption::new("open", "Open"),
         SelectOption::new("in_progress", "In Progress"),
         SelectOption::new("pending", "Pending"),
@@ -464,7 +509,7 @@ pub fn TicketListPage() -> Element {
             // Ticket table
             DataTable {
                 loading: is_loading,
-                total_items: if source == TicketSource::Backend { remote_tickets.len() } else { 5 },
+                total_items: if source == TicketSource::Backend { filtered_tickets.len() } else { 5 },
                 current_page: 1,
                 per_page: 25,
                 columns: 6,
@@ -481,12 +526,19 @@ pub fn TicketListPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 6, rows: 5 }
-                    } else if source == TicketSource::Backend && remote_tickets.is_empty() {
-                        TableEmpty { columns: 6, message: "No tickets yet.".to_string() }
+                    } else if source == TicketSource::Backend && filtered_tickets.is_empty() {
+                        TableEmpty {
+                            columns: 6,
+                            message: if remote_tickets.is_empty() {
+                                "No tickets yet.".to_string()
+                            } else {
+                                "No tickets match your filters.".to_string()
+                            },
+                        }
                     } else {
                         TableBody {
                             if source == TicketSource::Backend {
-                                for ticket in remote_tickets.iter().cloned() {
+                                for ticket in filtered_tickets.iter().cloned() {
                                     TicketRow {
                                         key: "{ticket.id}",
                                         id: ticket.id.to_string(),
