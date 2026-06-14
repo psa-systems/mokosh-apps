@@ -499,7 +499,7 @@ pub struct InvoiceDetailPageProps {
 #[component]
 pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     let id_for_resource = props.id.clone();
-    let invoice_resource = use_resource(move || {
+    let mut invoice_resource = use_resource(move || {
         let id = id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -509,15 +509,149 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         }
     });
 
+    // MAPPS-158: detail-page lifecycle actions. `PUT /invoices/{id}`
+    // freezes header/line/status edits once an invoice leaves
+    // draft/pending (`InvoiceStatus::is_frozen`), so Edit, Send and Void are
+    // surfaced only while the invoice is editable. Record Payment
+    // (`POST /payments`) is offered whenever a balance can still be
+    // collected. The backend exposes no route to delete, un-send, or email an
+    // invoice, and editing line items requires a credit note (out of scope),
+    // so those actions are intentionally not surfaced here.
+    let mut show_edit = use_signal(|| false);
+    let mut show_payment = use_signal(|| false);
+    let mut busy = use_signal(|| false);
+    let mut action_error = use_signal(String::new);
+
     let snap = invoice_resource.read_unchecked();
-    let header_title = match &*snap {
-        Some(Some(inv)) => format!("Invoice {}", inv.invoice_number),
-        _ => "Invoice".to_string(),
+    let invoice = match &*snap {
+        Some(Some(inv)) => Some(inv.clone()),
+        _ => None,
     };
+    let header_title = match &invoice {
+        Some(inv) => format!("Invoice {}", inv.invoice_number),
+        None => "Invoice".to_string(),
+    };
+    let status = invoice
+        .as_ref()
+        .map(|i| i.status.clone())
+        .unwrap_or_default();
+    let editable = matches!(status.as_str(), "draft" | "pending");
+    let collectible = matches!(status.as_str(), "pending" | "sent" | "partially_paid");
+    let pay_company_id = invoice
+        .as_ref()
+        .and_then(|i| i.company_id)
+        .map(|c| c.to_string())
+        .unwrap_or_default();
+    let id_for_send = props.id.clone();
+    let id_for_void = props.id.clone();
+    let act_err = action_error.read().clone();
 
     rsx! {
         AppLayout { title: "{header_title}",
-            PageHeader { title: "{header_title}" }
+            PageHeader {
+                title: "{header_title}",
+                actions: rsx! {
+                    if editable {
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            onclick: move |_| {
+                                action_error.set(String::new());
+                                show_edit.set(true);
+                            },
+                            "Edit"
+                        }
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            loading: *busy.read(),
+                            onclick: move |_| {
+                                if *busy.read() {
+                                    return;
+                                }
+                                busy.set(true);
+                                action_error.set(String::new());
+                                let path = format!("/invoices/{id_for_send}");
+                                spawn(async move {
+                                    #[cfg(feature = "web")]
+                                    {
+                                        let body = serde_json::json!({ "status": "sent" });
+                                        match crate::hooks::fetch::api::put_authed::<
+                                            serde_json::Value,
+                                            _,
+                                        >(&path, &body)
+                                            .await
+                                        {
+                                            Ok(_) => invoice_resource.restart(),
+                                            Err(err) => action_error
+                                                .set(format!("Could not send invoice: {err}")),
+                                        }
+                                    }
+                                    busy.set(false);
+                                });
+                            },
+                            "Send"
+                        }
+                    }
+                    if collectible {
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            onclick: move |_| {
+                                action_error.set(String::new());
+                                show_payment.set(true);
+                            },
+                            "Record Payment"
+                        }
+                    }
+                    if editable {
+                        Button {
+                            variant: ButtonVariant::Danger,
+                            loading: *busy.read(),
+                            onclick: move |_| {
+                                if *busy.read() {
+                                    return;
+                                }
+                                busy.set(true);
+                                action_error.set(String::new());
+                                let path = format!("/invoices/{id_for_void}");
+                                spawn(async move {
+                                    #[cfg(feature = "web")]
+                                    {
+                                        let confirmed = web_sys::window()
+                                            .and_then(|w| {
+                                                w.confirm_with_message(
+                                                    "Void this invoice? This cannot be undone.",
+                                                )
+                                                .ok()
+                                            })
+                                            .unwrap_or(false);
+                                        if confirmed {
+                                            let body = serde_json::json!({ "status": "void" });
+                                            match crate::hooks::fetch::api::put_authed::<
+                                                serde_json::Value,
+                                                _,
+                                            >(&path, &body)
+                                                .await
+                                            {
+                                                Ok(_) => invoice_resource.restart(),
+                                                Err(err) => action_error
+                                                    .set(format!("Could not void invoice: {err}")),
+                                            }
+                                        }
+                                    }
+                                    busy.set(false);
+                                });
+                            },
+                            "Void"
+                        }
+                    }
+                },
+            }
+
+            if !act_err.is_empty() {
+                div {
+                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                    "{act_err}"
+                }
+            }
 
             match &*snap {
                 None => rsx! {
@@ -722,6 +856,36 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                         }
                     }
                 },
+            }
+
+            if *show_edit.read() {
+                if let Some(inv) = invoice.clone() {
+                    InvoiceEditModal {
+                        id: props.id.clone(),
+                        invoice_date: inv.invoice_date.clone().unwrap_or_default(),
+                        due_date: inv.due_date.clone().unwrap_or_default(),
+                        payment_terms: inv.payment_terms.clone().unwrap_or_default(),
+                        po_number: inv.po_number.clone().unwrap_or_default(),
+                        notes: inv.notes.clone().unwrap_or_default(),
+                        onclose: move |_| show_edit.set(false),
+                        onsaved: move |_| {
+                            show_edit.set(false);
+                            invoice_resource.restart();
+                        },
+                    }
+                }
+            }
+
+            if *show_payment.read() {
+                RecordPaymentModal {
+                    company_id: pay_company_id.clone(),
+                    invoice_id: props.id.clone(),
+                    onclose: move |_| show_payment.set(false),
+                    onsaved: move |_| {
+                        show_payment.set(false);
+                        invoice_resource.restart();
+                    },
+                }
             }
         }
     }
@@ -1261,13 +1425,19 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
 
 #[derive(Props, Clone, PartialEq)]
 struct RecordPaymentModalProps {
+    // MAPPS-158: optional seeds so the invoice detail page can pre-fill the
+    // company and invoice. Default to empty for the standalone Payments view.
+    #[props(default)]
+    company_id: String,
+    #[props(default)]
+    invoice_id: String,
     onclose: EventHandler<()>,
     onsaved: EventHandler<()>,
 }
 
 #[component]
 fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
-    let mut company_id = use_signal(String::new);
+    let mut company_id = use_signal(|| props.company_id.clone());
     let companies_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         load_companies().await
@@ -1279,7 +1449,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
             .unwrap_or_default(),
         "Select a company",
     );
-    let mut invoice_id = use_signal(String::new);
+    let mut invoice_id = use_signal(|| props.invoice_id.clone());
     let mut payment_date = use_signal(String::new);
     let mut amount = use_signal(String::new);
     let mut payment_method = use_signal(|| "check".to_string());
@@ -1434,6 +1604,142 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                     name: "payment_notes",
                     label: "Notes",
                     rows: 2,
+                    value: notes.read().clone(),
+                    oninput: move |e: FormEvent| notes.set(e.value()),
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct InvoiceEditModalProps {
+    id: String,
+    invoice_date: String,
+    due_date: String,
+    payment_terms: String,
+    po_number: String,
+    notes: String,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+/// MAPPS-158: edit a draft/pending invoice's header fields. Wired to
+/// `PUT /invoices/{id}`; line items are left untouched (the request omits
+/// `lines`, so the server keeps the existing set). The backend rejects the
+/// PUT once the invoice is frozen, so this modal is only opened for editable
+/// invoices.
+#[component]
+fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
+    let mut invoice_date = use_signal(|| props.invoice_date.clone());
+    let mut due_date = use_signal(|| props.due_date.clone());
+    let mut payment_terms = use_signal(|| props.payment_terms.clone());
+    let mut po_number = use_signal(|| props.po_number.clone());
+    let mut notes = use_signal(|| props.notes.clone());
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+    let invoice_id = props.id.clone();
+
+    let handle_save = move |_| {
+        if *saving.read() {
+            return;
+        }
+        error.set(String::new());
+        let inv_date = invoice_date.read().trim().to_string();
+        let due = due_date.read().trim().to_string();
+        if inv_date.is_empty() || due.is_empty() {
+            error.set("Invoice date and due date are required.".to_string());
+            return;
+        }
+        saving.set(true);
+        let path = format!("/invoices/{invoice_id}");
+        let body = serde_json::json!({
+            "invoice_date": inv_date,
+            "due_date": due,
+            "payment_terms": optional_string(&payment_terms.read()),
+            "po_number": optional_string(&po_number.read()),
+            "notes": optional_string(&notes.read()),
+        });
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
+                    .await
+                {
+                    Ok(_) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not save invoice: {err}")),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    let footer = rsx! {
+        div { class: "flex-1" }
+        Button {
+            variant: ButtonVariant::Secondary,
+            onclick: move |_| onclose.call(()),
+            "Cancel"
+        }
+        Button {
+            variant: ButtonVariant::Primary,
+            loading: *saving.read(),
+            onclick: handle_save,
+            "Save"
+        }
+    };
+
+    rsx! {
+        Modal {
+            open: true,
+            title: "Edit Invoice",
+            size: ModalSize::Large,
+            onclose: move |_| onclose.call(()),
+            footer,
+            div { class: "space-y-4",
+                if !error.read().is_empty() {
+                    div {
+                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                        "{error.read()}"
+                    }
+                }
+                div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
+                    crate::components::Input {
+                        name: "invoice_date",
+                        label: "Invoice Date",
+                        r#type: "date",
+                        required: true,
+                        value: invoice_date.read().clone(),
+                        oninput: move |e: FormEvent| invoice_date.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "due_date",
+                        label: "Due Date",
+                        r#type: "date",
+                        required: true,
+                        value: due_date.read().clone(),
+                        oninput: move |e: FormEvent| due_date.set(e.value()),
+                    }
+                }
+                crate::components::Input {
+                    name: "payment_terms",
+                    label: "Payment Terms",
+                    value: payment_terms.read().clone(),
+                    oninput: move |e: FormEvent| payment_terms.set(e.value()),
+                }
+                crate::components::Input {
+                    name: "po_number",
+                    label: "PO Number",
+                    value: po_number.read().clone(),
+                    oninput: move |e: FormEvent| po_number.set(e.value()),
+                }
+                crate::components::Textarea {
+                    name: "invoice_notes",
+                    label: "Notes",
+                    rows: 3,
                     value: notes.read().clone(),
                     oninput: move |e: FormEvent| notes.set(e.value()),
                 }
