@@ -670,27 +670,26 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     let id_for_article = props.id.clone();
     let id_for_versions = props.id.clone();
 
-    let mut article_resource = use_resource(move || {
-        let id = id_for_article.clone();
-        async move {
-            let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<KbArticle>(&format!("/kb/articles/{id}"))
-                .await
-                .ok()
-        }
-    });
-
-    let mut versions_resource = use_resource(move || {
-        let id = id_for_versions.clone();
-        async move {
-            let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<KbArticleVersion>>(&format!(
-                "/kb/articles/{id}/versions?page=1&per_page=50"
-            ))
+    // Bind the route's `id` param into each fetch with `use_reactive!` so an
+    // in-app article-to-article navigation (same component, new `id` prop)
+    // restarts the resource. A plain captured `String` is not reactive, so
+    // without this the detail pane keeps showing the previous article even
+    // though the URL changed (MAPPS-155).
+    let mut article_resource = use_resource(use_reactive!(|id_for_article| async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<KbArticle>(&format!("/kb/articles/{id_for_article}"))
             .await
             .ok()
-        }
-    });
+    }));
+
+    let mut versions_resource = use_resource(use_reactive!(|id_for_versions| async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<KbArticleVersion>>(&format!(
+            "/kb/articles/{id_for_versions}/versions?page=1&per_page=50"
+        ))
+        .await
+        .ok()
+    }));
 
     // Category list for the breadcrumb path and the left tree rail.
     let categories_resource = use_resource(move || async move {
@@ -748,23 +747,18 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     // Seed my_vote (and refine counts) from GET /kb/articles/{id}/vote once
     // the article id is available. Declared unconditionally for rules-of-hooks.
     let id_for_vote = props.id.clone();
-    use_resource(move || {
-        let id = id_for_vote.clone();
-        async move {
-            #[cfg(feature = "web")]
-            {
-                let path = format!("/kb/articles/{id}/vote");
-                if let Ok(fb) =
-                    crate::hooks::fetch::api::get_authed::<KbArticleFeedback>(&path).await
-                {
-                    rating.set((fb.helpful_count, fb.not_helpful_count));
-                    my_vote.set(fb.my_vote);
-                }
+    use_resource(use_reactive!(|id_for_vote| async move {
+        #[cfg(feature = "web")]
+        {
+            let path = format!("/kb/articles/{id_for_vote}/vote");
+            if let Ok(fb) = crate::hooks::fetch::api::get_authed::<KbArticleFeedback>(&path).await {
+                rating.set((fb.helpful_count, fb.not_helpful_count));
+                my_vote.set(fb.my_vote);
             }
-            #[cfg(not(feature = "web"))]
-            let _ = &id;
         }
-    });
+        #[cfg(not(feature = "web"))]
+        let _ = &id_for_vote;
+    }));
 
     let article_snapshot = article_resource.read_unchecked();
     let header_title = match &*article_snapshot {
