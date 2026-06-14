@@ -1,11 +1,11 @@
 //! Update-available banner shown to admins when the server reports
 //! that a newer image is available in the registry.
 //!
-//! Progressive enablement: while mokosh-server's
-//! `GET /api/v1/system/version` endpoint is not deployed, the fetch
-//! errors and the banner renders nothing. Non-admin users never see
-//! it (the check is in this component, not the layout, so adding
-//! it does not change non-admin renders).
+//! The version skew is read from mokosh-server's public
+//! `GET /api/v1/version` endpoint; on any fetch error the banner
+//! renders nothing. Non-admin users never see it (the check is in
+//! this component, not the layout, so adding it does not change
+//! non-admin renders).
 //!
 //! Dismissal is keyed on the latest version string so a *new* update
 //! resurfaces after the user clicked dismiss on the previous one.
@@ -63,7 +63,7 @@ pub fn UpdateBanner() -> Element {
     // tracker re-runs the fetch when auth flips, AND skips the
     // network call entirely while the user is not an admin - that
     // keeps the hook order stable without burning a
-    // `GET /api/v1/system/version` round-trip on every non-admin
+    // `GET /api/v1/version` round-trip on every non-admin
     // layout mount.
     let auth = use_auth();
     let mut dismissed_local = use_signal(|| false);
