@@ -9,7 +9,7 @@ use crate::components::{
     TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::modules::contacts::Address;
-use crate::utils::url::urlencoding_minimal;
+use crate::utils::url::{safe_href, urlencoding_minimal};
 use crate::Route;
 
 /// Rows per page for the client-side paginated list views (F3).
@@ -916,11 +916,19 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                                 div { class: "flex justify-between",
                                                     dt { class: "text-sm text-gray-500", "Website" }
                                                     dd {
-                                                        a {
-                                                            href: "{website}",
-                                                            target: "_blank",
-                                                            class: "text-sm text-blue-600 hover:text-blue-500",
-                                                            "{website}"
+                                                        // Only render a live link when the value carries a
+                                                        // safe URL scheme; `javascript:`/`data:`/`vbscript:`
+                                                        // values fall back to plain text (MAPPS-149).
+                                                        if let Some(href) = safe_href(&website) {
+                                                            a {
+                                                                href: "{href}",
+                                                                target: "_blank",
+                                                                rel: "noopener noreferrer",
+                                                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                                                "{website}"
+                                                            }
+                                                        } else {
+                                                            span { class: "text-sm", "{website}" }
                                                         }
                                                     }
                                                 }
