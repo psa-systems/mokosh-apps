@@ -240,7 +240,10 @@
   }
 
   .table-cell {
-    @apply px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100;
+    /* MAPPS-152: `break-words` (not `whitespace-nowrap`) so long cell values
+       wrap and keep the table from overflowing horizontally. Mirrors the
+       TableCell component in src/components/table.rs. */
+    @apply px-6 py-4 break-words text-sm text-gray-900 dark:text-gray-100;
   }
 }
 
