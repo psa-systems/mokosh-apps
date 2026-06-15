@@ -805,6 +805,12 @@ pub fn TimesheetsPage() -> Element {
     // A week that has been submitted (pending) can be withdrawn; one that is
     // draft/rejected can be (re)submitted.
     let is_pending = approval == "pending";
+    // PMS-310: make the empty-week state self-explanatory. The current week
+    // drives the "jump back" control; the hint explains why Submit is greyed
+    // out (no time logged) rather than leaving the user with a dead button.
+    let current_week = monday_of_week(today);
+    let is_current_week = start == current_week;
+    let show_no_entries_hint = !is_pending && !already_approved && !has_entries;
     let submitting = *is_submitting.read();
     let withdrawing = *is_withdrawing.read();
     let msg = action_msg.read().clone();
@@ -866,16 +872,25 @@ pub fn TimesheetsPage() -> Element {
                             }
                         } else {
                             // Draft / rejected: open the submit confirmation modal.
-                            Button {
-                                variant: ButtonVariant::Primary,
-                                disabled: already_approved || !has_entries,
-                                onclick: move |_| {
-                                    action_msg.set(String::new());
-                                    action_err.set(String::new());
-                                    certified.set(false);
-                                    show_submit_modal.set(true);
-                                },
-                                "Submit Timesheet"
+                            // Column so the disabled reason (PMS-310) can sit
+                            // directly under the button, right-aligned with it.
+                            div { class: "flex flex-col items-end gap-1",
+                                Button {
+                                    variant: ButtonVariant::Primary,
+                                    disabled: already_approved || !has_entries,
+                                    onclick: move |_| {
+                                        action_msg.set(String::new());
+                                        action_err.set(String::new());
+                                        certified.set(false);
+                                        show_submit_modal.set(true);
+                                    },
+                                    "Submit Timesheet"
+                                }
+                                if show_no_entries_hint {
+                                    span { class: "text-xs text-gray-500 dark:text-gray-400",
+                                        "No time logged this week yet."
+                                    }
+                                }
                             }
                         }
                     }
@@ -907,8 +922,25 @@ pub fn TimesheetsPage() -> Element {
                         },
                         ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
                     }
-                    span { class: "text-lg font-medium text-gray-900 dark:text-white",
-                        "{week_label}"
+                    div { class: "flex flex-col items-center gap-1",
+                        span { class: "text-lg font-medium text-gray-900 dark:text-white",
+                            "{week_label}"
+                        }
+                        // PMS-310: one-click return to the current week (only
+                        // shown when paged away from it), so a future/empty
+                        // week is not a dead end.
+                        if !is_current_week {
+                            button {
+                                r#type: "button",
+                                class: "text-xs font-medium text-blue-600 hover:text-blue-500 dark:text-blue-400",
+                                onclick: move |_| {
+                                    action_msg.set(String::new());
+                                    action_err.set(String::new());
+                                    week_start.set(current_week);
+                                },
+                                "Jump to current week"
+                            }
+                        }
                     }
                     button {
                         r#type: "button",
