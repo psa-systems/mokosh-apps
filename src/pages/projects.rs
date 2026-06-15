@@ -358,13 +358,8 @@ fn status_badge(status: &str) -> (BadgeVariant, &'static str) {
     }
 }
 
-/// Whole-dollar money, or "-" when absent.
-fn fmt_money(v: Option<f64>) -> String {
-    match v {
-        Some(n) => format!("${n:.0}"),
-        None => "-".to_string(),
-    }
-}
+// Money formatting is centralized in `crate::utils::money` (MAPPS-197).
+use crate::utils::money::format_money_f64;
 
 /// "Feb 28, 2025" from an ISO date string; raw string on parse failure,
 /// "-" when absent.
@@ -546,7 +541,7 @@ pub fn ProjectListPage() -> Element {
                                 None => "bg-gray-400",
                             };
                             let due = fmt_date(&p.target_end_date);
-                            let budget = fmt_money(p.budget_amount);
+                            let budget = format_money_f64(p.budget_amount);
                             let pid = p.id.to_string();
                             rsx! {
                                 Link {
@@ -1167,11 +1162,11 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     div { class: "space-y-3",
                                         div { class: "flex justify-between",
                                             span { class: "text-sm text-gray-500", "Total Budget" }
-                                            span { class: "font-medium", "{fmt_money(p.budget_amount)}" }
+                                            span { class: "font-medium", "{format_money_f64(p.budget_amount)}" }
                                         }
                                         div { class: "flex justify-between",
                                             span { class: "text-sm text-gray-500", "Spent" }
-                                            span { class: "font-medium text-green-600", "{fmt_money(p.actual_amount)}" }
+                                            span { class: "font-medium text-green-600", "{format_money_f64(p.actual_amount)}" }
                                         }
                                         div { class: "flex justify-between",
                                             span { class: "text-sm text-gray-500", "Remaining" }
