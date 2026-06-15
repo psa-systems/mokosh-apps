@@ -243,17 +243,6 @@ fn insert_opt_date(body: &mut serde_json::Map<String, serde_json::Value>, key: &
 }
 
 /// Insert a numeric field as a JSON number, or `null` when blank/unparseable.
-fn insert_opt_num(body: &mut serde_json::Map<String, serde_json::Value>, key: &str, v: &str) {
-    let parsed = v.trim().parse::<f64>().ok();
-    body.insert(
-        key.to_string(),
-        match parsed {
-            Some(n) => serde_json::json!(n),
-            None => serde_json::Value::Null,
-        },
-    );
-}
-
 /// Max length for a project name. Mirrors the server's PMS-324 cap so the
 /// client rejects over-long names inline instead of waiting for a 422.
 const PROJECT_NAME_MAX: usize = 80;
@@ -1253,13 +1242,19 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 t_error.set("Please pick a status.".to_string());
                                 return;
                             }
+                            // Accept decimal hours or H:MM (PMS-319), reusing
+                            // the Log Time parser; estimated_hours is stored as
+                            // fractional hours, so parse straight to hours.
                             let est: Option<f64> = if est_raw.is_empty() {
                                 None
                             } else {
-                                match est_raw.parse() {
-                                    Ok(v) => Some(v),
-                                    Err(_) => {
-                                        t_error.set("Estimated hours must be a number.".to_string());
+                                match crate::utils::duration::parse_input_to_hours(&est_raw) {
+                                    Some(h) => Some(h),
+                                    None => {
+                                        t_error.set(
+                                            "Estimated hours must be a number (2.5) or H:MM (1:30)."
+                                                .to_string(),
+                                        );
                                         return;
                                     }
                                 }
@@ -1349,8 +1344,11 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                         crate::components::Input {
                             name: "task_est",
                             label: "Estimated Hours",
-                            r#type: "number",
-                            placeholder: "0",
+                            // Free-text so H:MM (e.g. "1:30") can be typed; a
+                            // type="number" input blocks the colon. PMS-319.
+                            r#type: "text",
+                            placeholder: "2.5 or 1:30",
+                            help: "Decimal hours (2.5) or H:MM (1:30).",
                             value: t_estimated.read().clone(),
                             oninput: move |e: FormEvent| t_estimated.set(e.value()),
                         }
@@ -1751,8 +1749,10 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
             .unwrap_or_default()
     });
     let mut te_estimated = use_signal(|| {
+        // Pre-fill in the same preference-aware shape the Log Time field uses
+        // (PMS-319), so an estimate set as 1.5h shows as "1:30" / "1.5".
         task.estimated_hours
-            .map(|v| v.to_string())
+            .map(crate::utils::duration::fmt_input_hours)
             .unwrap_or_default()
     });
     let mut te_due = use_signal(|| task.due_date.clone().unwrap_or_default());
@@ -1810,6 +1810,22 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
             te_error.set("Task title is required.".to_string());
             return;
         }
+        // estimated_hours: accept decimal or H:MM (PMS-319). Empty clears it;
+        // an unparseable value is a hard error here, before submit, rather
+        // than silently sending null (which used to wipe the estimate).
+        let est_raw = te_estimated().trim().to_string();
+        let est_json = if est_raw.is_empty() {
+            serde_json::Value::Null
+        } else {
+            match crate::utils::duration::parse_input_to_hours(&est_raw) {
+                Some(h) => serde_json::json!(h),
+                None => {
+                    te_error
+                        .set("Estimated hours must be a number (2.5) or H:MM (1:30).".to_string());
+                    return;
+                }
+            }
+        };
         spawn(async move {
             te_submitting.set(true);
             te_error.set(String::new());
@@ -1819,7 +1835,7 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
             body.insert("priority".into(), serde_json::json!(te_priority()));
             insert_opt_uuid(&mut body, "status_id", &te_status());
             insert_opt_uuid(&mut body, "assigned_to_id", &te_assignee());
-            insert_opt_num(&mut body, "estimated_hours", &te_estimated());
+            body.insert("estimated_hours".into(), est_json);
             insert_opt_date(&mut body, "due_date", &te_due());
             let body = serde_json::Value::Object(body);
             match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
@@ -1907,7 +1923,10 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                     Input {
                         name: "te-estimated",
                         label: "Estimated Hours",
-                        r#type: "number",
+                        // Free-text so H:MM can be typed (PMS-319).
+                        r#type: "text",
+                        placeholder: "2.5 or 1:30",
+                        help: "Decimal hours (2.5) or H:MM (1:30).",
                         value: "{te_estimated}",
                         oninput: move |e: FormEvent| te_estimated.set(e.value()),
                     }

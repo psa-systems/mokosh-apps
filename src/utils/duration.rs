@@ -108,6 +108,21 @@ fn fmt_input_decimal(minutes: i64) -> String {
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
+/// Like [`parse_input_to_minutes`] but returns decimal **hours**, for fields
+/// stored as fractional hours rather than whole minutes (PMS-319: task
+/// estimated_hours). `"1:30"` -> `1.5`, `"2.5"` -> `2.5`, `"0"` -> `0.0`.
+/// `None` on the same malformed/negative input the minute parser rejects.
+pub fn parse_input_to_hours(input: &str) -> Option<f64> {
+    parse_input_to_minutes(input).map(|m| m as f64 / 60.0)
+}
+
+/// Preference-aware pre-fill for an hours-valued field (PMS-319), mirroring
+/// [`fmt_input`]. The stored hours are quantized to the nearest minute first
+/// so the `H:MM` shape is exact.
+pub fn fmt_input_hours(hours: f64) -> String {
+    fmt_input((hours * 60.0).round() as i64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +212,18 @@ mod tests {
         for m in [5_i64, 10, 25, 55, 125, 1440] {
             assert_eq!(parse_input_to_minutes(&fmt_input_decimal(m)), Some(m));
         }
+    }
+
+    #[test]
+    fn parse_hours_hm_and_decimal() {
+        assert_eq!(parse_input_to_hours("1:30"), Some(1.5));
+        assert_eq!(parse_input_to_hours("0:30"), Some(0.5));
+        assert_eq!(parse_input_to_hours("2.5"), Some(2.5));
+        assert_eq!(parse_input_to_hours("8"), Some(8.0));
+        assert_eq!(parse_input_to_hours("0"), Some(0.0));
+        assert_eq!(parse_input_to_hours(""), None);
+        assert_eq!(parse_input_to_hours("abc"), None);
+        assert_eq!(parse_input_to_hours("1:60"), None);
+        assert_eq!(parse_input_to_hours("-2"), None);
     }
 }
