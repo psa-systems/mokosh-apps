@@ -1652,12 +1652,21 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
     let mut te_title = use_signal(|| task.title.clone());
     let mut te_description = use_signal(|| task.description.clone().unwrap_or_default());
     let mut te_status = use_signal(|| task.status_id.map(|v| v.to_string()).unwrap_or_default());
-    let mut te_priority =
-        use_signal(|| task.priority.clone().unwrap_or_else(|| "medium".to_string()));
-    let mut te_assignee =
-        use_signal(|| task.assigned_to_id.map(|v| v.to_string()).unwrap_or_default());
-    let mut te_estimated =
-        use_signal(|| task.estimated_hours.map(|v| v.to_string()).unwrap_or_default());
+    let mut te_priority = use_signal(|| {
+        task.priority
+            .clone()
+            .unwrap_or_else(|| "medium".to_string())
+    });
+    let mut te_assignee = use_signal(|| {
+        task.assigned_to_id
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+    });
+    let mut te_estimated = use_signal(|| {
+        task.estimated_hours
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+    });
     let mut te_due = use_signal(|| task.due_date.clone().unwrap_or_default());
     let mut te_submitting = use_signal(|| false);
     let mut te_error = use_signal(String::new);
@@ -1672,7 +1681,10 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
         .map(|p| p.data)
         .unwrap_or_default()
     });
-    let task_history = history_resource.read_unchecked().clone().unwrap_or_default();
+    let task_history = history_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
     let task_edited = task_history.iter().find(|e| e.action == "update").map(|e| {
         let who = actor_name(&users, &e.user_id);
         let when = fmt_history_dt(e.timestamp);
