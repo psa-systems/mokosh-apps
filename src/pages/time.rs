@@ -1121,8 +1121,12 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
             .map(|w| SelectOption::new(w.id.to_string(), w.name.clone())),
     );
 
-    let mut work_type =
-        use_signal(|| entry.work_type_id.map(|v| v.to_string()).unwrap_or_default());
+    let mut work_type = use_signal(|| {
+        entry
+            .work_type_id
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+    });
     let mut hours = use_signal(|| format!("{}", entry.duration_minutes as f64 / 60.0));
     let mut date = use_signal(|| entry.date.to_string());
     let mut description = use_signal(|| entry.notes.clone().unwrap_or_default());
