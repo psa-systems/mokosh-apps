@@ -33,8 +33,8 @@ use uuid::Uuid;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
-    PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
-    TableLoading, TableRow,
+    PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
+    TableHeader, TableLoading, TableRow,
 };
 use crate::utils::Paginated;
 use crate::Route;
@@ -1408,8 +1408,10 @@ fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
             #[cfg(feature = "web")]
             {
                 if confirm_delete("status") {
-                    match crate::hooks::fetch::api::delete_authed(&format!("/tickets/statuses/{id}"))
-                        .await
+                    match crate::hooks::fetch::api::delete_authed(&format!(
+                        "/tickets/statuses/{id}"
+                    ))
+                    .await
                     {
                         Ok(()) => onsaved.call(()),
                         Err(err) => error.set(format!("Could not delete status: {err}")),
