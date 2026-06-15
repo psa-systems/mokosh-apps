@@ -51,7 +51,7 @@ struct CompanyOption {
 }
 
 /// A task (`GET /api/v1/projects/:id/tasks`).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 struct RemoteTask {
     id: uuid::Uuid,
     #[serde(default)]
@@ -99,7 +99,7 @@ struct FieldChange {
 }
 
 /// A per-tenant task status (`GET /api/v1/task-statuses`).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 struct RemoteTaskStatus {
     id: uuid::Uuid,
     #[serde(default)]
@@ -109,7 +109,7 @@ struct RemoteTaskStatus {
 }
 
 /// A user, used to resolve `assigned_to_id` / `project_manager_id` to a name.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 struct RemoteUser {
     id: uuid::Uuid,
     #[serde(default)]
@@ -790,7 +790,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         }
     });
     let id_for_tasks = props.id.clone();
-    let tasks_resource = use_resource(move || {
+    let mut tasks_resource = use_resource(move || {
         let id = id_for_tasks.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -837,32 +837,10 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
     let mut pe_amount_err = use_signal(String::new);
     let mut pe_hours_err = use_signal(String::new);
 
-    // PMS-184 task-edit modal state. `selected_task` (Some when the modal is
-    // open) drives both the modal and the per-task history fetch below.
-    let mut selected_task = use_signal(|| None::<uuid::Uuid>);
-    let mut te_title = use_signal(String::new);
-    let mut te_description = use_signal(String::new);
-    let mut te_status = use_signal(String::new);
-    let mut te_priority = use_signal(|| "medium".to_string());
-    let mut te_assignee = use_signal(String::new);
-    let mut te_estimated = use_signal(String::new);
-    let mut te_due = use_signal(String::new);
-    let mut te_submitting = use_signal(|| false);
-    let mut te_error = use_signal(String::new);
-
-    let task_history_resource = use_resource(move || async move {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        match selected_task() {
-            Some(tid) => crate::hooks::fetch::api::get_authed::<Paginated<HistoryEntry>>(&format!(
-                "/audit-log/entity/tasks/{tid}"
-            ))
-            .await
-            .ok()
-            .map(|p| p.data)
-            .unwrap_or_default(),
-            None => Vec::new(),
-        }
-    });
+    // PMS-184 task-edit modal state. `selected_task` is `Some` while the
+    // modal is open for that task; the form and per-task history live in the
+    // shared `TaskEditModal` component (MAPPS-165).
+    let mut selected_task = use_signal(|| None::<RemoteTask>);
     // PMS-205: the project's own change history (who/when + before/after).
     let id_for_proj_history = props.id.clone();
     let project_history_resource = use_resource(move || {
@@ -888,20 +866,6 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         .clone()
         .unwrap_or_default();
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
-    let task_history = task_history_resource
-        .read_unchecked()
-        .clone()
-        .unwrap_or_default();
-    // "Edited" marker for the open task: most recent recorded edit.
-    let task_edited = task_history.iter().find(|e| e.action == "update").map(|e| {
-        let who = actor_name(&users, &e.user_id);
-        let when = fmt_history_dt(e.timestamp);
-        if who.is_empty() {
-            format!("Edited {when}")
-        } else {
-            format!("Edited {when} by {who}")
-        }
-    });
     let project_history = project_history_resource
         .read_unchecked()
         .clone()
@@ -1008,6 +972,29 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "Add Task"
                     }
+                    if let Some(p) = project.clone() {
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            onclick: move |_| {
+                                pe_name.set(p.name.clone());
+                                pe_description.set(p.description.clone().unwrap_or_default());
+                                pe_status.set(p.status.clone());
+                                pe_start.set(p.start_date.clone().unwrap_or_default());
+                                pe_due.set(p.target_end_date.clone().unwrap_or_default());
+                                pe_budget_amount
+                                    .set(p.budget_amount.map(|v| v.to_string()).unwrap_or_default());
+                                pe_budget_hours
+                                    .set(p.budget_hours.map(|v| v.to_string()).unwrap_or_default());
+                                pe_manager.set(
+                                    p.project_manager_id.map(|v| v.to_string()).unwrap_or_default(),
+                                );
+                                pe_error.set(String::new());
+                                show_proj_modal.set(true);
+                            },
+                            PencilIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                            "Edit"
+                        }
+                    }
                     Button {
                         variant: ButtonVariant::Danger,
                         loading: *deleting.read(),
@@ -1064,41 +1051,12 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                     let logged_h = p.actual_hours.unwrap_or(0.0);
                     let remaining_h = p.budget_hours.unwrap_or(0.0) - logged_h;
                     let description = p.description.clone().filter(|d| !d.trim().is_empty());
-                    // Seed + open the project-edit modal (PMS-184).
-                    let p_edit = p.clone();
-                    let open_proj_edit = move |_| {
-                        pe_name.set(p_edit.name.clone());
-                        pe_description.set(p_edit.description.clone().unwrap_or_default());
-                        pe_status.set(p_edit.status.clone());
-                        pe_start.set(p_edit.start_date.clone().unwrap_or_default());
-                        pe_due.set(p_edit.target_end_date.clone().unwrap_or_default());
-                        pe_budget_amount
-                            .set(p_edit.budget_amount.map(|v| v.to_string()).unwrap_or_default());
-                        pe_budget_hours
-                            .set(p_edit.budget_hours.map(|v| v.to_string()).unwrap_or_default());
-                        pe_manager.set(
-                            p_edit
-                                .project_manager_id
-                                .map(|v| v.to_string())
-                                .unwrap_or_default(),
-                        );
-                        pe_error.set(String::new());
-                        show_proj_modal.set(true);
-                    };
                     rsx! {
                         div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
                             // Main content
                             div { class: "lg:col-span-2 space-y-6",
                                 Card {
                                     title: "Overview",
-                                    actions: rsx! {
-                                        Button {
-                                            variant: ButtonVariant::Secondary,
-                                            onclick: open_proj_edit,
-                                            PencilIcon { size: IconSize::Small, class: "mr-1.5".to_string() }
-                                            "Edit"
-                                        }
-                                    },
                                     if let Some(d) = description {
                                         p { class: "text-gray-700 dark:text-gray-300 whitespace-pre-wrap", "{d}" }
                                     } else {
@@ -1119,30 +1077,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                     let who = user_name(&users, &t.assigned_to_id);
                                                     // Clicking a row opens the task in the edit modal.
                                                     let task = t.clone();
-                                                    let open_task = move |_| {
-                                                        te_title.set(task.title.clone());
-                                                        te_description
-                                                            .set(task.description.clone().unwrap_or_default());
-                                                        te_status.set(
-                                                            task.status_id.map(|v| v.to_string()).unwrap_or_default(),
-                                                        );
-                                                        te_priority.set(
-                                                            task.priority.clone().unwrap_or_else(|| "medium".into()),
-                                                        );
-                                                        te_assignee.set(
-                                                            task.assigned_to_id
-                                                                .map(|v| v.to_string())
-                                                                .unwrap_or_default(),
-                                                        );
-                                                        te_estimated.set(
-                                                            task.estimated_hours
-                                                                .map(|v| v.to_string())
-                                                                .unwrap_or_default(),
-                                                        );
-                                                        te_due.set(task.due_date.clone().unwrap_or_default());
-                                                        te_error.set(String::new());
-                                                        selected_task.set(Some(task.id));
-                                                    };
+                                                    let open_task = move |_| selected_task.set(Some(task.clone()));
                                                     rsx! {
                                                         div {
                                                             class: "flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors",
@@ -1597,209 +1532,18 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                 }
             }
 
-            // PMS-184 task-edit modal (view + edit + change history).
-            {
-                let mut tasks_res = tasks_resource;
-                let mut hist_res = task_history_resource;
-                let mut task_status_opts = vec![SelectOption::new("", "Select a status")];
-                task_status_opts.extend(
-                    statuses
-                        .iter()
-                        .map(|s| SelectOption::new(s.id.to_string(), s.name.clone())),
-                );
-                let task_priority_opts = vec![
-                    SelectOption::new("low", "Low"),
-                    SelectOption::new("medium", "Medium"),
-                    SelectOption::new("high", "High"),
-                    SelectOption::new("critical", "Critical"),
-                ];
-                let mut task_assignee_opts = vec![SelectOption::new("", "Unassigned")];
-                task_assignee_opts.extend(
-                    users
-                        .iter()
-                        .map(|u| SelectOption::new(u.id.to_string(), u.full_name.clone())),
-                );
-                let on_save = move |_| {
-                    if te_submitting() {
-                        return;
-                    }
-                    let tid = match selected_task() {
-                        Some(t) => t,
-                        None => return,
-                    };
-                    if te_title().trim().is_empty() {
-                        te_error.set("Task title is required.".to_string());
-                        return;
-                    }
-                    spawn(async move {
-                        te_submitting.set(true);
-                        te_error.set(String::new());
-                        let mut body = serde_json::Map::new();
-                        body.insert("title".into(), serde_json::json!(te_title().trim()));
-                        body.insert("description".into(), serde_json::json!(te_description()));
-                        body.insert("priority".into(), serde_json::json!(te_priority()));
-                        insert_opt_uuid(&mut body, "status_id", &te_status());
-                        insert_opt_uuid(&mut body, "assigned_to_id", &te_assignee());
-                        insert_opt_num(&mut body, "estimated_hours", &te_estimated());
-                        insert_opt_date(&mut body, "due_date", &te_due());
-                        let body = serde_json::Value::Object(body);
-                        match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
-                            &format!("/tasks/{tid}"),
-                            &body,
-                        )
-                        .await
-                        {
-                            Ok(_) => {
-                                te_submitting.set(false);
-                                selected_task.set(None);
-                                tasks_res.restart();
-                                hist_res.restart();
-                            }
-                            Err(err) => {
-                                te_submitting.set(false);
-                                te_error.set(err);
-                            }
-                        }
-                    });
-                };
-                let edited = task_edited.clone();
-                rsx! {
-                    Modal {
-                        open: selected_task().is_some(),
-                        title: "Edit Task",
-                        size: crate::components::ModalSize::Large,
-                        onclose: move |_| selected_task.set(None),
-                        footer: rsx! {
-                            Button {
-                                variant: ButtonVariant::Secondary,
-                                onclick: move |_| selected_task.set(None),
-                                "Cancel"
-                            }
-                            Button {
-                                variant: ButtonVariant::Primary,
-                                loading: te_submitting(),
-                                onclick: on_save,
-                                "Save Changes"
-                            }
-                        },
-                        div { class: "space-y-4",
-                            if !te_error().is_empty() {
-                                p { class: "text-sm text-red-600 dark:text-red-400", "{te_error}" }
-                            }
-                            if let Some(m) = edited {
-                                p { class: "text-xs text-gray-400 italic", "{m}" }
-                            }
-                            Input {
-                                name: "te-title",
-                                label: "Title",
-                                required: true,
-                                value: "{te_title}",
-                                oninput: move |e: FormEvent| te_title.set(e.value()),
-                            }
-                            Textarea {
-                                name: "te-description",
-                                label: "Description",
-                                rows: 4,
-                                value: "{te_description}",
-                                oninput: move |e: FormEvent| te_description.set(e.value()),
-                            }
-                            div { class: "grid grid-cols-2 gap-4",
-                                Select {
-                                    name: "te-status",
-                                    label: "Status",
-                                    options: task_status_opts.clone(),
-                                    value: "{te_status}",
-                                    onchange: move |e: FormEvent| te_status.set(e.value()),
-                                }
-                                Select {
-                                    name: "te-priority",
-                                    label: "Priority",
-                                    options: task_priority_opts.clone(),
-                                    value: "{te_priority}",
-                                    onchange: move |e: FormEvent| te_priority.set(e.value()),
-                                }
-                            }
-                            div { class: "grid grid-cols-2 gap-4",
-                                Select {
-                                    name: "te-assignee",
-                                    label: "Assignee",
-                                    options: task_assignee_opts.clone(),
-                                    value: "{te_assignee}",
-                                    onchange: move |e: FormEvent| te_assignee.set(e.value()),
-                                }
-                                Input {
-                                    name: "te-estimated",
-                                    label: "Estimated Hours",
-                                    r#type: "number",
-                                    value: "{te_estimated}",
-                                    oninput: move |e: FormEvent| te_estimated.set(e.value()),
-                                }
-                            }
-                            Input {
-                                name: "te-due",
-                                label: "Due Date",
-                                r#type: "date",
-                                value: "{te_due}",
-                                oninput: move |e: FormEvent| te_due.set(e.value()),
-                            }
-
-                            // Change history for this task.
-                            div { class: "border-t border-gray-200 dark:border-gray-700 pt-3",
-                                p { class: "text-sm font-medium text-gray-700 dark:text-gray-300 mb-2", "Change History" }
-                                if task_history.is_empty() {
-                                    p { class: "text-sm text-gray-400 italic", "No edits yet." }
-                                } else {
-                                    div { class: "space-y-2 text-sm max-h-48 overflow-y-auto",
-                                        for e in task_history.iter().take(20) {
-                                            {
-                                                let label = action_label(&e.action);
-                                                let fields = fields_label(&e.changed_fields);
-                                                let who = actor_name(&users, &e.user_id);
-                                                let when = fmt_history_dt(e.timestamp);
-                                                rsx! {
-                                                    div { class: "flex justify-between gap-2",
-                                                        div { class: "min-w-0",
-                                                            p { class: "text-gray-700 dark:text-gray-300",
-                                                                if fields.is_empty() {
-                                                                    "{label}"
-                                                                } else {
-                                                                    "{label}: {fields}"
-                                                                }
-                                                            }
-                                                            if !who.is_empty() {
-                                                                p { class: "text-xs text-gray-400", "by {who}" }
-                                                            }
-                                                            // PMS-204: actual before/after content.
-                                                            for c in e.changes.iter() {
-                                                                {
-                                                                    let old = fmt_change_value(&c.old);
-                                                                    let new = fmt_change_value(&c.new);
-                                                                    let fname = title_field(&c.field);
-                                                                    if old == "(reference)" && new == "(reference)" {
-                                                                        rsx! {}
-                                                                    } else {
-                                                                        rsx! {
-                                                                            p { class: "text-xs text-gray-500 dark:text-gray-400 mt-1",
-                                                                                span { class: "font-medium", "{fname}: " }
-                                                                                span { class: "line-through text-gray-400", "{old}" }
-                                                                                " → "
-                                                                                span { "{new}" }
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                        span { class: "text-gray-400 whitespace-nowrap", "{when}" }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+            // Task edit modal (MAPPS-165): the shared TaskEditModal is mounted
+            // only while a task is selected; it owns the form + change history.
+            if let Some(task) = selected_task() {
+                TaskEditModal {
+                    task,
+                    statuses: statuses.clone(),
+                    users: users.clone(),
+                    onclose: move |_| selected_task.set(None),
+                    onsaved: move |_| {
+                        selected_task.set(None);
+                        tasks_resource.restart();
+                    },
                 }
             }
         }
@@ -1815,7 +1559,7 @@ pub struct ProjectTasksPageProps {
 #[component]
 pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
     let id_for_tasks = props.id.clone();
-    let tasks_resource = use_resource(move || {
+    let mut tasks_resource = use_resource(move || {
         let id = id_for_tasks.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -1855,9 +1599,21 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
     let total = tasks.len();
 
+    // MAPPS-165: click-to-edit a task via the shared modal.
+    let mut selected_task = use_signal(|| None::<RemoteTask>);
+
     rsx! {
         AppLayout { title: "Project Tasks",
-            PageHeader { title: "Project Tasks", subtitle: "Tasks for this project" }
+            PageHeader {
+                title: "Project Tasks",
+                subtitle: "Tasks for this project",
+                actions: rsx! {
+                    Link {
+                        to: Route::ProjectDetail { id: props.id.clone() },
+                        Button { variant: ButtonVariant::Secondary, "Back to Project" }
+                    }
+                },
+            }
 
             DataTable {
                 total_items: total,
@@ -1899,8 +1655,11 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
                                         fmt_hours(t.estimated_hours),
                                     );
                                     let unassigned = t.assigned_to_id.is_none();
+                                    let task = t.clone();
                                     rsx! {
                                         TableRow {
+                                            clickable: true,
+                                            onclick: move |_| selected_task.set(Some(task.clone())),
                                             TableCell { "{t.title}" }
                                             TableCell { Badge { variant: tv, "{tl}" } }
                                             TableCell {
@@ -1912,6 +1671,290 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
                                             }
                                             TableCell { "{due}" }
                                             TableCell { "{hours}" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(task) = selected_task() {
+                TaskEditModal {
+                    task,
+                    statuses: statuses.clone(),
+                    users: users.clone(),
+                    onclose: move |_| selected_task.set(None),
+                    onsaved: move |_| {
+                        selected_task.set(None);
+                        tasks_resource.restart();
+                    },
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Shared task-edit modal (MAPPS-165)
+//
+// Extracted from ProjectDetailPage so both the project detail page and the
+// project tasks overview can open the same click-to-edit experience. Mounted
+// only while a task is selected (the caller wraps it in `if let Some(task)`),
+// so it is always `open`. Seeds its own form signals from the `task` prop,
+// fetches that task's change history, PUTs `/tasks/{id}`, and reports back via
+// `onsaved` (the caller refreshes its task list and clears the selection).
+// ============================================================================
+
+#[derive(Props, Clone, PartialEq)]
+struct TaskEditModalProps {
+    task: RemoteTask,
+    statuses: Vec<RemoteTaskStatus>,
+    users: Vec<RemoteUser>,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn TaskEditModal(props: TaskEditModalProps) -> Element {
+    let task = props.task.clone();
+    let tid = task.id;
+    let statuses = props.statuses.clone();
+    let users = props.users.clone();
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+
+    let mut te_title = use_signal(|| task.title.clone());
+    let mut te_description = use_signal(|| task.description.clone().unwrap_or_default());
+    let mut te_status = use_signal(|| task.status_id.map(|v| v.to_string()).unwrap_or_default());
+    let mut te_priority = use_signal(|| {
+        task.priority
+            .clone()
+            .unwrap_or_else(|| "medium".to_string())
+    });
+    let mut te_assignee = use_signal(|| {
+        task.assigned_to_id
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+    });
+    let mut te_estimated = use_signal(|| {
+        task.estimated_hours
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+    });
+    let mut te_due = use_signal(|| task.due_date.clone().unwrap_or_default());
+    let mut te_submitting = use_signal(|| false);
+    let mut te_error = use_signal(String::new);
+
+    let history_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<HistoryEntry>>(&format!(
+            "/audit-log/entity/tasks/{tid}"
+        ))
+        .await
+        .ok()
+        .map(|p| p.data)
+        .unwrap_or_default()
+    });
+    let task_history = history_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    let task_edited = task_history.iter().find(|e| e.action == "update").map(|e| {
+        let who = actor_name(&users, &e.user_id);
+        let when = fmt_history_dt(e.timestamp);
+        if who.is_empty() {
+            format!("Edited {when}")
+        } else {
+            format!("Edited {when} by {who}")
+        }
+    });
+
+    let mut task_status_opts = vec![SelectOption::new("", "Select a status")];
+    task_status_opts.extend(
+        statuses
+            .iter()
+            .map(|s| SelectOption::new(s.id.to_string(), s.name.clone())),
+    );
+    let task_priority_opts = vec![
+        SelectOption::new("low", "Low"),
+        SelectOption::new("medium", "Medium"),
+        SelectOption::new("high", "High"),
+        SelectOption::new("critical", "Critical"),
+    ];
+    let mut task_assignee_opts = vec![SelectOption::new("", "Unassigned")];
+    task_assignee_opts.extend(
+        users
+            .iter()
+            .map(|u| SelectOption::new(u.id.to_string(), u.full_name.clone())),
+    );
+
+    let on_save = move |_| {
+        if te_submitting() {
+            return;
+        }
+        if te_title().trim().is_empty() {
+            te_error.set("Task title is required.".to_string());
+            return;
+        }
+        spawn(async move {
+            te_submitting.set(true);
+            te_error.set(String::new());
+            let mut body = serde_json::Map::new();
+            body.insert("title".into(), serde_json::json!(te_title().trim()));
+            body.insert("description".into(), serde_json::json!(te_description()));
+            body.insert("priority".into(), serde_json::json!(te_priority()));
+            insert_opt_uuid(&mut body, "status_id", &te_status());
+            insert_opt_uuid(&mut body, "assigned_to_id", &te_assignee());
+            insert_opt_num(&mut body, "estimated_hours", &te_estimated());
+            insert_opt_date(&mut body, "due_date", &te_due());
+            let body = serde_json::Value::Object(body);
+            match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
+                &format!("/tasks/{tid}"),
+                &body,
+            )
+            .await
+            {
+                Ok(_) => {
+                    te_submitting.set(false);
+                    onsaved.call(());
+                }
+                Err(err) => {
+                    te_submitting.set(false);
+                    te_error.set(err);
+                }
+            }
+        });
+    };
+
+    rsx! {
+        Modal {
+            open: true,
+            title: "Edit Task",
+            size: crate::components::ModalSize::Large,
+            onclose: move |_| onclose.call(()),
+            footer: rsx! {
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| onclose.call(()),
+                    "Cancel"
+                }
+                Button {
+                    variant: ButtonVariant::Primary,
+                    loading: te_submitting(),
+                    onclick: on_save,
+                    "Save Changes"
+                }
+            },
+            div { class: "space-y-4",
+                if !te_error().is_empty() {
+                    p { class: "text-sm text-red-600 dark:text-red-400", "{te_error}" }
+                }
+                if let Some(m) = task_edited {
+                    p { class: "text-xs text-gray-400 italic", "{m}" }
+                }
+                Input {
+                    name: "te-title",
+                    label: "Title",
+                    required: true,
+                    value: "{te_title}",
+                    oninput: move |e: FormEvent| te_title.set(e.value()),
+                }
+                Textarea {
+                    name: "te-description",
+                    label: "Description",
+                    rows: 4,
+                    value: "{te_description}",
+                    oninput: move |e: FormEvent| te_description.set(e.value()),
+                }
+                div { class: "grid grid-cols-2 gap-4",
+                    Select {
+                        name: "te-status",
+                        label: "Status",
+                        options: task_status_opts.clone(),
+                        value: "{te_status}",
+                        onchange: move |e: FormEvent| te_status.set(e.value()),
+                    }
+                    Select {
+                        name: "te-priority",
+                        label: "Priority",
+                        options: task_priority_opts.clone(),
+                        value: "{te_priority}",
+                        onchange: move |e: FormEvent| te_priority.set(e.value()),
+                    }
+                }
+                div { class: "grid grid-cols-2 gap-4",
+                    Select {
+                        name: "te-assignee",
+                        label: "Assignee",
+                        options: task_assignee_opts.clone(),
+                        value: "{te_assignee}",
+                        onchange: move |e: FormEvent| te_assignee.set(e.value()),
+                    }
+                    Input {
+                        name: "te-estimated",
+                        label: "Estimated Hours",
+                        r#type: "number",
+                        value: "{te_estimated}",
+                        oninput: move |e: FormEvent| te_estimated.set(e.value()),
+                    }
+                }
+                Input {
+                    name: "te-due",
+                    label: "Due Date",
+                    r#type: "date",
+                    value: "{te_due}",
+                    oninput: move |e: FormEvent| te_due.set(e.value()),
+                }
+
+                // Change history for this task.
+                div { class: "border-t border-gray-200 dark:border-gray-700 pt-3",
+                    p { class: "text-sm font-medium text-gray-700 dark:text-gray-300 mb-2", "Change History" }
+                    if task_history.is_empty() {
+                        p { class: "text-sm text-gray-400 italic", "No edits yet." }
+                    } else {
+                        div { class: "space-y-2 text-sm max-h-48 overflow-y-auto",
+                            for e in task_history.iter().take(20) {
+                                {
+                                    let label = action_label(&e.action);
+                                    let fields = fields_label(&e.changed_fields);
+                                    let who = actor_name(&users, &e.user_id);
+                                    let when = fmt_history_dt(e.timestamp);
+                                    rsx! {
+                                        div { class: "flex justify-between gap-2",
+                                            div { class: "min-w-0",
+                                                p { class: "text-gray-700 dark:text-gray-300",
+                                                    if fields.is_empty() {
+                                                        "{label}"
+                                                    } else {
+                                                        "{label}: {fields}"
+                                                    }
+                                                }
+                                                if !who.is_empty() {
+                                                    p { class: "text-xs text-gray-400", "by {who}" }
+                                                }
+                                                for c in e.changes.iter() {
+                                                    {
+                                                        let old = fmt_change_value(&c.old);
+                                                        let new = fmt_change_value(&c.new);
+                                                        let fname = title_field(&c.field);
+                                                        if old == "(reference)" && new == "(reference)" {
+                                                            rsx! {}
+                                                        } else {
+                                                            rsx! {
+                                                                p { class: "text-xs text-gray-500 dark:text-gray-400 mt-1",
+                                                                    span { class: "font-medium", "{fname}: " }
+                                                                    span { class: "line-through text-gray-400", "{old}" }
+                                                                    " → "
+                                                                    span { "{new}" }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            span { class: "text-gray-400 whitespace-nowrap", "{when}" }
                                         }
                                     }
                                 }
