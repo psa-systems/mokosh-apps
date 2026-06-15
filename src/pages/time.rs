@@ -12,8 +12,9 @@ use crate::components::{
 use crate::utils::Paginated;
 use crate::Route;
 
-/// A time entry (`GET /api/v1/time-entries`). Names aren't joined into the
-/// response, so the list renders ids/links rather than ticket titles.
+/// A time entry (`GET /api/v1/time-entries`). The work-item names (ticket
+/// number/title, project name, task title) are joined server-side (PMS-332),
+/// so the list shows real names via `work_item_label` rather than bare ids.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct RemoteTimeEntry {
     id: uuid::Uuid,
