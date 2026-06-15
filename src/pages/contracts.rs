@@ -1699,16 +1699,16 @@ fn RateCardItemsCard(
             title: "Rates",
             padding: false,
             actions: if can_edit {
-                rsx! {
+                Some(rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
                         onclick: move |_| editing_item.set(Some(RateCardItemFormState::new())),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "Add Rate"
                     }
-                }
+                })
             } else {
-                rsx! {}
+                None
             },
             Table {
                 TableHead {
@@ -1901,14 +1901,12 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
                     )
                     .await
                     .map(|_| ()),
-                    Some(id) => {
-                        crate::hooks::fetch::api::put_authed::<RateCardResponse, _>(
-                            &format!("/rate-cards/{id}"),
-                            &body,
-                        )
-                        .await
-                        .map(|_| ())
-                    }
+                    Some(id) => crate::hooks::fetch::api::put_authed::<RateCardResponse, _>(
+                        &format!("/rate-cards/{id}"),
+                        &body,
+                    )
+                    .await
+                    .map(|_| ()),
                 };
                 match result {
                     Ok(()) => onsaved.call(()),
@@ -2042,7 +2040,10 @@ impl RateCardItemFormState {
             item_id: Some(i.id.to_string()),
             work_type_id: i.work_type_id.to_string(),
             hourly: i.hourly_rate.to_string(),
-            after: i.after_hours_rate.map(|d| d.to_string()).unwrap_or_default(),
+            after: i
+                .after_hours_rate
+                .map(|d| d.to_string())
+                .unwrap_or_default(),
             emergency: i.emergency_rate.map(|d| d.to_string()).unwrap_or_default(),
         }
     }
@@ -2163,7 +2164,9 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
 
     let del_item_id = initial.item_id.clone();
     let handle_delete = move |_| {
-        let Some(iid) = del_item_id.clone() else { return };
+        let Some(iid) = del_item_id.clone() else {
+            return;
+        };
         if *saving.read() || *deleting.read() {
             return;
         }
