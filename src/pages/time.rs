@@ -14,15 +14,20 @@ use crate::Route;
 
 /// A time entry (`GET /api/v1/time-entries`). Names aren't joined into the
 /// response, so the list renders ids/links rather than ticket titles.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 struct RemoteTimeEntry {
+    id: uuid::Uuid,
     date: NaiveDate,
     #[serde(default)]
     duration_minutes: i64,
     #[serde(default)]
+    work_type_id: Option<uuid::Uuid>,
+    #[serde(default)]
     ticket_id: Option<uuid::Uuid>,
     #[serde(default)]
     project_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    task_id: Option<uuid::Uuid>,
     #[serde(default)]
     notes: Option<String>,
     #[serde(default)]
@@ -106,13 +111,15 @@ fn monday_of_week(date: NaiveDate) -> NaiveDate {
 /// Time entry list page
 #[component]
 pub fn TimeEntryListPage() -> Element {
-    let entries_resource = use_resource(|| async {
+    let mut entries_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimeEntry>>("/time-entries")
             .await
             .ok()
             .map(|p| p.data)
     });
+    // MAPPS-166: click-to-edit a time entry via the modal below.
+    let mut selected_entry = use_signal(|| None::<RemoteTimeEntry>);
 
     let snapshot = entries_resource.read_unchecked().clone();
     // `None` while loading; `Some(None)` on fetch failure; `Some(Some(rows))`.
@@ -206,8 +213,11 @@ pub fn TimeEntryListPage() -> Element {
                                         .filter(|s| !s.is_empty())
                                         .unwrap_or_else(|| "-".to_string());
                                     let status = e.billing_status.clone();
+                                    let entry = e.clone();
                                     rsx! {
                                         TableRow {
+                                            clickable: true,
+                                            onclick: move |_| selected_entry.set(Some(entry.clone())),
                                             TableCell { class: "text-gray-500", "{e.date}" }
                                             TableCell {
                                                 if let Some(tid) = e.ticket_id {
@@ -240,6 +250,17 @@ pub fn TimeEntryListPage() -> Element {
                             }
                         }
                     }
+                }
+            }
+
+            if let Some(entry) = selected_entry() {
+                TimeEntryEditModal {
+                    entry,
+                    onclose: move |_| selected_entry.set(None),
+                    onsaved: move |_| {
+                        selected_entry.set(None);
+                        entries_resource.restart();
+                    },
                 }
             }
         }
@@ -1046,6 +1067,238 @@ pub fn TimesheetsPage() -> Element {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Time-entry edit modal (MAPPS-166)
+//
+// Click-to-edit a logged time entry. Edits the common fields (work type,
+// hours, date, description, billable) and supports delete. The work item
+// (ticket/project) and task are intentionally NOT changeable here: the
+// server's PUT direct-sets ticket_id/project_id/task_id (no COALESCE) and
+// never recomputes company_id, so changing them would risk a stale company.
+// Those ids are re-sent unchanged so the partial-looking update does not null
+// them. To move an entry to a different work item, delete it and re-log.
+// ============================================================================
+
+#[derive(Props, Clone, PartialEq)]
+struct TimeEntryEditModalProps {
+    entry: RemoteTimeEntry,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
+    let entry = props.entry.clone();
+    let eid = entry.id;
+    let ticket_id = entry.ticket_id;
+    let project_id = entry.project_id;
+    let task_id = entry.task_id;
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+
+    let work_types_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOption>>("/work-types")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+    let work_types = work_types_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    let mut work_type_options = vec![SelectOption::new("", "Select a work type")];
+    work_type_options.extend(
+        work_types
+            .iter()
+            .map(|w| SelectOption::new(w.id.to_string(), w.name.clone())),
+    );
+
+    let mut work_type =
+        use_signal(|| entry.work_type_id.map(|v| v.to_string()).unwrap_or_default());
+    let mut hours = use_signal(|| format!("{}", entry.duration_minutes as f64 / 60.0));
+    let mut date = use_signal(|| entry.date.to_string());
+    let mut description = use_signal(|| entry.notes.clone().unwrap_or_default());
+    let mut is_billable = use_signal(|| entry.is_billable);
+    let mut saving = use_signal(|| false);
+    let mut deleting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let work_item_label = if ticket_id.is_some() {
+        "Ticket"
+    } else if project_id.is_some() {
+        "Project"
+    } else {
+        "none"
+    };
+
+    let handle_save = move |_| {
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        let wtid = work_type.read().trim().to_string();
+        if wtid.is_empty() {
+            error.set("Please pick a work type.".to_string());
+            return;
+        }
+        let hours_val: f64 = match hours.read().trim().parse() {
+            Ok(h) if h > 0.0 && h <= 24.0 => h,
+            _ => {
+                error.set("Enter hours greater than 0 and no more than 24.".to_string());
+                return;
+            }
+        };
+        let d = date.read().trim().to_string();
+        if d.is_empty() {
+            error.set("Please pick a date.".to_string());
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        let duration_minutes = (hours_val * 60.0).round() as i64;
+        let desc = description.read().clone();
+        let billable = *is_billable.read();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                // Re-send ticket/project/task so the direct-set update keeps
+                // them; only the edited fields actually change.
+                let body = serde_json::json!({
+                    "date": d,
+                    "duration_minutes": duration_minutes,
+                    "work_type_id": wtid,
+                    "notes": desc,
+                    "is_billable": billable,
+                    "ticket_id": ticket_id,
+                    "project_id": project_id,
+                    "task_id": task_id,
+                });
+                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
+                    &format!("/time-entries/{eid}"),
+                    &body,
+                )
+                .await
+                {
+                    Ok(_) => onsaved.call(()),
+                    Err(e) => error.set(format!("Could not save time entry: {e}")),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    let handle_delete = move |_| {
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        deleting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let confirmed = web_sys::window()
+                    .and_then(|w| {
+                        w.confirm_with_message("Delete this time entry? This cannot be undone.")
+                            .ok()
+                    })
+                    .unwrap_or(false);
+                if confirmed {
+                    match crate::hooks::fetch::api::delete_authed(&format!("/time-entries/{eid}"))
+                        .await
+                    {
+                        Ok(()) => onsaved.call(()),
+                        Err(e) => error.set(format!("Could not delete time entry: {e}")),
+                    }
+                }
+            }
+            deleting.set(false);
+        });
+    };
+
+    rsx! {
+        Modal {
+            open: true,
+            title: "Edit Time Entry",
+            size: crate::components::ModalSize::Medium,
+            onclose: move |_| onclose.call(()),
+            footer: rsx! {
+                Button {
+                    variant: ButtonVariant::Danger,
+                    loading: *deleting.read(),
+                    onclick: handle_delete,
+                    "Delete"
+                }
+                div { class: "flex-1" }
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| onclose.call(()),
+                    "Cancel"
+                }
+                Button {
+                    variant: ButtonVariant::Primary,
+                    loading: *saving.read(),
+                    onclick: handle_save,
+                    "Save Changes"
+                }
+            },
+            div { class: "space-y-4",
+                if !error.read().is_empty() {
+                    div { class: "rounded-md bg-red-50 dark:bg-red-900/20 p-3",
+                        p { class: "text-sm text-red-600 dark:text-red-400", "{error.read()}" }
+                    }
+                }
+                p { class: "text-xs text-gray-500 dark:text-gray-400",
+                    "Work item: {work_item_label}. To move this entry to a different work item, delete it and log again."
+                }
+                Select {
+                    name: "edit_work_type",
+                    label: "Work Type",
+                    options: work_type_options,
+                    value: work_type.read().clone(),
+                    required: true,
+                    onchange: move |e: FormEvent| work_type.set(e.value()),
+                }
+                crate::components::Input {
+                    name: "edit_hours",
+                    label: "Hours",
+                    r#type: "number",
+                    step: "0.25",
+                    min: "0.25",
+                    max: "24",
+                    required: true,
+                    value: hours.read().clone(),
+                    oninput: move |e: FormEvent| hours.set(e.value()),
+                }
+                crate::components::Input {
+                    name: "edit_date",
+                    label: "Date",
+                    r#type: "date",
+                    required: true,
+                    value: date.read().clone(),
+                    oninput: move |e: FormEvent| date.set(e.value()),
+                }
+                crate::components::Textarea {
+                    name: "edit_description",
+                    label: "Description",
+                    rows: 3,
+                    value: description.read().clone(),
+                    oninput: move |e: FormEvent| description.set(e.value()),
+                }
+                Checkbox {
+                    name: "edit_billable",
+                    label: "Billable",
+                    checked: *is_billable.read(),
+                    onchange: move |_| {
+                        let c = *is_billable.read();
+                        is_billable.set(!c);
+                    },
                 }
             }
         }
