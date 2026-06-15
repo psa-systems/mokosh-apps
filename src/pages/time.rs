@@ -27,8 +27,6 @@ struct RemoteTimeEntry {
     #[serde(default)]
     project_id: Option<uuid::Uuid>,
     #[serde(default)]
-    task_id: Option<uuid::Uuid>,
-    #[serde(default)]
     notes: Option<String>,
     #[serde(default)]
     is_billable: bool,
@@ -221,10 +219,15 @@ pub fn TimeEntryListPage() -> Element {
                                             TableCell { class: "text-gray-500", "{e.date}" }
                                             TableCell {
                                                 if let Some(tid) = e.ticket_id {
-                                                    Link {
-                                                        to: Route::TicketDetail { id: tid.to_string() },
-                                                        class: "font-medium text-blue-600 hover:text-blue-500",
-                                                        "Ticket"
+                                                    // Stop the link click from also opening the
+                                                    // row's edit modal; let it just navigate.
+                                                    span {
+                                                        onclick: move |evt: MouseEvent| evt.stop_propagation(),
+                                                        Link {
+                                                            to: Route::TicketDetail { id: tid.to_string() },
+                                                            class: "font-medium text-blue-600 hover:text-blue-500",
+                                                            "Ticket"
+                                                        }
                                                     }
                                                 } else if e.project_id.is_some() {
                                                     span { class: "font-medium text-gray-700 dark:text-gray-300", "Project" }
@@ -1078,11 +1081,13 @@ pub fn TimesheetsPage() -> Element {
 //
 // Click-to-edit a logged time entry. Edits the common fields (work type,
 // hours, date, description, billable) and supports delete. The work item
-// (ticket/project) and task are intentionally NOT changeable here: the
-// server's PUT direct-sets ticket_id/project_id/task_id (no COALESCE) and
-// never recomputes company_id, so changing them would risk a stale company.
-// Those ids are re-sent unchanged so the partial-looking update does not null
-// them. To move an entry to a different work item, delete it and re-log.
+// (ticket/project) is intentionally NOT changeable here: the server's PUT
+// direct-sets ticket_id/project_id (no COALESCE) and never recomputes
+// company_id, so changing them would risk a stale company. Those ids are
+// re-sent unchanged so the partial-looking update does not null them. `task_id`
+// is not in the time-entry response, so it cannot be echoed; the entry's task
+// is preserved server-side by PMS-328 (COALESCE on task_id when omitted). To
+// move an entry to a different work item, delete it and re-log.
 // ============================================================================
 
 #[derive(Props, Clone, PartialEq)]
@@ -1098,7 +1103,6 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
     let eid = entry.id;
     let ticket_id = entry.ticket_id;
     let project_id = entry.project_id;
-    let task_id = entry.task_id;
     let onclose = props.onclose;
     let onsaved = props.onsaved;
 
@@ -1168,8 +1172,10 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                // Re-send ticket/project/task so the direct-set update keeps
-                // them; only the edited fields actually change.
+                // Re-send ticket/project so the direct-set update keeps them.
+                // `task_id` is intentionally omitted: the response does not
+                // carry it, so we cannot echo the current value; PMS-328 makes
+                // the server preserve task_id when it is absent (COALESCE).
                 let body = serde_json::json!({
                     "date": d,
                     "duration_minutes": duration_minutes,
@@ -1178,7 +1184,6 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
                     "is_billable": billable,
                     "ticket_id": ticket_id,
                     "project_id": project_id,
-                    "task_id": task_id,
                 });
                 match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
                     &format!("/time-entries/{eid}"),
@@ -1269,8 +1274,11 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
                     name: "edit_hours",
                     label: "Hours",
                     r#type: "number",
-                    step: "0.25",
-                    min: "0.25",
+                    // `step: "any"` so an existing off-grid duration (e.g. a
+                    // 10-minute entry -> 0.1667h) does not render :invalid; the
+                    // save handler still enforces 0 < hours <= 24.
+                    step: "any",
+                    min: "0",
                     max: "24",
                     required: true,
                     value: hours.read().clone(),
