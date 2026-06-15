@@ -66,8 +66,13 @@ struct RemoteTask {
     assigned_to_id: Option<uuid::Uuid>,
     #[serde(default, deserialize_with = "de_flex_f64")]
     estimated_hours: Option<f64>,
+    // Approved-only hours (PMS-51). MAPPS-167: `logged_hours` is all
+    // non-rejected logged time; we show both so logged time is visible
+    // before approval.
     #[serde(default, deserialize_with = "de_flex_f64")]
     actual_hours: Option<f64>,
+    #[serde(default, deserialize_with = "de_flex_f64")]
+    logged_hours: Option<f64>,
     #[serde(default)]
     due_date: Option<String>,
 }
@@ -1649,11 +1654,12 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
                                     let (tv, tl) = task_status_badge(&statuses, &t.status_id);
                                     let who = user_name(&users, &t.assigned_to_id);
                                     let due = fmt_date(&t.due_date);
-                                    let hours = format!(
-                                        "{} / {}",
-                                        fmt_hours(t.actual_hours),
-                                        fmt_hours(t.estimated_hours),
-                                    );
+                                    // Logged = all non-rejected time (PMS-329),
+                                    // visible before approval; approved = the
+                                    // approval-gated total; est = the estimate.
+                                    let logged_h = fmt_hours(t.logged_hours);
+                                    let approved_h = fmt_hours(t.actual_hours);
+                                    let est_h = fmt_hours(t.estimated_hours);
                                     let unassigned = t.assigned_to_id.is_none();
                                     let task = t.clone();
                                     rsx! {
@@ -1670,7 +1676,13 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
                                                 }
                                             }
                                             TableCell { "{due}" }
-                                            TableCell { "{hours}" }
+                                            TableCell {
+                                                div { class: "whitespace-nowrap font-medium", "Logged {logged_h} h" }
+                                                div {
+                                                    class: "text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap",
+                                                    "Approved {approved_h} h · Est {est_h} h"
+                                                }
+                                            }
                                         }
                                     }
                                 }
