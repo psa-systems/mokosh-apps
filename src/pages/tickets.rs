@@ -1031,7 +1031,8 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                 },
                                 if let Some(t) = ticket.as_ref() {
                                     if let Some(desc) = t.description.as_ref().filter(|d| !d.trim().is_empty()) {
-                                        p { class: "text-gray-700 dark:text-gray-300 whitespace-pre-wrap", "{desc}" }
+                                        // PMS-309: render Markdown (sanitized) instead of raw text.
+                                        crate::components::Markdown { content: desc.clone() }
                                     } else {
                                         p { class: "text-sm text-gray-400 italic", "No description provided." }
                                     }
