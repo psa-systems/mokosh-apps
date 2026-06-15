@@ -320,6 +320,9 @@ pub enum Route {
     SettingsTaxRates {},
     #[route("/settings/gateways")]
     SettingsGateways {},
+    // MAPPS-170: invoice payment-terms lookup editor (server CRUD from PMS-333).
+    #[route("/settings/payment-terms")]
+    SettingsPaymentTerms {},
     // MAPPS-172: ticket lookup editors (server CRUD from PMS-321).
     #[route("/settings/ticket-statuses")]
     SettingsTicketStatuses {},
@@ -740,6 +743,11 @@ fn SettingsAssetTypes() -> Element {
 #[component]
 fn SettingsProjectTypes() -> Element {
     rsx! { settings::ProjectTypesSettingsPage {} }
+}
+
+#[component]
+fn SettingsPaymentTerms() -> Element {
+    rsx! { settings::PaymentTermsSettingsPage {} }
 }
 
 #[component]
