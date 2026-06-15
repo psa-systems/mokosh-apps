@@ -17,10 +17,9 @@
 //!
 //! The ticket lookup editors (statuses, priorities, types, queues,
 //! categories) live here too (MAPPS-172), wired to the management CRUD
-//! that shipped in PMS-321. The project-type editor (MAPPS-173) is still
-//! deferred: the server stored project type as a hardcoded VARCHAR enum
-//! until PMS-322 added a lookup table, and the client editor for it is a
-//! separate follow-up.
+//! that shipped in PMS-321. The project-type editor (MAPPS-173) wires to
+//! the PMS-322 lookup table that replaced the old hardcoded enum; its
+//! seeded `is_system` rows are name-locked and undeletable in the UI.
 //!
 //! CRUD conventions mirror `src/pages/billing.rs` (`TaxRateListPage`):
 //! page-local `Deserialize` row structs, `active_tenant_generation()`
@@ -100,6 +99,11 @@ pub fn SettingsHomePage() -> Element {
                     to: Route::SettingsAssetTypes {},
                     title: "Asset Types",
                     description: "Categories for the assets you track per company.",
+                }
+                SettingsCard {
+                    to: Route::SettingsProjectTypes {},
+                    title: "Project Types",
+                    description: "Classify projects (e.g. client vs internal).",
                 }
             }
 
@@ -269,7 +273,7 @@ pub fn WorkTypesSettingsPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 4, rows: 4 }
-                    } else if rows.is_empty() {
+                    } else if rows.is_empty() && !fetch_failed {
                         TableEmpty {
                             columns: 4,
                             message: "No work types yet. Click New Work Type to add one.".to_string(),
@@ -594,7 +598,7 @@ pub fn TaskStatusesSettingsPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 3, rows: 4 }
-                    } else if rows.is_empty() {
+                    } else if rows.is_empty() && !fetch_failed {
                         TableEmpty {
                             columns: 3,
                             message: "No task statuses yet. Click New Status to add one.".to_string(),
@@ -888,7 +892,7 @@ pub fn AssetTypesSettingsPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 3, rows: 4 }
-                    } else if rows.is_empty() {
+                    } else if rows.is_empty() && !fetch_failed {
                         TableEmpty {
                             columns: 3,
                             message: "No asset types yet. Click New Asset Type to add one.".to_string(),
@@ -1083,6 +1087,319 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
 }
 
 // ============================================================================
+// Project types  (GET/POST `/project-types`, PUT/DELETE `/project-types/{id}`)
+//
+// PMS-322 lookup table replacing the old hardcoded `client`/`internal` enum.
+// `is_system` rows (the seeded `client`/`internal`) are read-only: the server
+// refuses to delete them, so the editor hides Delete and disables the name
+// field for them (the other fields stay editable).
+// ============================================================================
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct ProjectTypeRow {
+    id: Uuid,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    is_default: bool,
+    #[serde(default)]
+    is_active: bool,
+    #[serde(default)]
+    sort_order: i64,
+    #[serde(default)]
+    is_system: bool,
+}
+
+#[component]
+pub fn ProjectTypesSettingsPage() -> Element {
+    if !use_is_admin() {
+        return rsx! { AdminOnlyNotice { title: "Project Types" } };
+    }
+
+    let mut page = use_signal(|| 1usize);
+    let mut editing = use_signal(|| None::<ProjectTypeFormState>);
+    let current_page = (*page.read()).max(1);
+
+    let mut resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let path = format!("/project-types?page={current_page}&per_page={PER_PAGE}");
+        crate::hooks::fetch::api::get_authed::<Paginated<ProjectTypeRow>>(&path)
+            .await
+            .ok()
+    });
+
+    let snap = resource.read_unchecked();
+    let is_loading = snap.is_none();
+    let fetch_failed = matches!(*snap, Some(None));
+    let (rows, total): (Vec<ProjectTypeRow>, u64) = match &*snap {
+        Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
+        _ => (Vec::new(), 0),
+    };
+
+    rsx! {
+        AppLayout { title: "Project Types",
+            PageHeader {
+                title: "Project Types",
+                subtitle: "Classify projects (e.g. client vs internal)",
+                actions: rsx! {
+                    Link { to: Route::SettingsHome {},
+                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        onclick: move |_| editing.set(Some(ProjectTypeFormState::new())),
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "New Project Type"
+                    }
+                },
+            }
+
+            if fetch_failed {
+                LoadError { what: "project types" }
+            }
+
+            DataTable {
+                loading: is_loading,
+                total_items: total as usize,
+                current_page,
+                per_page: PER_PAGE,
+                columns: 3,
+                onpagechange: move |p| page.set(p),
+                Table {
+                    TableHead {
+                        TableRow {
+                            TableHeader { "Name" }
+                            TableHeader { "Default" }
+                            TableHeader { "Active" }
+                        }
+                    }
+                    if is_loading {
+                        TableLoading { columns: 3, rows: 4 }
+                    } else if rows.is_empty() && !fetch_failed {
+                        TableEmpty {
+                            columns: 3,
+                            message: "No project types yet. Click New Project Type to add one.".to_string(),
+                        }
+                    } else {
+                        TableBody {
+                            for row in rows.iter().cloned() {
+                                {
+                                    let key = row.id.to_string();
+                                    let edit_state = ProjectTypeFormState::from_existing(&row);
+                                    let name = row.name.clone();
+                                    let default = row.is_default;
+                                    let active = row.is_active;
+                                    let system = row.is_system;
+                                    rsx! {
+                                        TableRow { key: "{key}", clickable: true,
+                                            onclick: move |_| editing.set(Some(edit_state.clone())),
+                                            TableCell {
+                                                div { class: "flex items-center gap-2",
+                                                    span { class: "font-medium text-blue-600", "{name}" }
+                                                    if system {
+                                                        Badge { variant: BadgeVariant::Gray, "System" }
+                                                    }
+                                                }
+                                            }
+                                            TableCell {
+                                                if default {
+                                                    Badge { variant: BadgeVariant::Blue, "Default" }
+                                                }
+                                            }
+                                            TableCell { ActiveBadge { active } }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(state) = editing.read().clone() {
+                ProjectTypeFormModal {
+                    state,
+                    onclose: move |_| editing.set(None),
+                    onsaved: move |_| {
+                        editing.set(None);
+                        resource.restart();
+                    },
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ProjectTypeFormState {
+    id: Option<String>,
+    name: String,
+    is_default: bool,
+    is_active: bool,
+    sort_order: String,
+    is_system: bool,
+}
+
+impl ProjectTypeFormState {
+    fn new() -> Self {
+        Self {
+            id: None,
+            name: String::new(),
+            is_default: false,
+            is_active: true,
+            sort_order: "0".to_string(),
+            is_system: false,
+        }
+    }
+
+    fn from_existing(r: &ProjectTypeRow) -> Self {
+        Self {
+            id: Some(r.id.to_string()),
+            name: r.name.clone(),
+            is_default: r.is_default,
+            is_active: r.is_active,
+            sort_order: r.sort_order.to_string(),
+            is_system: r.is_system,
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct ProjectTypeFormModalProps {
+    state: ProjectTypeFormState,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
+    let initial = props.state.clone();
+    let is_edit = initial.id.is_some();
+    let is_system = initial.is_system;
+
+    let mut name = use_signal(|| initial.name.clone());
+    let mut is_default = use_signal(|| initial.is_default);
+    let mut is_active = use_signal(|| initial.is_active);
+    let mut sort_order = use_signal(|| initial.sort_order.clone());
+    let mut saving = use_signal(|| false);
+    let mut deleting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+
+    let save_id = initial.id.clone();
+    let handle_save = move |_| {
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        if name.read().trim().is_empty() {
+            error.set("Name is required.".to_string());
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        // `is_system` is server-owned and not sent.
+        let body = serde_json::json!({
+            "name": name.read().trim(),
+            "is_default": *is_default.read(),
+            "is_active": *is_active.read(),
+            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
+        });
+        let id = save_id.clone();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match save_lookup(id, "/project-types", &body).await {
+                    Ok(()) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not save project type: {err}")),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    let delete_id = initial.id.clone();
+    let handle_delete = move |_| {
+        let Some(id) = delete_id.clone() else { return };
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        deleting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match delete_lookup(&id, "/project-types", "project type").await {
+                    Ok(true) => onsaved.call(()),
+                    Ok(false) => {}
+                    Err(err) => error.set(format!("Could not delete project type: {err}")),
+                }
+            }
+            deleting.set(false);
+        });
+    };
+
+    rsx! {
+        SettingFormModal {
+            title: if is_edit { "Edit Project Type".to_string() } else { "New Project Type".to_string() },
+            is_edit,
+            deletable: !is_system,
+            saving: *saving.read(),
+            deleting: *deleting.read(),
+            error: error.read().clone(),
+            onclose: move |_| onclose.call(()),
+            onsave: handle_save,
+            ondelete: handle_delete,
+            create_label: "Create Project Type".to_string(),
+            if is_system {
+                div {
+                    class: "text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900/40 border border-gray-200 dark:border-gray-700 rounded-md px-3 py-2",
+                    "System project type: its name is fixed and it cannot be deleted. You can still change default, active, and sort order."
+                }
+            }
+            crate::components::Input {
+                name: "project_type_name",
+                label: "Name",
+                placeholder: "e.g. Client",
+                required: true,
+                disabled: is_system,
+                value: name.read().clone(),
+                oninput: move |e: FormEvent| name.set(e.value()),
+            }
+            crate::components::Input {
+                name: "project_type_sort_order",
+                label: "Sort order",
+                r#type: "number",
+                min: "0".to_string(),
+                max: "2147483647".to_string(),
+                value: sort_order.read().clone(),
+                oninput: move |e: FormEvent| sort_order.set(e.value()),
+            }
+            crate::components::Checkbox {
+                name: "project_type_default",
+                label: "Default project type",
+                help: "Applied to new projects when none is chosen.",
+                checked: *is_default.read(),
+                onchange: move |_| {
+                    let next = !*is_default.read();
+                    is_default.set(next);
+                },
+            }
+            crate::components::Checkbox {
+                name: "project_type_active",
+                label: "Active",
+                checked: *is_active.read(),
+                onchange: move |_| {
+                    let next = !*is_active.read();
+                    is_active.set(next);
+                },
+            }
+        }
+    }
+}
+
+// ============================================================================
 // Ticket statuses  (GET/POST `/tickets/statuses`, PUT/DELETE `/tickets/statuses/{id}`)
 // ============================================================================
 
@@ -1167,7 +1484,7 @@ pub fn TicketStatusesSettingsPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 4, rows: 4 }
-                    } else if rows.is_empty() {
+                    } else if rows.is_empty() && !fetch_failed {
                         TableEmpty {
                             columns: 4,
                             message: "No ticket statuses yet. Click New Status to add one.".to_string(),
@@ -1481,7 +1798,7 @@ pub fn TicketPrioritiesSettingsPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 4, rows: 4 }
-                    } else if rows.is_empty() {
+                    } else if rows.is_empty() && !fetch_failed {
                         TableEmpty {
                             columns: 4,
                             message: "No ticket priorities yet. Click New Priority to add one.".to_string(),
@@ -1809,7 +2126,7 @@ pub fn TicketTypesSettingsPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 3, rows: 4 }
-                    } else if rows.is_empty() {
+                    } else if rows.is_empty() && !fetch_failed {
                         TableEmpty {
                             columns: 3,
                             message: "No ticket types yet. Click New Type to add one.".to_string(),
@@ -2109,7 +2426,7 @@ pub fn TicketQueuesSettingsPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 3, rows: 4 }
-                    } else if rows.is_empty() {
+                    } else if rows.is_empty() && !fetch_failed {
                         TableEmpty {
                             columns: 3,
                             message: "No ticket queues yet. Click New Queue to add one.".to_string(),
@@ -2453,7 +2770,7 @@ pub fn TicketCategoriesSettingsPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 3, rows: 4 }
-                    } else if rows.is_empty() {
+                    } else if rows.is_empty() && !fetch_failed {
                         TableEmpty {
                             columns: 3,
                             message: "No ticket categories yet. Click New Category to add one.".to_string(),
@@ -2818,6 +3135,11 @@ struct SettingFormModalProps {
     deleting: bool,
     error: String,
     create_label: String,
+    /// Whether the Delete button renders on an edit. Defaults to true;
+    /// pass false for rows the server refuses to delete (e.g. system
+    /// `is_system` lookups).
+    #[props(default = true)]
+    deletable: bool,
     onclose: EventHandler<()>,
     onsave: EventHandler<MouseEvent>,
     ondelete: EventHandler<MouseEvent>,
@@ -2830,9 +3152,10 @@ fn SettingFormModal(props: SettingFormModalProps) -> Element {
     let onsave = props.onsave;
     let ondelete = props.ondelete;
     let is_edit = props.is_edit;
+    let deletable = props.deletable;
 
     let footer = rsx! {
-        if is_edit {
+        if is_edit && deletable {
             Button {
                 variant: ButtonVariant::Danger,
                 loading: props.deleting,
