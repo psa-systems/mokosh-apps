@@ -47,7 +47,8 @@ const PER_PAGE: usize = 25;
 /// so this is a UX affordance, not a security boundary.
 fn use_is_admin() -> bool {
     let auth = crate::hooks::use_auth();
-    auth.read()
+    let auth_state = auth.read();
+    auth_state
         .user
         .as_ref()
         .map(|u| u.role.is_admin())
@@ -445,7 +446,7 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
 
     rsx! {
         SettingFormModal {
-            title: if is_edit { "Edit Work Type" } else { "New Work Type" },
+            title: if is_edit { "Edit Work Type".to_string() } else { "New Work Type".to_string() },
             is_edit,
             saving: *saving.read(),
             deleting: *deleting.read(),
@@ -453,7 +454,7 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
             onclose: move |_| onclose.call(()),
             onsave: handle_save,
             ondelete: handle_delete,
-            create_label: "Create Work Type",
+            create_label: "Create Work Type".to_string(),
             crate::components::Input {
                 name: "work_type_name",
                 label: "Name",
@@ -787,7 +788,7 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
 
     rsx! {
         SettingFormModal {
-            title: if is_edit { "Edit Task Status" } else { "New Task Status" },
+            title: if is_edit { "Edit Task Status".to_string() } else { "New Task Status".to_string() },
             is_edit,
             saving: *saving.read(),
             deleting: *deleting.read(),
@@ -795,7 +796,7 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
             onclose: move |_| onclose.call(()),
             onsave: handle_save,
             ondelete: handle_delete,
-            create_label: "Create Status",
+            create_label: "Create Status".to_string(),
             crate::components::Input {
                 name: "task_status_name",
                 label: "Name",
@@ -1097,7 +1098,7 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
 
     rsx! {
         SettingFormModal {
-            title: if is_edit { "Edit Asset Type" } else { "New Asset Type" },
+            title: if is_edit { "Edit Asset Type".to_string() } else { "New Asset Type".to_string() },
             is_edit,
             saving: *saving.read(),
             deleting: *deleting.read(),
@@ -1105,7 +1106,7 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
             onclose: move |_| onclose.call(()),
             onsave: handle_save,
             ondelete: handle_delete,
-            create_label: "Create Asset Type",
+            create_label: "Create Asset Type".to_string(),
             crate::components::Input {
                 name: "asset_type_name",
                 label: "Name",
@@ -1154,12 +1155,12 @@ fn LoadError(what: String) -> Element {
 /// form fields are passed as `children`.
 #[derive(Props, Clone, PartialEq)]
 struct SettingFormModalProps {
-    title: &'static str,
+    title: String,
     is_edit: bool,
     saving: bool,
     deleting: bool,
     error: String,
-    create_label: &'static str,
+    create_label: String,
     onclose: EventHandler<()>,
     onsave: EventHandler<MouseEvent>,
     ondelete: EventHandler<MouseEvent>,
@@ -1199,7 +1200,7 @@ fn SettingFormModal(props: SettingFormModalProps) -> Element {
     rsx! {
         crate::components::Modal {
             open: true,
-            title: props.title.to_string(),
+            title: props.title.clone(),
             size: crate::components::ModalSize::Medium,
             onclose: move |_| onclose.call(()),
             footer,
