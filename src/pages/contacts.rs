@@ -523,6 +523,10 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let mut country = use_signal(|| initial.address_country.clone());
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // Per-field inline validation errors (MAPPS-177).
+    let mut phone_err = use_signal(String::new);
+    let mut postal_err = use_signal(String::new);
+    let mut country_err = use_signal(String::new);
 
     let type_options = vec![
         SelectOption::new("client", "Client"),
@@ -539,21 +543,46 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
 
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
-        is_submitting.set(true);
         error.set(String::new());
+        phone_err.set(String::new());
+        postal_err.set(String::new());
+        country_err.set(String::new());
+        // Validate the formatted/structured fields inline before submit (MAPPS-177).
+        let phone_value = match validate_phone_field(&phone.read(), "Phone") {
+            Ok(v) => v,
+            Err(msg) => {
+                phone_err.set(msg);
+                return;
+            }
+        };
+        let postal_value = match validate_postal_field(&postal.read()) {
+            Ok(v) => v,
+            Err(msg) => {
+                postal_err.set(msg);
+                return;
+            }
+        };
+        let country_value = match validate_country_field(&country.read()) {
+            Ok(v) => v,
+            Err(msg) => {
+                country_err.set(msg);
+                return;
+            }
+        };
+        is_submitting.set(true);
         let body = serde_json::json!({
             "name": name.read().trim(),
             "company_type": company_type.read().clone(),
             "industry": optional_string(&industry.read()),
             "website": optional_string(&website.read()),
-            "phone": optional_string(&phone.read()),
+            "phone": phone_value,
             "address": {
                 "line1": optional_string(&line1.read()),
                 "line2": optional_string(&line2.read()),
                 "city": optional_string(&city.read()),
                 "state": optional_string(&state.read()),
-                "postal_code": optional_string(&postal.read()),
-                "country": optional_string(&country.read()),
+                "postal_code": postal_value,
+                "country": country_value,
             },
         });
         let mode = mode.clone();
@@ -641,6 +670,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         label: "Phone",
                         placeholder: "(555) 555-5555",
                         value: phone.read().clone(),
+                        error: phone_err(),
                         oninput: move |e: FormEvent| phone.set(e.value()),
                     }
                 }
@@ -677,12 +707,15 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         name: "address_postal_code",
                         label: "Postal Code",
                         value: postal.read().clone(),
+                        error: postal_err(),
                         oninput: move |e: FormEvent| postal.set(e.value()),
                     }
                     crate::components::Input {
                         name: "address_country",
                         label: "Country",
+                        placeholder: "US",
                         value: country.read().clone(),
+                        error: country_err(),
                         oninput: move |e: FormEvent| country.set(e.value()),
                     }
                 }
@@ -710,6 +743,85 @@ fn optional_string(value: &str) -> serde_json::Value {
         serde_json::Value::Null
     } else {
         serde_json::Value::String(trimmed.to_string())
+    }
+}
+
+// ---- MAPPS-177: client-side field validation, mirroring the PMS-325 server
+// rules so the user gets immediate per-field feedback instead of a server error.
+
+/// Validate an optional phone field. Blank -> `Ok(None)`. Otherwise strips
+/// common formatting (spaces, dashes, parens, dots) and requires E.164: an
+/// optional leading `+` then 2-15 digits, the first 1-9. Returns the normalized
+/// value or an inline error message. `label` names the field in the message.
+fn validate_phone_field(raw: &str, label: &str) -> Result<serde_json::Value, String> {
+    let normalized: String = raw
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '\t' | '\u{00A0}' | '-' | '(' | ')' | '.'))
+        .collect();
+    if normalized.is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    let digits = normalized.strip_prefix('+').unwrap_or(&normalized);
+    let valid = (2..=15).contains(&digits.len())
+        && digits.bytes().all(|b| b.is_ascii_digit())
+        && digits
+            .as_bytes()
+            .first()
+            .is_some_and(|&b| (b'1'..=b'9').contains(&b));
+    if valid {
+        Ok(serde_json::Value::String(normalized))
+    } else {
+        Err(format!(
+            "{label} must be a valid phone number (e.g. +14155551234)."
+        ))
+    }
+}
+
+/// Validate an optional ISO 3166-1 alpha-2 country code. Blank -> `Ok(None)`.
+/// Requires exactly two ASCII letters (normalized to uppercase). The server
+/// (PMS-325) checks membership against the official set.
+fn validate_country_field(raw: &str) -> Result<serde_json::Value, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    if trimmed.len() == 2 && trimmed.bytes().all(|b| b.is_ascii_alphabetic()) {
+        Ok(serde_json::Value::String(trimmed.to_ascii_uppercase()))
+    } else {
+        Err("Country must be a 2-letter ISO code (e.g. US).".to_string())
+    }
+}
+
+/// Validate an optional postal code. Blank -> `Ok(None)`. Otherwise 2-12
+/// characters of letters, digits, spaces, or hyphens.
+fn validate_postal_field(raw: &str) -> Result<serde_json::Value, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    let len_ok = (2..=12).contains(&trimmed.chars().count());
+    let charset_ok = trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-');
+    if len_ok && charset_ok {
+        Ok(serde_json::Value::String(trimmed.to_string()))
+    } else {
+        Err("Postal code must be 2-12 letters, digits, spaces, or hyphens.".to_string())
+    }
+}
+
+/// Validate an optional IANA time zone. Blank -> `Ok(None)`. A light client
+/// check (must look like `Area/Location` with no spaces) that catches the
+/// common `America/New York` mistake; the server (PMS-325) is authoritative.
+fn validate_timezone_field(raw: &str) -> Result<serde_json::Value, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    if !trimmed.contains(' ') && trimmed.contains('/') {
+        Ok(serde_json::Value::String(trimmed.to_string()))
+    } else {
+        Err("Time zone must be an IANA name (e.g. America/New_York).".to_string())
     }
 }
 
@@ -1308,6 +1420,11 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // Per-field inline validation errors (MAPPS-177).
+    let mut phone_err = use_signal(String::new);
+    let mut tz_err = use_signal(String::new);
+    let mut postal_err = use_signal(String::new);
+    let mut country_err = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -1317,12 +1434,44 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
         if saving() || deleting() {
             return;
         }
+        error.set(String::new());
+        phone_err.set(String::new());
+        tz_err.set(String::new());
+        postal_err.set(String::new());
+        country_err.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Site name is required.".to_string());
             return;
         }
+        let phone_value = match validate_phone_field(&phone.read(), "Phone") {
+            Ok(v) => v,
+            Err(msg) => {
+                phone_err.set(msg);
+                return;
+            }
+        };
+        let tz_value = match validate_timezone_field(&timezone.read()) {
+            Ok(v) => v,
+            Err(msg) => {
+                tz_err.set(msg);
+                return;
+            }
+        };
+        let postal_value = match validate_postal_field(&postal.read()) {
+            Ok(v) => v,
+            Err(msg) => {
+                postal_err.set(msg);
+                return;
+            }
+        };
+        let country_value = match validate_country_field(&country.read()) {
+            Ok(v) => v,
+            Err(msg) => {
+                country_err.set(msg);
+                return;
+            }
+        };
         saving.set(true);
-        error.set(String::new());
         let body = serde_json::json!({
             "company_id": save_state.company_id,
             "name": name.read().trim(),
@@ -1331,12 +1480,12 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
                 "line2": optional_string(&line2.read()),
                 "city": optional_string(&city.read()),
                 "state": optional_string(&state.read()),
-                "postal_code": optional_string(&postal.read()),
-                "country": optional_string(&country.read()),
+                "postal_code": postal_value,
+                "country": country_value,
             },
-            "phone": optional_string(&phone.read()),
+            "phone": phone_value,
             "is_primary": *is_primary.read(),
-            "timezone": optional_string(&timezone.read()),
+            "timezone": tz_value,
         });
         let site_id = save_state.site_id.clone();
         spawn(async move {
@@ -1468,18 +1617,22 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
                         name: "site_postal",
                         label: "Postal Code",
                         value: postal.read().clone(),
+                        error: postal_err(),
                         oninput: move |e: FormEvent| postal.set(e.value()),
                     }
                     crate::components::Input {
                         name: "site_country",
                         label: "Country",
+                        placeholder: "US",
                         value: country.read().clone(),
+                        error: country_err(),
                         oninput: move |e: FormEvent| country.set(e.value()),
                     }
                     crate::components::Input {
                         name: "site_phone",
                         label: "Phone",
                         value: phone.read().clone(),
+                        error: phone_err(),
                         oninput: move |e: FormEvent| phone.set(e.value()),
                     }
                     crate::components::Input {
@@ -1487,6 +1640,7 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
                         label: "Timezone",
                         placeholder: "e.g. America/New_York",
                         value: timezone.read().clone(),
+                        error: tz_err(),
                         oninput: move |e: FormEvent| timezone.set(e.value()),
                     }
                 }
@@ -2003,6 +2157,9 @@ fn ContactForm(props: ContactFormProps) -> Element {
     let mut company_name = use_signal(|| initial.company_name.clone());
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // Per-field inline validation errors (MAPPS-177).
+    let mut phone_err = use_signal(String::new);
+    let mut mobile_err = use_signal(String::new);
 
     let type_options = vec![
         SelectOption::new("primary", "Primary"),
@@ -2019,23 +2176,39 @@ fn ContactForm(props: ContactFormProps) -> Element {
 
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
-        is_submitting.set(true);
         error.set(String::new());
+        phone_err.set(String::new());
+        mobile_err.set(String::new());
 
         let parsed_company = uuid::Uuid::parse_str(company_id.read().as_str()).ok();
         let Some(company_uuid) = parsed_company else {
             error.set("Please pick a company first.".to_string());
-            is_submitting.set(false);
             return;
         };
+        // Validate phone/mobile inline before submit (MAPPS-177).
+        let phone_value = match validate_phone_field(&phone.read(), "Phone") {
+            Ok(v) => v,
+            Err(msg) => {
+                phone_err.set(msg);
+                return;
+            }
+        };
+        let mobile_value = match validate_phone_field(&mobile.read(), "Mobile") {
+            Ok(v) => v,
+            Err(msg) => {
+                mobile_err.set(msg);
+                return;
+            }
+        };
+        is_submitting.set(true);
 
         let body = serde_json::json!({
             "company_id": company_uuid,
             "first_name": first_name.read().trim(),
             "last_name": last_name.read().trim(),
             "email": optional_string(&email.read()),
-            "phone": optional_string(&phone.read()),
-            "mobile": optional_string(&mobile.read()),
+            "phone": phone_value,
+            "mobile": mobile_value,
             "title": optional_string(&title.read()),
             "department": optional_string(&department.read()),
             "contact_type": contact_type.read().clone(),
@@ -2129,12 +2302,14 @@ fn ContactForm(props: ContactFormProps) -> Element {
                         name: "phone",
                         label: "Phone",
                         value: phone.read().clone(),
+                        error: phone_err(),
                         oninput: move |e: FormEvent| phone.set(e.value()),
                     }
                     crate::components::Input {
                         name: "mobile",
                         label: "Mobile",
                         value: mobile.read().clone(),
+                        error: mobile_err(),
                         oninput: move |e: FormEvent| mobile.set(e.value()),
                     }
                     crate::components::Input {
@@ -2574,5 +2749,56 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::{
+        validate_country_field, validate_phone_field, validate_postal_field,
+        validate_timezone_field,
+    };
+    use serde_json::Value;
+
+    #[test]
+    fn phone_normalizes_and_validates() {
+        // Blank -> null.
+        assert_eq!(validate_phone_field("  ", "Phone").unwrap(), Value::Null);
+        // Formatted -> normalized E.164.
+        assert_eq!(
+            validate_phone_field("+1 (415) 555-1234", "Phone").unwrap(),
+            Value::String("+14155551234".into())
+        );
+        // Garbage / leading zero rejected.
+        assert!(validate_phone_field("not-a-phone", "Phone").is_err());
+        assert!(validate_phone_field("0412 345 678", "Phone").is_err());
+    }
+
+    #[test]
+    fn country_requires_two_letters() {
+        assert_eq!(validate_country_field("").unwrap(), Value::Null);
+        assert_eq!(
+            validate_country_field("us").unwrap(),
+            Value::String("US".into())
+        );
+        assert!(validate_country_field("USA").is_err());
+        assert!(validate_country_field("United States").is_err());
+    }
+
+    #[test]
+    fn postal_permissive_rule() {
+        assert_eq!(validate_postal_field("").unwrap(), Value::Null);
+        assert!(validate_postal_field("K1A 0B1").is_ok());
+        assert!(validate_postal_field("90210-1234").is_ok());
+        assert!(validate_postal_field("X".repeat(13).as_str()).is_err());
+        assert!(validate_postal_field("12_34").is_err());
+    }
+
+    #[test]
+    fn timezone_light_check() {
+        assert_eq!(validate_timezone_field("").unwrap(), Value::Null);
+        assert!(validate_timezone_field("America/New_York").is_ok());
+        assert!(validate_timezone_field("America/New York").is_err());
+        assert!(validate_timezone_field("notazone").is_err());
     }
 }
