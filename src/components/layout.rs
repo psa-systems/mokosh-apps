@@ -185,6 +185,8 @@ fn SidebarContent() -> Element {
                     NavItem { to: Route::Team {}, icon: rsx!(UsersIcon {}), label: "Team" }
                     NavItem { to: Route::AuditLog {}, icon: rsx!(DocumentIcon {}), label: "Audit Log" }
                     NavItem { to: Route::SlaManagement {}, icon: rsx!(DocumentIcon {}), label: "SLA Management" }
+                    // MAPPS-169: single entry into the centralized Settings hub.
+                    NavItem { to: Route::SettingsHome {}, icon: rsx!(CogIcon {}), label: "Settings" }
                 }
             }
 
