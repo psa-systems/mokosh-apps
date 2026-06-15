@@ -32,8 +32,8 @@ use uuid::Uuid;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
-    PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
-    TableHeader, TableLoading, TableRow,
+    PlusIcon, Select, SelectOption, SettingFormModal, Table, TableBody, TableCell, TableEmpty,
+    TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::utils::Paginated;
 use crate::Route;
@@ -3124,75 +3124,6 @@ async fn delete_lookup(id: &str, base: &str, kind: &str) -> Result<bool, String>
         .map(|_| true)
 }
 
-/// Shared create/edit modal chrome for the settings editors. Owns the
-/// footer (Delete / Cancel / Save) and the error banner; the per-type
-/// form fields are passed as `children`.
-#[derive(Props, Clone, PartialEq)]
-struct SettingFormModalProps {
-    title: String,
-    is_edit: bool,
-    saving: bool,
-    deleting: bool,
-    error: String,
-    create_label: String,
-    /// Whether the Delete button renders on an edit. Defaults to true;
-    /// pass false for rows the server refuses to delete (e.g. system
-    /// `is_system` lookups).
-    #[props(default = true)]
-    deletable: bool,
-    onclose: EventHandler<()>,
-    onsave: EventHandler<MouseEvent>,
-    ondelete: EventHandler<MouseEvent>,
-    children: Element,
-}
-
-#[component]
-fn SettingFormModal(props: SettingFormModalProps) -> Element {
-    let onclose = props.onclose;
-    let onsave = props.onsave;
-    let ondelete = props.ondelete;
-    let is_edit = props.is_edit;
-    let deletable = props.deletable;
-
-    let footer = rsx! {
-        if is_edit && deletable {
-            Button {
-                variant: ButtonVariant::Danger,
-                loading: props.deleting,
-                onclick: move |e| ondelete.call(e),
-                "Delete"
-            }
-        }
-        div { class: "flex-1" }
-        Button {
-            variant: ButtonVariant::Secondary,
-            onclick: move |_| onclose.call(()),
-            "Cancel"
-        }
-        Button {
-            variant: ButtonVariant::Primary,
-            loading: props.saving,
-            onclick: move |e| onsave.call(e),
-            if is_edit { "Save Changes" } else { "{props.create_label}" }
-        }
-    };
-
-    rsx! {
-        crate::components::Modal {
-            open: true,
-            title: props.title.clone(),
-            size: crate::components::ModalSize::Medium,
-            onclose: move |_| onclose.call(()),
-            footer,
-            div { class: "space-y-4",
-                if !props.error.is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{props.error}"
-                    }
-                }
-                {props.children}
-            }
-        }
-    }
-}
+// `SettingFormModal` (the shared create/edit modal chrome) now lives in
+// `crate::components` so both these editors and the rate-card editor can
+// reuse it (MAPPS-160).
