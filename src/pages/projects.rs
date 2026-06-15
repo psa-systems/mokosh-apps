@@ -790,7 +790,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
     // PMS-184 task-edit modal state. `selected_task` is `Some` while the
     // modal is open for that task; the form and per-task history live in the
     // shared `TaskEditModal` component (MAPPS-165).
-    let mut selected_task = use_signal(|| None::<uuid::Uuid>);
+    let mut selected_task = use_signal(|| None::<RemoteTask>);
     // PMS-205: the project's own change history (who/when + before/after).
     let id_for_proj_history = props.id.clone();
     let project_history_resource = use_resource(move || {
@@ -1026,8 +1026,8 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                     let (tv, tl) = task_status_badge(&statuses, &t.status_id);
                                                     let who = user_name(&users, &t.assigned_to_id);
                                                     // Clicking a row opens the task in the edit modal.
-                                                    let task_id = t.id;
-                                                    let open_task = move |_| selected_task.set(Some(task_id));
+                                                    let task = t.clone();
+                                                    let open_task = move |_| selected_task.set(Some(task.clone()));
                                                     rsx! {
                                                         div {
                                                             class: "flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors",
@@ -1454,18 +1454,16 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
 
             // Task edit modal (MAPPS-165): the shared TaskEditModal is mounted
             // only while a task is selected; it owns the form + change history.
-            if let Some(tid) = selected_task() {
-                if let Some(task) = tasks.iter().find(|t| t.id == tid).cloned() {
-                    TaskEditModal {
-                        task,
-                        statuses: statuses.clone(),
-                        users: users.clone(),
-                        onclose: move |_| selected_task.set(None),
-                        onsaved: move |_| {
-                            selected_task.set(None);
-                            tasks_resource.restart();
-                        },
-                    }
+            if let Some(task) = selected_task() {
+                TaskEditModal {
+                    task,
+                    statuses: statuses.clone(),
+                    users: users.clone(),
+                    onclose: move |_| selected_task.set(None),
+                    onsaved: move |_| {
+                        selected_task.set(None);
+                        tasks_resource.restart();
+                    },
                 }
             }
         }
@@ -1522,7 +1520,7 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
     let total = tasks.len();
 
     // MAPPS-165: click-to-edit a task via the shared modal.
-    let mut selected_task = use_signal(|| None::<uuid::Uuid>);
+    let mut selected_task = use_signal(|| None::<RemoteTask>);
 
     rsx! {
         AppLayout { title: "Project Tasks",
@@ -1577,11 +1575,11 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
                                         fmt_hours(t.estimated_hours),
                                     );
                                     let unassigned = t.assigned_to_id.is_none();
-                                    let task_id = t.id;
+                                    let task = t.clone();
                                     rsx! {
                                         TableRow {
                                             clickable: true,
-                                            onclick: move |_| selected_task.set(Some(task_id)),
+                                            onclick: move |_| selected_task.set(Some(task.clone())),
                                             TableCell { "{t.title}" }
                                             TableCell { Badge { variant: tv, "{tl}" } }
                                             TableCell {
@@ -1602,18 +1600,16 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
                 }
             }
 
-            if let Some(tid) = selected_task() {
-                if let Some(task) = tasks.iter().find(|t| t.id == tid).cloned() {
-                    TaskEditModal {
-                        task,
-                        statuses: statuses.clone(),
-                        users: users.clone(),
-                        onclose: move |_| selected_task.set(None),
-                        onsaved: move |_| {
-                            selected_task.set(None);
-                            tasks_resource.restart();
-                        },
-                    }
+            if let Some(task) = selected_task() {
+                TaskEditModal {
+                    task,
+                    statuses: statuses.clone(),
+                    users: users.clone(),
+                    onclose: move |_| selected_task.set(None),
+                    onsaved: move |_| {
+                        selected_task.set(None);
+                        tasks_resource.restart();
+                    },
                 }
             }
         }
