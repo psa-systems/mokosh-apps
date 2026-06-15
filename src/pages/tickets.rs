@@ -1031,8 +1031,50 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                 },
                                 if let Some(t) = ticket.as_ref() {
                                     if let Some(desc) = t.description.as_ref().filter(|d| !d.trim().is_empty()) {
-                                        // PMS-309: render Markdown (sanitized) instead of raw text.
-                                        crate::components::Markdown { content: desc.clone() }
+                                        // PMS-309: render Markdown (sanitized). PMS-348:
+                                        // task-list checkboxes are clickable - toggling
+                                        // flips the source marker and persists.
+                                        {
+                                            let desc_src = desc.clone();
+                                            let tid = props.id.clone();
+                                            rsx! {
+                                                crate::components::Markdown {
+                                                    content: desc.clone(),
+                                                    interactive: true,
+                                                    on_toggle: move |i: usize| {
+                                                        let Some(new_desc) =
+                                                            crate::utils::markdown::toggle_task(&desc_src, i)
+                                                        else {
+                                                            return;
+                                                        };
+                                                        let tid = tid.clone();
+                                                        let mut tr = ticket_resource;
+                                                        let mut hr = history_resource;
+                                                        spawn(async move {
+                                                            let body = serde_json::json!({ "description": new_desc });
+                                                            match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
+                                                                    &format!("/tickets/{tid}"),
+                                                                    &body,
+                                                                )
+                                                                .await
+                                                            {
+                                                                Ok(_) => {
+                                                                    tr.restart();
+                                                                    hr.restart();
+                                                                }
+                                                                Err(e) => {
+                                                                    crate::hooks::push_toast(
+                                                                        crate::components::AlertType::Error,
+                                                                        format!("Could not update checklist: {e}"),
+                                                                    );
+                                                                    tr.restart();
+                                                                }
+                                                            }
+                                                        });
+                                                    },
+                                                }
+                                            }
+                                        }
                                     } else {
                                         p { class: "text-sm text-gray-400 italic", "No description provided." }
                                     }
