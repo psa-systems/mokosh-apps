@@ -273,7 +273,7 @@ pub fn WorkTypesSettingsPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 4, rows: 4 }
-                    } else if rows.is_empty() {
+                    } else if rows.is_empty() && !fetch_failed {
                         TableEmpty {
                             columns: 4,
                             message: "No work types yet. Click New Work Type to add one.".to_string(),
@@ -598,7 +598,7 @@ pub fn TaskStatusesSettingsPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 3, rows: 4 }
-                    } else if rows.is_empty() {
+                    } else if rows.is_empty() && !fetch_failed {
                         TableEmpty {
                             columns: 3,
                             message: "No task statuses yet. Click New Status to add one.".to_string(),
@@ -892,7 +892,7 @@ pub fn AssetTypesSettingsPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 3, rows: 4 }
-                    } else if rows.is_empty() {
+                    } else if rows.is_empty() && !fetch_failed {
                         TableEmpty {
                             columns: 3,
                             message: "No asset types yet. Click New Asset Type to add one.".to_string(),
@@ -1175,7 +1175,7 @@ pub fn ProjectTypesSettingsPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 3, rows: 4 }
-                    } else if rows.is_empty() {
+                    } else if rows.is_empty() && !fetch_failed {
                         TableEmpty {
                             columns: 3,
                             message: "No project types yet. Click New Project Type to add one.".to_string(),
@@ -1484,7 +1484,7 @@ pub fn TicketStatusesSettingsPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 4, rows: 4 }
-                    } else if rows.is_empty() {
+                    } else if rows.is_empty() && !fetch_failed {
                         TableEmpty {
                             columns: 4,
                             message: "No ticket statuses yet. Click New Status to add one.".to_string(),
@@ -1798,7 +1798,7 @@ pub fn TicketPrioritiesSettingsPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 4, rows: 4 }
-                    } else if rows.is_empty() {
+                    } else if rows.is_empty() && !fetch_failed {
                         TableEmpty {
                             columns: 4,
                             message: "No ticket priorities yet. Click New Priority to add one.".to_string(),
@@ -2126,7 +2126,7 @@ pub fn TicketTypesSettingsPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 3, rows: 4 }
-                    } else if rows.is_empty() {
+                    } else if rows.is_empty() && !fetch_failed {
                         TableEmpty {
                             columns: 3,
                             message: "No ticket types yet. Click New Type to add one.".to_string(),
@@ -2426,7 +2426,7 @@ pub fn TicketQueuesSettingsPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 3, rows: 4 }
-                    } else if rows.is_empty() {
+                    } else if rows.is_empty() && !fetch_failed {
                         TableEmpty {
                             columns: 3,
                             message: "No ticket queues yet. Click New Queue to add one.".to_string(),
@@ -2770,7 +2770,7 @@ pub fn TicketCategoriesSettingsPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 3, rows: 4 }
-                    } else if rows.is_empty() {
+                    } else if rows.is_empty() && !fetch_failed {
                         TableEmpty {
                             columns: 3,
                             message: "No ticket categories yet. Click New Category to add one.".to_string(),
