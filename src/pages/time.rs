@@ -265,8 +265,18 @@ pub fn TimeEntryListPage() -> Element {
                                                             "{wi_label}"
                                                         }
                                                     }
-                                                } else if e.project_id.is_some() {
-                                                    span { class: "font-medium text-gray-700 dark:text-gray-300", "{wi_label}" }
+                                                } else if let Some(pid) = e.project_id {
+                                                    // PMS-320: link the project like the ticket
+                                                    // above. stop_propagation so the link
+                                                    // navigates instead of opening the edit modal.
+                                                    span {
+                                                        onclick: move |evt: MouseEvent| evt.stop_propagation(),
+                                                        Link {
+                                                            to: Route::ProjectDetail { id: pid.to_string() },
+                                                            class: "font-medium text-blue-600 hover:text-blue-500",
+                                                            "{wi_label}"
+                                                        }
+                                                    }
                                                 } else {
                                                     span { class: "text-gray-400", "-" }
                                                 }
