@@ -303,13 +303,7 @@ pub fn WorkTypesSettingsPage() -> Element {
                                                 }
                                             }
                                             TableCell { class: "text-right", "{rate_display}" }
-                                            TableCell {
-                                                if active {
-                                                    Badge { variant: BadgeVariant::Green, "Active" }
-                                                } else {
-                                                    Badge { variant: BadgeVariant::Gray, "Inactive" }
-                                                }
-                                            }
+                                            TableCell { ActiveBadge { active } }
                                         }
                                     }
                                 }
@@ -410,10 +404,10 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
         let rate = default_rate.read().trim().to_string();
         let body = serde_json::json!({
             "name": name.read().trim(),
-            "description": if desc.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(desc) },
+            "description": opt_str(&desc),
             "default_billable": *default_billable.read(),
             // Server parses the rate string into `rust_decimal::Decimal`.
-            "default_rate": if rate.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(rate) },
+            "default_rate": opt_str(&rate),
             "is_active": *is_active.read(),
             "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
         });
@@ -421,21 +415,7 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let result: Result<(), String> = match id {
-                    None => crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
-                        "/work-types",
-                        &body,
-                    )
-                    .await
-                    .map(|_| ()),
-                    Some(id) => {
-                        let path = format!("/work-types/{id}");
-                        crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
-                            .await
-                            .map(|_| ())
-                    }
-                };
-                match result {
+                match save_lookup(id, "/work-types", &body).await {
                     Ok(()) => onsaved.call(()),
                     Err(err) => error.set(format!("Could not save work type: {err}")),
                 }
@@ -455,18 +435,10 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let confirmed = web_sys::window()
-                    .and_then(|w| {
-                        w.confirm_with_message("Delete this work type? This cannot be undone.")
-                            .ok()
-                    })
-                    .unwrap_or(false);
-                if confirmed {
-                    let path = format!("/work-types/{id}");
-                    match crate::hooks::fetch::api::delete_authed(&path).await {
-                        Ok(()) => onsaved.call(()),
-                        Err(err) => error.set(format!("Could not delete work type: {err}")),
-                    }
+                match delete_lookup(&id, "/work-types", "work type").await {
+                    Ok(true) => onsaved.call(()),
+                    Ok(false) => {}
+                    Err(err) => error.set(format!("Could not delete work type: {err}")),
                 }
             }
             deleting.set(false);
@@ -513,6 +485,8 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
                 name: "work_type_sort_order",
                 label: "Sort order",
                 r#type: "number",
+                min: "0".to_string(),
+                max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
                 oninput: move |e: FormEvent| sort_order.set(e.value()),
             }
@@ -640,15 +614,7 @@ pub fn TaskStatusesSettingsPage() -> Element {
                                             TableCell {
                                                 span { class: "font-medium text-blue-600", "{name}" }
                                             }
-                                            TableCell {
-                                                div { class: "flex items-center gap-2",
-                                                    span {
-                                                        class: "inline-block h-4 w-4 rounded-full border border-gray-300 dark:border-gray-600",
-                                                        style: "background-color: {color}",
-                                                    }
-                                                    span { class: "text-xs text-gray-500", "{color}" }
-                                                }
-                                            }
+                                            TableCell { ColorSwatch { color } }
                                             TableCell {
                                                 if completed {
                                                     Badge { variant: BadgeVariant::Green, "Completed" }
@@ -763,21 +729,7 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let result: Result<(), String> = match id {
-                    None => crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
-                        "/task-statuses",
-                        &body,
-                    )
-                    .await
-                    .map(|_| ()),
-                    Some(id) => {
-                        let path = format!("/task-statuses/{id}");
-                        crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
-                            .await
-                            .map(|_| ())
-                    }
-                };
-                match result {
+                match save_lookup(id, "/task-statuses", &body).await {
                     Ok(()) => onsaved.call(()),
                     Err(err) => error.set(format!("Could not save task status: {err}")),
                 }
@@ -797,18 +749,10 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let confirmed = web_sys::window()
-                    .and_then(|w| {
-                        w.confirm_with_message("Delete this task status? This cannot be undone.")
-                            .ok()
-                    })
-                    .unwrap_or(false);
-                if confirmed {
-                    let path = format!("/task-statuses/{id}");
-                    match crate::hooks::fetch::api::delete_authed(&path).await {
-                        Ok(()) => onsaved.call(()),
-                        Err(err) => error.set(format!("Could not delete task status: {err}")),
-                    }
+                match delete_lookup(&id, "/task-statuses", "task status").await {
+                    Ok(true) => onsaved.call(()),
+                    Ok(false) => {}
+                    Err(err) => error.set(format!("Could not delete task status: {err}")),
                 }
             }
             deleting.set(false);
@@ -845,6 +789,8 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
                 name: "task_status_sort_order",
                 label: "Sort order",
                 r#type: "number",
+                min: "0".to_string(),
+                max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
                 oninput: move |e: FormEvent| sort_order.set(e.value()),
             }
@@ -969,13 +915,7 @@ pub fn AssetTypesSettingsPage() -> Element {
                                                     span { class: "text-sm text-gray-600 dark:text-gray-300", "{icon}" }
                                                 }
                                             }
-                                            TableCell {
-                                                if active {
-                                                    Badge { variant: BadgeVariant::Green, "Active" }
-                                                } else {
-                                                    Badge { variant: BadgeVariant::Gray, "Inactive" }
-                                                }
-                                            }
+                                            TableCell { ActiveBadge { active } }
                                         }
                                     }
                                 }
@@ -1065,7 +1005,7 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
         // flat (top-level) asset types only. Nested types are a follow-up.
         let body = serde_json::json!({
             "name": name.read().trim(),
-            "icon": if icon_val.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(icon_val) },
+            "icon": opt_str(&icon_val),
             "parent_type_id": serde_json::Value::Null,
             "is_active": *is_active.read(),
         });
@@ -1073,21 +1013,7 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let result: Result<(), String> = match id {
-                    None => crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
-                        "/asset-types",
-                        &body,
-                    )
-                    .await
-                    .map(|_| ()),
-                    Some(id) => {
-                        let path = format!("/asset-types/{id}");
-                        crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
-                            .await
-                            .map(|_| ())
-                    }
-                };
-                match result {
+                match save_lookup(id, "/asset-types", &body).await {
                     Ok(()) => onsaved.call(()),
                     Err(err) => error.set(format!("Could not save asset type: {err}")),
                 }
@@ -1107,18 +1033,10 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let confirmed = web_sys::window()
-                    .and_then(|w| {
-                        w.confirm_with_message("Delete this asset type? This cannot be undone.")
-                            .ok()
-                    })
-                    .unwrap_or(false);
-                if confirmed {
-                    let path = format!("/asset-types/{id}");
-                    match crate::hooks::fetch::api::delete_authed(&path).await {
-                        Ok(()) => onsaved.call(()),
-                        Err(err) => error.set(format!("Could not delete asset type: {err}")),
-                    }
+                match delete_lookup(&id, "/asset-types", "asset type").await {
+                    Ok(true) => onsaved.call(()),
+                    Ok(false) => {}
+                    Err(err) => error.set(format!("Could not delete asset type: {err}")),
                 }
             }
             deleting.set(false);
@@ -1407,15 +1325,10 @@ fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                if confirm_delete("status") {
-                    match crate::hooks::fetch::api::delete_authed(&format!(
-                        "/tickets/statuses/{id}"
-                    ))
-                    .await
-                    {
-                        Ok(()) => onsaved.call(()),
-                        Err(err) => error.set(format!("Could not delete status: {err}")),
-                    }
+                match delete_lookup(&id, "/tickets/statuses", "status").await {
+                    Ok(true) => onsaved.call(()),
+                    Ok(false) => {}
+                    Err(err) => error.set(format!("Could not delete status: {err}")),
                 }
             }
             deleting.set(false);
@@ -1452,6 +1365,8 @@ fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
                 name: "ticket_status_sort_order",
                 label: "Sort order",
                 r#type: "number",
+                min: "0".to_string(),
+                max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
                 oninput: move |e: FormEvent| sort_order.set(e.value()),
             }
@@ -1688,8 +1603,16 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
             error.set("Name is required.".to_string());
             return;
         }
-        // Server validates the range; default to 1.0 on a non-numeric entry.
-        let sla = sla_multiplier.read().trim().parse::<f64>().unwrap_or(1.0);
+        // Validate the multiplier client-side so an out-of-range or
+        // non-numeric entry gets a clear message instead of a raw 400
+        // (server accepts 0.0..=9.99).
+        let sla = match sla_multiplier.read().trim().parse::<f64>() {
+            Ok(v) if (0.0..=9.99).contains(&v) => v,
+            _ => {
+                error.set("SLA multiplier must be a number between 0 and 9.99.".to_string());
+                return;
+            }
+        };
         saving.set(true);
         error.set(String::new());
         let icon_val = icon.read().trim().to_string();
@@ -1725,15 +1648,10 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                if confirm_delete("priority") {
-                    match crate::hooks::fetch::api::delete_authed(&format!(
-                        "/tickets/priorities/{id}"
-                    ))
-                    .await
-                    {
-                        Ok(()) => onsaved.call(()),
-                        Err(err) => error.set(format!("Could not delete priority: {err}")),
-                    }
+                match delete_lookup(&id, "/tickets/priorities", "priority").await {
+                    Ok(true) => onsaved.call(()),
+                    Ok(false) => {}
+                    Err(err) => error.set(format!("Could not delete priority: {err}")),
                 }
             }
             deleting.set(false);
@@ -1788,6 +1706,8 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
                 name: "ticket_priority_sort_order",
                 label: "Sort order",
                 r#type: "number",
+                min: "0".to_string(),
+                max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
                 oninput: move |e: FormEvent| sort_order.set(e.value()),
             }
@@ -2038,13 +1958,10 @@ fn TicketTypeFormModal(props: TicketTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                if confirm_delete("type") {
-                    match crate::hooks::fetch::api::delete_authed(&format!("/tickets/types/{id}"))
-                        .await
-                    {
-                        Ok(()) => onsaved.call(()),
-                        Err(err) => error.set(format!("Could not delete type: {err}")),
-                    }
+                match delete_lookup(&id, "/tickets/types", "type").await {
+                    Ok(true) => onsaved.call(()),
+                    Ok(false) => {}
+                    Err(err) => error.set(format!("Could not delete type: {err}")),
                 }
             }
             deleting.set(false);
@@ -2088,6 +2005,8 @@ fn TicketTypeFormModal(props: TicketTypeFormModalProps) -> Element {
                 name: "ticket_type_sort_order",
                 label: "Sort order",
                 r#type: "number",
+                min: "0".to_string(),
+                max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
                 oninput: move |e: FormEvent| sort_order.set(e.value()),
             }
@@ -2352,13 +2271,10 @@ fn TicketQueueFormModal(props: TicketQueueFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                if confirm_delete("queue") {
-                    match crate::hooks::fetch::api::delete_authed(&format!("/tickets/queues/{id}"))
-                        .await
-                    {
-                        Ok(()) => onsaved.call(()),
-                        Err(err) => error.set(format!("Could not delete queue: {err}")),
-                    }
+                match delete_lookup(&id, "/tickets/queues", "queue").await {
+                    Ok(true) => onsaved.call(()),
+                    Ok(false) => {}
+                    Err(err) => error.set(format!("Could not delete queue: {err}")),
                 }
             }
             deleting.set(false);
@@ -2409,6 +2325,8 @@ fn TicketQueueFormModal(props: TicketQueueFormModalProps) -> Element {
                 name: "ticket_queue_sort_order",
                 label: "Sort order",
                 r#type: "number",
+                min: "0".to_string(),
+                max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
                 oninput: move |e: FormEvent| sort_order.set(e.value()),
             }
@@ -2463,6 +2381,21 @@ pub fn TicketCategoriesSettingsPage() -> Element {
             .ok()
     });
 
+    // The full category set, independent of the table's current page, so
+    // the Parent column and the parent picker can resolve a parent that
+    // lives on another page. Server caps per_page at 100; categories
+    // beyond that are not expected for a single tenant.
+    let mut all_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<TicketCategoryRow>>(
+            "/tickets/categories?per_page=100",
+        )
+        .await
+        .ok()
+        .map(|p| p.data)
+        .unwrap_or_default()
+    });
+
     let snap = resource.read_unchecked();
     let is_loading = snap.is_none();
     let fetch_failed = matches!(*snap, Some(None));
@@ -2471,10 +2404,15 @@ pub fn TicketCategoriesSettingsPage() -> Element {
         _ => (Vec::new(), 0),
     };
 
-    // Resolve parent names for the table, and feed the parent picker.
-    let all_rows = rows.clone();
+    // Resolve parent names for the table, and feed the parent picker,
+    // from the full set rather than just the current page.
+    let all_snap = all_resource.read_unchecked();
+    let all_cats: Vec<TicketCategoryRow> = match &*all_snap {
+        Some(list) => list.clone(),
+        None => Vec::new(),
+    };
     let name_by_id: std::collections::HashMap<Uuid, String> =
-        rows.iter().map(|r| (r.id, r.name.clone())).collect();
+        all_cats.iter().map(|r| (r.id, r.name.clone())).collect();
 
     rsx! {
         AppLayout { title: "Ticket Categories",
@@ -2558,11 +2496,12 @@ pub fn TicketCategoriesSettingsPage() -> Element {
             if let Some(state) = editing.read().clone() {
                 TicketCategoryFormModal {
                     state,
-                    all: all_rows.clone(),
+                    all: all_cats.clone(),
                     onclose: move |_| editing.set(None),
                     onsaved: move |_| {
                         editing.set(None);
                         resource.restart();
+                        all_resource.restart();
                     },
                 }
             }
@@ -2693,15 +2632,10 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                if confirm_delete("category") {
-                    match crate::hooks::fetch::api::delete_authed(&format!(
-                        "/tickets/categories/{id}"
-                    ))
-                    .await
-                    {
-                        Ok(()) => onsaved.call(()),
-                        Err(err) => error.set(format!("Could not delete category: {err}")),
-                    }
+                match delete_lookup(&id, "/tickets/categories", "category").await {
+                    Ok(true) => onsaved.call(()),
+                    Ok(false) => {}
+                    Err(err) => error.set(format!("Could not delete category: {err}")),
                 }
             }
             deleting.set(false);
@@ -2745,6 +2679,8 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
                 name: "ticket_category_sort_order",
                 label: "Sort order",
                 r#type: "number",
+                min: "0".to_string(),
+                max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
                 oninput: move |e: FormEvent| sort_order.set(e.value()),
             }
@@ -2856,6 +2792,19 @@ fn confirm_delete(kind: &str) -> bool {
                 .ok()
         })
         .unwrap_or(false)
+}
+
+/// Confirm then DELETE a lookup row at `{base}/{id}`. Returns `Ok(true)`
+/// when deleted, `Ok(false)` when the user cancelled, `Err` on failure.
+/// `kind` is the singular noun shown in the confirm dialog.
+#[cfg(feature = "web")]
+async fn delete_lookup(id: &str, base: &str, kind: &str) -> Result<bool, String> {
+    if !confirm_delete(kind) {
+        return Ok(false);
+    }
+    crate::hooks::fetch::api::delete_authed(&format!("{base}/{id}"))
+        .await
+        .map(|_| true)
 }
 
 /// Shared create/edit modal chrome for the settings editors. Owns the
