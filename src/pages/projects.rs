@@ -249,6 +249,50 @@ fn insert_opt_num(body: &mut serde_json::Map<String, serde_json::Value>, key: &s
     );
 }
 
+/// Max length for a project name. Mirrors the server's PMS-324 cap so the
+/// client rejects over-long names inline instead of waiting for a 422.
+const PROJECT_NAME_MAX: usize = 80;
+
+/// Validate a project name (MAPPS-176): required, trimmed, at most
+/// [`PROJECT_NAME_MAX`] characters. Returns the trimmed name or an inline
+/// error message for the Name field.
+fn validate_project_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err("Project name is required.".to_string());
+    }
+    if name.chars().count() > PROJECT_NAME_MAX {
+        return Err(format!(
+            "Project name must be {PROJECT_NAME_MAX} characters or fewer."
+        ));
+    }
+    Ok(name.to_string())
+}
+
+/// Validate an optional budget field (MAPPS-176). Blank -> `Ok(None)`.
+/// Otherwise it must be a non-negative number with at most two decimal places
+/// (matching the server's `DECIMAL(_, 2)` budget columns). Returns the parsed
+/// value or an inline error message for that field. `label` names the field in
+/// the message (e.g. "Budget amount").
+fn validate_budget(raw: &str, label: &str) -> Result<Option<f64>, String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Ok(None);
+    }
+    let value: f64 = s
+        .parse()
+        .map_err(|_| format!("{label} must be a number."))?;
+    if !value.is_finite() || value < 0.0 {
+        return Err(format!("{label} must not be negative."));
+    }
+    if let Some((_, frac)) = s.split_once('.') {
+        if frac.trim_end_matches('0').len() > 2 {
+            return Err(format!("{label} must have at most 2 decimal places."));
+        }
+    }
+    Ok(Some(value))
+}
+
 /// Insert a UUID-bearing field as its string form, or `null` when blank.
 fn insert_opt_uuid(body: &mut serde_json::Map<String, serde_json::Value>, key: &str, v: &str) {
     let v = v.trim();
@@ -552,6 +596,10 @@ pub fn ProjectNewPage() -> Element {
     let mut budget_hours = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // Per-field inline validation errors (MAPPS-176).
+    let mut name_err = use_signal(String::new);
+    let mut amount_err = use_signal(String::new);
+    let mut hours_err = use_signal(String::new);
 
     // Real company picker from the live companies list.
     let companies_resource = use_resource(|| async {
@@ -588,36 +636,31 @@ pub fn ProjectNewPage() -> Element {
                     onsubmit: move |e: FormEvent| {
                         e.prevent_default();
                         error.set(String::new());
-                        let project_name = name.read().trim().to_string();
+                        name_err.set(String::new());
+                        amount_err.set(String::new());
+                        hours_err.set(String::new());
                         let company_id = company.read().clone();
                         let desc = description.read().clone();
-                        let amount_raw = budget_amount.read().trim().to_string();
-                        let hours_raw = budget_hours.read().trim().to_string();
-                        if project_name.is_empty() {
-                            error.set("Please enter a project name.".to_string());
-                            return;
-                        }
-                        // Budgets are optional, but if supplied must parse.
-                        let amount: Option<f64> = if amount_raw.is_empty() {
-                            None
-                        } else {
-                            match amount_raw.parse() {
-                                Ok(v) => Some(v),
-                                Err(_) => {
-                                    error.set("Budget amount must be a number.".to_string());
-                                    return;
-                                }
+                        // Per-field client validation mirrors the server rules (MAPPS-176).
+                        let project_name = match validate_project_name(&name.read()) {
+                            Ok(n) => n,
+                            Err(msg) => {
+                                name_err.set(msg);
+                                return;
                             }
                         };
-                        let hours: Option<f64> = if hours_raw.is_empty() {
-                            None
-                        } else {
-                            match hours_raw.parse() {
-                                Ok(v) => Some(v),
-                                Err(_) => {
-                                    error.set("Budget hours must be a number.".to_string());
-                                    return;
-                                }
+                        let amount = match validate_budget(&budget_amount.read(), "Budget amount") {
+                            Ok(v) => v,
+                            Err(msg) => {
+                                amount_err.set(msg);
+                                return;
+                            }
+                        };
+                        let hours = match validate_budget(&budget_hours.read(), "Budget hours") {
+                            Ok(v) => v,
+                            Err(msg) => {
+                                hours_err.set(msg);
+                                return;
                             }
                         };
                         is_submitting.set(true);
@@ -667,6 +710,7 @@ pub fn ProjectNewPage() -> Element {
                         placeholder: "Enter project name",
                         required: true,
                         value: name.read().clone(),
+                        error: name_err(),
                         oninput: move |e: FormEvent| name.set(e.value()),
                     }
 
@@ -695,6 +739,7 @@ pub fn ProjectNewPage() -> Element {
                             r#type: "number",
                             placeholder: "0.00",
                             value: budget_amount.read().clone(),
+                            error: amount_err(),
                             oninput: move |e: FormEvent| budget_amount.set(e.value()),
                         }
                         crate::components::Input {
@@ -703,6 +748,7 @@ pub fn ProjectNewPage() -> Element {
                             r#type: "number",
                             placeholder: "0",
                             value: budget_hours.read().clone(),
+                            error: hours_err(),
                             oninput: move |e: FormEvent| budget_hours.set(e.value()),
                         }
                     }
@@ -786,6 +832,10 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
     let mut pe_manager = use_signal(String::new);
     let mut pe_submitting = use_signal(|| false);
     let mut pe_error = use_signal(String::new);
+    // Per-field inline validation errors for the edit modal (MAPPS-176).
+    let mut pe_name_err = use_signal(String::new);
+    let mut pe_amount_err = use_signal(String::new);
+    let mut pe_hours_err = use_signal(String::new);
 
     // PMS-184 task-edit modal state. `selected_task` (Some when the modal is
     // open) drives both the modal and the per-task history fetch below.
@@ -1384,22 +1434,49 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                     if pe_submitting() {
                         return;
                     }
-                    if pe_name().trim().is_empty() {
-                        pe_error.set("Project name is required.".to_string());
-                        return;
-                    }
+                    pe_error.set(String::new());
+                    pe_name_err.set(String::new());
+                    pe_amount_err.set(String::new());
+                    pe_hours_err.set(String::new());
+                    // Per-field client validation mirrors the server rules (MAPPS-176).
+                    let project_name = match validate_project_name(&pe_name()) {
+                        Ok(n) => n,
+                        Err(msg) => {
+                            pe_name_err.set(msg);
+                            return;
+                        }
+                    };
+                    let amount = match validate_budget(&pe_budget_amount(), "Budget amount") {
+                        Ok(v) => v,
+                        Err(msg) => {
+                            pe_amount_err.set(msg);
+                            return;
+                        }
+                    };
+                    let hours = match validate_budget(&pe_budget_hours(), "Budget hours") {
+                        Ok(v) => v,
+                        Err(msg) => {
+                            pe_hours_err.set(msg);
+                            return;
+                        }
+                    };
                     let save_id = save_id.clone();
                     spawn(async move {
                         pe_submitting.set(true);
-                        pe_error.set(String::new());
                         let mut body = serde_json::Map::new();
-                        body.insert("name".into(), serde_json::json!(pe_name().trim()));
+                        body.insert("name".into(), serde_json::json!(project_name));
                         body.insert("description".into(), serde_json::json!(pe_description()));
                         body.insert("status".into(), serde_json::json!(pe_status()));
                         insert_opt_date(&mut body, "start_date", &pe_start());
                         insert_opt_date(&mut body, "target_end_date", &pe_due());
-                        insert_opt_num(&mut body, "budget_amount", &pe_budget_amount());
-                        insert_opt_num(&mut body, "budget_hours", &pe_budget_hours());
+                        body.insert(
+                            "budget_amount".into(),
+                            amount.map_or(serde_json::Value::Null, |a| serde_json::json!(a)),
+                        );
+                        body.insert(
+                            "budget_hours".into(),
+                            hours.map_or(serde_json::Value::Null, |h| serde_json::json!(h)),
+                        );
                         insert_opt_uuid(&mut body, "project_manager_id", &pe_manager());
                         let body = serde_json::Value::Object(body);
                         match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
@@ -1455,6 +1532,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 label: "Name",
                                 required: true,
                                 value: "{pe_name}",
+                                error: pe_name_err(),
                                 oninput: move |e: FormEvent| pe_name.set(e.value()),
                             }
                             Textarea {
@@ -1502,6 +1580,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     label: "Budget Amount",
                                     r#type: "number",
                                     value: "{pe_budget_amount}",
+                                    error: pe_amount_err(),
                                     oninput: move |e: FormEvent| pe_budget_amount.set(e.value()),
                                 }
                                 Input {
@@ -1509,6 +1588,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     label: "Budget Hours",
                                     r#type: "number",
                                     value: "{pe_budget_hours}",
+                                    error: pe_hours_err(),
                                     oninput: move |e: FormEvent| pe_budget_hours.set(e.value()),
                                 }
                             }
@@ -1841,5 +1921,36 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::{validate_budget, validate_project_name, PROJECT_NAME_MAX};
+
+    #[test]
+    fn name_required_and_capped() {
+        assert!(validate_project_name("   ").is_err());
+        assert_eq!(validate_project_name("  Acme  ").unwrap(), "Acme");
+        assert!(validate_project_name(&"x".repeat(PROJECT_NAME_MAX)).is_ok());
+        assert!(validate_project_name(&"x".repeat(PROJECT_NAME_MAX + 1)).is_err());
+    }
+
+    #[test]
+    fn budget_optional_nonneg_two_dp() {
+        // Blank -> None.
+        assert_eq!(validate_budget("", "Budget amount").unwrap(), None);
+        assert_eq!(validate_budget("  ", "Budget amount").unwrap(), None);
+        // Valid numbers.
+        assert_eq!(
+            validate_budget("500", "Budget amount").unwrap(),
+            Some(500.0)
+        );
+        assert_eq!(validate_budget("8.5", "Budget hours").unwrap(), Some(8.5));
+        assert_eq!(validate_budget("8.50", "Budget hours").unwrap(), Some(8.5));
+        // Rejected: non-numeric, negative, more than 2 decimal places.
+        assert!(validate_budget("Bobby Tables", "Budget amount").is_err());
+        assert!(validate_budget("-1", "Budget amount").is_err());
+        assert!(validate_budget("1.234", "Budget hours").is_err());
     }
 }
