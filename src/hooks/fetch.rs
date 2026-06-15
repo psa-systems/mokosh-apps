@@ -86,13 +86,27 @@ pub mod api {
     /// Bumps the reactive [`super::TENANT_GENERATION`] counter so any
     /// `use_resource` that read [`super::active_tenant_generation`] in
     /// its closure re-fetches against the new tenant (Phase-4 F1). The
-    /// bump is unconditional: a refresh that returns the same tenant's
-    /// token is cheap to re-fetch, and on an org switch the token
-    /// (and the tenant scope it encodes) actually changes.
+    /// generation is bumped only when the token actually changes: an org
+    /// switch or a refresh produces a different token (so dependent
+    /// resources refetch), but a redundant re-set of the identical token
+    /// does not. Startup sets the same token twice (the OIDC callback, then
+    /// rehydration / `complete_login`); the previous unconditional bump made
+    /// every `active_tenant_generation`-subscribed resource fetch twice on
+    /// mount (MAPPS-187).
     #[cfg(feature = "web")]
     pub fn set_access_token(token: Option<String>) {
-        ACCESS_TOKEN.with(|t| *t.borrow_mut() = token);
-        *super::TENANT_GENERATION.write() += 1;
+        let changed = ACCESS_TOKEN.with(|t| {
+            let mut slot = t.borrow_mut();
+            if *slot == token {
+                false
+            } else {
+                *slot = token;
+                true
+            }
+        });
+        if changed {
+            *super::TENANT_GENERATION.write() += 1;
+        }
     }
 
     /// Read the current access token. Returns `None` before sign-in.
