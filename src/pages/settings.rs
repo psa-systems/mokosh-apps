@@ -128,6 +128,11 @@ pub fn SettingsHomePage() -> Element {
                     title: "Payment Gateways",
                     description: "Connect and configure payment providers.",
                 }
+                SettingsCard {
+                    to: Route::SettingsPaymentTerms {},
+                    title: "Payment Terms",
+                    description: "Options for the invoice payment-terms dropdown.",
+                }
             }
 
             SettingsGroup { heading: "Tickets",
@@ -1388,6 +1393,295 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
             }
             crate::components::Checkbox {
                 name: "project_type_active",
+                label: "Active",
+                checked: *is_active.read(),
+                onchange: move |_| {
+                    let next = !*is_active.read();
+                    is_active.set(next);
+                },
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Payment terms  (GET/POST `/payment-terms`, PUT/DELETE `/payment-terms/{id}`)
+//
+// PMS-333 lookup backing the invoice payment-terms dropdown (MAPPS-170).
+// ============================================================================
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct PaymentTermRow {
+    id: Uuid,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    is_default: bool,
+    #[serde(default)]
+    is_active: bool,
+    #[serde(default)]
+    sort_order: i64,
+}
+
+#[component]
+pub fn PaymentTermsSettingsPage() -> Element {
+    if !use_is_admin() {
+        return rsx! { AdminOnlyNotice { title: "Payment Terms" } };
+    }
+
+    let mut page = use_signal(|| 1usize);
+    let mut editing = use_signal(|| None::<PaymentTermFormState>);
+    let current_page = (*page.read()).max(1);
+
+    let mut resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let path = format!("/payment-terms?page={current_page}&per_page={PER_PAGE}");
+        crate::hooks::fetch::api::get_authed::<Paginated<PaymentTermRow>>(&path)
+            .await
+            .ok()
+    });
+
+    let snap = resource.read_unchecked();
+    let is_loading = snap.is_none();
+    let fetch_failed = matches!(*snap, Some(None));
+    let (rows, total): (Vec<PaymentTermRow>, u64) = match &*snap {
+        Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
+        _ => (Vec::new(), 0),
+    };
+
+    rsx! {
+        AppLayout { title: "Payment Terms",
+            PageHeader {
+                title: "Payment Terms",
+                subtitle: "Options for the invoice payment-terms dropdown",
+                actions: rsx! {
+                    Link { to: Route::SettingsHome {},
+                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        onclick: move |_| editing.set(Some(PaymentTermFormState::new())),
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "New Payment Term"
+                    }
+                },
+            }
+
+            if fetch_failed {
+                LoadError { what: "payment terms" }
+            }
+
+            DataTable {
+                loading: is_loading,
+                total_items: total as usize,
+                current_page,
+                per_page: PER_PAGE,
+                columns: 3,
+                onpagechange: move |p| page.set(p),
+                Table {
+                    TableHead {
+                        TableRow {
+                            TableHeader { "Name" }
+                            TableHeader { "Default" }
+                            TableHeader { "Active" }
+                        }
+                    }
+                    if is_loading {
+                        TableLoading { columns: 3, rows: 4 }
+                    } else if rows.is_empty() && !fetch_failed {
+                        TableEmpty {
+                            columns: 3,
+                            message: "No payment terms yet. Click New Payment Term to add one.".to_string(),
+                        }
+                    } else {
+                        TableBody {
+                            for row in rows.iter().cloned() {
+                                {
+                                    let key = row.id.to_string();
+                                    let edit_state = PaymentTermFormState::from_existing(&row);
+                                    let name = row.name.clone();
+                                    let default = row.is_default;
+                                    let active = row.is_active;
+                                    rsx! {
+                                        TableRow { key: "{key}", clickable: true,
+                                            onclick: move |_| editing.set(Some(edit_state.clone())),
+                                            TableCell {
+                                                span { class: "font-medium text-blue-600", "{name}" }
+                                            }
+                                            TableCell {
+                                                if default {
+                                                    Badge { variant: BadgeVariant::Blue, "Default" }
+                                                }
+                                            }
+                                            TableCell { ActiveBadge { active } }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(state) = editing.read().clone() {
+                PaymentTermFormModal {
+                    state,
+                    onclose: move |_| editing.set(None),
+                    onsaved: move |_| {
+                        editing.set(None);
+                        resource.restart();
+                    },
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PaymentTermFormState {
+    id: Option<String>,
+    name: String,
+    is_default: bool,
+    is_active: bool,
+    sort_order: String,
+}
+
+impl PaymentTermFormState {
+    fn new() -> Self {
+        Self {
+            id: None,
+            name: String::new(),
+            is_default: false,
+            is_active: true,
+            sort_order: "0".to_string(),
+        }
+    }
+
+    fn from_existing(r: &PaymentTermRow) -> Self {
+        Self {
+            id: Some(r.id.to_string()),
+            name: r.name.clone(),
+            is_default: r.is_default,
+            is_active: r.is_active,
+            sort_order: r.sort_order.to_string(),
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct PaymentTermFormModalProps {
+    state: PaymentTermFormState,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
+    let initial = props.state.clone();
+    let is_edit = initial.id.is_some();
+
+    let mut name = use_signal(|| initial.name.clone());
+    let mut is_default = use_signal(|| initial.is_default);
+    let mut is_active = use_signal(|| initial.is_active);
+    let mut sort_order = use_signal(|| initial.sort_order.clone());
+    let mut saving = use_signal(|| false);
+    let mut deleting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+
+    let save_id = initial.id.clone();
+    let handle_save = move |_| {
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        if name.read().trim().is_empty() {
+            error.set("Name is required.".to_string());
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        let body = serde_json::json!({
+            "name": name.read().trim(),
+            "is_default": *is_default.read(),
+            "is_active": *is_active.read(),
+            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
+        });
+        let id = save_id.clone();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match save_lookup(id, "/payment-terms", &body).await {
+                    Ok(()) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not save payment term: {err}")),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    let delete_id = initial.id.clone();
+    let handle_delete = move |_| {
+        let Some(id) = delete_id.clone() else { return };
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        deleting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match delete_lookup(&id, "/payment-terms", "payment term").await {
+                    Ok(true) => onsaved.call(()),
+                    Ok(false) => {}
+                    Err(err) => error.set(format!("Could not delete payment term: {err}")),
+                }
+            }
+            deleting.set(false);
+        });
+    };
+
+    rsx! {
+        SettingFormModal {
+            title: if is_edit { "Edit Payment Term".to_string() } else { "New Payment Term".to_string() },
+            is_edit,
+            saving: *saving.read(),
+            deleting: *deleting.read(),
+            error: error.read().clone(),
+            onclose: move |_| onclose.call(()),
+            onsave: handle_save,
+            ondelete: handle_delete,
+            create_label: "Create Payment Term".to_string(),
+            crate::components::Input {
+                name: "payment_term_name",
+                label: "Name",
+                placeholder: "e.g. Net 30",
+                required: true,
+                value: name.read().clone(),
+                oninput: move |e: FormEvent| name.set(e.value()),
+            }
+            crate::components::Input {
+                name: "payment_term_sort_order",
+                label: "Sort order",
+                r#type: "number",
+                min: "0".to_string(),
+                max: "2147483647".to_string(),
+                value: sort_order.read().clone(),
+                oninput: move |e: FormEvent| sort_order.set(e.value()),
+            }
+            crate::components::Checkbox {
+                name: "payment_term_default",
+                label: "Default payment term",
+                help: "Applied to new invoices when none is chosen.",
+                checked: *is_default.read(),
+                onchange: move |_| {
+                    let next = !*is_default.read();
+                    is_default.set(next);
+                },
+            }
+            crate::components::Checkbox {
+                name: "payment_term_active",
                 label: "Active",
                 checked: *is_active.read(),
                 onchange: move |_| {

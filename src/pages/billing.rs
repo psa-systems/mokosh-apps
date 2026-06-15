@@ -453,8 +453,12 @@ struct InvoiceDetail {
     invoice_date: Option<String>,
     #[serde(default)]
     due_date: Option<String>,
+    // MAPPS-170/PMS-333: payment terms are now a lookup FK; the response
+    // carries the id (for editing) and the joined name (for display).
     #[serde(default)]
-    payment_terms: Option<String>,
+    payment_term_id: Option<String>,
+    #[serde(default)]
+    payment_term_name: Option<String>,
     #[serde(default)]
     subtotal: String,
     #[serde(default)]
@@ -676,7 +680,8 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                     let currency = inv.currency.clone().unwrap_or_default();
                     let notes = inv.notes.clone();
                     let po_number = inv.po_number.clone();
-                    let payment_terms = inv.payment_terms.clone();
+                    // Joined display name; the editor is seeded from the FK id.
+                    let payment_terms = inv.payment_term_name.clone();
                     let company_id = inv.company_id.map(|c| c.to_string());
                     let company_name = inv
                         .company_name
@@ -864,7 +869,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                         id: props.id.clone(),
                         invoice_date: inv.invoice_date.clone().unwrap_or_default(),
                         due_date: inv.due_date.clone().unwrap_or_default(),
-                        payment_terms: inv.payment_terms.clone().unwrap_or_default(),
+                        payment_term_id: inv.payment_term_id.clone().unwrap_or_default(),
                         po_number: inv.po_number.clone().unwrap_or_default(),
                         notes: inv.notes.clone().unwrap_or_default(),
                         onclose: move |_| show_edit.set(false),
@@ -1617,11 +1622,22 @@ struct InvoiceEditModalProps {
     id: String,
     invoice_date: String,
     due_date: String,
-    payment_terms: String,
+    /// Current payment-term FK (PMS-333), empty string when unset.
+    payment_term_id: String,
     po_number: String,
     notes: String,
     onclose: EventHandler<()>,
     onsaved: EventHandler<()>,
+}
+
+/// A payment-term option for the invoice dropdown (`GET /payment-terms`).
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PaymentTermOpt {
+    id: uuid::Uuid,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    is_active: bool,
 }
 
 /// MAPPS-158: edit a draft/pending invoice's header fields. Wired to
@@ -1633,11 +1649,42 @@ struct InvoiceEditModalProps {
 fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
     let mut invoice_date = use_signal(|| props.invoice_date.clone());
     let mut due_date = use_signal(|| props.due_date.clone());
-    let mut payment_terms = use_signal(|| props.payment_terms.clone());
+    let mut payment_term_id = use_signal(|| props.payment_term_id.clone());
     let mut po_number = use_signal(|| props.po_number.clone());
     let mut notes = use_signal(|| props.notes.clone());
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+
+    // Payment-term options from the settings-managed lookup (PMS-333). Only
+    // active terms are offered; the entry keeps its current term even if that
+    // term was later deactivated (it stays selected because we seed by id).
+    let terms_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<PaymentTermOpt>>(
+            "/payment-terms?per_page=100",
+        )
+        .await
+        .ok()
+        .map(|p| p.data)
+        .unwrap_or_default()
+    });
+    let current_term = payment_term_id.read().clone();
+    // The server PUT does `payment_term_id = COALESCE($x, payment_term_id)`, so
+    // a null cannot clear a term that is already set. Only offer the "no term"
+    // option when the invoice has none yet; once set, the user can switch terms
+    // but not blank it (the server cannot express a clear through this PUT).
+    let mut term_options = Vec::new();
+    if current_term.is_empty() {
+        term_options.push(SelectOption::new("", "No payment term"));
+    }
+    if let Some(terms) = &*terms_resource.read_unchecked() {
+        for t in terms.iter() {
+            // Keep an inactive term visible only if it is the one currently set.
+            if t.is_active || t.id.to_string() == current_term {
+                term_options.push(SelectOption::new(t.id.to_string(), t.name.clone()));
+            }
+        }
+    }
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -1659,7 +1706,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
         let body = serde_json::json!({
             "invoice_date": inv_date,
             "due_date": due,
-            "payment_terms": optional_string(&payment_terms.read()),
+            "payment_term_id": optional_string(&payment_term_id.read()),
             "po_number": optional_string(&po_number.read()),
             "notes": optional_string(&notes.read()),
         });
@@ -1724,11 +1771,12 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                         oninput: move |e: FormEvent| due_date.set(e.value()),
                     }
                 }
-                crate::components::Input {
-                    name: "payment_terms",
+                Select {
+                    name: "payment_term_id",
                     label: "Payment Terms",
-                    value: payment_terms.read().clone(),
-                    oninput: move |e: FormEvent| payment_terms.set(e.value()),
+                    options: term_options,
+                    value: payment_term_id.read().clone(),
+                    onchange: move |e: FormEvent| payment_term_id.set(e.value()),
                 }
                 crate::components::Input {
                     name: "po_number",
