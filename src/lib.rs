@@ -309,6 +309,9 @@ pub enum Route {
     SettingsTaskStatuses {},
     #[route("/settings/asset-types")]
     SettingsAssetTypes {},
+    // MAPPS-173: project type editor (server CRUD from PMS-322).
+    #[route("/settings/project-types")]
+    SettingsProjectTypes {},
     #[route("/settings/sla")]
     SettingsSla {},
     #[route("/settings/rate-cards")]
@@ -732,6 +735,11 @@ fn SettingsTaskStatuses() -> Element {
 #[component]
 fn SettingsAssetTypes() -> Element {
     rsx! { settings::AssetTypesSettingsPage {} }
+}
+
+#[component]
+fn SettingsProjectTypes() -> Element {
+    rsx! { settings::ProjectTypesSettingsPage {} }
 }
 
 #[component]
