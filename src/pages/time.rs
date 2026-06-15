@@ -616,8 +616,8 @@ pub fn TimeEntryNewPage() -> Element {
                         // type="number" input blocks the colon. PMS-314.
                         // Validation lives in the submit handler.
                         r#type: "text",
-                        placeholder: "2.5 or 1:30",
-                        help: "Decimal hours (2.5) or H:MM (1:30).",
+                        placeholder: "2, 2.5, or 1:30",
+                        help: "Decimal hours or H:MM.",
                         required: true,
                         value: hours.read().clone(),
                         oninput: move |e: FormEvent| hours.set(e.value()),
@@ -1357,8 +1357,8 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
                     // type="number" input blocks the colon. PMS-314.
                     // The save handler enforces 0 < t <= 24h.
                     r#type: "text",
-                    placeholder: "2.5 or 1:30",
-                    help: "Decimal hours (2.5) or H:MM (1:30).",
+                    placeholder: "2, 2.5, or 1:30",
+                    help: "Decimal hours or H:MM.",
                     required: true,
                     value: hours.read().clone(),
                     oninput: move |e: FormEvent| hours.set(e.value()),
