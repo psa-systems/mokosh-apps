@@ -317,6 +317,17 @@ pub enum Route {
     SettingsTaxRates {},
     #[route("/settings/gateways")]
     SettingsGateways {},
+    // MAPPS-172: ticket lookup editors (server CRUD from PMS-321).
+    #[route("/settings/ticket-statuses")]
+    SettingsTicketStatuses {},
+    #[route("/settings/ticket-priorities")]
+    SettingsTicketPriorities {},
+    #[route("/settings/ticket-types")]
+    SettingsTicketTypes {},
+    #[route("/settings/ticket-queues")]
+    SettingsTicketQueues {},
+    #[route("/settings/ticket-categories")]
+    SettingsTicketCategories {},
 
     // Mokosh-side profile. Edits the tenant-scoped fields on the
     // user row (name, title, phone, mobile, timezone). Cross-app
@@ -741,6 +752,32 @@ fn SettingsTaxRates() -> Element {
 #[component]
 fn SettingsGateways() -> Element {
     rsx! { billing::PaymentGatewayConfigPage {} }
+}
+
+// MAPPS-172 ticket lookup editors.
+#[component]
+fn SettingsTicketStatuses() -> Element {
+    rsx! { settings::TicketStatusesSettingsPage {} }
+}
+
+#[component]
+fn SettingsTicketPriorities() -> Element {
+    rsx! { settings::TicketPrioritiesSettingsPage {} }
+}
+
+#[component]
+fn SettingsTicketTypes() -> Element {
+    rsx! { settings::TicketTypesSettingsPage {} }
+}
+
+#[component]
+fn SettingsTicketQueues() -> Element {
+    rsx! { settings::TicketQueuesSettingsPage {} }
+}
+
+#[component]
+fn SettingsTicketCategories() -> Element {
+    rsx! { settings::TicketCategoriesSettingsPage {} }
 }
 
 #[component]

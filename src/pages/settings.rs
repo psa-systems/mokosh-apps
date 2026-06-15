@@ -15,11 +15,12 @@
 //!     (`/work-types`, `/task-statuses`, `/asset-types`) - no server
 //!     change was needed.
 //!
-//! The ticket statuses/types/priorities and project-type editors the
-//! issue also mentions are intentionally NOT built here: the server
-//! exposes those as read-only (no POST/PUT/DELETE) or as hardcoded
-//! VARCHAR enums, so a management editor is blocked on backend work.
-//! Tracked as follow-ups.
+//! The ticket lookup editors (statuses, priorities, types, queues,
+//! categories) live here too (MAPPS-172), wired to the management CRUD
+//! that shipped in PMS-321. The project-type editor (MAPPS-173) is still
+//! deferred: the server stored project type as a hardcoded VARCHAR enum
+//! until PMS-322 added a lookup table, and the client editor for it is a
+//! separate follow-up.
 //!
 //! CRUD conventions mirror `src/pages/billing.rs` (`TaxRateListPage`):
 //! page-local `Deserialize` row structs, `active_tenant_generation()`
@@ -32,8 +33,8 @@ use uuid::Uuid;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
-    PlusIcon, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
-    TableRow,
+    PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
+    TableHeader, TableLoading, TableRow,
 };
 use crate::utils::Paginated;
 use crate::Route;
@@ -122,6 +123,34 @@ pub fn SettingsHomePage() -> Element {
                     to: Route::SettingsGateways {},
                     title: "Payment Gateways",
                     description: "Connect and configure payment providers.",
+                }
+            }
+
+            SettingsGroup { heading: "Tickets",
+                SettingsCard {
+                    to: Route::SettingsTicketStatuses {},
+                    title: "Ticket Statuses",
+                    description: "Workflow states a ticket can move through.",
+                }
+                SettingsCard {
+                    to: Route::SettingsTicketPriorities {},
+                    title: "Ticket Priorities",
+                    description: "Priority levels and their SLA multipliers.",
+                }
+                SettingsCard {
+                    to: Route::SettingsTicketTypes {},
+                    title: "Ticket Types",
+                    description: "Categories for the kind of work a ticket represents.",
+                }
+                SettingsCard {
+                    to: Route::SettingsTicketQueues {},
+                    title: "Ticket Queues",
+                    description: "Queues tickets are routed into.",
+                }
+                SettingsCard {
+                    to: Route::SettingsTicketCategories {},
+                    title: "Ticket Categories",
+                    description: "Hierarchical categories for classifying tickets.",
                 }
             }
         }
@@ -274,13 +303,7 @@ pub fn WorkTypesSettingsPage() -> Element {
                                                 }
                                             }
                                             TableCell { class: "text-right", "{rate_display}" }
-                                            TableCell {
-                                                if active {
-                                                    Badge { variant: BadgeVariant::Green, "Active" }
-                                                } else {
-                                                    Badge { variant: BadgeVariant::Gray, "Inactive" }
-                                                }
-                                            }
+                                            TableCell { ActiveBadge { active } }
                                         }
                                     }
                                 }
@@ -381,10 +404,10 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
         let rate = default_rate.read().trim().to_string();
         let body = serde_json::json!({
             "name": name.read().trim(),
-            "description": if desc.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(desc) },
+            "description": opt_str(&desc),
             "default_billable": *default_billable.read(),
             // Server parses the rate string into `rust_decimal::Decimal`.
-            "default_rate": if rate.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(rate) },
+            "default_rate": opt_str(&rate),
             "is_active": *is_active.read(),
             "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
         });
@@ -392,21 +415,7 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let result: Result<(), String> = match id {
-                    None => crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
-                        "/work-types",
-                        &body,
-                    )
-                    .await
-                    .map(|_| ()),
-                    Some(id) => {
-                        let path = format!("/work-types/{id}");
-                        crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
-                            .await
-                            .map(|_| ())
-                    }
-                };
-                match result {
+                match save_lookup(id, "/work-types", &body).await {
                     Ok(()) => onsaved.call(()),
                     Err(err) => error.set(format!("Could not save work type: {err}")),
                 }
@@ -426,18 +435,10 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let confirmed = web_sys::window()
-                    .and_then(|w| {
-                        w.confirm_with_message("Delete this work type? This cannot be undone.")
-                            .ok()
-                    })
-                    .unwrap_or(false);
-                if confirmed {
-                    let path = format!("/work-types/{id}");
-                    match crate::hooks::fetch::api::delete_authed(&path).await {
-                        Ok(()) => onsaved.call(()),
-                        Err(err) => error.set(format!("Could not delete work type: {err}")),
-                    }
+                match delete_lookup(&id, "/work-types", "work type").await {
+                    Ok(true) => onsaved.call(()),
+                    Ok(false) => {}
+                    Err(err) => error.set(format!("Could not delete work type: {err}")),
                 }
             }
             deleting.set(false);
@@ -484,6 +485,8 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
                 name: "work_type_sort_order",
                 label: "Sort order",
                 r#type: "number",
+                min: "0".to_string(),
+                max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
                 oninput: move |e: FormEvent| sort_order.set(e.value()),
             }
@@ -611,15 +614,7 @@ pub fn TaskStatusesSettingsPage() -> Element {
                                             TableCell {
                                                 span { class: "font-medium text-blue-600", "{name}" }
                                             }
-                                            TableCell {
-                                                div { class: "flex items-center gap-2",
-                                                    span {
-                                                        class: "inline-block h-4 w-4 rounded-full border border-gray-300 dark:border-gray-600",
-                                                        style: "background-color: {color}",
-                                                    }
-                                                    span { class: "text-xs text-gray-500", "{color}" }
-                                                }
-                                            }
+                                            TableCell { ColorSwatch { color } }
                                             TableCell {
                                                 if completed {
                                                     Badge { variant: BadgeVariant::Green, "Completed" }
@@ -734,21 +729,7 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let result: Result<(), String> = match id {
-                    None => crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
-                        "/task-statuses",
-                        &body,
-                    )
-                    .await
-                    .map(|_| ()),
-                    Some(id) => {
-                        let path = format!("/task-statuses/{id}");
-                        crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
-                            .await
-                            .map(|_| ())
-                    }
-                };
-                match result {
+                match save_lookup(id, "/task-statuses", &body).await {
                     Ok(()) => onsaved.call(()),
                     Err(err) => error.set(format!("Could not save task status: {err}")),
                 }
@@ -768,18 +749,10 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let confirmed = web_sys::window()
-                    .and_then(|w| {
-                        w.confirm_with_message("Delete this task status? This cannot be undone.")
-                            .ok()
-                    })
-                    .unwrap_or(false);
-                if confirmed {
-                    let path = format!("/task-statuses/{id}");
-                    match crate::hooks::fetch::api::delete_authed(&path).await {
-                        Ok(()) => onsaved.call(()),
-                        Err(err) => error.set(format!("Could not delete task status: {err}")),
-                    }
+                match delete_lookup(&id, "/task-statuses", "task status").await {
+                    Ok(true) => onsaved.call(()),
+                    Ok(false) => {}
+                    Err(err) => error.set(format!("Could not delete task status: {err}")),
                 }
             }
             deleting.set(false);
@@ -816,6 +789,8 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
                 name: "task_status_sort_order",
                 label: "Sort order",
                 r#type: "number",
+                min: "0".to_string(),
+                max: "2147483647".to_string(),
                 value: sort_order.read().clone(),
                 oninput: move |e: FormEvent| sort_order.set(e.value()),
             }
@@ -940,13 +915,7 @@ pub fn AssetTypesSettingsPage() -> Element {
                                                     span { class: "text-sm text-gray-600 dark:text-gray-300", "{icon}" }
                                                 }
                                             }
-                                            TableCell {
-                                                if active {
-                                                    Badge { variant: BadgeVariant::Green, "Active" }
-                                                } else {
-                                                    Badge { variant: BadgeVariant::Gray, "Inactive" }
-                                                }
-                                            }
+                                            TableCell { ActiveBadge { active } }
                                         }
                                     }
                                 }
@@ -1036,7 +1005,7 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
         // flat (top-level) asset types only. Nested types are a follow-up.
         let body = serde_json::json!({
             "name": name.read().trim(),
-            "icon": if icon_val.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(icon_val) },
+            "icon": opt_str(&icon_val),
             "parent_type_id": serde_json::Value::Null,
             "is_active": *is_active.read(),
         });
@@ -1044,21 +1013,7 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let result: Result<(), String> = match id {
-                    None => crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
-                        "/asset-types",
-                        &body,
-                    )
-                    .await
-                    .map(|_| ()),
-                    Some(id) => {
-                        let path = format!("/asset-types/{id}");
-                        crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
-                            .await
-                            .map(|_| ())
-                    }
-                };
-                match result {
+                match save_lookup(id, "/asset-types", &body).await {
                     Ok(()) => onsaved.call(()),
                     Err(err) => error.set(format!("Could not save asset type: {err}")),
                 }
@@ -1078,18 +1033,10 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let confirmed = web_sys::window()
-                    .and_then(|w| {
-                        w.confirm_with_message("Delete this asset type? This cannot be undone.")
-                            .ok()
-                    })
-                    .unwrap_or(false);
-                if confirmed {
-                    let path = format!("/asset-types/{id}");
-                    match crate::hooks::fetch::api::delete_authed(&path).await {
-                        Ok(()) => onsaved.call(()),
-                        Err(err) => error.set(format!("Could not delete asset type: {err}")),
-                    }
+                match delete_lookup(&id, "/asset-types", "asset type").await {
+                    Ok(true) => onsaved.call(()),
+                    Ok(false) => {}
+                    Err(err) => error.set(format!("Could not delete asset type: {err}")),
                 }
             }
             deleting.set(false);
@@ -1136,6 +1083,1621 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
 }
 
 // ============================================================================
+// Ticket statuses  (GET/POST `/tickets/statuses`, PUT/DELETE `/tickets/statuses/{id}`)
+// ============================================================================
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct TicketStatusRow {
+    id: Uuid,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    color: String,
+    #[serde(default)]
+    is_closed: bool,
+    #[serde(default)]
+    is_default: bool,
+    #[serde(default)]
+    sort_order: i64,
+}
+
+#[component]
+pub fn TicketStatusesSettingsPage() -> Element {
+    if !use_is_admin() {
+        return rsx! { AdminOnlyNotice { title: "Ticket Statuses" } };
+    }
+
+    let mut page = use_signal(|| 1usize);
+    let mut editing = use_signal(|| None::<TicketStatusFormState>);
+    let current_page = (*page.read()).max(1);
+
+    let mut resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let path = format!("/tickets/statuses?page={current_page}&per_page={PER_PAGE}");
+        crate::hooks::fetch::api::get_authed::<Paginated<TicketStatusRow>>(&path)
+            .await
+            .ok()
+    });
+
+    let snap = resource.read_unchecked();
+    let is_loading = snap.is_none();
+    let fetch_failed = matches!(*snap, Some(None));
+    let (rows, total): (Vec<TicketStatusRow>, u64) = match &*snap {
+        Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
+        _ => (Vec::new(), 0),
+    };
+
+    rsx! {
+        AppLayout { title: "Ticket Statuses",
+            PageHeader {
+                title: "Ticket Statuses",
+                subtitle: "Workflow states a ticket can move through",
+                actions: rsx! {
+                    Link { to: Route::SettingsHome {},
+                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        onclick: move |_| editing.set(Some(TicketStatusFormState::new())),
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "New Status"
+                    }
+                },
+            }
+
+            if fetch_failed {
+                LoadError { what: "ticket statuses" }
+            }
+
+            DataTable {
+                loading: is_loading,
+                total_items: total as usize,
+                current_page,
+                per_page: PER_PAGE,
+                columns: 4,
+                onpagechange: move |p| page.set(p),
+                Table {
+                    TableHead {
+                        TableRow {
+                            TableHeader { "Name" }
+                            TableHeader { "Color" }
+                            TableHeader { "Closed" }
+                            TableHeader { "Default" }
+                        }
+                    }
+                    if is_loading {
+                        TableLoading { columns: 4, rows: 4 }
+                    } else if rows.is_empty() {
+                        TableEmpty {
+                            columns: 4,
+                            message: "No ticket statuses yet. Click New Status to add one.".to_string(),
+                        }
+                    } else {
+                        TableBody {
+                            for row in rows.iter().cloned() {
+                                {
+                                    let key = row.id.to_string();
+                                    let edit_state = TicketStatusFormState::from_existing(&row);
+                                    let name = row.name.clone();
+                                    let color = row.color.clone();
+                                    let closed = row.is_closed;
+                                    let default = row.is_default;
+                                    rsx! {
+                                        TableRow { key: "{key}", clickable: true,
+                                            onclick: move |_| editing.set(Some(edit_state.clone())),
+                                            TableCell {
+                                                span { class: "font-medium text-blue-600", "{name}" }
+                                            }
+                                            TableCell { ColorSwatch { color } }
+                                            TableCell {
+                                                if closed {
+                                                    Badge { variant: BadgeVariant::Gray, "Closed" }
+                                                } else {
+                                                    Badge { variant: BadgeVariant::Green, "Open" }
+                                                }
+                                            }
+                                            TableCell {
+                                                if default {
+                                                    Badge { variant: BadgeVariant::Blue, "Default" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(state) = editing.read().clone() {
+                TicketStatusFormModal {
+                    state,
+                    onclose: move |_| editing.set(None),
+                    onsaved: move |_| {
+                        editing.set(None);
+                        resource.restart();
+                    },
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct TicketStatusFormState {
+    id: Option<String>,
+    name: String,
+    color: String,
+    is_closed: bool,
+    is_default: bool,
+    sort_order: String,
+}
+
+impl TicketStatusFormState {
+    fn new() -> Self {
+        Self {
+            id: None,
+            name: String::new(),
+            color: "#6b7280".to_string(),
+            is_closed: false,
+            is_default: false,
+            sort_order: "0".to_string(),
+        }
+    }
+
+    fn from_existing(r: &TicketStatusRow) -> Self {
+        Self {
+            id: Some(r.id.to_string()),
+            name: r.name.clone(),
+            color: non_empty_color(&r.color),
+            is_closed: r.is_closed,
+            is_default: r.is_default,
+            sort_order: r.sort_order.to_string(),
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct TicketStatusFormModalProps {
+    state: TicketStatusFormState,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
+    let initial = props.state.clone();
+    let is_edit = initial.id.is_some();
+
+    let mut name = use_signal(|| initial.name.clone());
+    let mut color = use_signal(|| initial.color.clone());
+    let mut is_closed = use_signal(|| initial.is_closed);
+    let mut is_default = use_signal(|| initial.is_default);
+    let mut sort_order = use_signal(|| initial.sort_order.clone());
+    let mut saving = use_signal(|| false);
+    let mut deleting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+
+    let save_id = initial.id.clone();
+    let handle_save = move |_| {
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        if name.read().trim().is_empty() {
+            error.set("Name is required.".to_string());
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        let body = serde_json::json!({
+            "name": name.read().trim(),
+            "color": color.read().trim(),
+            "is_closed": *is_closed.read(),
+            "is_default": *is_default.read(),
+            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
+        });
+        let id = save_id.clone();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let result = save_lookup(id, "/tickets/statuses", &body).await;
+                match result {
+                    Ok(()) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not save status: {err}")),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    let delete_id = initial.id.clone();
+    let handle_delete = move |_| {
+        let Some(id) = delete_id.clone() else { return };
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        deleting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match delete_lookup(&id, "/tickets/statuses", "status").await {
+                    Ok(true) => onsaved.call(()),
+                    Ok(false) => {}
+                    Err(err) => error.set(format!("Could not delete status: {err}")),
+                }
+            }
+            deleting.set(false);
+        });
+    };
+
+    rsx! {
+        SettingFormModal {
+            title: if is_edit { "Edit Ticket Status".to_string() } else { "New Ticket Status".to_string() },
+            is_edit,
+            saving: *saving.read(),
+            deleting: *deleting.read(),
+            error: error.read().clone(),
+            onclose: move |_| onclose.call(()),
+            onsave: handle_save,
+            ondelete: handle_delete,
+            create_label: "Create Status".to_string(),
+            crate::components::Input {
+                name: "ticket_status_name",
+                label: "Name",
+                placeholder: "e.g. Waiting on Customer",
+                required: true,
+                value: name.read().clone(),
+                oninput: move |e: FormEvent| name.set(e.value()),
+            }
+            crate::components::Input {
+                name: "ticket_status_color",
+                label: "Color",
+                r#type: "color",
+                value: color.read().clone(),
+                oninput: move |e: FormEvent| color.set(e.value()),
+            }
+            crate::components::Input {
+                name: "ticket_status_sort_order",
+                label: "Sort order",
+                r#type: "number",
+                min: "0".to_string(),
+                max: "2147483647".to_string(),
+                value: sort_order.read().clone(),
+                oninput: move |e: FormEvent| sort_order.set(e.value()),
+            }
+            crate::components::Checkbox {
+                name: "ticket_status_closed",
+                label: "Counts as closed",
+                help: "Tickets in this status are treated as resolved/closed.",
+                checked: *is_closed.read(),
+                onchange: move |_| {
+                    let next = !*is_closed.read();
+                    is_closed.set(next);
+                },
+            }
+            crate::components::Checkbox {
+                name: "ticket_status_default",
+                label: "Default status",
+                help: "Applied to new tickets when none is chosen.",
+                checked: *is_default.read(),
+                onchange: move |_| {
+                    let next = !*is_default.read();
+                    is_default.set(next);
+                },
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Ticket priorities  (GET/POST `/tickets/priorities`, PUT/DELETE `/tickets/priorities/{id}`)
+// ============================================================================
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct TicketPriorityRow {
+    id: Uuid,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    color: String,
+    #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
+    sla_multiplier: f64,
+    #[serde(default)]
+    is_default: bool,
+    #[serde(default)]
+    sort_order: i64,
+}
+
+#[component]
+pub fn TicketPrioritiesSettingsPage() -> Element {
+    if !use_is_admin() {
+        return rsx! { AdminOnlyNotice { title: "Ticket Priorities" } };
+    }
+
+    let mut page = use_signal(|| 1usize);
+    let mut editing = use_signal(|| None::<TicketPriorityFormState>);
+    let current_page = (*page.read()).max(1);
+
+    let mut resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let path = format!("/tickets/priorities?page={current_page}&per_page={PER_PAGE}");
+        crate::hooks::fetch::api::get_authed::<Paginated<TicketPriorityRow>>(&path)
+            .await
+            .ok()
+    });
+
+    let snap = resource.read_unchecked();
+    let is_loading = snap.is_none();
+    let fetch_failed = matches!(*snap, Some(None));
+    let (rows, total): (Vec<TicketPriorityRow>, u64) = match &*snap {
+        Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
+        _ => (Vec::new(), 0),
+    };
+
+    rsx! {
+        AppLayout { title: "Ticket Priorities",
+            PageHeader {
+                title: "Ticket Priorities",
+                subtitle: "Priority levels and their SLA multipliers",
+                actions: rsx! {
+                    Link { to: Route::SettingsHome {},
+                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        onclick: move |_| editing.set(Some(TicketPriorityFormState::new())),
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "New Priority"
+                    }
+                },
+            }
+
+            if fetch_failed {
+                LoadError { what: "ticket priorities" }
+            }
+
+            DataTable {
+                loading: is_loading,
+                total_items: total as usize,
+                current_page,
+                per_page: PER_PAGE,
+                columns: 4,
+                onpagechange: move |p| page.set(p),
+                Table {
+                    TableHead {
+                        TableRow {
+                            TableHeader { "Name" }
+                            TableHeader { "Color" }
+                            TableHeader { class: "text-right", "SLA x" }
+                            TableHeader { "Default" }
+                        }
+                    }
+                    if is_loading {
+                        TableLoading { columns: 4, rows: 4 }
+                    } else if rows.is_empty() {
+                        TableEmpty {
+                            columns: 4,
+                            message: "No ticket priorities yet. Click New Priority to add one.".to_string(),
+                        }
+                    } else {
+                        TableBody {
+                            for row in rows.iter().cloned() {
+                                {
+                                    let key = row.id.to_string();
+                                    let edit_state = TicketPriorityFormState::from_existing(&row);
+                                    let name = row.name.clone();
+                                    let color = row.color.clone();
+                                    let sla = format!("{:.2}x", row.sla_multiplier);
+                                    let default = row.is_default;
+                                    rsx! {
+                                        TableRow { key: "{key}", clickable: true,
+                                            onclick: move |_| editing.set(Some(edit_state.clone())),
+                                            TableCell {
+                                                span { class: "font-medium text-blue-600", "{name}" }
+                                            }
+                                            TableCell { ColorSwatch { color } }
+                                            TableCell { class: "text-right", "{sla}" }
+                                            TableCell {
+                                                if default {
+                                                    Badge { variant: BadgeVariant::Blue, "Default" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(state) = editing.read().clone() {
+                TicketPriorityFormModal {
+                    state,
+                    onclose: move |_| editing.set(None),
+                    onsaved: move |_| {
+                        editing.set(None);
+                        resource.restart();
+                    },
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct TicketPriorityFormState {
+    id: Option<String>,
+    name: String,
+    color: String,
+    icon: String,
+    sla_multiplier: String,
+    is_default: bool,
+    sort_order: String,
+}
+
+impl TicketPriorityFormState {
+    fn new() -> Self {
+        Self {
+            id: None,
+            name: String::new(),
+            color: "#6b7280".to_string(),
+            icon: String::new(),
+            sla_multiplier: "1.0".to_string(),
+            is_default: false,
+            sort_order: "0".to_string(),
+        }
+    }
+
+    fn from_existing(r: &TicketPriorityRow) -> Self {
+        Self {
+            id: Some(r.id.to_string()),
+            name: r.name.clone(),
+            color: non_empty_color(&r.color),
+            icon: r.icon.clone().unwrap_or_default(),
+            sla_multiplier: r.sla_multiplier.to_string(),
+            is_default: r.is_default,
+            sort_order: r.sort_order.to_string(),
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct TicketPriorityFormModalProps {
+    state: TicketPriorityFormState,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
+    let initial = props.state.clone();
+    let is_edit = initial.id.is_some();
+
+    let mut name = use_signal(|| initial.name.clone());
+    let mut color = use_signal(|| initial.color.clone());
+    let mut icon = use_signal(|| initial.icon.clone());
+    let mut sla_multiplier = use_signal(|| initial.sla_multiplier.clone());
+    let mut is_default = use_signal(|| initial.is_default);
+    let mut sort_order = use_signal(|| initial.sort_order.clone());
+    let mut saving = use_signal(|| false);
+    let mut deleting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+
+    let save_id = initial.id.clone();
+    let handle_save = move |_| {
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        if name.read().trim().is_empty() {
+            error.set("Name is required.".to_string());
+            return;
+        }
+        // Validate the multiplier client-side so an out-of-range or
+        // non-numeric entry gets a clear message instead of a raw 400
+        // (server accepts 0.0..=9.99).
+        let sla = match sla_multiplier.read().trim().parse::<f64>() {
+            Ok(v) if (0.0..=9.99).contains(&v) => v,
+            _ => {
+                error.set("SLA multiplier must be a number between 0 and 9.99.".to_string());
+                return;
+            }
+        };
+        saving.set(true);
+        error.set(String::new());
+        let icon_val = icon.read().trim().to_string();
+        let body = serde_json::json!({
+            "name": name.read().trim(),
+            "color": color.read().trim(),
+            "icon": opt_str(&icon_val),
+            "sla_multiplier": sla,
+            "is_default": *is_default.read(),
+            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
+        });
+        let id = save_id.clone();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match save_lookup(id, "/tickets/priorities", &body).await {
+                    Ok(()) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not save priority: {err}")),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    let delete_id = initial.id.clone();
+    let handle_delete = move |_| {
+        let Some(id) = delete_id.clone() else { return };
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        deleting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match delete_lookup(&id, "/tickets/priorities", "priority").await {
+                    Ok(true) => onsaved.call(()),
+                    Ok(false) => {}
+                    Err(err) => error.set(format!("Could not delete priority: {err}")),
+                }
+            }
+            deleting.set(false);
+        });
+    };
+
+    rsx! {
+        SettingFormModal {
+            title: if is_edit { "Edit Ticket Priority".to_string() } else { "New Ticket Priority".to_string() },
+            is_edit,
+            saving: *saving.read(),
+            deleting: *deleting.read(),
+            error: error.read().clone(),
+            onclose: move |_| onclose.call(()),
+            onsave: handle_save,
+            ondelete: handle_delete,
+            create_label: "Create Priority".to_string(),
+            crate::components::Input {
+                name: "ticket_priority_name",
+                label: "Name",
+                placeholder: "e.g. Urgent",
+                required: true,
+                value: name.read().clone(),
+                oninput: move |e: FormEvent| name.set(e.value()),
+            }
+            crate::components::Input {
+                name: "ticket_priority_color",
+                label: "Color",
+                r#type: "color",
+                value: color.read().clone(),
+                oninput: move |e: FormEvent| color.set(e.value()),
+            }
+            crate::components::Input {
+                name: "ticket_priority_sla",
+                label: "SLA multiplier",
+                r#type: "number",
+                step: "0.01".to_string(),
+                min: "0".to_string(),
+                max: "9.99".to_string(),
+                help: "Scales SLA target durations (e.g. 0.5 = half the time).",
+                value: sla_multiplier.read().clone(),
+                oninput: move |e: FormEvent| sla_multiplier.set(e.value()),
+            }
+            crate::components::Input {
+                name: "ticket_priority_icon",
+                label: "Icon",
+                placeholder: "Optional icon name",
+                value: icon.read().clone(),
+                oninput: move |e: FormEvent| icon.set(e.value()),
+            }
+            crate::components::Input {
+                name: "ticket_priority_sort_order",
+                label: "Sort order",
+                r#type: "number",
+                min: "0".to_string(),
+                max: "2147483647".to_string(),
+                value: sort_order.read().clone(),
+                oninput: move |e: FormEvent| sort_order.set(e.value()),
+            }
+            crate::components::Checkbox {
+                name: "ticket_priority_default",
+                label: "Default priority",
+                help: "Applied to new tickets when none is chosen.",
+                checked: *is_default.read(),
+                onchange: move |_| {
+                    let next = !*is_default.read();
+                    is_default.set(next);
+                },
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Ticket types  (GET/POST `/tickets/types`, PUT/DELETE `/tickets/types/{id}`)
+// ============================================================================
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct TicketTypeRow {
+    id: Uuid,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
+    is_active: bool,
+    #[serde(default)]
+    sort_order: i64,
+}
+
+#[component]
+pub fn TicketTypesSettingsPage() -> Element {
+    if !use_is_admin() {
+        return rsx! { AdminOnlyNotice { title: "Ticket Types" } };
+    }
+
+    let mut page = use_signal(|| 1usize);
+    let mut editing = use_signal(|| None::<TicketTypeFormState>);
+    let current_page = (*page.read()).max(1);
+
+    let mut resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let path = format!("/tickets/types?page={current_page}&per_page={PER_PAGE}");
+        crate::hooks::fetch::api::get_authed::<Paginated<TicketTypeRow>>(&path)
+            .await
+            .ok()
+    });
+
+    let snap = resource.read_unchecked();
+    let is_loading = snap.is_none();
+    let fetch_failed = matches!(*snap, Some(None));
+    let (rows, total): (Vec<TicketTypeRow>, u64) = match &*snap {
+        Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
+        _ => (Vec::new(), 0),
+    };
+
+    rsx! {
+        AppLayout { title: "Ticket Types",
+            PageHeader {
+                title: "Ticket Types",
+                subtitle: "Categories for the kind of work a ticket represents",
+                actions: rsx! {
+                    Link { to: Route::SettingsHome {},
+                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        onclick: move |_| editing.set(Some(TicketTypeFormState::new())),
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "New Type"
+                    }
+                },
+            }
+
+            if fetch_failed {
+                LoadError { what: "ticket types" }
+            }
+
+            DataTable {
+                loading: is_loading,
+                total_items: total as usize,
+                current_page,
+                per_page: PER_PAGE,
+                columns: 3,
+                onpagechange: move |p| page.set(p),
+                Table {
+                    TableHead {
+                        TableRow {
+                            TableHeader { "Name" }
+                            TableHeader { "Description" }
+                            TableHeader { "Active" }
+                        }
+                    }
+                    if is_loading {
+                        TableLoading { columns: 3, rows: 4 }
+                    } else if rows.is_empty() {
+                        TableEmpty {
+                            columns: 3,
+                            message: "No ticket types yet. Click New Type to add one.".to_string(),
+                        }
+                    } else {
+                        TableBody {
+                            for row in rows.iter().cloned() {
+                                {
+                                    let key = row.id.to_string();
+                                    let edit_state = TicketTypeFormState::from_existing(&row);
+                                    let name = row.name.clone();
+                                    let desc = row.description.clone().unwrap_or_default();
+                                    let active = row.is_active;
+                                    rsx! {
+                                        TableRow { key: "{key}", clickable: true,
+                                            onclick: move |_| editing.set(Some(edit_state.clone())),
+                                            TableCell {
+                                                span { class: "font-medium text-blue-600", "{name}" }
+                                            }
+                                            TableCell {
+                                                span { class: "text-sm text-gray-500 dark:text-gray-400", "{desc}" }
+                                            }
+                                            TableCell { ActiveBadge { active } }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(state) = editing.read().clone() {
+                TicketTypeFormModal {
+                    state,
+                    onclose: move |_| editing.set(None),
+                    onsaved: move |_| {
+                        editing.set(None);
+                        resource.restart();
+                    },
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct TicketTypeFormState {
+    id: Option<String>,
+    name: String,
+    description: String,
+    icon: String,
+    is_active: bool,
+    sort_order: String,
+}
+
+impl TicketTypeFormState {
+    fn new() -> Self {
+        Self {
+            id: None,
+            name: String::new(),
+            description: String::new(),
+            icon: String::new(),
+            is_active: true,
+            sort_order: "0".to_string(),
+        }
+    }
+
+    fn from_existing(r: &TicketTypeRow) -> Self {
+        Self {
+            id: Some(r.id.to_string()),
+            name: r.name.clone(),
+            description: r.description.clone().unwrap_or_default(),
+            icon: r.icon.clone().unwrap_or_default(),
+            is_active: r.is_active,
+            sort_order: r.sort_order.to_string(),
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct TicketTypeFormModalProps {
+    state: TicketTypeFormState,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn TicketTypeFormModal(props: TicketTypeFormModalProps) -> Element {
+    let initial = props.state.clone();
+    let is_edit = initial.id.is_some();
+
+    let mut name = use_signal(|| initial.name.clone());
+    let mut description = use_signal(|| initial.description.clone());
+    let mut icon = use_signal(|| initial.icon.clone());
+    let mut is_active = use_signal(|| initial.is_active);
+    let mut sort_order = use_signal(|| initial.sort_order.clone());
+    let mut saving = use_signal(|| false);
+    let mut deleting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+
+    let save_id = initial.id.clone();
+    let handle_save = move |_| {
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        if name.read().trim().is_empty() {
+            error.set("Name is required.".to_string());
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        let desc = description.read().trim().to_string();
+        let icon_val = icon.read().trim().to_string();
+        let body = serde_json::json!({
+            "name": name.read().trim(),
+            "description": opt_str(&desc),
+            "icon": opt_str(&icon_val),
+            "is_active": *is_active.read(),
+            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
+        });
+        let id = save_id.clone();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match save_lookup(id, "/tickets/types", &body).await {
+                    Ok(()) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not save type: {err}")),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    let delete_id = initial.id.clone();
+    let handle_delete = move |_| {
+        let Some(id) = delete_id.clone() else { return };
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        deleting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match delete_lookup(&id, "/tickets/types", "type").await {
+                    Ok(true) => onsaved.call(()),
+                    Ok(false) => {}
+                    Err(err) => error.set(format!("Could not delete type: {err}")),
+                }
+            }
+            deleting.set(false);
+        });
+    };
+
+    rsx! {
+        SettingFormModal {
+            title: if is_edit { "Edit Ticket Type".to_string() } else { "New Ticket Type".to_string() },
+            is_edit,
+            saving: *saving.read(),
+            deleting: *deleting.read(),
+            error: error.read().clone(),
+            onclose: move |_| onclose.call(()),
+            onsave: handle_save,
+            ondelete: handle_delete,
+            create_label: "Create Type".to_string(),
+            crate::components::Input {
+                name: "ticket_type_name",
+                label: "Name",
+                placeholder: "e.g. Incident",
+                required: true,
+                value: name.read().clone(),
+                oninput: move |e: FormEvent| name.set(e.value()),
+            }
+            crate::components::Input {
+                name: "ticket_type_description",
+                label: "Description",
+                placeholder: "Optional",
+                value: description.read().clone(),
+                oninput: move |e: FormEvent| description.set(e.value()),
+            }
+            crate::components::Input {
+                name: "ticket_type_icon",
+                label: "Icon",
+                placeholder: "Optional icon name",
+                value: icon.read().clone(),
+                oninput: move |e: FormEvent| icon.set(e.value()),
+            }
+            crate::components::Input {
+                name: "ticket_type_sort_order",
+                label: "Sort order",
+                r#type: "number",
+                min: "0".to_string(),
+                max: "2147483647".to_string(),
+                value: sort_order.read().clone(),
+                oninput: move |e: FormEvent| sort_order.set(e.value()),
+            }
+            crate::components::Checkbox {
+                name: "ticket_type_active",
+                label: "Active",
+                checked: *is_active.read(),
+                onchange: move |_| {
+                    let next = !*is_active.read();
+                    is_active.set(next);
+                },
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Ticket queues  (GET/POST `/tickets/queues`, PUT/DELETE `/tickets/queues/{id}`)
+// ============================================================================
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct TicketQueueRow {
+    id: Uuid,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    color: Option<String>,
+    #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
+    is_default: bool,
+    #[serde(default)]
+    sort_order: i64,
+}
+
+#[component]
+pub fn TicketQueuesSettingsPage() -> Element {
+    if !use_is_admin() {
+        return rsx! { AdminOnlyNotice { title: "Ticket Queues" } };
+    }
+
+    let mut page = use_signal(|| 1usize);
+    let mut editing = use_signal(|| None::<TicketQueueFormState>);
+    let current_page = (*page.read()).max(1);
+
+    let mut resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let path = format!("/tickets/queues?page={current_page}&per_page={PER_PAGE}");
+        crate::hooks::fetch::api::get_authed::<Paginated<TicketQueueRow>>(&path)
+            .await
+            .ok()
+    });
+
+    let snap = resource.read_unchecked();
+    let is_loading = snap.is_none();
+    let fetch_failed = matches!(*snap, Some(None));
+    let (rows, total): (Vec<TicketQueueRow>, u64) = match &*snap {
+        Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
+        _ => (Vec::new(), 0),
+    };
+
+    rsx! {
+        AppLayout { title: "Ticket Queues",
+            PageHeader {
+                title: "Ticket Queues",
+                subtitle: "Queues tickets are routed into",
+                actions: rsx! {
+                    Link { to: Route::SettingsHome {},
+                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        onclick: move |_| editing.set(Some(TicketQueueFormState::new())),
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "New Queue"
+                    }
+                },
+            }
+
+            if fetch_failed {
+                LoadError { what: "ticket queues" }
+            }
+
+            DataTable {
+                loading: is_loading,
+                total_items: total as usize,
+                current_page,
+                per_page: PER_PAGE,
+                columns: 3,
+                onpagechange: move |p| page.set(p),
+                Table {
+                    TableHead {
+                        TableRow {
+                            TableHeader { "Name" }
+                            TableHeader { "Color" }
+                            TableHeader { "Default" }
+                        }
+                    }
+                    if is_loading {
+                        TableLoading { columns: 3, rows: 4 }
+                    } else if rows.is_empty() {
+                        TableEmpty {
+                            columns: 3,
+                            message: "No ticket queues yet. Click New Queue to add one.".to_string(),
+                        }
+                    } else {
+                        TableBody {
+                            for row in rows.iter().cloned() {
+                                {
+                                    let key = row.id.to_string();
+                                    let edit_state = TicketQueueFormState::from_existing(&row);
+                                    let name = row.name.clone();
+                                    let color = row.color.clone().unwrap_or_default();
+                                    let default = row.is_default;
+                                    rsx! {
+                                        TableRow { key: "{key}", clickable: true,
+                                            onclick: move |_| editing.set(Some(edit_state.clone())),
+                                            TableCell {
+                                                span { class: "font-medium text-blue-600", "{name}" }
+                                            }
+                                            TableCell {
+                                                if color.is_empty() {
+                                                    span { class: "text-gray-400", "-" }
+                                                } else {
+                                                    ColorSwatch { color }
+                                                }
+                                            }
+                                            TableCell {
+                                                if default {
+                                                    Badge { variant: BadgeVariant::Blue, "Default" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(state) = editing.read().clone() {
+                TicketQueueFormModal {
+                    state,
+                    onclose: move |_| editing.set(None),
+                    onsaved: move |_| {
+                        editing.set(None);
+                        resource.restart();
+                    },
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct TicketQueueFormState {
+    id: Option<String>,
+    name: String,
+    description: String,
+    color: String,
+    icon: String,
+    is_default: bool,
+    sort_order: String,
+}
+
+impl TicketQueueFormState {
+    fn new() -> Self {
+        Self {
+            id: None,
+            name: String::new(),
+            description: String::new(),
+            color: "#6b7280".to_string(),
+            icon: String::new(),
+            is_default: false,
+            sort_order: "0".to_string(),
+        }
+    }
+
+    fn from_existing(r: &TicketQueueRow) -> Self {
+        Self {
+            id: Some(r.id.to_string()),
+            name: r.name.clone(),
+            description: r.description.clone().unwrap_or_default(),
+            color: non_empty_color(r.color.as_deref().unwrap_or_default()),
+            icon: r.icon.clone().unwrap_or_default(),
+            is_default: r.is_default,
+            sort_order: r.sort_order.to_string(),
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct TicketQueueFormModalProps {
+    state: TicketQueueFormState,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn TicketQueueFormModal(props: TicketQueueFormModalProps) -> Element {
+    let initial = props.state.clone();
+    let is_edit = initial.id.is_some();
+
+    let mut name = use_signal(|| initial.name.clone());
+    let mut description = use_signal(|| initial.description.clone());
+    let mut color = use_signal(|| initial.color.clone());
+    let mut icon = use_signal(|| initial.icon.clone());
+    let mut is_default = use_signal(|| initial.is_default);
+    let mut sort_order = use_signal(|| initial.sort_order.clone());
+    let mut saving = use_signal(|| false);
+    let mut deleting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+
+    let save_id = initial.id.clone();
+    let handle_save = move |_| {
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        if name.read().trim().is_empty() {
+            error.set("Name is required.".to_string());
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        let desc = description.read().trim().to_string();
+        let icon_val = icon.read().trim().to_string();
+        let body = serde_json::json!({
+            "name": name.read().trim(),
+            "description": opt_str(&desc),
+            "color": color.read().trim(),
+            "icon": opt_str(&icon_val),
+            "is_default": *is_default.read(),
+            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
+        });
+        let id = save_id.clone();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match save_lookup(id, "/tickets/queues", &body).await {
+                    Ok(()) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not save queue: {err}")),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    let delete_id = initial.id.clone();
+    let handle_delete = move |_| {
+        let Some(id) = delete_id.clone() else { return };
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        deleting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match delete_lookup(&id, "/tickets/queues", "queue").await {
+                    Ok(true) => onsaved.call(()),
+                    Ok(false) => {}
+                    Err(err) => error.set(format!("Could not delete queue: {err}")),
+                }
+            }
+            deleting.set(false);
+        });
+    };
+
+    rsx! {
+        SettingFormModal {
+            title: if is_edit { "Edit Ticket Queue".to_string() } else { "New Ticket Queue".to_string() },
+            is_edit,
+            saving: *saving.read(),
+            deleting: *deleting.read(),
+            error: error.read().clone(),
+            onclose: move |_| onclose.call(()),
+            onsave: handle_save,
+            ondelete: handle_delete,
+            create_label: "Create Queue".to_string(),
+            crate::components::Input {
+                name: "ticket_queue_name",
+                label: "Name",
+                placeholder: "e.g. Tier 1 Support",
+                required: true,
+                value: name.read().clone(),
+                oninput: move |e: FormEvent| name.set(e.value()),
+            }
+            crate::components::Input {
+                name: "ticket_queue_description",
+                label: "Description",
+                placeholder: "Optional",
+                value: description.read().clone(),
+                oninput: move |e: FormEvent| description.set(e.value()),
+            }
+            crate::components::Input {
+                name: "ticket_queue_color",
+                label: "Color",
+                r#type: "color",
+                value: color.read().clone(),
+                oninput: move |e: FormEvent| color.set(e.value()),
+            }
+            crate::components::Input {
+                name: "ticket_queue_icon",
+                label: "Icon",
+                placeholder: "Optional icon name",
+                value: icon.read().clone(),
+                oninput: move |e: FormEvent| icon.set(e.value()),
+            }
+            crate::components::Input {
+                name: "ticket_queue_sort_order",
+                label: "Sort order",
+                r#type: "number",
+                min: "0".to_string(),
+                max: "2147483647".to_string(),
+                value: sort_order.read().clone(),
+                oninput: move |e: FormEvent| sort_order.set(e.value()),
+            }
+            crate::components::Checkbox {
+                name: "ticket_queue_default",
+                label: "Default queue",
+                help: "New tickets land here when no queue is chosen.",
+                checked: *is_default.read(),
+                onchange: move |_| {
+                    let next = !*is_default.read();
+                    is_default.set(next);
+                },
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Ticket categories  (GET/POST `/tickets/categories`, PUT/DELETE `/tickets/categories/{id}`)
+// ============================================================================
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct TicketCategoryRow {
+    id: Uuid,
+    #[serde(default)]
+    parent_id: Option<Uuid>,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    is_active: bool,
+    #[serde(default)]
+    sort_order: i64,
+}
+
+#[component]
+pub fn TicketCategoriesSettingsPage() -> Element {
+    if !use_is_admin() {
+        return rsx! { AdminOnlyNotice { title: "Ticket Categories" } };
+    }
+
+    let mut page = use_signal(|| 1usize);
+    let mut editing = use_signal(|| None::<TicketCategoryFormState>);
+    let current_page = (*page.read()).max(1);
+
+    let mut resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let path = format!("/tickets/categories?page={current_page}&per_page={PER_PAGE}");
+        crate::hooks::fetch::api::get_authed::<Paginated<TicketCategoryRow>>(&path)
+            .await
+            .ok()
+    });
+
+    // The full category set, independent of the table's current page, so
+    // the Parent column and the parent picker can resolve a parent that
+    // lives on another page. Server caps per_page at 100; categories
+    // beyond that are not expected for a single tenant.
+    let mut all_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<TicketCategoryRow>>(
+            "/tickets/categories?per_page=100",
+        )
+        .await
+        .ok()
+        .map(|p| p.data)
+        .unwrap_or_default()
+    });
+
+    let snap = resource.read_unchecked();
+    let is_loading = snap.is_none();
+    let fetch_failed = matches!(*snap, Some(None));
+    let (rows, total): (Vec<TicketCategoryRow>, u64) = match &*snap {
+        Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
+        _ => (Vec::new(), 0),
+    };
+
+    // Resolve parent names for the table, and feed the parent picker,
+    // from the full set rather than just the current page.
+    let all_snap = all_resource.read_unchecked();
+    let all_cats: Vec<TicketCategoryRow> = match &*all_snap {
+        Some(list) => list.clone(),
+        None => Vec::new(),
+    };
+    let name_by_id: std::collections::HashMap<Uuid, String> =
+        all_cats.iter().map(|r| (r.id, r.name.clone())).collect();
+
+    rsx! {
+        AppLayout { title: "Ticket Categories",
+            PageHeader {
+                title: "Ticket Categories",
+                subtitle: "Hierarchical categories for classifying tickets",
+                actions: rsx! {
+                    Link { to: Route::SettingsHome {},
+                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        onclick: move |_| editing.set(Some(TicketCategoryFormState::new())),
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "New Category"
+                    }
+                },
+            }
+
+            if fetch_failed {
+                LoadError { what: "ticket categories" }
+            }
+
+            DataTable {
+                loading: is_loading,
+                total_items: total as usize,
+                current_page,
+                per_page: PER_PAGE,
+                columns: 3,
+                onpagechange: move |p| page.set(p),
+                Table {
+                    TableHead {
+                        TableRow {
+                            TableHeader { "Name" }
+                            TableHeader { "Parent" }
+                            TableHeader { "Active" }
+                        }
+                    }
+                    if is_loading {
+                        TableLoading { columns: 3, rows: 4 }
+                    } else if rows.is_empty() {
+                        TableEmpty {
+                            columns: 3,
+                            message: "No ticket categories yet. Click New Category to add one.".to_string(),
+                        }
+                    } else {
+                        TableBody {
+                            for row in rows.iter().cloned() {
+                                {
+                                    let key = row.id.to_string();
+                                    let edit_state = TicketCategoryFormState::from_existing(&row);
+                                    let name = row.name.clone();
+                                    let parent = row
+                                        .parent_id
+                                        .and_then(|pid| name_by_id.get(&pid).cloned())
+                                        .unwrap_or_default();
+                                    let active = row.is_active;
+                                    rsx! {
+                                        TableRow { key: "{key}", clickable: true,
+                                            onclick: move |_| editing.set(Some(edit_state.clone())),
+                                            TableCell {
+                                                span { class: "font-medium text-blue-600", "{name}" }
+                                            }
+                                            TableCell {
+                                                if parent.is_empty() {
+                                                    span { class: "text-gray-400", "-" }
+                                                } else {
+                                                    span { class: "text-sm text-gray-600 dark:text-gray-300", "{parent}" }
+                                                }
+                                            }
+                                            TableCell { ActiveBadge { active } }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(state) = editing.read().clone() {
+                TicketCategoryFormModal {
+                    state,
+                    all: all_cats.clone(),
+                    onclose: move |_| editing.set(None),
+                    onsaved: move |_| {
+                        editing.set(None);
+                        resource.restart();
+                        all_resource.restart();
+                    },
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct TicketCategoryFormState {
+    id: Option<String>,
+    name: String,
+    description: String,
+    parent_id: String,
+    is_active: bool,
+    sort_order: String,
+}
+
+impl TicketCategoryFormState {
+    fn new() -> Self {
+        Self {
+            id: None,
+            name: String::new(),
+            description: String::new(),
+            parent_id: String::new(),
+            is_active: true,
+            sort_order: "0".to_string(),
+        }
+    }
+
+    fn from_existing(r: &TicketCategoryRow) -> Self {
+        Self {
+            id: Some(r.id.to_string()),
+            name: r.name.clone(),
+            description: r.description.clone().unwrap_or_default(),
+            parent_id: r.parent_id.map(|p| p.to_string()).unwrap_or_default(),
+            is_active: r.is_active,
+            sort_order: r.sort_order.to_string(),
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct TicketCategoryFormModalProps {
+    state: TicketCategoryFormState,
+    all: Vec<TicketCategoryRow>,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
+    let initial = props.state.clone();
+    let is_edit = initial.id.is_some();
+
+    let mut name = use_signal(|| initial.name.clone());
+    let mut description = use_signal(|| initial.description.clone());
+    let mut parent_id = use_signal(|| initial.parent_id.clone());
+    let mut is_active = use_signal(|| initial.is_active);
+    let mut sort_order = use_signal(|| initial.sort_order.clone());
+    let mut saving = use_signal(|| false);
+    let mut deleting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+
+    // Parent options: every category except the one being edited (the
+    // server also rejects self-parenting and deeper cycles).
+    let self_id = initial.id.clone();
+    let mut parent_options = vec![SelectOption {
+        value: String::new(),
+        label: "None (top level)".to_string(),
+        disabled: false,
+    }];
+    for cat in props.all.iter() {
+        let cat_id = cat.id.to_string();
+        if self_id.as_deref() == Some(cat_id.as_str()) {
+            continue;
+        }
+        parent_options.push(SelectOption {
+            value: cat_id,
+            label: cat.name.clone(),
+            disabled: false,
+        });
+    }
+
+    let save_id = initial.id.clone();
+    let handle_save = move |_| {
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        if name.read().trim().is_empty() {
+            error.set("Name is required.".to_string());
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        let desc = description.read().trim().to_string();
+        let parent = parent_id.read().trim().to_string();
+        let body = serde_json::json!({
+            "name": name.read().trim(),
+            "description": opt_str(&desc),
+            "parent_id": opt_str(&parent),
+            "is_active": *is_active.read(),
+            "sort_order": sort_order.read().trim().parse::<i64>().unwrap_or(0),
+        });
+        let id = save_id.clone();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match save_lookup(id, "/tickets/categories", &body).await {
+                    Ok(()) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not save category: {err}")),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    let delete_id = initial.id.clone();
+    let handle_delete = move |_| {
+        let Some(id) = delete_id.clone() else { return };
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        deleting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match delete_lookup(&id, "/tickets/categories", "category").await {
+                    Ok(true) => onsaved.call(()),
+                    Ok(false) => {}
+                    Err(err) => error.set(format!("Could not delete category: {err}")),
+                }
+            }
+            deleting.set(false);
+        });
+    };
+
+    rsx! {
+        SettingFormModal {
+            title: if is_edit { "Edit Ticket Category".to_string() } else { "New Ticket Category".to_string() },
+            is_edit,
+            saving: *saving.read(),
+            deleting: *deleting.read(),
+            error: error.read().clone(),
+            onclose: move |_| onclose.call(()),
+            onsave: handle_save,
+            ondelete: handle_delete,
+            create_label: "Create Category".to_string(),
+            crate::components::Input {
+                name: "ticket_category_name",
+                label: "Name",
+                placeholder: "e.g. Hardware",
+                required: true,
+                value: name.read().clone(),
+                oninput: move |e: FormEvent| name.set(e.value()),
+            }
+            crate::components::Input {
+                name: "ticket_category_description",
+                label: "Description",
+                placeholder: "Optional",
+                value: description.read().clone(),
+                oninput: move |e: FormEvent| description.set(e.value()),
+            }
+            Select {
+                name: "ticket_category_parent",
+                label: "Parent category",
+                options: parent_options,
+                value: parent_id.read().clone(),
+                onchange: move |e: FormEvent| parent_id.set(e.value()),
+            }
+            crate::components::Input {
+                name: "ticket_category_sort_order",
+                label: "Sort order",
+                r#type: "number",
+                min: "0".to_string(),
+                max: "2147483647".to_string(),
+                value: sort_order.read().clone(),
+                oninput: move |e: FormEvent| sort_order.set(e.value()),
+            }
+            crate::components::Checkbox {
+                name: "ticket_category_active",
+                label: "Active",
+                checked: *is_active.read(),
+                onchange: move |_| {
+                    let next = !*is_active.read();
+                    is_active.set(next);
+                },
+            }
+        }
+    }
+}
+
+// ============================================================================
 // Shared bits
 // ============================================================================
 
@@ -1148,6 +2710,101 @@ fn LoadError(what: String) -> Element {
             "Could not load {what}. Refresh the page to retry."
         }
     }
+}
+
+/// A color dot plus its hex value, for the lookup tables that carry a color.
+#[component]
+fn ColorSwatch(color: String) -> Element {
+    rsx! {
+        div { class: "flex items-center gap-2",
+            span {
+                class: "inline-block h-4 w-4 rounded-full border border-gray-300 dark:border-gray-600",
+                style: "background-color: {color}",
+            }
+            span { class: "text-xs text-gray-500", "{color}" }
+        }
+    }
+}
+
+/// Green "Active" / gray "Inactive" badge, shared by the lookups with an
+/// `is_active` flag.
+#[component]
+fn ActiveBadge(active: bool) -> Element {
+    rsx! {
+        if active {
+            Badge { variant: BadgeVariant::Green, "Active" }
+        } else {
+            Badge { variant: BadgeVariant::Gray, "Inactive" }
+        }
+    }
+}
+
+/// Map a free-text field to a JSON value: an empty/whitespace string
+/// becomes `null` (the server treats a missing optional as `None`),
+/// otherwise the trimmed string.
+fn opt_str(s: &str) -> serde_json::Value {
+    let t = s.trim();
+    if t.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::String(t.to_string())
+    }
+}
+
+/// Fall back to a neutral gray when a stored color is empty, so the
+/// `type="color"` input always has a valid hex to show.
+fn non_empty_color(c: &str) -> String {
+    if c.trim().is_empty() {
+        "#6b7280".to_string()
+    } else {
+        c.to_string()
+    }
+}
+
+/// POST (create) or PUT (update) a lookup row. `base` is the collection
+/// path (e.g. `/tickets/statuses`); update targets `{base}/{id}`.
+#[cfg(feature = "web")]
+async fn save_lookup(
+    id: Option<String>,
+    base: &str,
+    body: &serde_json::Value,
+) -> Result<(), String> {
+    match id {
+        None => crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(base, body)
+            .await
+            .map(|_| ()),
+        Some(id) => {
+            let path = format!("{base}/{id}");
+            crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, body)
+                .await
+                .map(|_| ())
+        }
+    }
+}
+
+/// Native confirm dialog for a destructive lookup delete. `kind` is the
+/// singular noun, e.g. "status".
+#[cfg(feature = "web")]
+fn confirm_delete(kind: &str) -> bool {
+    web_sys::window()
+        .and_then(|w| {
+            w.confirm_with_message(&format!("Delete this {kind}? This cannot be undone."))
+                .ok()
+        })
+        .unwrap_or(false)
+}
+
+/// Confirm then DELETE a lookup row at `{base}/{id}`. Returns `Ok(true)`
+/// when deleted, `Ok(false)` when the user cancelled, `Err` on failure.
+/// `kind` is the singular noun shown in the confirm dialog.
+#[cfg(feature = "web")]
+async fn delete_lookup(id: &str, base: &str, kind: &str) -> Result<bool, String> {
+    if !confirm_delete(kind) {
+        return Ok(false);
+    }
+    crate::hooks::fetch::api::delete_authed(&format!("{base}/{id}"))
+        .await
+        .map(|_| true)
 }
 
 /// Shared create/edit modal chrome for the settings editors. Owns the
