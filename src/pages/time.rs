@@ -453,14 +453,18 @@ pub fn TimeEntryNewPage() -> Element {
                             error.set("Please pick a work type.".to_string());
                             return;
                         }
-                        // Mirror the input's min/max bounds so a value that
-                        // slips past browser validation (or non-browser submit)
-                        // is still rejected: positive, decimal, at most 24h.
-                        let hours_val: f64 = match hrs.trim().parse() {
-                            Ok(h) if h > 0.0 && h <= 24.0 => h,
+                        // The Hours field is free-text (it accepts H:MM as
+                        // well as decimal), so the submit path owns all
+                        // validation: parse either shape into whole minutes
+                        // and require 0 < t <= 24h.
+                        let duration_minutes = match crate::utils::duration::parse_input_to_minutes(
+                            &hrs,
+                        ) {
+                            Some(m) if m > 0 && m <= 24 * 60 => m,
                             _ => {
                                 error.set(
-                                    "Enter hours greater than 0 and no more than 24.".to_string(),
+                                    "Enter time as hours (2.5) or H:MM (1:30), greater than 0 and at most 24h."
+                                        .to_string(),
                                 );
                                 return;
                             }
@@ -511,7 +515,6 @@ pub fn TimeEntryNewPage() -> Element {
                                 return;
                             }
                         };
-                        let duration_minutes = (hours_val * 60.0).round() as i64;
                         let date = Utc::now().date_naive().to_string();
 
                         is_submitting.set(true);
@@ -599,15 +602,12 @@ pub fn TimeEntryNewPage() -> Element {
                     crate::components::Input {
                         name: "hours",
                         label: "Hours",
-                        r#type: "number",
-                        // Decimal hours only; HH:MM (e.g. "0:30") is not
-                        // supported. step/min keep 0.25, 0.5, ... valid while
-                        // the browser rejects negatives and zero; max caps
-                        // absurd magnitudes (e.g. 1000h) at a single day.
-                        step: "0.25",
-                        min: "0.25",
-                        max: "24",
-                        placeholder: "0.00",
+                        // Free-text so H:MM (e.g. "0:30") can be typed; a
+                        // type="number" input blocks the colon. PMS-314.
+                        // Validation lives in the submit handler.
+                        r#type: "text",
+                        placeholder: "2.5 or 1:30",
+                        help: "Decimal hours (2.5) or H:MM (1:30).",
                         required: true,
                         value: hours.read().clone(),
                         oninput: move |e: FormEvent| hours.set(e.value()),
@@ -1167,7 +1167,9 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
             .map(|v| v.to_string())
             .unwrap_or_default()
     });
-    let mut hours = use_signal(|| format!("{}", entry.duration_minutes as f64 / 60.0));
+    // Pre-fill in a clean, parseable shape honoring the duration-format
+    // pref (PMS-314); avoids raw decimals like "0.16666666666666666".
+    let mut hours = use_signal(|| crate::utils::duration::fmt_input(entry.duration_minutes));
     let mut date = use_signal(|| entry.date.to_string());
     let mut description = use_signal(|| entry.notes.clone().unwrap_or_default());
     let mut is_billable = use_signal(|| entry.is_billable);
@@ -1186,10 +1188,13 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
             error.set("Please pick a work type.".to_string());
             return;
         }
-        let hours_val: f64 = match hours.read().trim().parse() {
-            Ok(h) if h > 0.0 && h <= 24.0 => h,
+        let duration_minutes = match crate::utils::duration::parse_input_to_minutes(&hours.read()) {
+            Some(m) if m > 0 && m <= 24 * 60 => m,
             _ => {
-                error.set("Enter hours greater than 0 and no more than 24.".to_string());
+                error.set(
+                    "Enter time as hours (2.5) or H:MM (1:30), greater than 0 and at most 24h."
+                        .to_string(),
+                );
                 return;
             }
         };
@@ -1200,7 +1205,6 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
         }
         saving.set(true);
         error.set(String::new());
-        let duration_minutes = (hours_val * 60.0).round() as i64;
         let desc = description.read().clone();
         let billable = *is_billable.read();
         spawn(async move {
@@ -1307,13 +1311,12 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
                 crate::components::Input {
                     name: "edit_hours",
                     label: "Hours",
-                    r#type: "number",
-                    // `step: "any"` so an existing off-grid duration (e.g. a
-                    // 10-minute entry -> 0.1667h) does not render :invalid; the
-                    // save handler still enforces 0 < hours <= 24.
-                    step: "any",
-                    min: "0",
-                    max: "24",
+                    // Free-text so H:MM (e.g. "0:30") can be typed; a
+                    // type="number" input blocks the colon. PMS-314.
+                    // The save handler enforces 0 < t <= 24h.
+                    r#type: "text",
+                    placeholder: "2.5 or 1:30",
+                    help: "Decimal hours (2.5) or H:MM (1:30).",
                     required: true,
                     value: hours.read().clone(),
                     oninput: move |e: FormEvent| hours.set(e.value()),
