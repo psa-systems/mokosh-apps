@@ -34,25 +34,31 @@ const PER_PAGE: usize = 25;
 /// every row a contract or rate card realistically has.
 const SUBLIST_PER_PAGE: usize = 100;
 
-/// Contract-type enum tags (`managed`, `block_hours`, `time_materials`,
-/// `fixed_price`, ...) to a title-case label. Unknown tags pass through.
+/// Contract-type enum tags (`managed_services`, `block_hours`,
+/// `time_and_materials`, `fixed_price`, ...) to a title-case label. Also maps
+/// line-item types (`recurring_service`, `retainer`, `product`, `one_time`).
+/// Unknown tags pass through.
 fn humanize_contract_type(raw: &str) -> String {
     match raw {
-        "managed" => "Managed Services".to_string(),
+        "managed_services" => "Managed Services".to_string(),
         "block_hours" => "Block Hours".to_string(),
-        "time_materials" => "Time & Materials".to_string(),
+        "time_and_materials" => "Time and Materials".to_string(),
         "fixed_price" => "Fixed Price".to_string(),
-        "recurring" => "Recurring".to_string(),
+        "warranty" => "Warranty".to_string(),
+        "recurring_service" => "Recurring Service".to_string(),
+        "retainer" => "Retainer".to_string(),
+        "product" => "Product".to_string(),
+        "one_time" => "One-time".to_string(),
         other => other.to_string(),
     }
 }
 
 fn contract_type_variant(raw: &str) -> BadgeVariant {
     match raw {
-        "managed" | "recurring" => BadgeVariant::Blue,
+        "managed_services" | "recurring_service" => BadgeVariant::Blue,
         "block_hours" => BadgeVariant::Purple,
         "fixed_price" => BadgeVariant::Green,
-        "time_materials" => BadgeVariant::Yellow,
+        "time_and_materials" => BadgeVariant::Yellow,
         _ => BadgeVariant::Gray,
     }
 }
@@ -115,10 +121,11 @@ pub fn ContractListPage() -> Element {
     ];
     let type_options = vec![
         SelectOption::new("", "All Types"),
-        SelectOption::new("managed", "Managed Services"),
+        SelectOption::new("managed_services", "Managed Services"),
         SelectOption::new("block_hours", "Block Hours"),
-        SelectOption::new("time_materials", "Time & Materials"),
+        SelectOption::new("time_and_materials", "Time and Materials"),
         SelectOption::new("fixed_price", "Fixed Price"),
+        SelectOption::new("warranty", "Warranty"),
     ];
 
     // Company filter is a dropdown populated from the companies endpoint.
@@ -482,7 +489,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
     let mut company_id = use_signal(|| initial.company_id.clone());
     let mut contract_type = use_signal(|| {
         if initial.contract_type.is_empty() {
-            "managed".to_string()
+            "managed_services".to_string()
         } else {
             initial.contract_type.clone()
         }
@@ -532,10 +539,11 @@ fn ContractForm(props: ContractFormProps) -> Element {
     };
 
     let type_options = vec![
-        SelectOption::new("managed", "Managed Services"),
+        SelectOption::new("managed_services", "Managed Services"),
         SelectOption::new("block_hours", "Block Hours"),
-        SelectOption::new("time_materials", "Time & Materials"),
+        SelectOption::new("time_and_materials", "Time and Materials"),
         SelectOption::new("fixed_price", "Fixed Price"),
+        SelectOption::new("warranty", "Warranty"),
     ];
     let status_options = vec![
         SelectOption::new("draft", "Draft"),
@@ -546,14 +554,15 @@ fn ContractForm(props: ContractFormProps) -> Element {
     let cycle_options = vec![
         SelectOption::new("monthly", "Monthly"),
         SelectOption::new("quarterly", "Quarterly"),
-        SelectOption::new("annual", "Annual"),
+        SelectOption::new("annually", "Annually"),
         SelectOption::new("one_time", "One-time"),
     ];
     let item_type_options = vec![
-        SelectOption::new("recurring", "Recurring"),
-        SelectOption::new("one_time", "One-time"),
+        SelectOption::new("recurring_service", "Recurring Service"),
         SelectOption::new("block_hours", "Block Hours"),
-        SelectOption::new("usage", "Usage"),
+        SelectOption::new("retainer", "Retainer"),
+        SelectOption::new("product", "Product"),
+        SelectOption::new("one_time", "One-time"),
     ];
 
     let navigator = use_navigator();
@@ -835,7 +844,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                                 onclick: move |_| {
                                     let mut next = items.read().clone();
                                     next.push(ItemFormValues {
-                                        item_type: "recurring".to_string(),
+                                        item_type: "recurring_service".to_string(),
                                         quantity: "1".to_string(),
                                         ..ItemFormValues::default()
                                     });
@@ -963,7 +972,7 @@ async fn create_items(contract_id: &str, items: &[ItemFormValues]) -> Result<(),
             name: name.to_string(),
             description: None,
             item_type: if item.item_type.is_empty() {
-                "recurring".to_string()
+                "recurring_service".to_string()
             } else {
                 item.item_type.clone()
             },
