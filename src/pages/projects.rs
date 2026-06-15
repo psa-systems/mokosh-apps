@@ -1096,7 +1096,8 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 Card {
                                     title: "Overview",
                                     if let Some(d) = description {
-                                        p { class: "text-gray-700 dark:text-gray-300 whitespace-pre-wrap", "{d}" }
+                                        // PMS-309: render Markdown (sanitized) instead of raw text.
+                                        crate::components::Markdown { content: d }
                                     } else {
                                         p { class: "text-sm text-gray-400 italic", "No description provided." }
                                     }
