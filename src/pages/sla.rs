@@ -761,8 +761,10 @@ fn TargetRow(props: TargetRowProps) -> Element {
             TableCell {
                 crate::components::Input {
                     name: "first_{props.priority_id}",
-                    r#type: "number",
-                    placeholder: "e.g. 1",
+                    // Free-text so H:MM (e.g. "1:30") and fractional hours
+                    // can be entered; type="number" blocks both. PMS-340.
+                    r#type: "text",
+                    placeholder: "1.5 or 1:30",
                     value: first_hours.read().clone(),
                     oninput: move |e: FormEvent| first_hours.set(e.value()),
                 }
@@ -770,8 +772,9 @@ fn TargetRow(props: TargetRowProps) -> Element {
             TableCell {
                 crate::components::Input {
                     name: "resolution_{props.priority_id}",
-                    r#type: "number",
-                    placeholder: "e.g. 8",
+                    // Free-text for H:MM / fractional hours (PMS-340).
+                    r#type: "text",
+                    placeholder: "8 or 8:30",
                     value: resolution_hours.read().clone(),
                     oninput: move |e: FormEvent| resolution_hours.set(e.value()),
                 }
@@ -1448,6 +1451,13 @@ fn parse_hours(value: &str) -> Option<rust_decimal::Decimal> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return None;
+    }
+    // Accept H:MM as well as a plain decimal (PMS-340). For H:MM, reuse the
+    // shared minute parser (so validation matches the Log Time field) and
+    // convert to exact Decimal hours; a plain decimal keeps its exact value.
+    if trimmed.contains(':') {
+        let mins = crate::utils::duration::parse_input_to_minutes(trimmed)?;
+        return Some(rust_decimal::Decimal::from(mins) / rust_decimal::Decimal::from(60));
     }
     trimmed.parse::<rust_decimal::Decimal>().ok()
 }

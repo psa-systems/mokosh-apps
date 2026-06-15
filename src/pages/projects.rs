@@ -668,11 +668,24 @@ pub fn ProjectNewPage() -> Element {
                                 return;
                             }
                         };
-                        let hours = match validate_budget(&budget_hours.read(), "Budget hours") {
-                            Ok(v) => v,
-                            Err(msg) => {
-                                hours_err.set(msg);
-                                return;
+                        // Budget hours is a duration: accept decimal or H:MM
+                        // (PMS-340), reusing the Log Time parser. Blank leaves
+                        // it unset; an unparseable value errors inline.
+                        let hours: Option<f64> = {
+                            let raw = budget_hours.read().trim().to_string();
+                            if raw.is_empty() {
+                                None
+                            } else {
+                                match crate::utils::duration::parse_input_to_hours(&raw) {
+                                    Some(h) => Some(h),
+                                    None => {
+                                        hours_err.set(
+                                            "Budget hours must be a number (2.5) or H:MM (1:30)."
+                                                .to_string(),
+                                        );
+                                        return;
+                                    }
+                                }
                             }
                         };
                         is_submitting.set(true);
@@ -757,8 +770,11 @@ pub fn ProjectNewPage() -> Element {
                         crate::components::Input {
                             name: "budget_hours",
                             label: "Budget Hours",
-                            r#type: "number",
-                            placeholder: "0",
+                            // Free-text so H:MM (e.g. "1:30") can be typed; a
+                            // type="number" input blocks the colon. PMS-340.
+                            r#type: "text",
+                            placeholder: "2.5 or 1:30",
+                            help: "Decimal hours (2.5) or H:MM (1:30).",
                             value: budget_hours.read().clone(),
                             error: hours_err(),
                             oninput: move |e: FormEvent| budget_hours.set(e.value()),
@@ -995,8 +1011,11 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 pe_due.set(p.target_end_date.clone().unwrap_or_default());
                                 pe_budget_amount
                                     .set(p.budget_amount.map(|v| v.to_string()).unwrap_or_default());
-                                pe_budget_hours
-                                    .set(p.budget_hours.map(|v| v.to_string()).unwrap_or_default());
+                                pe_budget_hours.set(
+                                    p.budget_hours
+                                        .map(crate::utils::duration::fmt_input_hours)
+                                        .unwrap_or_default(),
+                                );
                                 pe_manager.set(
                                     p.project_manager_id.map(|v| v.to_string()).unwrap_or_default(),
                                 );
@@ -1414,11 +1433,24 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                             return;
                         }
                     };
-                    let hours = match validate_budget(&pe_budget_hours(), "Budget hours") {
-                        Ok(v) => v,
-                        Err(msg) => {
-                            pe_hours_err.set(msg);
-                            return;
+                    // Budget hours: accept decimal or H:MM (PMS-340). Blank
+                    // leaves it unset; an unparseable value errors inline.
+                    let hours: Option<f64> = {
+                        let raw = pe_budget_hours();
+                        let raw = raw.trim();
+                        if raw.is_empty() {
+                            None
+                        } else {
+                            match crate::utils::duration::parse_input_to_hours(raw) {
+                                Some(h) => Some(h),
+                                None => {
+                                    pe_hours_err.set(
+                                        "Budget hours must be a number (2.5) or H:MM (1:30)."
+                                            .to_string(),
+                                    );
+                                    return;
+                                }
+                            }
                         }
                     };
                     let save_id = save_id.clone();
@@ -1547,7 +1579,10 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 Input {
                                     name: "pe-budget-hours",
                                     label: "Budget Hours",
-                                    r#type: "number",
+                                    // Free-text for H:MM input (PMS-340).
+                                    r#type: "text",
+                                    placeholder: "2.5 or 1:30",
+                                    help: "Decimal hours (2.5) or H:MM (1:30).",
                                     value: "{pe_budget_hours}",
                                     error: pe_hours_err(),
                                     oninput: move |e: FormEvent| pe_budget_hours.set(e.value()),
