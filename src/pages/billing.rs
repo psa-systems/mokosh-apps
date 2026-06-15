@@ -1669,7 +1669,14 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
         .unwrap_or_default()
     });
     let current_term = payment_term_id.read().clone();
-    let mut term_options = vec![SelectOption::new("", "No payment term")];
+    // The server PUT does `payment_term_id = COALESCE($x, payment_term_id)`, so
+    // a null cannot clear a term that is already set. Only offer the "no term"
+    // option when the invoice has none yet; once set, the user can switch terms
+    // but not blank it (the server cannot express a clear through this PUT).
+    let mut term_options = Vec::new();
+    if current_term.is_empty() {
+        term_options.push(SelectOption::new("", "No payment term"));
+    }
     if let Some(terms) = &*terms_resource.read_unchecked() {
         for t in terms.iter() {
             // Keep an inactive term visible only if it is the one currently set.
