@@ -295,6 +295,29 @@ pub enum Route {
     #[route("/settings/active-tenant")]
     ActiveTenant {},
 
+    // MAPPS-169: centralized Settings hub. One left-nav entry lands on
+    // `/settings` (grouped cards); each configuration surface gets a
+    // sub-route. The "re-homed" surfaces (SLA, rate cards, tax rates,
+    // payment gateways) render the SAME page components as their original
+    // `/admin/*` and `/`-prefixed routes, which stay in place - the old
+    // nav items and buttons keep working (chosen "keep old + add Settings").
+    #[route("/settings")]
+    SettingsHome {},
+    #[route("/settings/work-types")]
+    SettingsWorkTypes {},
+    #[route("/settings/task-statuses")]
+    SettingsTaskStatuses {},
+    #[route("/settings/asset-types")]
+    SettingsAssetTypes {},
+    #[route("/settings/sla")]
+    SettingsSla {},
+    #[route("/settings/rate-cards")]
+    SettingsRateCards {},
+    #[route("/settings/tax-rates")]
+    SettingsTaxRates {},
+    #[route("/settings/gateways")]
+    SettingsGateways {},
+
     // Mokosh-side profile. Edits the tenant-scoped fields on the
     // user row (name, title, phone, mobile, timezone). Cross-app
     // identity (email, password, MFA, sessions, billing) lives on
@@ -675,6 +698,49 @@ fn ActiveTenant() -> Element {
 #[component]
 fn Profile() -> Element {
     rsx! { profile::ProfilePage {} }
+}
+
+// MAPPS-169 Settings hub + sub-routes. The type editors are net-new
+// (pages::settings); the re-homed surfaces reuse the existing page
+// components so there is one source of truth per surface.
+#[component]
+fn SettingsHome() -> Element {
+    rsx! { settings::SettingsHomePage {} }
+}
+
+#[component]
+fn SettingsWorkTypes() -> Element {
+    rsx! { settings::WorkTypesSettingsPage {} }
+}
+
+#[component]
+fn SettingsTaskStatuses() -> Element {
+    rsx! { settings::TaskStatusesSettingsPage {} }
+}
+
+#[component]
+fn SettingsAssetTypes() -> Element {
+    rsx! { settings::AssetTypesSettingsPage {} }
+}
+
+#[component]
+fn SettingsSla() -> Element {
+    rsx! { sla::SlaManagementPage {} }
+}
+
+#[component]
+fn SettingsRateCards() -> Element {
+    rsx! { contracts::RateCardListPage {} }
+}
+
+#[component]
+fn SettingsTaxRates() -> Element {
+    rsx! { billing::TaxRateListPage {} }
+}
+
+#[component]
+fn SettingsGateways() -> Element {
+    rsx! { billing::PaymentGatewayConfigPage {} }
 }
 
 #[component]
