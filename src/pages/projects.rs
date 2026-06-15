@@ -1096,8 +1096,50 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 Card {
                                     title: "Overview",
                                     if let Some(d) = description {
-                                        // PMS-309: render Markdown (sanitized) instead of raw text.
-                                        crate::components::Markdown { content: d }
+                                        // PMS-309: render Markdown (sanitized). PMS-348:
+                                        // task-list checkboxes are clickable - toggling
+                                        // flips the source marker and persists.
+                                        {
+                                            let d_src = d.clone();
+                                            let pid = props.id.clone();
+                                            rsx! {
+                                                crate::components::Markdown {
+                                                    content: d,
+                                                    interactive: true,
+                                                    on_toggle: move |i: usize| {
+                                                        let Some(new_desc) =
+                                                            crate::utils::markdown::toggle_task(&d_src, i)
+                                                        else {
+                                                            return;
+                                                        };
+                                                        let pid = pid.clone();
+                                                        let mut pr = project_resource;
+                                                        let mut phr = project_history_resource;
+                                                        spawn(async move {
+                                                            let body = serde_json::json!({ "description": new_desc });
+                                                            match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
+                                                                    &format!("/projects/{pid}"),
+                                                                    &body,
+                                                                )
+                                                                .await
+                                                            {
+                                                                Ok(_) => {
+                                                                    pr.restart();
+                                                                    phr.restart();
+                                                                }
+                                                                Err(e) => {
+                                                                    crate::hooks::push_toast(
+                                                                        crate::components::AlertType::Error,
+                                                                        format!("Could not update checklist: {e}"),
+                                                                    );
+                                                                    pr.restart();
+                                                                }
+                                                            }
+                                                        });
+                                                    },
+                                                }
+                                            }
+                                        }
                                     } else {
                                         p { class: "text-sm text-gray-400 italic", "No description provided." }
                                     }
