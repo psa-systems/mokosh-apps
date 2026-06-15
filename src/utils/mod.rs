@@ -5,6 +5,7 @@ pub mod duration;
 pub mod envelope;
 pub mod error;
 pub mod markdown;
+pub mod money;
 pub mod pagination;
 pub mod prefs;
 pub mod url;

@@ -232,18 +232,25 @@ fn fmt_history_dt(dt: chrono::DateTime<chrono::Utc>) -> String {
     dt.format("%b %-d, %Y %H:%M").to_string()
 }
 
-/// Validate an optional `yyyy-mm-dd` date field (PMS-317). Blank is allowed
-/// (`Ok`). A non-empty value must parse as a full calendar date, so a partial
-/// entry (e.g. a month with no day/year) is rejected before submit instead of
-/// being sent on. `label` names the field in the message.
+/// Validate an optional `yyyy-mm-dd` date field (PMS-317 / PMS-346). Blank is
+/// allowed (`Ok`). A non-empty value must parse as a full calendar date within
+/// a sane year range. The Due Date inputs are native `<input type="date">`,
+/// which only ever emit a valid date or empty, so the real gap this guards is
+/// an out-of-range year (e.g. `0007`); the inputs carry matching min/max so
+/// the picker rejects it natively too. `label` names the field in the message.
 fn validate_opt_date(raw: &str, label: &str) -> Result<(), String> {
     let s = raw.trim();
     if s.is_empty() {
         return Ok(());
     }
-    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
-        .map(|_| ())
-        .map_err(|_| format!("{label} must be a valid date."))
+    let d = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .map_err(|_| format!("{label} must be a valid date."))?;
+    let min = chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
+    let max = chrono::NaiveDate::from_ymd_opt(2100, 12, 31).unwrap();
+    if d < min || d > max {
+        return Err(format!("{label} must be between 2000 and 2100."));
+    }
+    Ok(())
 }
 
 /// Insert a date field, sending `null` (leaves the column unchanged under the
@@ -351,13 +358,8 @@ fn status_badge(status: &str) -> (BadgeVariant, &'static str) {
     }
 }
 
-/// Whole-dollar money, or "-" when absent.
-fn fmt_money(v: Option<f64>) -> String {
-    match v {
-        Some(n) => format!("${n:.0}"),
-        None => "-".to_string(),
-    }
-}
+// Money formatting is centralized in `crate::utils::money` (MAPPS-197).
+use crate::utils::money::format_money_f64;
 
 /// "Feb 28, 2025" from an ISO date string; raw string on parse failure,
 /// "-" when absent.
@@ -539,7 +541,7 @@ pub fn ProjectListPage() -> Element {
                                 None => "bg-gray-400",
                             };
                             let due = fmt_date(&p.target_end_date);
-                            let budget = fmt_money(p.budget_amount);
+                            let budget = format_money_f64(p.budget_amount);
                             let pid = p.id.to_string();
                             rsx! {
                                 Link {
@@ -773,8 +775,8 @@ pub fn ProjectNewPage() -> Element {
                             // Free-text so H:MM (e.g. "1:30") can be typed; a
                             // type="number" input blocks the colon. PMS-340.
                             r#type: "text",
-                            placeholder: "2.5 or 1:30",
-                            help: "Decimal hours (2.5) or H:MM (1:30).",
+                            placeholder: "2, 2.5, or 1:30",
+                            help: "Decimal hours or H:MM.",
                             value: budget_hours.read().clone(),
                             error: hours_err(),
                             oninput: move |e: FormEvent| budget_hours.set(e.value()),
@@ -1089,7 +1091,8 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 Card {
                                     title: "Overview",
                                     if let Some(d) = description {
-                                        p { class: "text-gray-700 dark:text-gray-300 whitespace-pre-wrap", "{d}" }
+                                        // PMS-309: render Markdown (sanitized) instead of raw text.
+                                        crate::components::Markdown { content: d }
                                     } else {
                                         p { class: "text-sm text-gray-400 italic", "No description provided." }
                                     }
@@ -1159,11 +1162,11 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     div { class: "space-y-3",
                                         div { class: "flex justify-between",
                                             span { class: "text-sm text-gray-500", "Total Budget" }
-                                            span { class: "font-medium", "{fmt_money(p.budget_amount)}" }
+                                            span { class: "font-medium", "{format_money_f64(p.budget_amount)}" }
                                         }
                                         div { class: "flex justify-between",
                                             span { class: "text-sm text-gray-500", "Spent" }
-                                            span { class: "font-medium text-green-600", "{fmt_money(p.actual_amount)}" }
+                                            span { class: "font-medium text-green-600", "{format_money_f64(p.actual_amount)}" }
                                         }
                                         div { class: "flex justify-between",
                                             span { class: "text-sm text-gray-500", "Remaining" }
@@ -1389,8 +1392,8 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                             // Free-text so H:MM (e.g. "1:30") can be typed; a
                             // type="number" input blocks the colon. PMS-319.
                             r#type: "text",
-                            placeholder: "2.5 or 1:30",
-                            help: "Decimal hours (2.5) or H:MM (1:30).",
+                            placeholder: "2, 2.5, or 1:30",
+                            help: "Decimal hours or H:MM.",
                             value: t_estimated.read().clone(),
                             oninput: move |e: FormEvent| t_estimated.set(e.value()),
                         }
@@ -1398,6 +1401,9 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                             name: "task_due",
                             label: "Due Date",
                             r#type: "date",
+                            // Bound the picker to a sane range (PMS-346).
+                            min: "2000-01-01",
+                            max: "2100-12-31",
                             value: t_due.read().clone(),
                             oninput: move |e: FormEvent| t_due.set(e.value()),
                         }
@@ -1581,8 +1587,8 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     label: "Budget Hours",
                                     // Free-text for H:MM input (PMS-340).
                                     r#type: "text",
-                                    placeholder: "2.5 or 1:30",
-                                    help: "Decimal hours (2.5) or H:MM (1:30).",
+                                    placeholder: "2, 2.5, or 1:30",
+                                    help: "Decimal hours or H:MM.",
                                     value: "{pe_budget_hours}",
                                     error: pe_hours_err(),
                                     oninput: move |e: FormEvent| pe_budget_hours.set(e.value()),
@@ -1988,8 +1994,8 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                         label: "Estimated Hours",
                         // Free-text so H:MM can be typed (PMS-319).
                         r#type: "text",
-                        placeholder: "2.5 or 1:30",
-                        help: "Decimal hours (2.5) or H:MM (1:30).",
+                        placeholder: "2, 2.5, or 1:30",
+                        help: "Decimal hours or H:MM.",
                         value: "{te_estimated}",
                         oninput: move |e: FormEvent| te_estimated.set(e.value()),
                     }
@@ -1998,6 +2004,9 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                     name: "te-due",
                     label: "Due Date",
                     r#type: "date",
+                    // Bound the picker to a sane range (PMS-346).
+                    min: "2000-01-01",
+                    max: "2100-12-31",
                     value: "{te_due}",
                     oninput: move |e: FormEvent| te_due.set(e.value()),
                 }

@@ -764,7 +764,7 @@ fn TargetRow(props: TargetRowProps) -> Element {
                     // Free-text so H:MM (e.g. "1:30") and fractional hours
                     // can be entered; type="number" blocks both. PMS-340.
                     r#type: "text",
-                    placeholder: "1.5 or 1:30",
+                    placeholder: "2, 2.5, or 1:30",
                     value: first_hours.read().clone(),
                     oninput: move |e: FormEvent| first_hours.set(e.value()),
                 }
@@ -774,7 +774,7 @@ fn TargetRow(props: TargetRowProps) -> Element {
                     name: "resolution_{props.priority_id}",
                     // Free-text for H:MM / fractional hours (PMS-340).
                     r#type: "text",
-                    placeholder: "8 or 8:30",
+                    placeholder: "2, 2.5, or 1:30",
                     value: resolution_hours.read().clone(),
                     oninput: move |e: FormEvent| resolution_hours.set(e.value()),
                 }

@@ -81,33 +81,9 @@ fn status_variant(raw: &str) -> BadgeVariant {
     }
 }
 
-/// Format an optional `Decimal` money value as `$1,234.56`, or `-` when
-/// absent. Thousands separators are inserted manually to avoid an extra
-/// formatting dependency.
-fn format_money_opt(amount: Option<Decimal>) -> String {
-    match amount {
-        Some(d) => format_money(d),
-        None => "-".to_string(),
-    }
-}
-
-fn format_money(amount: Decimal) -> String {
-    let rounded = amount.round_dp(2);
-    let negative = rounded.is_sign_negative();
-    let abs = rounded.abs();
-    let s = format!("{abs:.2}");
-    let (int_part, frac_part) = s.split_once('.').unwrap_or((s.as_str(), "00"));
-    let mut grouped = String::new();
-    let digits: Vec<char> = int_part.chars().collect();
-    for (i, ch) in digits.iter().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(*ch);
-    }
-    let sign = if negative { "-" } else { "" };
-    format!("{sign}${grouped}.{frac_part}")
-}
+// Money formatting is centralized in `crate::utils::money` (MAPPS-197) so
+// projects, billing, and contracts render currency identically.
+use crate::utils::money::{format_money, format_money_opt};
 
 /// Company options shared by the create/edit form's company picker. The
 /// list endpoint returns `CompanyResponse`; we only need id + name.
@@ -1085,6 +1061,20 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
         AppLayout { title: "{header_title}",
             PageHeader {
                 title: "{header_title}",
+                breadcrumbs: rsx! {
+                    crate::components::Breadcrumbs {
+                        items: vec![
+                            crate::components::BreadcrumbItem {
+                                label: "Contracts".to_string(),
+                                route: Some(Route::ContractList {}),
+                            },
+                            crate::components::BreadcrumbItem {
+                                label: header_title.clone(),
+                                route: None,
+                            },
+                        ],
+                    }
+                },
                 actions: rsx! {
                     Link {
                         to: Route::ContractEdit { id: edit_id },
@@ -1587,6 +1577,20 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
         AppLayout { title: "{header_title}",
             PageHeader {
                 title: "{header_title}",
+                breadcrumbs: rsx! {
+                    crate::components::Breadcrumbs {
+                        items: vec![
+                            crate::components::BreadcrumbItem {
+                                label: "Rate Cards".to_string(),
+                                route: Some(Route::RateCardList {}),
+                            },
+                            crate::components::BreadcrumbItem {
+                                label: header_title.clone(),
+                                route: None,
+                            },
+                        ],
+                    }
+                },
                 actions: rsx! {
                     Link {
                         to: Route::RateCardList {},

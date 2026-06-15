@@ -29,17 +29,10 @@ use crate::Route;
 /// Rows per page for the paginated billing list views.
 const PER_PAGE: usize = 25;
 
-/// Render a money string (the server sends decimals as JSON strings,
-/// e.g. `"2500.00"`) with a leading `$`. Empty / missing values render
-/// as `$0.00` so totals never show a blank.
-fn money(raw: &str) -> String {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        "$0.00".to_string()
-    } else {
-        format!("${trimmed}")
-    }
-}
+// Money formatting is centralized in `crate::utils::money` (MAPPS-197).
+// `format_money_str` parses the server's decimal string and renders it with
+// grouped thousands + two decimals, matching projects and contracts.
+use crate::utils::money::format_money_str;
 
 /// Map the server's snake_case `InvoiceStatus` tag to a title-case label.
 /// Unknown values fall through unchanged so future statuses don't vanish.
@@ -365,8 +358,8 @@ pub fn InvoiceListPage() -> Element {
                                     company: invoice.company_name.clone().unwrap_or_default(),
                                     date: invoice.invoice_date.unwrap_or_default(),
                                     due_date: invoice.due_date.unwrap_or_default(),
-                                    total: money(&invoice.total),
-                                    balance: money(&invoice.balance_due),
+                                    total: format_money_str(&invoice.total),
+                                    balance: format_money_str(&invoice.balance_due),
                                     status: invoice.status,
                                 }
                             }
@@ -691,12 +684,12 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                     let billing_contact_id = inv.billing_contact_id.map(|c| c.to_string());
                     let invoice_date = inv.invoice_date.clone().unwrap_or_default();
                     let due_date = inv.due_date.clone().unwrap_or_default();
-                    let subtotal = money(&inv.subtotal);
-                    let tax_amount = money(&inv.tax_amount);
-                    let discount_amount = money(&inv.discount_amount);
-                    let total = money(&inv.total);
-                    let amount_paid = money(&inv.amount_paid);
-                    let balance_due = money(&inv.balance_due);
+                    let subtotal = format_money_str(&inv.subtotal);
+                    let tax_amount = format_money_str(&inv.tax_amount);
+                    let discount_amount = format_money_str(&inv.discount_amount);
+                    let total = format_money_str(&inv.total);
+                    let amount_paid = format_money_str(&inv.amount_paid);
+                    let balance_due = format_money_str(&inv.balance_due);
                     rsx! {
                         div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
                             div { class: "lg:col-span-2",
@@ -749,8 +742,8 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                                     TableRow { key: "{line.id}",
                                                         TableCell { "{line.description}" }
                                                         TableCell { class: "text-right", "{line.quantity}" }
-                                                        TableCell { class: "text-right", "{money(&line.unit_price)}" }
-                                                        TableCell { class: "text-right font-medium", "{money(&line.total)}" }
+                                                        TableCell { class: "text-right", "{format_money_str(&line.unit_price)}" }
+                                                        TableCell { class: "text-right font-medium", "{format_money_str(&line.total)}" }
                                                     }
                                                 }
                                             }
@@ -1302,7 +1295,7 @@ pub fn PaymentListPage() -> Element {
                                     date: payment.payment_date.unwrap_or_default(),
                                     method: humanize_payment_method(&payment.payment_method),
                                     reference: payment.reference_number.unwrap_or_default(),
-                                    amount: money(&payment.amount),
+                                    amount: format_money_str(&payment.amount),
                                     on_deleted: move |_| { reload += 1; },
                                 }
                             }
