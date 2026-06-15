@@ -1085,6 +1085,20 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
         AppLayout { title: "{header_title}",
             PageHeader {
                 title: "{header_title}",
+                breadcrumbs: rsx! {
+                    crate::components::Breadcrumbs {
+                        items: vec![
+                            crate::components::BreadcrumbItem {
+                                label: "Contracts".to_string(),
+                                route: Some(Route::ContractList {}),
+                            },
+                            crate::components::BreadcrumbItem {
+                                label: header_title.clone(),
+                                route: None,
+                            },
+                        ],
+                    }
+                },
                 actions: rsx! {
                     Link {
                         to: Route::ContractEdit { id: edit_id },
@@ -1587,6 +1601,20 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
         AppLayout { title: "{header_title}",
             PageHeader {
                 title: "{header_title}",
+                breadcrumbs: rsx! {
+                    crate::components::Breadcrumbs {
+                        items: vec![
+                            crate::components::BreadcrumbItem {
+                                label: "Rate Cards".to_string(),
+                                route: Some(Route::RateCardList {}),
+                            },
+                            crate::components::BreadcrumbItem {
+                                label: header_title.clone(),
+                                route: None,
+                            },
+                        ],
+                    }
+                },
                 actions: rsx! {
                     Link {
                         to: Route::RateCardList {},
