@@ -209,6 +209,10 @@ fn fmt_change_value(v: &Option<serde_json::Value>) -> String {
             let t = s.trim();
             if t.is_empty() {
                 "(empty)".to_string()
+            } else if let Ok(d) = chrono::NaiveDate::parse_from_str(t, "%Y-%m-%d") {
+                // PMS-317: show dates the way the rest of the app does
+                // ("Mar 1, 2026"), not the raw yyyy-mm-dd the audit stores.
+                d.format("%b %-d, %Y").to_string()
             } else if looks_like_uuid(t) {
                 "(reference)".to_string()
             } else if t.chars().count() > 160 {
@@ -226,6 +230,20 @@ fn fmt_change_value(v: &Option<serde_json::Value>) -> String {
 /// "Feb 28, 2025 15:04" for a history timestamp.
 fn fmt_history_dt(dt: chrono::DateTime<chrono::Utc>) -> String {
     dt.format("%b %-d, %Y %H:%M").to_string()
+}
+
+/// Validate an optional `yyyy-mm-dd` date field (PMS-317). Blank is allowed
+/// (`Ok`). A non-empty value must parse as a full calendar date, so a partial
+/// entry (e.g. a month with no day/year) is rejected before submit instead of
+/// being sent on. `label` names the field in the message.
+fn validate_opt_date(raw: &str, label: &str) -> Result<(), String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Ok(());
+    }
+    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .map(|_| ())
+        .map_err(|_| format!("{label} must be a valid date."))
 }
 
 /// Insert a date field, sending `null` (leaves the column unchanged under the
@@ -1242,6 +1260,11 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 t_error.set("Please pick a status.".to_string());
                                 return;
                             }
+                            // Reject a partial/invalid due date (PMS-317).
+                            if let Err(e) = validate_opt_date(&due, "Due date") {
+                                t_error.set(e);
+                                return;
+                            }
                             // Accept decimal hours or H:MM (PMS-319), reusing
                             // the Log Time parser; estimated_hours is stored as
                             // fractional hours, so parse straight to hours.
@@ -1808,6 +1831,11 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
         }
         if te_title().trim().is_empty() {
             te_error.set("Task title is required.".to_string());
+            return;
+        }
+        // Reject a partial/invalid due date (PMS-317) before submit.
+        if let Err(e) = validate_opt_date(&te_due(), "Due date") {
+            te_error.set(e);
             return;
         }
         // estimated_hours: accept decimal or H:MM (PMS-319). Empty clears it;
