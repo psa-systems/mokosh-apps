@@ -15,11 +15,12 @@
 //!     (`/work-types`, `/task-statuses`, `/asset-types`) - no server
 //!     change was needed.
 //!
-//! The ticket statuses/types/priorities and project-type editors the
-//! issue also mentions are intentionally NOT built here: the server
-//! exposes those as read-only (no POST/PUT/DELETE) or as hardcoded
-//! VARCHAR enums, so a management editor is blocked on backend work.
-//! Tracked as follow-ups.
+//! The ticket lookup editors (statuses, priorities, types, queues,
+//! categories) live here too (MAPPS-172), wired to the management CRUD
+//! that shipped in PMS-321. The project-type editor (MAPPS-173) is still
+//! deferred: the server stored project type as a hardcoded VARCHAR enum
+//! until PMS-322 added a lookup table, and the client editor for it is a
+//! separate follow-up.
 //!
 //! CRUD conventions mirror `src/pages/billing.rs` (`TaxRateListPage`):
 //! page-local `Deserialize` row structs, `active_tenant_generation()`
