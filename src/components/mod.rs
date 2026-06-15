@@ -11,6 +11,7 @@ mod icons;
 mod layout;
 mod modal;
 mod overflow_actions;
+mod setting_form_modal;
 mod table;
 mod update_banner;
 
@@ -23,5 +24,6 @@ pub use icons::*;
 pub use layout::*;
 pub use modal::*;
 pub use overflow_actions::*;
+pub use setting_form_modal::*;
 pub use table::*;
 pub use update_banner::*;

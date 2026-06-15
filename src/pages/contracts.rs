@@ -14,8 +14,8 @@ use uuid::Uuid;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
-    PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
-    TableHeader, TableLoading, TableRow,
+    PlusIcon, Select, SelectOption, SettingFormModal, Table, TableBody, TableCell, TableEmpty,
+    TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::modules::contracts::{
     ContractHourBalanceResponse, ContractItemResponse, ContractResponse, CreateContractRequest,
@@ -1357,6 +1357,7 @@ fn ContractHourBalanceCard(
 #[component]
 pub fn RateCardListPage() -> Element {
     let can_edit = use_can_manage_billing();
+    let navigator = use_navigator();
     let mut page = use_signal(|| 1usize);
     let mut editing = use_signal(|| None::<RateCardFormState>);
     let current_page = (*page.read()).max(1);
@@ -1451,6 +1452,10 @@ pub fn RateCardListPage() -> Element {
                     onsaved: move |_| {
                         editing.set(None);
                         rate_cards_resource.restart();
+                    },
+                    oncreated: move |id: String| {
+                        editing.set(None);
+                        navigator.push(Route::RateCardDetail { id });
                     },
                     ondeleted: move |_| {
                         editing.set(None);
@@ -1659,6 +1664,9 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
                         editing_card.set(None);
                         card_resource.restart();
                     },
+                    // The detail page only ever edits an existing card, so a
+                    // create callback is never invoked here.
+                    oncreated: move |_: String| {},
                     ondeleted: move |_| {
                         editing_card.set(None);
                         navigator.push(Route::RateCardList {});
@@ -1694,6 +1702,14 @@ fn RateCardItemsCard(
     let name_by_id: std::collections::HashMap<Uuid, String> =
         work_types.iter().map(|w| (w.id, w.name.clone())).collect();
     let snap = items_resource.read_unchecked();
+    // Every work type already has a rate (or none are defined), so there is
+    // nothing left to add: disable the button rather than open a modal whose
+    // picker is empty.
+    let used_count = match &*snap {
+        Some(Some(resp)) => resp.data.len(),
+        _ => 0,
+    };
+    let can_add = !work_types.is_empty() && used_count < work_types.len();
     rsx! {
         Card {
             title: "Rates",
@@ -1702,6 +1718,7 @@ fn RateCardItemsCard(
                 Some(rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
+                        disabled: !can_add,
                         onclick: move |_| editing_item.set(Some(RateCardItemFormState::new())),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "Add Rate"
@@ -1854,6 +1871,9 @@ struct RateCardFormModalProps {
     state: RateCardFormState,
     onclose: EventHandler<()>,
     onsaved: EventHandler<()>,
+    /// Called with the new card's id after a successful CREATE, so the list
+    /// can jump straight to the new card to add rates (avoids a dead-end).
+    oncreated: EventHandler<String>,
     ondeleted: EventHandler<()>,
 }
 
@@ -1871,6 +1891,7 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
+    let oncreated = props.oncreated;
     let ondeleted = props.ondeleted;
 
     let save_id = initial.id.clone();
@@ -1894,23 +1915,25 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let result: Result<(), String> = match id {
-                    None => crate::hooks::fetch::api::post_authed::<RateCardResponse, _>(
+                match id {
+                    None => match crate::hooks::fetch::api::post_authed::<RateCardResponse, _>(
                         "/rate-cards",
                         &body,
                     )
                     .await
-                    .map(|_| ()),
-                    Some(id) => crate::hooks::fetch::api::put_authed::<RateCardResponse, _>(
+                    {
+                        Ok(card) => oncreated.call(card.id.to_string()),
+                        Err(err) => error.set(format!("Could not save rate card: {err}")),
+                    },
+                    Some(id) => match crate::hooks::fetch::api::put_authed::<RateCardResponse, _>(
                         &format!("/rate-cards/{id}"),
                         &body,
                     )
                     .await
-                    .map(|_| ()),
-                };
-                match result {
-                    Ok(()) => onsaved.call(()),
-                    Err(err) => error.set(format!("Could not save rate card: {err}")),
+                    {
+                        Ok(_) => onsaved.call(()),
+                        Err(err) => error.set(format!("Could not save rate card: {err}")),
+                    },
                 }
             }
             saving.set(false);
@@ -1947,68 +1970,41 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
         });
     };
 
-    let footer = rsx! {
-        if is_edit {
-            Button {
-                variant: ButtonVariant::Danger,
-                loading: *deleting.read(),
-                onclick: handle_delete,
-                "Delete"
-            }
-        }
-        div { class: "flex-1" }
-        Button {
-            variant: ButtonVariant::Secondary,
-            onclick: move |_| onclose.call(()),
-            "Cancel"
-        }
-        Button {
-            variant: ButtonVariant::Primary,
-            loading: *saving.read(),
-            onclick: handle_save,
-            if is_edit { "Save Changes" } else { "Create Rate Card" }
-        }
-    };
-
     rsx! {
-        crate::components::Modal {
-            open: true,
+        SettingFormModal {
             title: if is_edit { "Edit Rate Card".to_string() } else { "New Rate Card".to_string() },
-            size: crate::components::ModalSize::Medium,
+            is_edit,
+            saving: *saving.read(),
+            deleting: *deleting.read(),
+            error: error.read().clone(),
+            create_label: "Create Rate Card".to_string(),
             onclose: move |_| onclose.call(()),
-            footer,
-            div { class: "space-y-4",
-                if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
-                }
-                crate::components::Input {
-                    name: "rate_card_name",
-                    label: "Name",
-                    placeholder: "e.g. Standard 2026",
-                    required: true,
-                    value: name.read().clone(),
-                    oninput: move |e: FormEvent| name.set(e.value()),
-                }
-                crate::components::Input {
-                    name: "rate_card_description",
-                    label: "Description",
-                    placeholder: "Optional",
-                    value: description.read().clone(),
-                    oninput: move |e: FormEvent| description.set(e.value()),
-                }
-                crate::components::Checkbox {
-                    name: "rate_card_default",
-                    label: "Default rate card",
-                    help: "Used when a contract does not specify one.",
-                    checked: *is_default.read(),
-                    onchange: move |_| {
-                        let next = !*is_default.read();
-                        is_default.set(next);
-                    },
-                }
+            onsave: handle_save,
+            ondelete: handle_delete,
+            crate::components::Input {
+                name: "rate_card_name",
+                label: "Name",
+                placeholder: "e.g. Standard 2026",
+                required: true,
+                value: name.read().clone(),
+                oninput: move |e: FormEvent| name.set(e.value()),
+            }
+            crate::components::Input {
+                name: "rate_card_description",
+                label: "Description",
+                placeholder: "Optional",
+                value: description.read().clone(),
+                oninput: move |e: FormEvent| description.set(e.value()),
+            }
+            crate::components::Checkbox {
+                name: "rate_card_default",
+                label: "Default rate card",
+                help: "Used when a contract does not specify one.",
+                checked: *is_default.read(),
+                onchange: move |_| {
+                    let next = !*is_default.read();
+                    is_default.set(next);
+                },
             }
         }
     }
@@ -2136,6 +2132,15 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
                 return;
             }
         };
+        // `min="0"` on the inputs is only advisory (paste/programmatic input
+        // bypasses it), so reject negative rates client-side too.
+        if hourly_val.is_sign_negative()
+            || after_val.map(|v| v.is_sign_negative()).unwrap_or(false)
+            || emergency_val.map(|v| v.is_sign_negative()).unwrap_or(false)
+        {
+            error.set("Rates cannot be negative.".to_string());
+            return;
+        }
         saving.set(true);
         error.set(String::new());
         let body = UpsertRateCardItemRequest {
@@ -2196,81 +2201,54 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
         });
     };
 
-    let footer = rsx! {
-        if is_edit {
-            Button {
-                variant: ButtonVariant::Danger,
-                loading: *deleting.read(),
-                onclick: handle_delete,
-                "Delete"
-            }
-        }
-        div { class: "flex-1" }
-        Button {
-            variant: ButtonVariant::Secondary,
-            onclick: move |_| onclose.call(()),
-            "Cancel"
-        }
-        Button {
-            variant: ButtonVariant::Primary,
-            loading: *saving.read(),
-            onclick: handle_save,
-            if is_edit { "Save Changes" } else { "Add Rate" }
-        }
-    };
-
     rsx! {
-        crate::components::Modal {
-            open: true,
+        SettingFormModal {
             title: if is_edit { "Edit Rate".to_string() } else { "Add Rate".to_string() },
-            size: crate::components::ModalSize::Medium,
+            is_edit,
+            saving: *saving.read(),
+            deleting: *deleting.read(),
+            error: error.read().clone(),
+            create_label: "Add Rate".to_string(),
             onclose: move |_| onclose.call(()),
-            footer,
-            div { class: "space-y-4",
-                if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
-                }
-                crate::components::Select {
-                    name: "rate_item_work_type",
-                    label: "Work type",
-                    options,
-                    value: work_type_id.read().clone(),
-                    disabled: is_edit,
-                    onchange: move |e: FormEvent| work_type_id.set(e.value()),
-                }
-                crate::components::Input {
-                    name: "rate_item_hourly",
-                    label: "Hourly rate",
-                    r#type: "number",
-                    step: "0.01".to_string(),
-                    min: "0".to_string(),
-                    required: true,
-                    value: hourly.read().clone(),
-                    oninput: move |e: FormEvent| hourly.set(e.value()),
-                }
-                crate::components::Input {
-                    name: "rate_item_after",
-                    label: "After-hours rate",
-                    r#type: "number",
-                    step: "0.01".to_string(),
-                    min: "0".to_string(),
-                    placeholder: "Optional",
-                    value: after.read().clone(),
-                    oninput: move |e: FormEvent| after.set(e.value()),
-                }
-                crate::components::Input {
-                    name: "rate_item_emergency",
-                    label: "Emergency rate",
-                    r#type: "number",
-                    step: "0.01".to_string(),
-                    min: "0".to_string(),
-                    placeholder: "Optional",
-                    value: emergency.read().clone(),
-                    oninput: move |e: FormEvent| emergency.set(e.value()),
-                }
+            onsave: handle_save,
+            ondelete: handle_delete,
+            crate::components::Select {
+                name: "rate_item_work_type",
+                label: "Work type",
+                options,
+                value: work_type_id.read().clone(),
+                disabled: is_edit,
+                onchange: move |e: FormEvent| work_type_id.set(e.value()),
+            }
+            crate::components::Input {
+                name: "rate_item_hourly",
+                label: "Hourly rate",
+                r#type: "number",
+                step: "0.01".to_string(),
+                min: "0".to_string(),
+                required: true,
+                value: hourly.read().clone(),
+                oninput: move |e: FormEvent| hourly.set(e.value()),
+            }
+            crate::components::Input {
+                name: "rate_item_after",
+                label: "After-hours rate",
+                r#type: "number",
+                step: "0.01".to_string(),
+                min: "0".to_string(),
+                placeholder: "Optional",
+                value: after.read().clone(),
+                oninput: move |e: FormEvent| after.set(e.value()),
+            }
+            crate::components::Input {
+                name: "rate_item_emergency",
+                label: "Emergency rate",
+                r#type: "number",
+                step: "0.01".to_string(),
+                min: "0".to_string(),
+                placeholder: "Optional",
+                value: emergency.read().clone(),
+                oninput: move |e: FormEvent| emergency.set(e.value()),
             }
         }
     }
