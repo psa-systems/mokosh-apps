@@ -26,6 +26,16 @@ struct RemoteTimeEntry {
     ticket_id: Option<uuid::Uuid>,
     #[serde(default)]
     project_id: Option<uuid::Uuid>,
+    // Work-item names joined server-side (PMS-332) so the list can show the
+    // ticket/project and task name instead of a bare "Ticket"/"Project".
+    #[serde(default)]
+    ticket_number: Option<String>,
+    #[serde(default)]
+    ticket_title: Option<String>,
+    #[serde(default)]
+    project_name: Option<String>,
+    #[serde(default)]
+    task_title: Option<String>,
     #[serde(default)]
     notes: Option<String>,
     #[serde(default)]
@@ -104,6 +114,30 @@ fn monday_of_week(date: NaiveDate) -> NaiveDate {
         Weekday::Sun => 6,
     };
     date - Duration::days(offset)
+}
+
+/// Human label for a time entry's work item: "Ticket {n}: {title}" or
+/// "{project} · {task}" using the names joined server-side (PMS-332). Falls
+/// back to the bare kind when a name is missing, or "-" when unlinked.
+fn work_item_label(e: &RemoteTimeEntry) -> String {
+    if e.ticket_id.is_some() {
+        match (e.ticket_number.as_deref(), e.ticket_title.as_deref()) {
+            (Some(n), Some(t)) => format!("Ticket {n}: {t}"),
+            (Some(n), None) => format!("Ticket {n}"),
+            _ => "Ticket".to_string(),
+        }
+    } else if e.project_id.is_some() {
+        let p = e
+            .project_name
+            .clone()
+            .unwrap_or_else(|| "Project".to_string());
+        match e.task_title.as_deref() {
+            Some(t) if !t.is_empty() => format!("{p} · {t}"),
+            _ => p,
+        }
+    } else {
+        "-".to_string()
+    }
 }
 
 /// Time entry list page
@@ -211,6 +245,7 @@ pub fn TimeEntryListPage() -> Element {
                                         .filter(|s| !s.is_empty())
                                         .unwrap_or_else(|| "-".to_string());
                                     let status = e.billing_status.clone();
+                                    let wi_label = work_item_label(e);
                                     let entry = e.clone();
                                     rsx! {
                                         TableRow {
@@ -226,11 +261,11 @@ pub fn TimeEntryListPage() -> Element {
                                                         Link {
                                                             to: Route::TicketDetail { id: tid.to_string() },
                                                             class: "font-medium text-blue-600 hover:text-blue-500",
-                                                            "Ticket"
+                                                            "{wi_label}"
                                                         }
                                                     }
                                                 } else if e.project_id.is_some() {
-                                                    span { class: "font-medium text-gray-700 dark:text-gray-300", "Project" }
+                                                    span { class: "font-medium text-gray-700 dark:text-gray-300", "{wi_label}" }
                                                 } else {
                                                     span { class: "text-gray-400", "-" }
                                                 }
@@ -1139,13 +1174,7 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
 
-    let work_item_label = if ticket_id.is_some() {
-        "Ticket"
-    } else if project_id.is_some() {
-        "Project"
-    } else {
-        "none"
-    };
+    let wi_label = work_item_label(&entry);
 
     let handle_save = move |_| {
         if *saving.read() || *deleting.read() {
@@ -1264,7 +1293,7 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
                     }
                 }
                 p { class: "text-xs text-gray-500 dark:text-gray-400",
-                    "Work item: {work_item_label}. To move this entry to a different work item, delete it and log again."
+                    "Work item: {wi_label}. To move this entry to a different work item, delete it and log again."
                 }
                 Select {
                     name: "edit_work_type",
