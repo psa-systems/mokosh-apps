@@ -82,77 +82,127 @@ pub fn UpdateBanner() -> Element {
         return rsx! {};
     }
 
-    // `read()` rather than `read_unchecked()` so this component
-    // re-renders when the resource resolves. The unchecked variant
-    // would silently miss the transition from Loading -> Ready.
-    let v: SystemVersion = match &*version_resource.read() {
-        Some(Ok(v)) => v.clone(),
-        _ => return rsx! {},
+    // PMS-313: zero layout shift. The async version check used to make
+    // this component render nothing until a result arrived, then pop a
+    // ~40px banner in and shove the TopBar / sidebar / content down
+    // (non-zero CLS on every admin login on a stale client).
+    //
+    // Fix: for admins the outer container ALWAYS renders, so the
+    // banner's height is reserved from first paint. While the check is
+    // in flight we reserve that height invisibly (`Reserving`); once it
+    // resolves we either fade the banner into the already-reserved space
+    // (`Show`, zero shift) or collapse the reserved height away
+    // (`Collapsed`) with a deliberate 200ms transition. The collapse
+    // uses the `grid-template-rows: 1fr -> 0fr` pattern so it animates to
+    // the content's natural height with no hard-coded pixel value and no
+    // clipping of a wrapped multi-line banner on narrow viewports.
+    //
+    // `read()` (not `read_unchecked()`) so the component re-renders when
+    // the resource transitions Loading -> Ready.
+    enum BannerState {
+        /// Version check in flight: reserve height, paint nothing.
+        Reserving,
+        /// Update available and not dismissed: show the banner.
+        Show(SystemVersion),
+        /// Resolved with no update, fetch error, or dismissed: collapse.
+        Collapsed,
+    }
+
+    let state = match &*version_resource.read() {
+        None => BannerState::Reserving,
+        Some(Ok(v)) => {
+            let has_update = v.server.update_available() || v.client.update_available();
+            let dismissed = *dismissed_local.read() || is_dismissed(&dismissal_key(v));
+            if has_update && !dismissed {
+                BannerState::Show(v.clone())
+            } else {
+                BannerState::Collapsed
+            }
+        }
+        Some(Err(_)) => BannerState::Collapsed,
     };
 
-    let server_update = v.server.update_available();
-    let client_update = v.client.update_available();
-    if !server_update && !client_update {
-        return rsx! {};
-    }
-
-    let key = dismissal_key(&v);
-    if *dismissed_local.read() || is_dismissed(&key) {
-        return rsx! {};
-    }
-
-    // `VersionPair::update_available()` only returns true when
-    // `latest` is `Some`, so the unwraps here are unreachable. They
-    // also avoid carrying owned `String`s into the rsx! closures
-    // just to please the lifetime checker.
-    let client_running = v.client.running.clone();
-    let client_latest = v
-        .client
-        .latest
-        .clone()
-        .unwrap_or_else(|| "unknown".to_string());
-    let server_running = v.server.running.clone();
-    let server_latest = v
-        .server
-        .latest
-        .clone()
-        .unwrap_or_else(|| "unknown".to_string());
+    // `1fr` reserves/keeps the row's natural height; `0fr` collapses it.
+    let rows = match &state {
+        BannerState::Collapsed => "grid-rows-[0fr]",
+        _ => "grid-rows-[1fr]",
+    };
+    // Only the shown banner is visible; the reserved placeholder and the
+    // collapsing row stay transparent (AC: invisible on first paint).
+    let opacity = match &state {
+        BannerState::Show(_) => "opacity-100",
+        _ => "opacity-0",
+    };
 
     rsx! {
         div {
-            class: "border-b border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/30 text-amber-900 dark:text-amber-200",
-            div {
-                class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex items-center justify-between gap-4 text-sm",
-                div { class: "flex-1",
-                    span { class: "font-medium", "Update available." }
-                    " "
-                    if client_update {
-                        span { "Client: {client_running} → {client_latest}. " }
-                    }
-                    if server_update {
-                        span { "Server: {server_running} → {server_latest}. " }
-                    }
-                    span { class: "text-amber-700 dark:text-amber-300",
-                        "Bump the tag(s) in your compose.yml and run "
-                        code { class: "px-1 py-0.5 bg-amber-100 dark:bg-amber-900/50 rounded text-xs",
-                            "docker compose pull && docker compose up --detach"
+            class: "grid overflow-hidden transition-all duration-200 ease-in-out {rows} {opacity}",
+            // Inner wrapper is the grid row whose height the transition
+            // animates; `overflow-hidden` clips its content as it collapses.
+            div { class: "overflow-hidden",
+                {match state {
+                    // `VersionPair::update_available()` only returns true
+                    // when `latest` is `Some`, so the unwraps here are
+                    // unreachable; they avoid carrying owned `String`s
+                    // into the rsx! closures just to please the borrow
+                    // checker.
+                    BannerState::Show(v) => {
+                        let server_update = v.server.update_available();
+                        let client_update = v.client.update_available();
+                        let client_running = v.client.running.clone();
+                        let client_latest =
+                            v.client.latest.clone().unwrap_or_else(|| "unknown".to_string());
+                        let server_running = v.server.running.clone();
+                        let server_latest =
+                            v.server.latest.clone().unwrap_or_else(|| "unknown".to_string());
+                        let key = dismissal_key(&v);
+                        rsx! {
+                            div {
+                                class: "border-b border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/30 text-amber-900 dark:text-amber-200",
+                                div {
+                                    class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex items-center justify-between gap-4 text-sm",
+                                    div { class: "flex-1",
+                                        span { class: "font-medium", "Update available." }
+                                        " "
+                                        if client_update {
+                                            span { "Client: {client_running} → {client_latest}. " }
+                                        }
+                                        if server_update {
+                                            span { "Server: {server_running} → {server_latest}. " }
+                                        }
+                                        span { class: "text-amber-700 dark:text-amber-300",
+                                            "Bump the tag(s) in your compose.yml and run "
+                                            code { class: "px-1 py-0.5 bg-amber-100 dark:bg-amber-900/50 rounded text-xs",
+                                                "docker compose pull && docker compose up --detach"
+                                            }
+                                            " on the host to apply."
+                                        }
+                                    }
+                                    button {
+                                        class: "shrink-0 p-1 rounded hover:bg-amber-100 dark:hover:bg-amber-900/40",
+                                        title: "Dismiss until next update",
+                                        aria_label: "Dismiss update notification",
+                                        onclick: {
+                                            let key = key.clone();
+                                            move |_| {
+                                                mark_dismissed(&key);
+                                                dismissed_local.set(true);
+                                            }
+                                        },
+                                        XMarkIcon { size: IconSize::Small, class: "text-amber-700 dark:text-amber-300".to_string() }
+                                    }
+                                }
+                            }
                         }
-                        " on the host to apply."
                     }
-                }
-                button {
-                    class: "shrink-0 p-1 rounded hover:bg-amber-100 dark:hover:bg-amber-900/40",
-                    title: "Dismiss until next update",
-                    aria_label: "Dismiss update notification",
-                    onclick: {
-                        let key = key.clone();
-                        move |_| {
-                            mark_dismissed(&key);
-                            dismissed_local.set(true);
-                        }
+                    // One banner-line tall, transparent: reserves the
+                    // height so the real banner fades in without shifting
+                    // anything below it.
+                    BannerState::Reserving => rsx! {
+                        div { class: "border-b border-transparent py-2 text-sm", "\u{00a0}" }
                     },
-                    XMarkIcon { size: IconSize::Small, class: "text-amber-700 dark:text-amber-300".to_string() }
-                }
+                    BannerState::Collapsed => rsx! {},
+                }}
             }
         }
     }
