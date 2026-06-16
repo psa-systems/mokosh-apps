@@ -8,9 +8,9 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, Input, PageHeader,
-    Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
-    TableLoading, TableRow,
+    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ConfirmDialog, DataTable, Input,
+    PageHeader, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
+    TableHeader, TableLoading, TableRow,
 };
 use crate::hooks::auth::use_auth;
 use crate::modules::auth::UserRole;
@@ -120,6 +120,15 @@ pub fn TeamPage() -> Element {
     let is_loading = snapshot.is_none();
     let rows = snapshot.as_ref().cloned().unwrap_or_default();
 
+    // PMS-369: the Revoke button used to fire DELETE /invitations/{id}
+    // on first click with no confirmation, so a misclick on the row
+    // immediately destroyed a pending invite. The Revoke button below
+    // now stages the target id and email into `pending_revoke`, which
+    // opens a ConfirmDialog; only the explicit Revoke press inside the
+    // dialog fires the DELETE. Cancel and the X both clear the signal.
+    let mut pending_revoke = use_signal::<Option<(uuid::Uuid, String)>>(|| None);
+    let mut revoking = use_signal(|| false);
+
     rsx! {
         AppLayout { title: "Team",
             PageHeader {
@@ -163,6 +172,71 @@ pub fn TeamPage() -> Element {
                 }
             }
 
+            // PMS-369: Revoke confirmation. `pending_revoke` carries the
+            // (id, email) of the row whose Revoke button was clicked; the
+            // dialog renders with the email inlined so the user can see
+            // which invite they are about to revoke. `revoking` gates the
+            // dialog's loading state so a click during the in-flight
+            // request does not double-fire.
+            {
+                let pending = pending_revoke.read().clone();
+                let open = pending.is_some();
+                let email_label = pending
+                    .as_ref()
+                    .map(|(_, e)| e.clone())
+                    .unwrap_or_default();
+                let message = if email_label.is_empty() {
+                    "Revoke this invitation? The invitee will not be able to accept it.".to_string()
+                } else {
+                    format!(
+                        "Revoke the invitation for {email_label}? They will not be able to accept it."
+                    )
+                };
+                let mut invites_for_confirm = invites;
+                let on_confirm = move |_: ()| {
+                    let Some((id, _)) = pending_revoke.read().clone() else {
+                        return;
+                    };
+                    if revoking() {
+                        return;
+                    }
+                    revoking.set(true);
+                    spawn(async move {
+                        #[cfg(feature = "web")]
+                        {
+                            let _ = crate::hooks::fetch::api::delete_authed(&format!(
+                                "/invitations/{id}"
+                            ))
+                            .await;
+                            invites_for_confirm.restart();
+                        }
+                        #[cfg(not(feature = "web"))]
+                        {
+                            let _ = id;
+                        }
+                        revoking.set(false);
+                        pending_revoke.set(None);
+                    });
+                };
+                rsx! {
+                    ConfirmDialog {
+                        open,
+                        title: "Revoke invitation".to_string(),
+                        message,
+                        confirm_text: "Revoke".to_string(),
+                        cancel_text: "Cancel".to_string(),
+                        destructive: true,
+                        loading: revoking(),
+                        onconfirm: on_confirm,
+                        oncancel: move |_| {
+                            if !revoking() {
+                                pending_revoke.set(None);
+                            }
+                        },
+                    }
+                }
+            }
+
             div { class: "mt-6",
                 DataTable {
                     loading: is_loading,
@@ -196,18 +270,7 @@ pub fn TeamPage() -> Element {
                                             Button {
                                                 variant: ButtonVariant::Secondary,
                                                 onclick: move |_| {
-                                                    let id = inv.id;
-                                                    let mut invites = invites;
-                                                    spawn(async move {
-                                                        #[cfg(feature = "web")]
-                                                        {
-                                                            let _ = crate::hooks::fetch::api::delete_authed(
-                                                                &format!("/invitations/{id}"),
-                                                            )
-                                                            .await;
-                                                            invites.restart();
-                                                        }
-                                                    });
+                                                    pending_revoke.set(Some((inv.id, inv.email.clone())));
                                                 },
                                                 "Revoke"
                                             }
