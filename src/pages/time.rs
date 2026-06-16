@@ -746,43 +746,57 @@ pub fn TimesheetsPage() -> Element {
     let end = start + Duration::days(6);
 
     // Pivot the week's entries into per-work-item rows with seven day buckets
-    // (Mon..Sun), summing duration into each (row, weekday) cell.
-    let label_for = |e: &RemoteTimeEntry| -> String {
+    // (Mon..Sun), summing duration into each (row, weekday) cell. Each row also
+    // carries a link to its work item's detail page (MAPPS-206 for projects,
+    // and tickets too for parity), or `None` for internal time.
+    let work_item_of = |e: &RemoteTimeEntry| -> (String, Option<Route>) {
         if let Some(tid) = e.ticket_id {
-            return tickets
+            let label = tickets
                 .iter()
                 .find(|t| t.id == tid)
                 .map(|t| format!("{}: {}", t.ticket_number, t.title))
                 .unwrap_or_else(|| format!("Ticket {}", short_id(tid)));
+            return (
+                label,
+                Some(Route::TicketDetail {
+                    id: tid.to_string(),
+                }),
+            );
         }
         if let Some(pid) = e.project_id {
-            return projects
+            let label = projects
                 .iter()
                 .find(|p| p.id == pid)
                 .map(|p| format!("Project: {}", p.name))
                 .unwrap_or_else(|| format!("Project {}", short_id(pid)));
+            return (
+                label,
+                Some(Route::ProjectDetail {
+                    id: pid.to_string(),
+                }),
+            );
         }
-        "Internal".to_string()
+        ("Internal".to_string(), None)
     };
 
-    let mut rows: Vec<(String, [i64; 7])> = Vec::new();
+    let mut rows: Vec<(String, Option<Route>, [i64; 7])> = Vec::new();
     for e in &entries {
         let day_idx = (e.date - start).num_days();
         if !(0..7).contains(&day_idx) {
             continue;
         }
-        let label = label_for(e);
-        let pos = match rows.iter().position(|(l, _)| *l == label) {
+        let (label, route) = work_item_of(e);
+        let pos = match rows.iter().position(|(l, _, _)| *l == label) {
             Some(p) => p,
             None => {
-                rows.push((label, [0; 7]));
+                rows.push((label, route, [0; 7]));
                 rows.len() - 1
             }
         };
-        rows[pos].1[day_idx as usize] += e.duration_minutes;
+        rows[pos].2[day_idx as usize] += e.duration_minutes;
     }
     let mut daily_totals = [0i64; 7];
-    for (_, buckets) in &rows {
+    for (_, _, buckets) in &rows {
         for (i, m) in buckets.iter().enumerate() {
             daily_totals[i] += m;
         }
@@ -1042,13 +1056,22 @@ pub fn TimesheetsPage() -> Element {
                                     }
                                 }
                             } else {
-                                for (label , buckets) in rows.iter() {
+                                for (label , route , buckets) in rows.iter() {
                                     {
                                         let row_total = buckets.iter().sum::<i64>();
                                         rsx! {
                                             tr {
-                                                td { class: "px-6 py-3 text-sm text-gray-900 dark:text-white",
-                                                    "{label}"
+                                                td { class: "px-6 py-3 text-sm",
+                                                    // MAPPS-206: link the work item to its detail.
+                                                    if let Some(r) = route {
+                                                        Link {
+                                                            to: r.clone(),
+                                                            class: "font-medium text-blue-600 hover:text-blue-500",
+                                                            "{label}"
+                                                        }
+                                                    } else {
+                                                        span { class: "text-gray-900 dark:text-white", "{label}" }
+                                                    }
                                                 }
                                                 for m in buckets.iter() {
                                                     td { class: "px-4 py-3 text-center text-sm",
