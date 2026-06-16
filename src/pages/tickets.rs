@@ -871,6 +871,12 @@ pub fn TicketNewPage() -> Element {
                             value: company_name.read().clone(),
                             selected_id: picker_selected_id,
                             required: true,
+                            // PMS-352: opt this picker into the inline
+                            // "+ Create new company" affordance so a
+                            // first-time technician on a tenant with zero
+                            // companies can finish the New Ticket flow
+                            // without leaving the form to seed a company.
+                            allow_inline_create: true,
                             onselect: move |(id, name): (String, String)| {
                                 company_id.set(id);
                                 company_name.set(name);
