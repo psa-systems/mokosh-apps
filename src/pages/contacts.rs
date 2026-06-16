@@ -523,7 +523,8 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let mut country = use_signal(|| initial.address_country.clone());
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
-    // Per-field inline validation errors (MAPPS-177).
+    // Per-field inline validation errors (MAPPS-177, MAPPS-213).
+    let mut website_err = use_signal(String::new);
     let mut phone_err = use_signal(String::new);
     let mut postal_err = use_signal(String::new);
     let mut country_err = use_signal(String::new);
@@ -544,10 +545,18 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
         error.set(String::new());
+        website_err.set(String::new());
         phone_err.set(String::new());
         postal_err.set(String::new());
         country_err.set(String::new());
-        // Validate the formatted/structured fields inline before submit (MAPPS-177).
+        // Validate the formatted/structured fields inline before submit (MAPPS-177, MAPPS-213).
+        let website_value = match validate_website_field(&website.read()) {
+            Ok(v) => v,
+            Err(msg) => {
+                website_err.set(msg);
+                return;
+            }
+        };
         let phone_value = match validate_phone_field(&phone.read(), "Phone") {
             Ok(v) => v,
             Err(msg) => {
@@ -574,7 +583,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             "name": name.read().trim(),
             "company_type": company_type.read().clone(),
             "industry": optional_string(&industry.read()),
-            "website": optional_string(&website.read()),
+            "website": website_value,
             "phone": phone_value,
             "address": {
                 "line1": optional_string(&line1.read()),
@@ -594,17 +603,15 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                     id: uuid::Uuid,
                 }
                 let result = match &mode {
-                    CompanyFormMode::Create => {
-                        crate::hooks::fetch::api::post_authed::<CompanyId, _>(
-                            "/contacts/companies",
-                            &body,
-                        )
-                        .await
-                        .map(|c| c.id.to_string())
-                    }
+                    CompanyFormMode::Create => crate::hooks::fetch::api::post_authed_typed::<
+                        CompanyId,
+                        _,
+                    >("/contacts/companies", &body)
+                    .await
+                    .map(|c| c.id.to_string()),
                     CompanyFormMode::Edit { id } => {
                         let path = format!("/contacts/companies/{id}");
-                        crate::hooks::fetch::api::put_authed::<CompanyId, _>(&path, &body)
+                        crate::hooks::fetch::api::put_authed_typed::<CompanyId, _>(&path, &body)
                             .await
                             .map(|_| id.clone())
                     }
@@ -614,7 +621,15 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         navigator.push(Route::CompanyDetail { id });
                     }
                     Err(err) => {
-                        error.set(format!("Could not save company: {err}"));
+                        // If the server rejected Website specifically (e.g. a
+                        // scheme rule the client did not mirror), highlight the
+                        // field rather than only showing the generic banner
+                        // (MAPPS-210 / MAPPS-213).
+                        if let Some(msg) = err.field_message("website") {
+                            website_err.set(msg);
+                        } else {
+                            error.set(format!("Could not save company: {}", err.user_message()));
+                        }
                     }
                 }
             }
@@ -641,6 +656,8 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         label: "Company Name",
                         placeholder: "Enter company name",
                         required: true,
+                        // Mirror the server cap (CreateCompanyRequest.name: max 255).
+                        maxlength: "255",
                         value: name.read().clone(),
                         oninput: move |e: FormEvent| name.set(e.value()),
                     }
@@ -655,6 +672,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         name: "industry",
                         label: "Industry",
                         placeholder: "e.g. Healthcare",
+                        maxlength: "255",
                         value: industry.read().clone(),
                         oninput: move |e: FormEvent| industry.set(e.value()),
                     }
@@ -662,7 +680,9 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         name: "website",
                         label: "Website",
                         placeholder: "https://example.com",
+                        maxlength: "255",
                         value: website.read().clone(),
+                        error: website_err(),
                         oninput: move |e: FormEvent| website.set(e.value()),
                     }
                     crate::components::Input {
@@ -682,30 +702,36 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                     crate::components::Input {
                         name: "address_line1",
                         label: "Street",
+                        maxlength: "255",
                         value: line1.read().clone(),
                         oninput: move |e: FormEvent| line1.set(e.value()),
                     }
                     crate::components::Input {
                         name: "address_line2",
                         label: "Street (line 2)",
+                        maxlength: "255",
                         value: line2.read().clone(),
                         oninput: move |e: FormEvent| line2.set(e.value()),
                     }
                     crate::components::Input {
                         name: "address_city",
                         label: "City",
+                        maxlength: "255",
                         value: city.read().clone(),
                         oninput: move |e: FormEvent| city.set(e.value()),
                     }
                     crate::components::Input {
                         name: "address_state",
                         label: "State / Region",
+                        maxlength: "255",
                         value: state.read().clone(),
                         oninput: move |e: FormEvent| state.set(e.value()),
                     }
                     crate::components::Input {
                         name: "address_postal_code",
                         label: "Postal Code",
+                        // Matches the client postal rule (max 12 chars).
+                        maxlength: "12",
                         value: postal.read().clone(),
                         error: postal_err(),
                         oninput: move |e: FormEvent| postal.set(e.value()),
@@ -714,6 +740,8 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         name: "address_country",
                         label: "Country",
                         placeholder: "US",
+                        // 2-letter ISO code (see validate_country_field).
+                        maxlength: "2",
                         value: country.read().clone(),
                         error: country_err(),
                         oninput: move |e: FormEvent| country.set(e.value()),
@@ -808,6 +836,41 @@ fn validate_postal_field(raw: &str) -> Result<serde_json::Value, String> {
     } else {
         Err("Postal code must be 2-12 letters, digits, spaces, or hyphens.".to_string())
     }
+}
+
+/// Validate an optional Website URL. Blank -> `Ok(None)`. Otherwise the value
+/// must carry an explicit `http`/`https` scheme and a non-empty host. Dangerous
+/// schemes (`javascript:`, `data:`, `vbscript:`, anything else) and malformed
+/// URLs are rejected with an inline message *before* any request, so the user
+/// learns Website is the problem instead of hitting an opaque server 422
+/// (MAPPS-213). The scheme check reuses `utils::url::scheme_of`, the same
+/// whitespace-collapsing detection `safe_href` applies at render time, so
+/// `java\tscript:` cannot slip through.
+fn validate_website_field(raw: &str) -> Result<serde_json::Value, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    const MSG: &str = "Website must be a valid http(s) URL (e.g. https://example.com).";
+    // Reject anything but an explicit http/https scheme (covers javascript:,
+    // data:, vbscript:, mailto:, scheme-less input, ...).
+    match crate::utils::url::scheme_of(trimmed).as_deref() {
+        Some("http") | Some("https") => {}
+        _ => return Err(MSG.to_string()),
+    }
+    // Require `scheme://host` with a non-empty host and no embedded whitespace
+    // so `http://`, `http:/x`, and `https://exa mple.com` are rejected.
+    let host = trimmed
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or("")
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("");
+    if host.is_empty() || trimmed.chars().any(|c| c.is_whitespace()) {
+        return Err(MSG.to_string());
+    }
+    Ok(serde_json::Value::String(trimmed.to_string()))
 }
 
 /// Validate an optional IANA time zone. Blank -> `Ok(None)`. A light client
@@ -2756,9 +2819,35 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
 mod validation_tests {
     use super::{
         validate_country_field, validate_phone_field, validate_postal_field,
-        validate_timezone_field,
+        validate_timezone_field, validate_website_field,
     };
     use serde_json::Value;
+
+    #[test]
+    fn website_requires_http_scheme_and_rejects_dangerous() {
+        // Blank -> null (Website is optional).
+        assert_eq!(validate_website_field("  ").unwrap(), Value::Null);
+        // Valid http/https pass through unchanged.
+        assert_eq!(
+            validate_website_field("https://example.com").unwrap(),
+            Value::String("https://example.com".into())
+        );
+        assert_eq!(
+            validate_website_field("http://example.com/path?q=1").unwrap(),
+            Value::String("http://example.com/path?q=1".into())
+        );
+        // Dangerous schemes are rejected before any request.
+        assert!(validate_website_field("javascript:alert(1)").is_err());
+        assert!(validate_website_field("java\tscript:alert(1)").is_err());
+        assert!(validate_website_field("data:text/html,<script>").is_err());
+        assert!(validate_website_field("vbscript:msgbox(1)").is_err());
+        // Non-http schemes and scheme-less input are rejected.
+        assert!(validate_website_field("mailto:a@example.com").is_err());
+        assert!(validate_website_field("example.com").is_err());
+        // Malformed http(s) URLs are rejected.
+        assert!(validate_website_field("http://").is_err());
+        assert!(validate_website_field("https://exa mple.com").is_err());
+    }
 
     #[test]
     fn phone_normalizes_and_validates() {

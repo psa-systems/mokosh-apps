@@ -26,6 +26,11 @@ pub struct InputProps {
     /// the browser rejects absurd magnitudes. No-op for non-number inputs.
     #[props(default)]
     max: Option<String>,
+    /// `maxlength` attribute. Caps the number of characters the field accepts
+    /// so unbounded free text cannot be entered with no feedback (MAPPS-213).
+    /// Set it to match the server's column/validation cap.
+    #[props(default)]
+    maxlength: Option<String>,
     /// Placeholder text
     #[props(default)]
     placeholder: String,
@@ -85,6 +90,7 @@ pub fn Input(props: InputProps) -> Element {
                 step: props.step.as_deref(),
                 min: props.min.as_deref(),
                 max: props.max.as_deref(),
+                maxlength: props.maxlength.as_deref(),
                 class: "{class}",
                 placeholder: "{props.placeholder}",
                 value: "{props.value}",

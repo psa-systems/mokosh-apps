@@ -355,8 +355,16 @@ pub mod api {
         Network(String),
         /// Server returned a non-2xx status. `message` is the server's
         /// `error.message` field when it parsed, otherwise the raw body
-        /// truncated to a sensible length.
-        Status { code: u16, message: String },
+        /// truncated to a sensible length. `fields` carries the per-field
+        /// validation errors from a 422 envelope (`error.errors`) so callers
+        /// can highlight the offending field instead of only showing the
+        /// generic banner (MAPPS-210 / MAPPS-213); empty for non-validation
+        /// errors or bodies without a field breakdown.
+        Status {
+            code: u16,
+            message: String,
+            fields: Vec<crate::utils::error::FieldError>,
+        },
         /// Response was 2xx but the body could not be decoded into the
         /// target type.
         Decode(String),
@@ -368,7 +376,7 @@ pub mod api {
         pub fn user_message(&self) -> String {
             match self {
                 Self::Network(_) => "Network error. Check your connection and try again.".into(),
-                Self::Status { code, message } => match *code {
+                Self::Status { code, message, .. } => match *code {
                     401 => "Your session has expired. Please sign in again.".into(),
                     403 => "You do not have permission to do that.".into(),
                     404 => "The requested resource was not found.".into(),
@@ -392,6 +400,20 @@ pub mod api {
                 _ => None,
             }
         }
+
+        /// Server-side validation message for `field`, if the response carried
+        /// a field-level breakdown naming it. Lets a form highlight the
+        /// offending field rather than showing only the generic status banner
+        /// (MAPPS-213).
+        pub fn field_message(&self, field: &str) -> Option<String> {
+            match self {
+                Self::Status { fields, .. } => fields
+                    .iter()
+                    .find(|f| f.field == field)
+                    .map(|f| f.message.clone()),
+                _ => None,
+            }
+        }
     }
 
     #[cfg(feature = "web")]
@@ -399,7 +421,7 @@ pub mod api {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
                 Self::Network(e) => write!(f, "network error: {e}"),
-                Self::Status { code, message } => {
+                Self::Status { code, message, .. } => {
                     if message.is_empty() {
                         write!(f, "http {code}")
                     } else {
@@ -423,16 +445,17 @@ pub mod api {
                 .map_err(|e| ApiError::Decode(e.to_string()));
         }
         let body = response.text().await.unwrap_or_default();
-        let message = serde_json::from_str::<crate::utils::error::ErrorResponse>(&body)
-            .map(|env| env.error.message)
+        let (message, fields) = serde_json::from_str::<crate::utils::error::ErrorResponse>(&body)
+            .map(|env| (env.error.message, env.error.errors.unwrap_or_default()))
             .unwrap_or_else(|_| {
                 // Fall back to the raw body, capped so a runaway HTML
                 // 500 page doesn't end up in a toast.
-                body.chars().take(200).collect()
+                (body.chars().take(200).collect(), Vec::new())
             });
         Err(ApiError::Status {
             code: status,
             message,
+            fields,
         })
     }
 
@@ -477,6 +500,7 @@ pub mod api {
         let t = current_access_token().ok_or_else(|| ApiError::Status {
             code: 401,
             message: String::new(),
+            fields: Vec::new(),
         })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::put(&url)
@@ -495,6 +519,7 @@ pub mod api {
         let t = current_access_token().ok_or_else(|| ApiError::Status {
             code: 401,
             message: String::new(),
+            fields: Vec::new(),
         })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::delete(&url)
@@ -508,12 +533,14 @@ pub mod api {
             Ok(())
         } else {
             let body = resp.text().await.unwrap_or_default();
-            let message = serde_json::from_str::<crate::utils::error::ErrorResponse>(&body)
-                .map(|env| env.error.message)
-                .unwrap_or_else(|_| body.chars().take(200).collect());
+            let (message, fields) =
+                serde_json::from_str::<crate::utils::error::ErrorResponse>(&body)
+                    .map(|env| (env.error.message, env.error.errors.unwrap_or_default()))
+                    .unwrap_or_else(|_| (body.chars().take(200).collect(), Vec::new()));
             Err(ApiError::Status {
                 code: status,
                 message,
+                fields,
             })
         }
     }
