@@ -99,21 +99,36 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
             let id = id.clone();
             let name = props.value.clone();
             let onclear = props.onclear;
+            // PMS-344 follow-up (layout): skip the picker's own label
+            // when the parent passed an empty string. The inline ticket-
+            // detail editor wraps the picker in a `DetailItem` that
+            // already renders "Asset" on the left side of the row, so
+            // letting the picker render a second label produced a
+            // duplicated "Asset" inside the value column. Same convention
+            // the inline Status/Priority/Assigned-To `Select` editors
+            // already follow (they pass `label: ""`).
+            let show_label = !props.label.trim().is_empty();
             return rsx! {
-                div { class: "space-y-1",
-                    label { class: "block text-sm font-medium text-gray-700 dark:text-gray-300",
-                        "{props.label}"
-                        if props.required {
-                            span { class: "text-red-500 ml-0.5", "*" }
+                div { class: "space-y-1 w-full",
+                    if show_label {
+                        label { class: "block text-sm font-medium text-gray-700 dark:text-gray-300",
+                            "{props.label}"
+                            if props.required {
+                                span { class: "text-red-500 ml-0.5", "*" }
+                            }
                         }
                     }
                     div {
-                        class: "flex items-center justify-between border border-gray-300 dark:border-gray-700 rounded-md px-3 py-2 bg-gray-50 dark:bg-gray-900",
-                        div { class: "min-w-0",
+                        // w-full + min-w-0 so the chip fills its parent
+                        // (the DetailItem `dd` cell when used inline)
+                        // instead of escaping rightward, and the long
+                        // name / uuid truncate cleanly inside.
+                        class: "flex items-center justify-between border border-gray-300 dark:border-gray-700 rounded-md px-3 py-2 bg-gray-50 dark:bg-gray-900 w-full min-w-0",
+                        div { class: "min-w-0 flex-1 text-left",
                             p { class: "text-sm font-medium text-gray-900 dark:text-gray-100 truncate", "{name}" }
                             p { class: "text-xs text-gray-500 truncate", "{id}" }
                         }
-                        div { class: "flex items-center gap-1 shrink-0",
+                        div { class: "flex items-center gap-1 shrink-0 ml-2",
                             button {
                                 r#type: "button",
                                 class: "text-xs text-blue-600 hover:text-blue-500 px-2 py-1",
