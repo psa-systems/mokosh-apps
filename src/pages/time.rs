@@ -398,7 +398,7 @@ pub fn TimeEntryNewPage() -> Element {
     });
     let work_types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOption>>("/work-types")
+        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOption>>("/work-types?per_page=100")
             .await
             .ok()
             .map(|p| p.data)
@@ -1252,7 +1252,7 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
 
     let work_types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOption>>("/work-types")
+        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOption>>("/work-types?per_page=100")
             .await
             .ok()
             .map(|p| p.data)
