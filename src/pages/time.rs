@@ -12,17 +12,31 @@ use crate::components::{
 use crate::utils::Paginated;
 use crate::Route;
 
-/// A time entry (`GET /api/v1/time-entries`). Names aren't joined into the
-/// response, so the list renders ids/links rather than ticket titles.
-#[derive(Clone, Debug, Deserialize)]
+/// A time entry (`GET /api/v1/time-entries`). The work-item names (ticket
+/// number/title, project name, task title) are joined server-side (PMS-332),
+/// so the list shows real names via `work_item_label` rather than bare ids.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 struct RemoteTimeEntry {
+    id: uuid::Uuid,
     date: NaiveDate,
     #[serde(default)]
     duration_minutes: i64,
     #[serde(default)]
+    work_type_id: Option<uuid::Uuid>,
+    #[serde(default)]
     ticket_id: Option<uuid::Uuid>,
     #[serde(default)]
     project_id: Option<uuid::Uuid>,
+    // Work-item names joined server-side (PMS-332) so the list can show the
+    // ticket/project and task name instead of a bare "Ticket"/"Project".
+    #[serde(default)]
+    ticket_number: Option<String>,
+    #[serde(default)]
+    ticket_title: Option<String>,
+    #[serde(default)]
+    project_name: Option<String>,
+    #[serde(default)]
+    task_title: Option<String>,
     #[serde(default)]
     notes: Option<String>,
     #[serde(default)]
@@ -103,16 +117,42 @@ fn monday_of_week(date: NaiveDate) -> NaiveDate {
     date - Duration::days(offset)
 }
 
+/// Human label for a time entry's work item: "Ticket {n}: {title}" or
+/// "{project} · {task}" using the names joined server-side (PMS-332). Falls
+/// back to the bare kind when a name is missing, or "-" when unlinked.
+fn work_item_label(e: &RemoteTimeEntry) -> String {
+    if e.ticket_id.is_some() {
+        match (e.ticket_number.as_deref(), e.ticket_title.as_deref()) {
+            (Some(n), Some(t)) => format!("Ticket {n}: {t}"),
+            (Some(n), None) => format!("Ticket {n}"),
+            _ => "Ticket".to_string(),
+        }
+    } else if e.project_id.is_some() {
+        let p = e
+            .project_name
+            .clone()
+            .unwrap_or_else(|| "Project".to_string());
+        match e.task_title.as_deref() {
+            Some(t) if !t.is_empty() => format!("{p} · {t}"),
+            _ => p,
+        }
+    } else {
+        "-".to_string()
+    }
+}
+
 /// Time entry list page
 #[component]
 pub fn TimeEntryListPage() -> Element {
-    let entries_resource = use_resource(|| async {
+    let mut entries_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimeEntry>>("/time-entries")
             .await
             .ok()
             .map(|p| p.data)
     });
+    // MAPPS-166: click-to-edit a time entry via the modal below.
+    let mut selected_entry = use_signal(|| None::<RemoteTimeEntry>);
 
     let snapshot = entries_resource.read_unchecked().clone();
     // `None` while loading; `Some(None)` on fetch failure; `Some(Some(rows))`.
@@ -206,18 +246,37 @@ pub fn TimeEntryListPage() -> Element {
                                         .filter(|s| !s.is_empty())
                                         .unwrap_or_else(|| "-".to_string());
                                     let status = e.billing_status.clone();
+                                    let wi_label = work_item_label(e);
+                                    let entry = e.clone();
                                     rsx! {
                                         TableRow {
+                                            clickable: true,
+                                            onclick: move |_| selected_entry.set(Some(entry.clone())),
                                             TableCell { class: "text-gray-500", "{e.date}" }
                                             TableCell {
                                                 if let Some(tid) = e.ticket_id {
-                                                    Link {
-                                                        to: Route::TicketDetail { id: tid.to_string() },
-                                                        class: "font-medium text-blue-600 hover:text-blue-500",
-                                                        "Ticket"
+                                                    // Stop the link click from also opening the
+                                                    // row's edit modal; let it just navigate.
+                                                    span {
+                                                        onclick: move |evt: MouseEvent| evt.stop_propagation(),
+                                                        Link {
+                                                            to: Route::TicketDetail { id: tid.to_string() },
+                                                            class: "font-medium text-blue-600 hover:text-blue-500",
+                                                            "{wi_label}"
+                                                        }
                                                     }
-                                                } else if e.project_id.is_some() {
-                                                    span { class: "font-medium text-gray-700 dark:text-gray-300", "Project" }
+                                                } else if let Some(pid) = e.project_id {
+                                                    // PMS-320: link the project like the ticket
+                                                    // above. stop_propagation so the link
+                                                    // navigates instead of opening the edit modal.
+                                                    span {
+                                                        onclick: move |evt: MouseEvent| evt.stop_propagation(),
+                                                        Link {
+                                                            to: Route::ProjectDetail { id: pid.to_string() },
+                                                            class: "font-medium text-blue-600 hover:text-blue-500",
+                                                            "{wi_label}"
+                                                        }
+                                                    }
                                                 } else {
                                                     span { class: "text-gray-400", "-" }
                                                 }
@@ -240,6 +299,17 @@ pub fn TimeEntryListPage() -> Element {
                             }
                         }
                     }
+                }
+            }
+
+            if let Some(entry) = selected_entry() {
+                TimeEntryEditModal {
+                    entry,
+                    onclose: move |_| selected_entry.set(None),
+                    onsaved: move |_| {
+                        selected_entry.set(None);
+                        entries_resource.restart();
+                    },
                 }
             }
         }
@@ -393,14 +463,18 @@ pub fn TimeEntryNewPage() -> Element {
                             error.set("Please pick a work type.".to_string());
                             return;
                         }
-                        // Mirror the input's min/max bounds so a value that
-                        // slips past browser validation (or non-browser submit)
-                        // is still rejected: positive, decimal, at most 24h.
-                        let hours_val: f64 = match hrs.trim().parse() {
-                            Ok(h) if h > 0.0 && h <= 24.0 => h,
+                        // The Hours field is free-text (it accepts H:MM as
+                        // well as decimal), so the submit path owns all
+                        // validation: parse either shape into whole minutes
+                        // and require 0 < t <= 24h.
+                        let duration_minutes = match crate::utils::duration::parse_input_to_minutes(
+                            &hrs,
+                        ) {
+                            Some(m) if m > 0 && m <= 24 * 60 => m,
                             _ => {
                                 error.set(
-                                    "Enter hours greater than 0 and no more than 24.".to_string(),
+                                    "Enter time as hours (2.5) or H:MM (1:30), greater than 0 and at most 24h."
+                                        .to_string(),
                                 );
                                 return;
                             }
@@ -451,7 +525,6 @@ pub fn TimeEntryNewPage() -> Element {
                                 return;
                             }
                         };
-                        let duration_minutes = (hours_val * 60.0).round() as i64;
                         let date = Utc::now().date_naive().to_string();
 
                         is_submitting.set(true);
@@ -539,15 +612,12 @@ pub fn TimeEntryNewPage() -> Element {
                     crate::components::Input {
                         name: "hours",
                         label: "Hours",
-                        r#type: "number",
-                        // Decimal hours only; HH:MM (e.g. "0:30") is not
-                        // supported. step/min keep 0.25, 0.5, ... valid while
-                        // the browser rejects negatives and zero; max caps
-                        // absurd magnitudes (e.g. 1000h) at a single day.
-                        step: "0.25",
-                        min: "0.25",
-                        max: "24",
-                        placeholder: "0.00",
+                        // Free-text so H:MM (e.g. "0:30") can be typed; a
+                        // type="number" input blocks the colon. PMS-314.
+                        // Validation lives in the submit handler.
+                        r#type: "text",
+                        placeholder: "2, 2.5, or 1:30",
+                        help: "Decimal hours or H:MM.",
                         required: true,
                         value: hours.read().clone(),
                         oninput: move |e: FormEvent| hours.set(e.value()),
@@ -676,43 +746,57 @@ pub fn TimesheetsPage() -> Element {
     let end = start + Duration::days(6);
 
     // Pivot the week's entries into per-work-item rows with seven day buckets
-    // (Mon..Sun), summing duration into each (row, weekday) cell.
-    let label_for = |e: &RemoteTimeEntry| -> String {
+    // (Mon..Sun), summing duration into each (row, weekday) cell. Each row also
+    // carries a link to its work item's detail page (MAPPS-206 for projects,
+    // and tickets too for parity), or `None` for internal time.
+    let work_item_of = |e: &RemoteTimeEntry| -> (String, Option<Route>) {
         if let Some(tid) = e.ticket_id {
-            return tickets
+            let label = tickets
                 .iter()
                 .find(|t| t.id == tid)
                 .map(|t| format!("{}: {}", t.ticket_number, t.title))
                 .unwrap_or_else(|| format!("Ticket {}", short_id(tid)));
+            return (
+                label,
+                Some(Route::TicketDetail {
+                    id: tid.to_string(),
+                }),
+            );
         }
         if let Some(pid) = e.project_id {
-            return projects
+            let label = projects
                 .iter()
                 .find(|p| p.id == pid)
                 .map(|p| format!("Project: {}", p.name))
                 .unwrap_or_else(|| format!("Project {}", short_id(pid)));
+            return (
+                label,
+                Some(Route::ProjectDetail {
+                    id: pid.to_string(),
+                }),
+            );
         }
-        "Internal".to_string()
+        ("Internal".to_string(), None)
     };
 
-    let mut rows: Vec<(String, [i64; 7])> = Vec::new();
+    let mut rows: Vec<(String, Option<Route>, [i64; 7])> = Vec::new();
     for e in &entries {
         let day_idx = (e.date - start).num_days();
         if !(0..7).contains(&day_idx) {
             continue;
         }
-        let label = label_for(e);
-        let pos = match rows.iter().position(|(l, _)| *l == label) {
+        let (label, route) = work_item_of(e);
+        let pos = match rows.iter().position(|(l, _, _)| *l == label) {
             Some(p) => p,
             None => {
-                rows.push((label, [0; 7]));
+                rows.push((label, route, [0; 7]));
                 rows.len() - 1
             }
         };
-        rows[pos].1[day_idx as usize] += e.duration_minutes;
+        rows[pos].2[day_idx as usize] += e.duration_minutes;
     }
     let mut daily_totals = [0i64; 7];
-    for (_, buckets) in &rows {
+    for (_, _, buckets) in &rows {
         for (i, m) in buckets.iter().enumerate() {
             daily_totals[i] += m;
         }
@@ -745,6 +829,12 @@ pub fn TimesheetsPage() -> Element {
     // A week that has been submitted (pending) can be withdrawn; one that is
     // draft/rejected can be (re)submitted.
     let is_pending = approval == "pending";
+    // PMS-310: make the empty-week state self-explanatory. The current week
+    // drives the "jump back" control; the hint explains why Submit is greyed
+    // out (no time logged) rather than leaving the user with a dead button.
+    let current_week = monday_of_week(today);
+    let is_current_week = start == current_week;
+    let show_no_entries_hint = !is_pending && !already_approved && !has_entries;
     let submitting = *is_submitting.read();
     let withdrawing = *is_withdrawing.read();
     let msg = action_msg.read().clone();
@@ -806,16 +896,25 @@ pub fn TimesheetsPage() -> Element {
                             }
                         } else {
                             // Draft / rejected: open the submit confirmation modal.
-                            Button {
-                                variant: ButtonVariant::Primary,
-                                disabled: already_approved || !has_entries,
-                                onclick: move |_| {
-                                    action_msg.set(String::new());
-                                    action_err.set(String::new());
-                                    certified.set(false);
-                                    show_submit_modal.set(true);
-                                },
-                                "Submit Timesheet"
+                            // Column so the disabled reason (PMS-310) can sit
+                            // directly under the button, right-aligned with it.
+                            div { class: "flex flex-col items-end gap-1",
+                                Button {
+                                    variant: ButtonVariant::Primary,
+                                    disabled: already_approved || !has_entries,
+                                    onclick: move |_| {
+                                        action_msg.set(String::new());
+                                        action_err.set(String::new());
+                                        certified.set(false);
+                                        show_submit_modal.set(true);
+                                    },
+                                    "Submit Timesheet"
+                                }
+                                if show_no_entries_hint {
+                                    span { class: "text-xs text-gray-500 dark:text-gray-400",
+                                        "No time logged this week yet."
+                                    }
+                                }
                             }
                         }
                     }
@@ -847,8 +946,25 @@ pub fn TimesheetsPage() -> Element {
                         },
                         ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
                     }
-                    span { class: "text-lg font-medium text-gray-900 dark:text-white",
-                        "{week_label}"
+                    div { class: "flex flex-col items-center gap-1",
+                        span { class: "text-lg font-medium text-gray-900 dark:text-white",
+                            "{week_label}"
+                        }
+                        // PMS-310: one-click return to the current week (only
+                        // shown when paged away from it), so a future/empty
+                        // week is not a dead end.
+                        if !is_current_week {
+                            button {
+                                r#type: "button",
+                                class: "text-xs font-medium text-blue-600 hover:text-blue-500 dark:text-blue-400",
+                                onclick: move |_| {
+                                    action_msg.set(String::new());
+                                    action_err.set(String::new());
+                                    week_start.set(current_week);
+                                },
+                                "Jump to current week"
+                            }
+                        }
                     }
                     button {
                         r#type: "button",
@@ -917,21 +1033,45 @@ pub fn TimesheetsPage() -> Element {
                                     }
                                 }
                             } else if !has_entries {
+                                // MAPPS-201: empty-week prompt + one-click path
+                                // to a new entry for the current week. Submit
+                                // stays disabled until an entry exists.
                                 tr {
                                     td {
-                                        class: "px-6 py-8 text-center text-sm text-gray-500",
+                                        class: "px-6 py-8 text-center",
                                         colspan: "9",
-                                        "No time logged this week."
+                                        p { class: "text-sm text-gray-500 dark:text-gray-400",
+                                            "No time logged this week yet. Select a time to log for this week."
+                                        }
+                                        div { class: "mt-3",
+                                            Link {
+                                                to: Route::TimeEntryNew {},
+                                                Button {
+                                                    variant: ButtonVariant::Primary,
+                                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                                    "Log Time"
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             } else {
-                                for (label , buckets) in rows.iter() {
+                                for (label , route , buckets) in rows.iter() {
                                     {
                                         let row_total = buckets.iter().sum::<i64>();
                                         rsx! {
                                             tr {
-                                                td { class: "px-6 py-3 text-sm text-gray-900 dark:text-white",
-                                                    "{label}"
+                                                td { class: "px-6 py-3 text-sm",
+                                                    // MAPPS-206: link the work item to its detail.
+                                                    if let Some(r) = route {
+                                                        Link {
+                                                            to: r.clone(),
+                                                            class: "font-medium text-blue-600 hover:text-blue-500",
+                                                            "{label}"
+                                                        }
+                                                    } else {
+                                                        span { class: "text-gray-900 dark:text-white", "{label}" }
+                                                    }
                                                 }
                                                 for m in buckets.iter() {
                                                     td { class: "px-4 py-3 text-center text-sm",
@@ -1046,6 +1186,243 @@ pub fn TimesheetsPage() -> Element {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Time-entry edit modal (MAPPS-166)
+//
+// Click-to-edit a logged time entry. Edits the common fields (work type,
+// hours, date, description, billable) and supports delete. The work item
+// (ticket/project) is intentionally NOT changeable here: the server's PUT
+// direct-sets ticket_id/project_id (no COALESCE) and never recomputes
+// company_id, so changing them would risk a stale company. Those ids are
+// re-sent unchanged so the partial-looking update does not null them. `task_id`
+// is not in the time-entry response, so it cannot be echoed; the entry's task
+// is preserved server-side by PMS-328 (COALESCE on task_id when omitted). To
+// move an entry to a different work item, delete it and re-log.
+// ============================================================================
+
+#[derive(Props, Clone, PartialEq)]
+struct TimeEntryEditModalProps {
+    entry: RemoteTimeEntry,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
+    let entry = props.entry.clone();
+    let eid = entry.id;
+    let ticket_id = entry.ticket_id;
+    let project_id = entry.project_id;
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+
+    let work_types_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOption>>("/work-types")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+    let work_types = work_types_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    let mut work_type_options = vec![SelectOption::new("", "Select a work type")];
+    work_type_options.extend(
+        work_types
+            .iter()
+            .map(|w| SelectOption::new(w.id.to_string(), w.name.clone())),
+    );
+
+    let mut work_type = use_signal(|| {
+        entry
+            .work_type_id
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+    });
+    // Pre-fill in a clean, parseable shape honoring the duration-format
+    // pref (PMS-314); avoids raw decimals like "0.16666666666666666".
+    let mut hours = use_signal(|| crate::utils::duration::fmt_input(entry.duration_minutes));
+    let mut date = use_signal(|| entry.date.to_string());
+    let mut description = use_signal(|| entry.notes.clone().unwrap_or_default());
+    let mut is_billable = use_signal(|| entry.is_billable);
+    let mut saving = use_signal(|| false);
+    let mut deleting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let wi_label = work_item_label(&entry);
+
+    let handle_save = move |_| {
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        let wtid = work_type.read().trim().to_string();
+        if wtid.is_empty() {
+            error.set("Please pick a work type.".to_string());
+            return;
+        }
+        let duration_minutes = match crate::utils::duration::parse_input_to_minutes(&hours.read()) {
+            Some(m) if m > 0 && m <= 24 * 60 => m,
+            _ => {
+                error.set(
+                    "Enter time as hours (2.5) or H:MM (1:30), greater than 0 and at most 24h."
+                        .to_string(),
+                );
+                return;
+            }
+        };
+        let d = date.read().trim().to_string();
+        if d.is_empty() {
+            error.set("Please pick a date.".to_string());
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        let desc = description.read().clone();
+        let billable = *is_billable.read();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                // Re-send ticket/project so the direct-set update keeps them.
+                // `task_id` is intentionally omitted: the response does not
+                // carry it, so we cannot echo the current value; PMS-328 makes
+                // the server preserve task_id when it is absent (COALESCE).
+                let body = serde_json::json!({
+                    "date": d,
+                    "duration_minutes": duration_minutes,
+                    "work_type_id": wtid,
+                    "notes": desc,
+                    "is_billable": billable,
+                    "ticket_id": ticket_id,
+                    "project_id": project_id,
+                });
+                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
+                    &format!("/time-entries/{eid}"),
+                    &body,
+                )
+                .await
+                {
+                    Ok(_) => onsaved.call(()),
+                    Err(e) => error.set(format!("Could not save time entry: {e}")),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    let handle_delete = move |_| {
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        deleting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let confirmed = web_sys::window()
+                    .and_then(|w| {
+                        w.confirm_with_message("Delete this time entry? This cannot be undone.")
+                            .ok()
+                    })
+                    .unwrap_or(false);
+                if confirmed {
+                    match crate::hooks::fetch::api::delete_authed(&format!("/time-entries/{eid}"))
+                        .await
+                    {
+                        Ok(()) => onsaved.call(()),
+                        Err(e) => error.set(format!("Could not delete time entry: {e}")),
+                    }
+                }
+            }
+            deleting.set(false);
+        });
+    };
+
+    rsx! {
+        Modal {
+            open: true,
+            title: "Edit Time Entry",
+            size: crate::components::ModalSize::Medium,
+            onclose: move |_| onclose.call(()),
+            footer: rsx! {
+                Button {
+                    variant: ButtonVariant::Danger,
+                    loading: *deleting.read(),
+                    onclick: handle_delete,
+                    "Delete"
+                }
+                div { class: "flex-1" }
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| onclose.call(()),
+                    "Cancel"
+                }
+                Button {
+                    variant: ButtonVariant::Primary,
+                    loading: *saving.read(),
+                    onclick: handle_save,
+                    "Save Changes"
+                }
+            },
+            div { class: "space-y-4",
+                if !error.read().is_empty() {
+                    div { class: "rounded-md bg-red-50 dark:bg-red-900/20 p-3",
+                        p { class: "text-sm text-red-600 dark:text-red-400", "{error.read()}" }
+                    }
+                }
+                p { class: "text-xs text-gray-500 dark:text-gray-400",
+                    "Work item: {wi_label}. To move this entry to a different work item, delete it and log again."
+                }
+                Select {
+                    name: "edit_work_type",
+                    label: "Work Type",
+                    options: work_type_options,
+                    value: work_type.read().clone(),
+                    required: true,
+                    onchange: move |e: FormEvent| work_type.set(e.value()),
+                }
+                crate::components::Input {
+                    name: "edit_hours",
+                    label: "Hours",
+                    // Free-text so H:MM (e.g. "0:30") can be typed; a
+                    // type="number" input blocks the colon. PMS-314.
+                    // The save handler enforces 0 < t <= 24h.
+                    r#type: "text",
+                    placeholder: "2, 2.5, or 1:30",
+                    help: "Decimal hours or H:MM.",
+                    required: true,
+                    value: hours.read().clone(),
+                    oninput: move |e: FormEvent| hours.set(e.value()),
+                }
+                crate::components::DateField {
+                    name: "edit_date",
+                    label: "Date",
+                    required: true,
+                    value: date.read().clone(),
+                    oninput: move |e: FormEvent| date.set(e.value()),
+                }
+                crate::components::Textarea {
+                    name: "edit_description",
+                    label: "Description",
+                    rows: 3,
+                    value: description.read().clone(),
+                    oninput: move |e: FormEvent| description.set(e.value()),
+                }
+                Checkbox {
+                    name: "edit_billable",
+                    label: "Billable",
+                    checked: *is_billable.read(),
+                    onchange: move |_| {
+                        let c = *is_billable.read();
+                        is_billable.set(!c);
+                    },
                 }
             }
         }

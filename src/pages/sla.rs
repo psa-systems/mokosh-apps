@@ -658,6 +658,13 @@ fn TargetRow(props: TargetRowProps) -> Element {
     let mut operational_hours = use_signal(|| init_ops.clone());
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
+    // PMS-369: the Remove button used to block-confirm via
+    // `window.confirm_with_message`, which the cc-reviews/mokosh-2
+    // reviewer correctly flagged as the kind of unstyled native dialog
+    // that reads like "no confirmation". Switch to the polished
+    // ConfirmDialog component so the destructive action gets a styled
+    // modal consistent with the rest of the app.
+    let mut confirming_delete = use_signal(|| false);
 
     let onsaved = props.onsaved;
     let policy_id = props.policy_id.clone();
@@ -718,22 +725,32 @@ fn TargetRow(props: TargetRowProps) -> Element {
         });
     };
 
-    let delete_target_id = target_id.clone();
-    let handle_delete = move |_| {
-        let Some(id) = delete_target_id.clone() else {
-            return;
-        };
-        if *saving.read() || *deleting.read() {
+    // PMS-369: opening the dialog is now the Remove button's only
+    // immediate side effect; the actual DELETE fires from
+    // `on_confirm_delete` below when the user clicks Remove inside the
+    // ConfirmDialog. Clone `target_id` for each closure so neither
+    // takes ownership of the other's copy.
+    let open_target_id = target_id.clone();
+    let open_delete_confirm = move |_| {
+        if open_target_id.is_none() || *saving.read() || *deleting.read() {
             return;
         }
-        deleting.set(true);
-        spawn(async move {
-            #[cfg(feature = "web")]
-            {
-                let confirmed = web_sys::window()
-                    .and_then(|w| w.confirm_with_message("Remove this SLA target?").ok())
-                    .unwrap_or(false);
-                if confirmed {
+        confirming_delete.set(true);
+    };
+
+    let on_confirm_delete = {
+        let delete_target_id = target_id.clone();
+        move |_: ()| {
+            let Some(id) = delete_target_id.clone() else {
+                return;
+            };
+            if *deleting.read() {
+                return;
+            }
+            deleting.set(true);
+            spawn(async move {
+                #[cfg(feature = "web")]
+                {
                     let path = format!("/sla/targets/{id}");
                     match crate::hooks::fetch::api::delete_authed_typed(&path).await {
                         Ok(()) => {
@@ -746,9 +763,10 @@ fn TargetRow(props: TargetRowProps) -> Element {
                         Err(err) => crate::hooks::push_api_error(&err),
                     }
                 }
-            }
-            deleting.set(false);
-        });
+                deleting.set(false);
+                confirming_delete.set(false);
+            });
+        }
     };
 
     let has_target = target_id.is_some();
@@ -761,8 +779,10 @@ fn TargetRow(props: TargetRowProps) -> Element {
             TableCell {
                 crate::components::Input {
                     name: "first_{props.priority_id}",
-                    r#type: "number",
-                    placeholder: "e.g. 1",
+                    // Free-text so H:MM (e.g. "1:30") and fractional hours
+                    // can be entered; type="number" blocks both. PMS-340.
+                    r#type: "text",
+                    placeholder: "2, 2.5, or 1:30",
                     value: first_hours.read().clone(),
                     oninput: move |e: FormEvent| first_hours.set(e.value()),
                 }
@@ -770,8 +790,9 @@ fn TargetRow(props: TargetRowProps) -> Element {
             TableCell {
                 crate::components::Input {
                     name: "resolution_{props.priority_id}",
-                    r#type: "number",
-                    placeholder: "e.g. 8",
+                    // Free-text for H:MM / fractional hours (PMS-340).
+                    r#type: "text",
+                    placeholder: "2, 2.5, or 1:30",
                     value: resolution_hours.read().clone(),
                     oninput: move |e: FormEvent| resolution_hours.set(e.value()),
                 }
@@ -801,11 +822,33 @@ fn TargetRow(props: TargetRowProps) -> Element {
                             variant: ButtonVariant::Danger,
                             size: crate::components::ButtonSize::Small,
                             loading: *deleting.read(),
-                            onclick: handle_delete,
+                            onclick: open_delete_confirm,
                             "Remove"
                         }
                     }
                 }
+            }
+            // PMS-369: the polished ConfirmDialog replaces the native
+            // browser confirm. Rendering it inside the row's last
+            // TableCell keeps the modal alive only while this row is in
+            // the DOM, so navigating away cleanly tears it down.
+            crate::components::ConfirmDialog {
+                open: confirming_delete(),
+                title: "Remove SLA target".to_string(),
+                message: format!(
+                    "Remove the {} SLA target? The policy will fall back to no target for this priority until you set a new one.",
+                    props.priority_name
+                ),
+                confirm_text: "Remove".to_string(),
+                cancel_text: "Cancel".to_string(),
+                destructive: true,
+                loading: *deleting.read(),
+                onconfirm: on_confirm_delete,
+                oncancel: move |_| {
+                    if !*deleting.read() {
+                        confirming_delete.set(false);
+                    }
+                },
             }
         }
     }
@@ -1448,6 +1491,13 @@ fn parse_hours(value: &str) -> Option<rust_decimal::Decimal> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return None;
+    }
+    // Accept H:MM as well as a plain decimal (PMS-340). For H:MM, reuse the
+    // shared minute parser (so validation matches the Log Time field) and
+    // convert to exact Decimal hours; a plain decimal keeps its exact value.
+    if trimmed.contains(':') {
+        let mins = crate::utils::duration::parse_input_to_minutes(trimmed)?;
+        return Some(rust_decimal::Decimal::from(mins) / rust_decimal::Decimal::from(60));
     }
     trimmed.parse::<rust_decimal::Decimal>().ok()
 }

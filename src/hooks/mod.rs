@@ -16,6 +16,7 @@ mod sidebar;
 pub mod theme;
 pub mod toast;
 pub mod update_check;
+pub mod version_cache;
 
 pub use auth::*;
 pub use fetch::*;
@@ -23,3 +24,4 @@ pub use sidebar::*;
 pub use theme::use_apply_theme;
 pub use toast::*;
 pub use update_check::use_update_check;
+pub use version_cache::{use_version_cache, use_version_cache_provider, CachedVersion};

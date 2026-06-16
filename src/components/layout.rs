@@ -185,6 +185,8 @@ fn SidebarContent() -> Element {
                     NavItem { to: Route::Team {}, icon: rsx!(UsersIcon {}), label: "Team" }
                     NavItem { to: Route::AuditLog {}, icon: rsx!(DocumentIcon {}), label: "Audit Log" }
                     NavItem { to: Route::SlaManagement {}, icon: rsx!(DocumentIcon {}), label: "SLA Management" }
+                    // MAPPS-169: single entry into the centralized Settings hub.
+                    NavItem { to: Route::SettingsHome {}, icon: rsx!(CogIcon {}), label: "Settings" }
                 }
             }
 
@@ -268,14 +270,32 @@ struct NavItemProps {
     label: String,
 }
 
+/// Map a route to the nav list it lives under, so a detail page keeps its
+/// parent section highlighted (PMS-312). Routes without a list parent map to
+/// themselves, preserving exact-match highlighting for top-level pages.
+fn section_route(route: &Route) -> Route {
+    match route {
+        Route::TicketDetail { .. } => Route::TicketList {},
+        Route::ProjectDetail { .. } => Route::ProjectList {},
+        Route::CompanyDetail { .. } => Route::CompanyList {},
+        Route::ContactDetail { .. } => Route::ContactList {},
+        Route::ContractDetail { .. } => Route::ContractList {},
+        Route::RateCardDetail { .. } => Route::RateCardList {},
+        Route::InvoiceDetail { .. } => Route::InvoiceList {},
+        Route::AssetDetail { .. } => Route::AssetList {},
+        Route::KBArticleDetail { .. } => Route::KBHome {},
+        Route::ReportDetail { .. } => Route::Reports {},
+        other => other.clone(),
+    }
+}
+
 #[component]
 fn NavItem(props: NavItemProps) -> Element {
-    // Highlight the item whose `to` matches the current route. Exact
-    // PartialEq match for now — detail pages (e.g. TicketDetail) will
-    // not highlight their parent list nav until a path-prefix check is
-    // added later.
+    // Highlight the item whose `to` matches the current route, treating a
+    // detail page as its parent list (PMS-312) so e.g. RateCardDetail keeps
+    // "Rate Cards" highlighted.
     let current_route: Route = use_route();
-    let is_active = current_route == props.to;
+    let is_active = section_route(&current_route) == props.to;
 
     let class = if is_active {
         "group flex items-center px-3 py-2 text-sm font-medium rounded-md bg-gray-800 text-white border-l-2 border-blue-500"

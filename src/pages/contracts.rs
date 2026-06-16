@@ -3,22 +3,24 @@
 //! loading/empty/error states, `serde`-typed request bodies, the minimal
 //! query-string encoder) mirror `src/pages/contacts.rs`.
 //!
-//! The server also exposes contract-item edit/delete and rate-card-item
-//! upsert/delete routes (mokosh-server `src/modules/contracts/routes.rs`).
-//! These are intentionally NOT wired in this UI yet: the routes are ahead
-//! of the frontend. Wire them when item-level editing lands (MAPPS-138).
+//! Rate cards and their line items are fully editable here (MAPPS-160),
+//! finance-gated to match the server's `RequireFinance` write guard.
+//! Contract-item edit/delete is still ahead of the frontend (MAPPS-138).
 
 use dioxus::prelude::*;
 use rust_decimal::Decimal;
+use serde::Deserialize;
+use uuid::Uuid;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
-    PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
-    TableHeader, TableLoading, TableRow,
+    PlusIcon, Select, SelectOption, SettingFormModal, Table, TableBody, TableCell, TableEmpty,
+    TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::modules::contracts::{
     ContractHourBalanceResponse, ContractItemResponse, ContractResponse, CreateContractRequest,
-    RateCardItemResponse, RateCardResponse, UpdateContractRequest,
+    RateCardItemResponse, RateCardResponse, UpdateContractRequest, UpsertRateCardItemRequest,
+    UpsertRateCardRequest,
 };
 use crate::utils::url::urlencoding_minimal;
 use crate::utils::Paginated;
@@ -32,25 +34,31 @@ const PER_PAGE: usize = 25;
 /// every row a contract or rate card realistically has.
 const SUBLIST_PER_PAGE: usize = 100;
 
-/// Contract-type enum tags (`managed`, `block_hours`, `time_materials`,
-/// `fixed_price`, ...) to a title-case label. Unknown tags pass through.
+/// Contract-type enum tags (`managed_services`, `block_hours`,
+/// `time_and_materials`, `fixed_price`, ...) to a title-case label. Also maps
+/// line-item types (`recurring_service`, `retainer`, `product`, `one_time`).
+/// Unknown tags pass through.
 fn humanize_contract_type(raw: &str) -> String {
     match raw {
-        "managed" => "Managed Services".to_string(),
+        "managed_services" => "Managed Services".to_string(),
         "block_hours" => "Block Hours".to_string(),
-        "time_materials" => "Time & Materials".to_string(),
+        "time_and_materials" => "Time and Materials".to_string(),
         "fixed_price" => "Fixed Price".to_string(),
-        "recurring" => "Recurring".to_string(),
+        "warranty" => "Warranty".to_string(),
+        "recurring_service" => "Recurring Service".to_string(),
+        "retainer" => "Retainer".to_string(),
+        "product" => "Product".to_string(),
+        "one_time" => "One-time".to_string(),
         other => other.to_string(),
     }
 }
 
 fn contract_type_variant(raw: &str) -> BadgeVariant {
     match raw {
-        "managed" | "recurring" => BadgeVariant::Blue,
+        "managed_services" | "recurring_service" => BadgeVariant::Blue,
         "block_hours" => BadgeVariant::Purple,
         "fixed_price" => BadgeVariant::Green,
-        "time_materials" => BadgeVariant::Yellow,
+        "time_and_materials" => BadgeVariant::Yellow,
         _ => BadgeVariant::Gray,
     }
 }
@@ -79,33 +87,9 @@ fn status_variant(raw: &str) -> BadgeVariant {
     }
 }
 
-/// Format an optional `Decimal` money value as `$1,234.56`, or `-` when
-/// absent. Thousands separators are inserted manually to avoid an extra
-/// formatting dependency.
-fn format_money_opt(amount: Option<Decimal>) -> String {
-    match amount {
-        Some(d) => format_money(d),
-        None => "-".to_string(),
-    }
-}
-
-fn format_money(amount: Decimal) -> String {
-    let rounded = amount.round_dp(2);
-    let negative = rounded.is_sign_negative();
-    let abs = rounded.abs();
-    let s = format!("{abs:.2}");
-    let (int_part, frac_part) = s.split_once('.').unwrap_or((s.as_str(), "00"));
-    let mut grouped = String::new();
-    let digits: Vec<char> = int_part.chars().collect();
-    for (i, ch) in digits.iter().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(*ch);
-    }
-    let sign = if negative { "-" } else { "" };
-    format!("{sign}${grouped}.{frac_part}")
-}
+// Money formatting is centralized in `crate::utils::money` (MAPPS-197) so
+// projects, billing, and contracts render currency identically.
+use crate::utils::money::{format_money, format_money_opt};
 
 /// Company options shared by the create/edit form's company picker. The
 /// list endpoint returns `CompanyResponse`; we only need id + name.
@@ -137,10 +121,11 @@ pub fn ContractListPage() -> Element {
     ];
     let type_options = vec![
         SelectOption::new("", "All Types"),
-        SelectOption::new("managed", "Managed Services"),
+        SelectOption::new("managed_services", "Managed Services"),
         SelectOption::new("block_hours", "Block Hours"),
-        SelectOption::new("time_materials", "Time & Materials"),
+        SelectOption::new("time_and_materials", "Time and Materials"),
         SelectOption::new("fixed_price", "Fixed Price"),
+        SelectOption::new("warranty", "Warranty"),
     ];
 
     // Company filter is a dropdown populated from the companies endpoint.
@@ -504,7 +489,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
     let mut company_id = use_signal(|| initial.company_id.clone());
     let mut contract_type = use_signal(|| {
         if initial.contract_type.is_empty() {
-            "managed".to_string()
+            "managed_services".to_string()
         } else {
             initial.contract_type.clone()
         }
@@ -554,10 +539,11 @@ fn ContractForm(props: ContractFormProps) -> Element {
     };
 
     let type_options = vec![
-        SelectOption::new("managed", "Managed Services"),
+        SelectOption::new("managed_services", "Managed Services"),
         SelectOption::new("block_hours", "Block Hours"),
-        SelectOption::new("time_materials", "Time & Materials"),
+        SelectOption::new("time_and_materials", "Time and Materials"),
         SelectOption::new("fixed_price", "Fixed Price"),
+        SelectOption::new("warranty", "Warranty"),
     ];
     let status_options = vec![
         SelectOption::new("draft", "Draft"),
@@ -568,14 +554,15 @@ fn ContractForm(props: ContractFormProps) -> Element {
     let cycle_options = vec![
         SelectOption::new("monthly", "Monthly"),
         SelectOption::new("quarterly", "Quarterly"),
-        SelectOption::new("annual", "Annual"),
+        SelectOption::new("annually", "Annually"),
         SelectOption::new("one_time", "One-time"),
     ];
     let item_type_options = vec![
-        SelectOption::new("recurring", "Recurring"),
-        SelectOption::new("one_time", "One-time"),
+        SelectOption::new("recurring_service", "Recurring Service"),
         SelectOption::new("block_hours", "Block Hours"),
-        SelectOption::new("usage", "Usage"),
+        SelectOption::new("retainer", "Retainer"),
+        SelectOption::new("product", "Product"),
+        SelectOption::new("one_time", "One-time"),
     ];
 
     let navigator = use_navigator();
@@ -798,18 +785,16 @@ fn ContractForm(props: ContractFormProps) -> Element {
                 }
 
                 div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
-                    crate::components::Input {
+                    crate::components::DateField {
                         name: "start_date",
                         label: "Start Date",
-                        r#type: "date",
                         required: true,
                         value: start_date.read().clone(),
                         oninput: move |e: FormEvent| start_date.set(e.value()),
                     }
-                    crate::components::Input {
+                    crate::components::DateField {
                         name: "end_date",
                         label: "End Date",
-                        r#type: "date",
                         value: end_date.read().clone(),
                         oninput: move |e: FormEvent| end_date.set(e.value()),
                     }
@@ -857,7 +842,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                                 onclick: move |_| {
                                     let mut next = items.read().clone();
                                     next.push(ItemFormValues {
-                                        item_type: "recurring".to_string(),
+                                        item_type: "recurring_service".to_string(),
                                         quantity: "1".to_string(),
                                         ..ItemFormValues::default()
                                     });
@@ -985,7 +970,7 @@ async fn create_items(contract_id: &str, items: &[ItemFormValues]) -> Result<(),
             name: name.to_string(),
             description: None,
             item_type: if item.item_type.is_empty() {
-                "recurring".to_string()
+                "recurring_service".to_string()
             } else {
                 item.item_type.clone()
             },
@@ -1083,6 +1068,20 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
         AppLayout { title: "{header_title}",
             PageHeader {
                 title: "{header_title}",
+                breadcrumbs: rsx! {
+                    crate::components::Breadcrumbs {
+                        items: vec![
+                            crate::components::BreadcrumbItem {
+                                label: "Contracts".to_string(),
+                                route: Some(Route::ContractList {}),
+                            },
+                            crate::components::BreadcrumbItem {
+                                label: header_title.clone(),
+                                route: None,
+                            },
+                        ],
+                    }
+                },
                 actions: rsx! {
                     Link {
                         to: Route::ContractEdit { id: edit_id },
@@ -1354,10 +1353,13 @@ fn ContractHourBalanceCard(
 /// Rate-card list page. Fetches `GET /rate-cards` (paginated).
 #[component]
 pub fn RateCardListPage() -> Element {
+    let can_edit = use_can_manage_billing();
+    let navigator = use_navigator();
     let mut page = use_signal(|| 1usize);
+    let mut editing = use_signal(|| None::<RateCardFormState>);
     let current_page = (*page.read()).max(1);
 
-    let rate_cards_resource = use_resource(move || async move {
+    let mut rate_cards_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
         let path = format!("/rate-cards?page={current_page}&per_page={PER_PAGE}");
@@ -1383,6 +1385,14 @@ pub fn RateCardListPage() -> Element {
                     Link {
                         to: Route::ContractList {},
                         Button { variant: ButtonVariant::Secondary, "Contracts" }
+                    }
+                    if can_edit {
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            onclick: move |_| editing.set(Some(RateCardFormState::new())),
+                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                            "New Rate Card"
+                        }
                     }
                 },
             }
@@ -1411,7 +1421,7 @@ pub fn RateCardListPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 3, rows: 5 }
-                    } else if rows.is_empty() {
+                    } else if rows.is_empty() && !fetch_failed {
                         TableEmpty {
                             columns: 3,
                             message: "No rate cards yet.".to_string(),
@@ -1429,6 +1439,25 @@ pub fn RateCardListPage() -> Element {
                             }
                         }
                     }
+                }
+            }
+
+            if let Some(state) = editing.read().clone() {
+                RateCardFormModal {
+                    state,
+                    onclose: move |_| editing.set(None),
+                    onsaved: move |_| {
+                        editing.set(None);
+                        rate_cards_resource.restart();
+                    },
+                    oncreated: move |id: String| {
+                        editing.set(None);
+                        navigator.push(Route::RateCardDetail { id });
+                    },
+                    ondeleted: move |_| {
+                        editing.set(None);
+                        rate_cards_resource.restart();
+                    },
                 }
             }
         }
@@ -1477,13 +1506,19 @@ pub struct RateCardDetailPageProps {
 
 #[component]
 pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
+    let can_edit = use_can_manage_billing();
+    let navigator = use_navigator();
     let id_str = props.id.clone();
     let id_for_card = id_str.clone();
     let id_for_items = id_str.clone();
+    let card_id = id_str.clone();
+
+    let mut editing_card = use_signal(|| None::<RateCardFormState>);
+    let mut editing_item = use_signal(|| None::<RateCardItemFormState>);
 
     // The list endpoint is the only read for a single card's metadata
     // (there is no GET /rate-cards/{id}); pull a page and find the row.
-    let card_resource = use_resource(move || {
+    let mut card_resource = use_resource(move || {
         let id = id_for_card.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -1495,7 +1530,7 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
             resp.data.into_iter().find(|c| c.id.to_string() == id)
         }
     });
-    let items_resource = use_resource(move || {
+    let mut items_resource = use_resource(move || {
         let id = id_for_items.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -1506,16 +1541,79 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
             .ok()
         }
     });
+    // Work types resolve the item rows' `work_type_id` to names and feed
+    // the rate editor's work-type picker.
+    let work_types_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOpt>>("/work-types?per_page=100")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
 
     let card_snapshot = card_resource.read_unchecked();
     let header_title = match &*card_snapshot {
         Some(Some(c)) => c.name.clone(),
         _ => "Rate Card".to_string(),
     };
+    let card_for_edit = match &*card_snapshot {
+        Some(Some(c)) => Some(RateCardFormState::from_existing(c)),
+        _ => None,
+    };
+
+    let wt_snap = work_types_resource.read_unchecked();
+    let work_types: Vec<WorkTypeOpt> = match &*wt_snap {
+        Some(v) => v.clone(),
+        None => Vec::new(),
+    };
+
+    // Work-type ids already on this card, so "Add rate" can exclude them
+    // (the server upsert would otherwise silently overwrite an existing row).
+    let items_snap = items_resource.read_unchecked();
+    let used_work_type_ids: Vec<String> = match &*items_snap {
+        Some(Some(resp)) => resp
+            .data
+            .iter()
+            .map(|i| i.work_type_id.to_string())
+            .collect(),
+        _ => Vec::new(),
+    };
 
     rsx! {
         AppLayout { title: "{header_title}",
-            PageHeader { title: "{header_title}" }
+            PageHeader {
+                title: "{header_title}",
+                breadcrumbs: rsx! {
+                    crate::components::Breadcrumbs {
+                        items: vec![
+                            crate::components::BreadcrumbItem {
+                                label: "Rate Cards".to_string(),
+                                route: Some(Route::RateCardList {}),
+                            },
+                            crate::components::BreadcrumbItem {
+                                label: header_title.clone(),
+                                route: None,
+                            },
+                        ],
+                    }
+                },
+                actions: rsx! {
+                    Link {
+                        to: Route::RateCardList {},
+                        Button { variant: ButtonVariant::Secondary, "Rate Cards" }
+                    }
+                    if can_edit {
+                        if let Some(state) = card_for_edit.clone() {
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                onclick: move |_| editing_card.set(Some(state.clone())),
+                                "Edit Card"
+                            }
+                        }
+                    }
+                },
+            }
 
             match &*card_snapshot {
                 None => rsx! {
@@ -1558,22 +1656,88 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
                                     }
                                 }
                             }
-                            RateCardItemsCard { items_resource }
+                            RateCardItemsCard {
+                                items_resource,
+                                can_edit,
+                                work_types: work_types.clone(),
+                                editing_item,
+                            }
                         }
                     }
                 },
+            }
+
+            if let Some(state) = editing_card.read().clone() {
+                RateCardFormModal {
+                    state,
+                    onclose: move |_| editing_card.set(None),
+                    onsaved: move |_| {
+                        editing_card.set(None);
+                        card_resource.restart();
+                    },
+                    // The detail page only ever edits an existing card, so a
+                    // create callback is never invoked here.
+                    oncreated: move |_: String| {},
+                    ondeleted: move |_| {
+                        editing_card.set(None);
+                        navigator.push(Route::RateCardList {});
+                    },
+                }
+            }
+
+            if let Some(state) = editing_item.read().clone() {
+                RateCardItemFormModal {
+                    state,
+                    card_id: card_id.clone(),
+                    work_types: work_types.clone(),
+                    used_work_type_ids: used_work_type_ids.clone(),
+                    onclose: move |_| editing_item.set(None),
+                    onsaved: move |_| {
+                        editing_item.set(None);
+                        items_resource.restart();
+                    },
+                }
             }
         }
     }
 }
 
 #[component]
-fn RateCardItemsCard(items_resource: Resource<Option<Paginated<RateCardItemResponse>>>) -> Element {
+fn RateCardItemsCard(
+    items_resource: Resource<Option<Paginated<RateCardItemResponse>>>,
+    can_edit: bool,
+    work_types: Vec<WorkTypeOpt>,
+    editing_item: Signal<Option<RateCardItemFormState>>,
+) -> Element {
+    let mut editing_item = editing_item;
+    let name_by_id: std::collections::HashMap<Uuid, String> =
+        work_types.iter().map(|w| (w.id, w.name.clone())).collect();
     let snap = items_resource.read_unchecked();
+    // Every work type already has a rate (or none are defined), so there is
+    // nothing left to add: disable the button rather than open a modal whose
+    // picker is empty.
+    let used_count = match &*snap {
+        Some(Some(resp)) => resp.data.len(),
+        _ => 0,
+    };
+    let can_add = !work_types.is_empty() && used_count < work_types.len();
     rsx! {
         Card {
             title: "Rates",
             padding: false,
+            actions: if can_edit {
+                Some(rsx! {
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        disabled: !can_add,
+                        onclick: move |_| editing_item.set(Some(RateCardItemFormState::new())),
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "Add Rate"
+                    }
+                })
+            } else {
+                None
+            },
             Table {
                 TableHead {
                     TableRow {
@@ -1598,14 +1762,25 @@ fn RateCardItemsCard(items_resource: Resource<Option<Paginated<RateCardItemRespo
                                 for item in rows.into_iter() {
                                     {
                                         let key = item.id.to_string();
-                                        let work_type = item.work_type_id.to_string();
+                                        let wt_name = name_by_id
+                                            .get(&item.work_type_id)
+                                            .cloned()
+                                            .unwrap_or_else(|| item.work_type_id.to_string());
                                         let hourly = format_money(item.hourly_rate);
                                         let after = format_money_opt(item.after_hours_rate);
                                         let emergency = format_money_opt(item.emergency_rate);
+                                        let edit_state = RateCardItemFormState::from_existing(&item);
                                         rsx! {
-                                            TableRow { key: "{key}",
-                                                TableCell { class: "font-mono text-xs", "{work_type}" }
-                                                TableCell { class: "font-medium", "{hourly}" }
+                                            TableRow {
+                                                key: "{key}",
+                                                clickable: can_edit,
+                                                onclick: move |_| {
+                                                    if can_edit {
+                                                        editing_item.set(Some(edit_state.clone()));
+                                                    }
+                                                },
+                                                TableCell { class: "font-medium", "{wt_name}" }
+                                                TableCell { "{hourly}" }
                                                 TableCell { "{after}" }
                                                 TableCell { "{emergency}" }
                                             }
@@ -1616,6 +1791,475 @@ fn RateCardItemsCard(items_resource: Resource<Option<Paginated<RateCardItemRespo
                         }
                     },
                 }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Rate-card editing (MAPPS-160)
+//
+// Cards: POST/PUT /rate-cards, DELETE /rate-cards/{id}. Items: upsert via
+// POST /rate-cards/{id}/items (keyed on work_type_id), DELETE
+// /rate-card-items/{id}. All writes require a finance role server-side
+// (`RequireFinance`); the UI gates the affordances on the same capability.
+// ============================================================================
+
+/// Work-type option, used to resolve a rate row's `work_type_id` to a name
+/// and to populate the rate editor's picker. `GET /work-types`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct WorkTypeOpt {
+    id: Uuid,
+    #[serde(default)]
+    name: String,
+}
+
+/// True when the signed-in user holds a finance role (matches the server's
+/// `RequireFinance` write guard). Reads stay open to any authenticated user;
+/// only the create/edit/delete affordances are gated on this.
+fn use_can_manage_billing() -> bool {
+    let auth = crate::hooks::use_auth();
+    let state = auth.read();
+    state
+        .user
+        .as_ref()
+        .map(|u| u.role.can_manage_billing())
+        .unwrap_or(false)
+}
+
+/// Trim a free-text field to `Some(String)`, or `None` when empty.
+fn opt_string(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
+}
+
+/// Parse a money field into an optional `Decimal`. Empty -> `Ok(None)`; a
+/// non-empty non-numeric value -> `Err(message)`.
+fn parse_money_opt(s: &str) -> Result<Option<Decimal>, String> {
+    let t = s.trim();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    t.parse::<Decimal>()
+        .map(Some)
+        .map_err(|_| "Enter a valid amount, e.g. 150.00.".to_string())
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct RateCardFormState {
+    id: Option<String>,
+    name: String,
+    description: String,
+    is_default: bool,
+}
+
+impl RateCardFormState {
+    fn new() -> Self {
+        Self {
+            id: None,
+            name: String::new(),
+            description: String::new(),
+            is_default: false,
+        }
+    }
+
+    fn from_existing(c: &RateCardResponse) -> Self {
+        Self {
+            id: Some(c.id.to_string()),
+            name: c.name.clone(),
+            description: c.description.clone().unwrap_or_default(),
+            is_default: c.is_default,
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct RateCardFormModalProps {
+    state: RateCardFormState,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+    /// Called with the new card's id after a successful CREATE, so the list
+    /// can jump straight to the new card to add rates (avoids a dead-end).
+    oncreated: EventHandler<String>,
+    ondeleted: EventHandler<()>,
+}
+
+#[component]
+fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
+    let initial = props.state.clone();
+    let is_edit = initial.id.is_some();
+
+    let mut name = use_signal(|| initial.name.clone());
+    let mut description = use_signal(|| initial.description.clone());
+    let mut is_default = use_signal(|| initial.is_default);
+    let mut saving = use_signal(|| false);
+    let mut deleting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+    let oncreated = props.oncreated;
+    let ondeleted = props.ondeleted;
+
+    let save_id = initial.id.clone();
+    let handle_save = move |_| {
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        if name.read().trim().is_empty() {
+            error.set("Name is required.".to_string());
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        let desc = description.read().trim().to_string();
+        let body = UpsertRateCardRequest {
+            name: name.read().trim().to_string(),
+            description: opt_string(&desc),
+            is_default: *is_default.read(),
+        };
+        let id = save_id.clone();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match id {
+                    None => match crate::hooks::fetch::api::post_authed::<RateCardResponse, _>(
+                        "/rate-cards",
+                        &body,
+                    )
+                    .await
+                    {
+                        Ok(card) => oncreated.call(card.id.to_string()),
+                        Err(err) => error.set(format!("Could not save rate card: {err}")),
+                    },
+                    Some(id) => match crate::hooks::fetch::api::put_authed::<RateCardResponse, _>(
+                        &format!("/rate-cards/{id}"),
+                        &body,
+                    )
+                    .await
+                    {
+                        Ok(_) => onsaved.call(()),
+                        Err(err) => error.set(format!("Could not save rate card: {err}")),
+                    },
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    let delete_id = initial.id.clone();
+    let handle_delete = move |_| {
+        let Some(id) = delete_id.clone() else { return };
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        deleting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let confirmed = web_sys::window()
+                    .and_then(|w| {
+                        w.confirm_with_message("Delete this rate card? This cannot be undone.")
+                            .ok()
+                    })
+                    .unwrap_or(false);
+                if confirmed {
+                    match crate::hooks::fetch::api::delete_authed(&format!("/rate-cards/{id}"))
+                        .await
+                    {
+                        Ok(()) => ondeleted.call(()),
+                        Err(err) => error.set(format!("Could not delete rate card: {err}")),
+                    }
+                }
+            }
+            deleting.set(false);
+        });
+    };
+
+    rsx! {
+        SettingFormModal {
+            title: if is_edit { "Edit Rate Card".to_string() } else { "New Rate Card".to_string() },
+            is_edit,
+            saving: *saving.read(),
+            deleting: *deleting.read(),
+            error: error.read().clone(),
+            create_label: "Create Rate Card".to_string(),
+            onclose: move |_| onclose.call(()),
+            onsave: handle_save,
+            ondelete: handle_delete,
+            crate::components::Input {
+                name: "rate_card_name",
+                label: "Name",
+                placeholder: "e.g. Standard 2026",
+                required: true,
+                value: name.read().clone(),
+                oninput: move |e: FormEvent| name.set(e.value()),
+            }
+            crate::components::Input {
+                name: "rate_card_description",
+                label: "Description",
+                placeholder: "Optional",
+                value: description.read().clone(),
+                oninput: move |e: FormEvent| description.set(e.value()),
+            }
+            crate::components::Checkbox {
+                name: "rate_card_default",
+                label: "Default rate card",
+                help: "Used when a contract does not specify one.",
+                checked: *is_default.read(),
+                onchange: move |_| {
+                    let next = !*is_default.read();
+                    is_default.set(next);
+                },
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct RateCardItemFormState {
+    /// `Some` => editing an existing line (enables delete; locks work type).
+    item_id: Option<String>,
+    work_type_id: String,
+    hourly: String,
+    after: String,
+    emergency: String,
+}
+
+impl RateCardItemFormState {
+    fn new() -> Self {
+        Self {
+            item_id: None,
+            work_type_id: String::new(),
+            hourly: String::new(),
+            after: String::new(),
+            emergency: String::new(),
+        }
+    }
+
+    fn from_existing(i: &RateCardItemResponse) -> Self {
+        Self {
+            item_id: Some(i.id.to_string()),
+            work_type_id: i.work_type_id.to_string(),
+            hourly: i.hourly_rate.to_string(),
+            after: i
+                .after_hours_rate
+                .map(|d| d.to_string())
+                .unwrap_or_default(),
+            emergency: i.emergency_rate.map(|d| d.to_string()).unwrap_or_default(),
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct RateCardItemFormModalProps {
+    state: RateCardItemFormState,
+    card_id: String,
+    work_types: Vec<WorkTypeOpt>,
+    used_work_type_ids: Vec<String>,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
+    let initial = props.state.clone();
+    let is_edit = initial.item_id.is_some();
+
+    let mut work_type_id = use_signal(|| initial.work_type_id.clone());
+    let mut hourly = use_signal(|| initial.hourly.clone());
+    let mut after = use_signal(|| initial.after.clone());
+    let mut emergency = use_signal(|| initial.emergency.clone());
+    let mut saving = use_signal(|| false);
+    let mut deleting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+
+    // Picker options. On add, exclude work types already on the card (the
+    // server upsert would otherwise overwrite an existing rate silently). On
+    // edit the work type is the row identity, so it is fixed and disabled.
+    let mut options = vec![SelectOption {
+        value: String::new(),
+        label: "Select a work type".to_string(),
+        disabled: false,
+    }];
+    for wt in props.work_types.iter() {
+        let id = wt.id.to_string();
+        if !is_edit && props.used_work_type_ids.contains(&id) {
+            continue;
+        }
+        options.push(SelectOption {
+            value: id,
+            label: wt.name.clone(),
+            disabled: false,
+        });
+    }
+
+    let card_for_save = props.card_id.clone();
+    let handle_save = move |_| {
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        let wt = work_type_id.read().trim().to_string();
+        if wt.is_empty() {
+            error.set("Pick a work type.".to_string());
+            return;
+        }
+        let work_type_uuid = match Uuid::parse_str(&wt) {
+            Ok(u) => u,
+            Err(_) => {
+                error.set("Invalid work type.".to_string());
+                return;
+            }
+        };
+        let hourly_str = hourly.read().trim().to_string();
+        let hourly_val = match hourly_str.parse::<Decimal>() {
+            Ok(d) => d,
+            Err(_) => {
+                error.set("Hourly rate is required and must be a number.".to_string());
+                return;
+            }
+        };
+        let after_str = after.read().trim().to_string();
+        let after_val = match parse_money_opt(&after_str) {
+            Ok(v) => v,
+            Err(e) => {
+                error.set(e);
+                return;
+            }
+        };
+        let emergency_str = emergency.read().trim().to_string();
+        let emergency_val = match parse_money_opt(&emergency_str) {
+            Ok(v) => v,
+            Err(e) => {
+                error.set(e);
+                return;
+            }
+        };
+        // `min="0"` on the inputs is only advisory (paste/programmatic input
+        // bypasses it), so reject negative rates client-side too.
+        if hourly_val.is_sign_negative()
+            || after_val.map(|v| v.is_sign_negative()).unwrap_or(false)
+            || emergency_val.map(|v| v.is_sign_negative()).unwrap_or(false)
+        {
+            error.set("Rates cannot be negative.".to_string());
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        let body = UpsertRateCardItemRequest {
+            work_type_id: work_type_uuid,
+            hourly_rate: hourly_val,
+            after_hours_rate: after_val,
+            emergency_rate: emergency_val,
+        };
+        let card = card_for_save.clone();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match crate::hooks::fetch::api::post_authed::<RateCardItemResponse, _>(
+                    &format!("/rate-cards/{card}/items"),
+                    &body,
+                )
+                .await
+                {
+                    Ok(_) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not save rate: {err}")),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    let del_item_id = initial.item_id.clone();
+    let handle_delete = move |_| {
+        let Some(iid) = del_item_id.clone() else {
+            return;
+        };
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        deleting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let confirmed = web_sys::window()
+                    .and_then(|w| {
+                        w.confirm_with_message("Delete this rate? This cannot be undone.")
+                            .ok()
+                    })
+                    .unwrap_or(false);
+                if confirmed {
+                    match crate::hooks::fetch::api::delete_authed(&format!(
+                        "/rate-card-items/{iid}"
+                    ))
+                    .await
+                    {
+                        Ok(()) => onsaved.call(()),
+                        Err(err) => error.set(format!("Could not delete rate: {err}")),
+                    }
+                }
+            }
+            deleting.set(false);
+        });
+    };
+
+    rsx! {
+        SettingFormModal {
+            title: if is_edit { "Edit Rate".to_string() } else { "Add Rate".to_string() },
+            is_edit,
+            saving: *saving.read(),
+            deleting: *deleting.read(),
+            error: error.read().clone(),
+            create_label: "Add Rate".to_string(),
+            onclose: move |_| onclose.call(()),
+            onsave: handle_save,
+            ondelete: handle_delete,
+            crate::components::Select {
+                name: "rate_item_work_type",
+                label: "Work type",
+                options,
+                value: work_type_id.read().clone(),
+                disabled: is_edit,
+                onchange: move |e: FormEvent| work_type_id.set(e.value()),
+            }
+            crate::components::Input {
+                name: "rate_item_hourly",
+                label: "Hourly rate",
+                r#type: "number",
+                step: "0.01".to_string(),
+                min: "0".to_string(),
+                required: true,
+                value: hourly.read().clone(),
+                oninput: move |e: FormEvent| hourly.set(e.value()),
+            }
+            crate::components::Input {
+                name: "rate_item_after",
+                label: "After-hours rate",
+                r#type: "number",
+                step: "0.01".to_string(),
+                min: "0".to_string(),
+                placeholder: "Optional",
+                value: after.read().clone(),
+                oninput: move |e: FormEvent| after.set(e.value()),
+            }
+            crate::components::Input {
+                name: "rate_item_emergency",
+                label: "Emergency rate",
+                r#type: "number",
+                step: "0.01".to_string(),
+                min: "0".to_string(),
+                placeholder: "Optional",
+                value: emergency.read().clone(),
+                oninput: move |e: FormEvent| emergency.set(e.value()),
             }
         }
     }

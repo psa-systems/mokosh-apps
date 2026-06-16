@@ -295,6 +295,49 @@ pub enum Route {
     #[route("/settings/active-tenant")]
     ActiveTenant {},
 
+    // MAPPS-169: centralized Settings hub. One left-nav entry lands on
+    // `/settings` (grouped cards); each configuration surface gets a
+    // sub-route. The "re-homed" surfaces (SLA, rate cards, tax rates,
+    // payment gateways) render the SAME page components as their original
+    // `/admin/*` and `/`-prefixed routes, which stay in place - the old
+    // nav items and buttons keep working (chosen "keep old + add Settings").
+    #[route("/settings")]
+    SettingsHome {},
+    #[route("/settings/work-types")]
+    SettingsWorkTypes {},
+    #[route("/settings/task-statuses")]
+    SettingsTaskStatuses {},
+    #[route("/settings/asset-types")]
+    SettingsAssetTypes {},
+    // MAPPS-173: project type editor (server CRUD from PMS-322).
+    #[route("/settings/project-types")]
+    SettingsProjectTypes {},
+    #[route("/settings/sla")]
+    SettingsSla {},
+    // MAPPS-345: tenant-wide standard due date (PMS-345 server setting).
+    #[route("/settings/scheduling")]
+    SettingsScheduling {},
+    #[route("/settings/rate-cards")]
+    SettingsRateCards {},
+    #[route("/settings/tax-rates")]
+    SettingsTaxRates {},
+    #[route("/settings/gateways")]
+    SettingsGateways {},
+    // MAPPS-170: invoice payment-terms lookup editor (server CRUD from PMS-333).
+    #[route("/settings/payment-terms")]
+    SettingsPaymentTerms {},
+    // MAPPS-172: ticket lookup editors (server CRUD from PMS-321).
+    #[route("/settings/ticket-statuses")]
+    SettingsTicketStatuses {},
+    #[route("/settings/ticket-priorities")]
+    SettingsTicketPriorities {},
+    #[route("/settings/ticket-types")]
+    SettingsTicketTypes {},
+    #[route("/settings/ticket-queues")]
+    SettingsTicketQueues {},
+    #[route("/settings/ticket-categories")]
+    SettingsTicketCategories {},
+
     // Mokosh-side profile. Edits the tenant-scoped fields on the
     // user row (name, title, phone, mobile, timezone). Cross-app
     // identity (email, password, MFA, sessions, billing) lives on
@@ -675,6 +718,90 @@ fn ActiveTenant() -> Element {
 #[component]
 fn Profile() -> Element {
     rsx! { profile::ProfilePage {} }
+}
+
+// MAPPS-169 Settings hub + sub-routes. The type editors are net-new
+// (pages::settings); the re-homed surfaces reuse the existing page
+// components so there is one source of truth per surface.
+#[component]
+fn SettingsHome() -> Element {
+    rsx! { settings::SettingsHomePage {} }
+}
+
+#[component]
+fn SettingsWorkTypes() -> Element {
+    rsx! { settings::WorkTypesSettingsPage {} }
+}
+
+#[component]
+fn SettingsTaskStatuses() -> Element {
+    rsx! { settings::TaskStatusesSettingsPage {} }
+}
+
+#[component]
+fn SettingsAssetTypes() -> Element {
+    rsx! { settings::AssetTypesSettingsPage {} }
+}
+
+#[component]
+fn SettingsProjectTypes() -> Element {
+    rsx! { settings::ProjectTypesSettingsPage {} }
+}
+
+#[component]
+fn SettingsPaymentTerms() -> Element {
+    rsx! { settings::PaymentTermsSettingsPage {} }
+}
+
+#[component]
+fn SettingsSla() -> Element {
+    rsx! { sla::SlaManagementPage {} }
+}
+
+#[component]
+fn SettingsScheduling() -> Element {
+    rsx! { settings::SchedulingSettingsPage {} }
+}
+
+#[component]
+fn SettingsRateCards() -> Element {
+    rsx! { contracts::RateCardListPage {} }
+}
+
+#[component]
+fn SettingsTaxRates() -> Element {
+    rsx! { billing::TaxRateListPage {} }
+}
+
+#[component]
+fn SettingsGateways() -> Element {
+    rsx! { billing::PaymentGatewayConfigPage {} }
+}
+
+// MAPPS-172 ticket lookup editors.
+#[component]
+fn SettingsTicketStatuses() -> Element {
+    rsx! { settings::TicketStatusesSettingsPage {} }
+}
+
+#[component]
+fn SettingsTicketPriorities() -> Element {
+    rsx! { settings::TicketPrioritiesSettingsPage {} }
+}
+
+#[component]
+fn SettingsTicketTypes() -> Element {
+    rsx! { settings::TicketTypesSettingsPage {} }
+}
+
+#[component]
+fn SettingsTicketQueues() -> Element {
+    rsx! { settings::TicketQueuesSettingsPage {} }
+}
+
+#[component]
+fn SettingsTicketCategories() -> Element {
+    rsx! { settings::TicketCategoriesSettingsPage {} }
 }
 
 #[component]

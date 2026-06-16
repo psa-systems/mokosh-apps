@@ -106,6 +106,65 @@ pub fn Input(props: InputProps) -> Element {
     }
 }
 
+/// Shared date-field props (MAPPS-204). The single date-input pattern for the
+/// whole app: a native `<input type="date">` (calendar picker) with consistent
+/// `min`/`max` bounds so an out-of-range date is rejected by the picker rather
+/// than silently saved.
+///
+/// Behavior (documented, consistent everywhere):
+/// - The native picker only ever yields a complete date or an empty string, so
+///   a half-entered date can't be saved.
+/// - `required: true` marks the field (asterisk + native `required`); the
+///   form's submit handler rejects an empty value with a visible error.
+/// - An empty optional field saves as "no date" (the documented default).
+#[derive(Props, Clone, PartialEq)]
+pub struct DateFieldProps {
+    name: String,
+    #[props(default)]
+    label: String,
+    #[props(default)]
+    value: String,
+    #[props(default = false)]
+    required: bool,
+    #[props(default = false)]
+    disabled: bool,
+    #[props(default)]
+    error: String,
+    #[props(default)]
+    help: String,
+    /// Earliest selectable date. Defaults to a sane lower bound so a fumbled
+    /// year (e.g. `0007`) is rejected by the picker.
+    #[props(default = "2000-01-01".to_string())]
+    min: String,
+    /// Latest selectable date.
+    #[props(default = "2100-12-31".to_string())]
+    max: String,
+    #[props(default)]
+    oninput: EventHandler<FormEvent>,
+}
+
+/// The single date input used across the app (MAPPS-204). Thin wrapper over
+/// [`Input`] that fixes `type="date"` and applies consistent bounds, so every
+/// screen's date selection looks and behaves the same.
+#[component]
+pub fn DateField(props: DateFieldProps) -> Element {
+    rsx! {
+        Input {
+            name: props.name,
+            label: props.label,
+            r#type: "date",
+            min: props.min,
+            max: props.max,
+            value: props.value,
+            required: props.required,
+            disabled: props.disabled,
+            error: props.error,
+            help: props.help,
+            oninput: move |e| props.oninput.call(e),
+        }
+    }
+}
+
 /// Textarea component props
 #[derive(Props, Clone, PartialEq)]
 pub struct TextareaProps {

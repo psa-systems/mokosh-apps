@@ -25,6 +25,7 @@ pub mod portal;
 pub mod profile;
 pub mod projects;
 pub mod reports;
+pub mod settings;
 pub mod sla;
 pub mod system_status;
 pub mod team;

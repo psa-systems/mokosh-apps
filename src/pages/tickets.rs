@@ -34,6 +34,13 @@ struct RemoteTicket {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 struct RemoteSummary {
+    /// Server-side `TicketStatusSummary` / `TicketPrioritySummary` always
+    /// carry an `id`; the field is optional here only because legacy code
+    /// paths and the demo-data fallback may omit it. PMS-359 reads it as
+    /// the canonical "currently saved" selection for the inline editors
+    /// on the ticket detail page.
+    #[serde(default)]
+    id: Option<uuid::Uuid>,
     #[serde(default)]
     name: String,
 }
@@ -62,7 +69,21 @@ struct RemoteTicketDetail {
     #[serde(default)]
     priority: RemoteSummary,
     #[serde(default)]
-    assigned_to_name: Option<String>,
+    assigned_to_id: Option<uuid::Uuid>,
+    // PMS-359: assigned_to_name is no longer read on the detail page
+    // (the inline Assignee editor renders the chosen user by looking up
+    // the id in the cached `/auth/users` list); dropped from the
+    // deserialise shape entirely to keep the type honest. The list page
+    // still reads `RemoteTicket.assigned_to_name`.
+    /// PMS-344: the asset this ticket is associated with, if any. Both
+    /// the id (for the inline AssetPicker editor + the asset-detail
+    /// link) and the name (so the sidebar can render the asset's
+    /// display name without an extra fetch) come straight off the
+    /// server's joined TicketResponse.
+    #[serde(default)]
+    asset_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    asset_name: Option<String>,
     #[serde(default)]
     created_by_name: String,
     created_at: DateTime<Utc>,
@@ -70,6 +91,33 @@ struct RemoteTicketDetail {
     sla_due_date: Option<DateTime<Utc>>,
     #[serde(default)]
     sla_status: SlaStatus,
+}
+
+/// One row from `GET /tickets/statuses` (PMS-359). Tenant-scoped lookup
+/// powering the inline Status editor on the ticket detail sidebar. The
+/// `is_closed` flag is read so the renderer can keep the badge colour
+/// stable when the user picks a Resolved / Closed row.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteTicketStatus {
+    id: uuid::Uuid,
+    name: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    is_closed: bool,
+}
+
+/// One row from `GET /tickets/priorities` (PMS-358 / PMS-359). Tenant-
+/// scoped lookup the New Ticket form (PMS-358, defaults to the row with
+/// `is_default = true`) and the detail-page inline editor (PMS-359)
+/// both consume. Server's `CreateTicketRequest` / `UpdateTicketRequest`
+/// both accept `priority_id: Option<Uuid>`, so any non-UUID would be
+/// silently coerced away.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteTicketPriority {
+    id: uuid::Uuid,
+    name: String,
+    #[serde(default)]
+    is_default: bool,
 }
 
 /// A ticket note (`GET /tickets/:id/notes`), rendered as an Activity item.
@@ -263,16 +311,6 @@ fn humanize_priority(raw: &str) -> String {
     }
 }
 
-/// Badge colour for a humanized priority label.
-fn priority_badge_variant(label: &str) -> BadgeVariant {
-    match label {
-        "Critical" | "High" => BadgeVariant::Red,
-        "Medium" => BadgeVariant::Yellow,
-        "Low" => BadgeVariant::Green,
-        _ => BadgeVariant::Gray,
-    }
-}
-
 /// Absolute timestamp for created / activity lines, e.g. "Jun 05, 2026 14:30".
 /// PMS-253: honours the per-user format pref when set.
 fn fmt_datetime(dt: DateTime<Utc>) -> String {
@@ -317,8 +355,16 @@ fn fields_label(fields: &[String]) -> String {
 }
 
 /// "due_date" to "Due date" for a single field name.
+///
+/// PMS-370: column names for foreign-key fields end in `_id`
+/// (`status_id`, `priority_id`, `assigned_to_id`). The audit log records
+/// the raw column name, so without trimming the suffix the change-history
+/// feed reads "Status id" / "Priority id" / "Assigned to id". Strip the
+/// trailing `_id` first so future FK fields render cleanly without a
+/// per-column allow-list.
 fn title_field(f: &str) -> String {
-    let mut s = f.replace('_', " ");
+    let trimmed = f.strip_suffix("_id").unwrap_or(f);
+    let mut s = trimmed.replace('_', " ");
     if let Some(first) = s.get_mut(0..1) {
         first.make_ascii_uppercase();
     }
@@ -684,16 +730,67 @@ pub fn TicketNewPage() -> Element {
     // create always failed against the server (MAPPS-122).
     let mut company_id = use_signal(String::new);
     let mut company_name = use_signal(String::new);
-    let mut priority = use_signal(|| "medium".to_string());
+    // PMS-358: priority is a tenant-scoped lookup whose IDs are UUIDs. The
+    // signal stores the selected UUID as a string (empty = "use tenant
+    // default"). The hardcoded ["critical", "high", "medium", "low"]
+    // string options the form used previously never landed in the request
+    // body at all (the submit handler did not read the signal), and even if
+    // they had they would not match the server's `priority_id: Option<Uuid>`
+    // contract. Fetch the tenant's priorities on mount, default to the row
+    // flagged `is_default = true`, and bind the Select's value to the UUID.
+    let mut priority_id = use_signal(String::new);
+    // PMS-344: optional asset association. Empty signals = no asset.
+    // Both id and human name are tracked so the AssetPicker can render
+    // its "selected chip" state without an extra fetch.
+    let mut asset_id = use_signal(String::new);
+    let mut asset_name = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
 
-    let priority_options = vec![
-        SelectOption::new("critical", "Critical"),
-        SelectOption::new("high", "High"),
-        SelectOption::new("medium", "Medium"),
-        SelectOption::new("low", "Low"),
-    ];
+    // Fetch the tenant's ticket priorities on mount. The Paginated envelope
+    // matches the server's PaginatedResponse wire shape; meta is ignored
+    // here (lookup tables are short enough to fit one page).
+    let priorities_resource = use_resource(|| async move {
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketPriority>>(
+            "/tickets/priorities",
+        )
+        .await
+        .map(|p| p.data)
+        .unwrap_or_default()
+    });
+
+    // Once priorities load, seed the signal with the tenant's default row
+    // (or the first row if none is flagged default). use_effect re-runs
+    // every time the resource transitions to Ready, but a non-empty
+    // priority_id signal short-circuits so an in-progress user selection
+    // is never clobbered by a late-arriving fetch.
+    use_effect(move || {
+        if !priority_id.read().is_empty() {
+            return;
+        }
+        if let Some(rows) = priorities_resource.read().as_ref() {
+            let chosen = rows
+                .iter()
+                .find(|p| p.is_default)
+                .or_else(|| rows.first())
+                .map(|p| p.id.to_string())
+                .unwrap_or_default();
+            if !chosen.is_empty() {
+                priority_id.set(chosen);
+            }
+        }
+    });
+
+    let priority_options: Vec<SelectOption> = match priorities_resource.read().as_ref() {
+        Some(rows) => rows
+            .iter()
+            .map(|p| SelectOption::new(p.id.to_string(), p.name.clone()))
+            .collect(),
+        // While the fetch is in flight, render an empty single-option
+        // placeholder so the Select component does not blow up; the
+        // effect above will populate the real options on the next tick.
+        None => vec![SelectOption::new("", "Loading…")],
+    };
 
     let navigator = use_navigator();
     let handle_submit = move |e: FormEvent| {
@@ -710,6 +807,15 @@ pub fn TicketNewPage() -> Element {
             return;
         };
 
+        // PMS-358: send the selected priority UUID. An empty string means
+        // the priorities fetch was still in flight; let the server apply
+        // its default rather than blocking the submit.
+        let priority_uuid: Option<uuid::Uuid> =
+            uuid::Uuid::parse_str(priority_id.read().as_str()).ok();
+
+        // PMS-344: asset is optional. Empty string = not picked.
+        let asset_uuid: Option<uuid::Uuid> = uuid::Uuid::parse_str(asset_id.read().as_str()).ok();
+
         // Snapshot signals so the spawn doesn't need to read them.
         let title_v = title.read().clone();
         let description_v = description.read().clone();
@@ -721,6 +827,8 @@ pub fn TicketNewPage() -> Element {
                     "title": title_v,
                     "description": if description_v.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(description_v) },
                     "company_id": company_uuid,
+                    "priority_id": priority_uuid,
+                    "asset_id": asset_uuid,
                 });
 
                 #[derive(serde::Deserialize)]
@@ -789,6 +897,12 @@ pub fn TicketNewPage() -> Element {
                             value: company_name.read().clone(),
                             selected_id: picker_selected_id,
                             required: true,
+                            // PMS-352: opt this picker into the inline
+                            // "+ Create new company" affordance so a
+                            // first-time technician on a tenant with zero
+                            // companies can finish the New Ticket flow
+                            // without leaving the form to seed a company.
+                            allow_inline_create: true,
                             onselect: move |(id, name): (String, String)| {
                                 company_id.set(id);
                                 company_name.set(name);
@@ -815,8 +929,34 @@ pub fn TicketNewPage() -> Element {
                             name: "priority",
                             label: "Priority",
                             options: priority_options,
-                            value: priority.read().clone(),
-                            onchange: move |e: FormEvent| priority.set(e.value()),
+                            value: priority_id.read().clone(),
+                            onchange: move |e: FormEvent| priority_id.set(e.value()),
+                        }
+
+                        // PMS-344: optional asset on create. Wires to the
+                        // server's `asset_id` field on TicketCreateRequest;
+                        // empty signal sends null (no asset).
+                        {
+                            let picker_asset_selected_id: Option<String> =
+                                if uuid::Uuid::parse_str(asset_id.read().as_str()).is_ok() {
+                                    Some(asset_id.read().clone())
+                                } else {
+                                    None
+                                };
+                            rsx! {
+                                crate::components::AssetPicker {
+                                    value: asset_name.read().clone(),
+                                    selected_id: picker_asset_selected_id,
+                                    onselect: move |(id, name): (String, String)| {
+                                        asset_id.set(id);
+                                        asset_name.set(name);
+                                    },
+                                    onclear: move |_| {
+                                        asset_id.set(String::new());
+                                        asset_name.set(String::new());
+                                    },
+                                }
+                            }
                         }
                     }
 
@@ -916,6 +1056,32 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             .map(|p| p.data)
             .unwrap_or_default()
     });
+    // PMS-359: the tenant's ticket statuses + priorities, fetched once
+    // and reused by the three inline editors on the sidebar. Same
+    // Paginated envelope the New Ticket form's priorities fetch uses
+    // (PMS-358).
+    let statuses_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketStatus>>("/tickets/statuses")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+    let priorities_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketPriority>>(
+            "/tickets/priorities",
+        )
+        .await
+        .ok()
+        .map(|p| p.data)
+        .unwrap_or_default()
+    });
+    // PMS-359: per-field error message surfaced inline below the editor.
+    // One signal is enough since at most one of the three editors fires
+    // at a time and we always clear before the next attempt.
+    let mut field_error = use_signal(String::new);
 
     // PMS-182 description edit state.
     let mut editing_desc = use_signal(|| false);
@@ -930,6 +1096,16 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
         .clone()
         .unwrap_or_default();
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
+    // PMS-359: lookups for the inline editors. Empty until the fetches
+    // land; the renderer falls back to a "Loading…" badge in that window.
+    let statuses = statuses_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    let priorities = priorities_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
     // "Edited" marker for the description: most recent history entry that
     // touched the description column.
     let desc_edited = history
@@ -1031,7 +1207,50 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                 },
                                 if let Some(t) = ticket.as_ref() {
                                     if let Some(desc) = t.description.as_ref().filter(|d| !d.trim().is_empty()) {
-                                        p { class: "text-gray-700 dark:text-gray-300 whitespace-pre-wrap", "{desc}" }
+                                        // PMS-309: render Markdown (sanitized). PMS-348:
+                                        // task-list checkboxes are clickable - toggling
+                                        // flips the source marker and persists.
+                                        {
+                                            let desc_src = desc.clone();
+                                            let tid = props.id.clone();
+                                            rsx! {
+                                                crate::components::Markdown {
+                                                    content: desc.clone(),
+                                                    interactive: true,
+                                                    on_toggle: move |i: usize| {
+                                                        let Some(new_desc) =
+                                                            crate::utils::markdown::toggle_task(&desc_src, i)
+                                                        else {
+                                                            return;
+                                                        };
+                                                        let tid = tid.clone();
+                                                        let mut tr = ticket_resource;
+                                                        let mut hr = history_resource;
+                                                        spawn(async move {
+                                                            let body = serde_json::json!({ "description": new_desc });
+                                                            match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
+                                                                    &format!("/tickets/{tid}"),
+                                                                    &body,
+                                                                )
+                                                                .await
+                                                            {
+                                                                Ok(_) => {
+                                                                    tr.restart();
+                                                                    hr.restart();
+                                                                }
+                                                                Err(e) => {
+                                                                    crate::hooks::push_toast(
+                                                                        crate::components::AlertType::Error,
+                                                                        format!("Could not update checklist: {e}"),
+                                                                    );
+                                                                    tr.restart();
+                                                                }
+                                                            }
+                                                        });
+                                                    },
+                                                }
+                                            }
+                                        }
                                     } else {
                                         p { class: "text-sm text-gray-400 italic", "No description provided." }
                                     }
@@ -1075,32 +1294,286 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     Card { title: "Details",
                         if let Some(t) = ticket.as_ref() {
                             dl { class: "space-y-4",
+                                // PMS-359: inline Status / Priority / Assigned To editors.
+                                // Each renders a native Select bound to the
+                                // currently-saved id; onchange fires a PUT
+                                // /tickets/{id} with the matching field and
+                                // refreshes the ticket + history resources on
+                                // success so the change-history pane records
+                                // the edit alongside any prior description edits.
                                 {
-                                    let status_label = humanize_ticket_status(&t.status.name);
+                                    // Statuses Select. Empty options list (still
+                                    // fetching) falls back to a single "Loading…"
+                                    // entry so the component does not collapse.
+                                    let current_status = t
+                                        .status
+                                        .id
+                                        .map(|u| u.to_string())
+                                        .unwrap_or_default();
+                                    let mut status_options: Vec<SelectOption> = statuses
+                                        .iter()
+                                        .map(|s| SelectOption::new(s.id.to_string(), s.name.clone()))
+                                        .collect();
+                                    if status_options.is_empty() {
+                                        status_options.push(SelectOption::new("", "Loading…"));
+                                    }
+                                    let save_id = props.id.clone();
+                                    let mut tr = ticket_resource;
+                                    let mut hr = history_resource;
+                                    let onchange = move |e: FormEvent| {
+                                        let Ok(new_id) = uuid::Uuid::parse_str(&e.value()) else {
+                                            return;
+                                        };
+                                        let save_id = save_id.clone();
+                                        spawn(async move {
+                                            field_error.set(String::new());
+                                            let body =
+                                                serde_json::json!({ "status_id": new_id });
+                                            match crate::hooks::fetch::api::put_authed::<
+                                                serde_json::Value,
+                                                _,
+                                            >(
+                                                &format!("/tickets/{save_id}"), &body
+                                            )
+                                            .await
+                                            {
+                                                Ok(_) => {
+                                                    tr.restart();
+                                                    hr.restart();
+                                                }
+                                                Err(err) => {
+                                                    field_error.set(format!(
+                                                        "Could not update status: {err}"
+                                                    ));
+                                                }
+                                            }
+                                        });
+                                    };
                                     rsx! {
                                         DetailItem {
                                             label: "Status",
-                                            value: rsx!(Badge { variant: ticket_status_badge(&status_label), "{status_label}" }),
+                                            value: rsx! {
+                                                Select {
+                                                    name: "status_id",
+                                                    label: "",
+                                                    options: status_options,
+                                                    value: current_status,
+                                                    onchange,
+                                                }
+                                            },
                                         }
                                     }
                                 }
                                 {
-                                    let priority_label = humanize_priority(&t.priority.name);
+                                    let current_priority = t
+                                        .priority
+                                        .id
+                                        .map(|u| u.to_string())
+                                        .unwrap_or_default();
+                                    let mut priority_options: Vec<SelectOption> = priorities
+                                        .iter()
+                                        .map(|p| SelectOption::new(p.id.to_string(), p.name.clone()))
+                                        .collect();
+                                    if priority_options.is_empty() {
+                                        priority_options.push(SelectOption::new("", "Loading…"));
+                                    }
+                                    let save_id = props.id.clone();
+                                    let mut tr = ticket_resource;
+                                    let mut hr = history_resource;
+                                    let onchange = move |e: FormEvent| {
+                                        let Ok(new_id) = uuid::Uuid::parse_str(&e.value()) else {
+                                            return;
+                                        };
+                                        let save_id = save_id.clone();
+                                        spawn(async move {
+                                            field_error.set(String::new());
+                                            let body =
+                                                serde_json::json!({ "priority_id": new_id });
+                                            match crate::hooks::fetch::api::put_authed::<
+                                                serde_json::Value,
+                                                _,
+                                            >(
+                                                &format!("/tickets/{save_id}"), &body
+                                            )
+                                            .await
+                                            {
+                                                Ok(_) => {
+                                                    tr.restart();
+                                                    hr.restart();
+                                                }
+                                                Err(err) => {
+                                                    field_error.set(format!(
+                                                        "Could not update priority: {err}"
+                                                    ));
+                                                }
+                                            }
+                                        });
+                                    };
                                     rsx! {
                                         DetailItem {
                                             label: "Priority",
-                                            value: rsx!(Badge { variant: priority_badge_variant(&priority_label), "{priority_label}" }),
+                                            value: rsx! {
+                                                Select {
+                                                    name: "priority_id",
+                                                    label: "",
+                                                    options: priority_options,
+                                                    value: current_priority,
+                                                    onchange,
+                                                }
+                                            },
                                         }
                                     }
                                 }
                                 {
-                                    let assigned = t
-                                        .assigned_to_name
-                                        .clone()
-                                        .filter(|s| !s.is_empty())
-                                        .unwrap_or_else(|| "Unassigned".to_string());
+                                    // Assignee uses the same users list the change-
+                                    // history viewer consumes. Empty value = unassigned,
+                                    // which serialises to JSON null so the server
+                                    // clears assigned_to_id.
+                                    let current_assignee = t
+                                        .assigned_to_id
+                                        .map(|u| u.to_string())
+                                        .unwrap_or_default();
+                                    let mut user_options: Vec<SelectOption> =
+                                        vec![SelectOption::new("", "Unassigned")];
+                                    for u in users.iter() {
+                                        let label = if u.full_name.trim().is_empty() {
+                                            u.id.to_string()
+                                        } else {
+                                            u.full_name.clone()
+                                        };
+                                        user_options.push(SelectOption::new(u.id.to_string(), label));
+                                    }
+                                    let save_id = props.id.clone();
+                                    let mut tr = ticket_resource;
+                                    let mut hr = history_resource;
+                                    let onchange = move |e: FormEvent| {
+                                        let raw = e.value();
+                                        let new_id: Option<uuid::Uuid> = if raw.is_empty() {
+                                            None
+                                        } else {
+                                            match uuid::Uuid::parse_str(&raw) {
+                                                Ok(u) => Some(u),
+                                                Err(_) => return,
+                                            }
+                                        };
+                                        let save_id = save_id.clone();
+                                        spawn(async move {
+                                            field_error.set(String::new());
+                                            let body =
+                                                serde_json::json!({ "assigned_to_id": new_id });
+                                            match crate::hooks::fetch::api::put_authed::<
+                                                serde_json::Value,
+                                                _,
+                                            >(
+                                                &format!("/tickets/{save_id}"), &body
+                                            )
+                                            .await
+                                            {
+                                                Ok(_) => {
+                                                    tr.restart();
+                                                    hr.restart();
+                                                }
+                                                Err(err) => {
+                                                    field_error.set(format!(
+                                                        "Could not update assignee: {err}"
+                                                    ));
+                                                }
+                                            }
+                                        });
+                                    };
                                     rsx! {
-                                        DetailItem { label: "Assigned To", value: rsx!(span { "{assigned}" }) }
+                                        DetailItem {
+                                            label: "Assigned To",
+                                            value: rsx! {
+                                                Select {
+                                                    name: "assigned_to_id",
+                                                    label: "",
+                                                    options: user_options,
+                                                    value: current_assignee,
+                                                    onchange,
+                                                }
+                                            },
+                                        }
+                                    }
+                                }
+                                if !field_error.read().is_empty() {
+                                    p { class: "text-xs text-red-600 dark:text-red-400",
+                                        "{field_error}"
+                                    }
+                                }
+                                // PMS-344: Asset row with inline AssetPicker.
+                                // Selecting an asset fires PUT /tickets/{id}
+                                // with `asset_id`, the same shape the inline
+                                // status/priority/assignee editors above use.
+                                // Clearing the picker sends `null` so the
+                                // server unsets the association.
+                                {
+                                    let current_asset_id = t.asset_id.map(|u| u.to_string());
+                                    let current_asset_name =
+                                        t.asset_name.clone().unwrap_or_default();
+                                    let save_id = props.id.clone();
+                                    let mut tr = ticket_resource;
+                                    let mut hr = history_resource;
+                                    let put_asset = move |new_id: Option<uuid::Uuid>| {
+                                        let save_id = save_id.clone();
+                                        spawn(async move {
+                                            field_error.set(String::new());
+                                            let body = serde_json::json!({
+                                                "asset_id": new_id,
+                                            });
+                                            match crate::hooks::fetch::api::put_authed::<
+                                                serde_json::Value,
+                                                _,
+                                            >(
+                                                &format!("/tickets/{save_id}"),
+                                                &body,
+                                            )
+                                            .await
+                                            {
+                                                Ok(_) => {
+                                                    tr.restart();
+                                                    hr.restart();
+                                                }
+                                                Err(err) => {
+                                                    field_error.set(format!(
+                                                        "Could not update asset: {err}"
+                                                    ));
+                                                }
+                                            }
+                                        });
+                                    };
+                                    let put_asset_for_select = put_asset.clone();
+                                    let put_asset_for_clear = put_asset.clone();
+                                    rsx! {
+                                        DetailItem {
+                                            label: "Asset",
+                                            value: rsx! {
+                                                crate::components::AssetPicker {
+                                                    // PMS-344 follow-up
+                                                    // (layout): suppress
+                                                    // the picker's own
+                                                    // label here because
+                                                    // DetailItem already
+                                                    // renders "Asset" on
+                                                    // the left, matching
+                                                    // how the inline
+                                                    // Status/Priority/
+                                                    // Assignee Select
+                                                    // editors mount.
+                                                    label: String::new(),
+                                                    value: current_asset_name,
+                                                    selected_id: current_asset_id,
+                                                    onselect: move |(id, _name): (String, String)| {
+                                                        if let Ok(uid) = uuid::Uuid::parse_str(&id) {
+                                                            put_asset_for_select(Some(uid));
+                                                        }
+                                                    },
+                                                    onclear: move |_| {
+                                                        put_asset_for_clear(None);
+                                                    },
+                                                }
+                                            },
+                                        }
                                     }
                                 }
                                 if !t.company_name.is_empty() {
@@ -1399,14 +1872,24 @@ struct DetailItemProps {
 
 #[component]
 fn DetailItem(props: DetailItemProps) -> Element {
+    // `flex-1 min-w-0` on dd so the value cell grows to fill the row
+    // after the (shrink-0) label, instead of being sized to its content.
+    // The Select-based inline editors stay visually unchanged because
+    // their content is small and stays right-anchored by `text-right`,
+    // but the AssetPicker chip (PMS-344) can now `w-full` itself into
+    // the dd cell and truncate its long asset name / uuid inline rather
+    // than escaping the row and rendering on top of the next field.
+    // `items-start` (instead of `items-baseline`) keeps a multi-line
+    // value cell (chip + buttons) aligned to the label's top, not its
+    // baseline.
     let dd_class = if props.nowrap {
-        "text-sm text-gray-900 dark:text-white text-right whitespace-nowrap"
+        "text-sm text-gray-900 dark:text-white text-right whitespace-nowrap flex-1 min-w-0"
     } else {
-        "text-sm text-gray-900 dark:text-white text-right"
+        "text-sm text-gray-900 dark:text-white text-right flex-1 min-w-0"
     };
     rsx! {
-        div { class: "flex justify-between items-baseline gap-3",
-            dt { class: "text-sm text-gray-500 dark:text-gray-400 flex-shrink-0", "{props.label}" }
+        div { class: "flex justify-between items-start gap-3",
+            dt { class: "text-sm text-gray-500 dark:text-gray-400 flex-shrink-0 pt-0.5", "{props.label}" }
             dd { class: "{dd_class}", {props.value} }
         }
     }

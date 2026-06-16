@@ -51,7 +51,7 @@ struct CompanyOption {
 }
 
 /// A task (`GET /api/v1/projects/:id/tasks`).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 struct RemoteTask {
     id: uuid::Uuid,
     #[serde(default)]
@@ -66,8 +66,13 @@ struct RemoteTask {
     assigned_to_id: Option<uuid::Uuid>,
     #[serde(default, deserialize_with = "de_flex_f64")]
     estimated_hours: Option<f64>,
+    // Approved-only hours (PMS-51). MAPPS-167: `logged_hours` is all
+    // non-rejected logged time; we show both so logged time is visible
+    // before approval.
     #[serde(default, deserialize_with = "de_flex_f64")]
     actual_hours: Option<f64>,
+    #[serde(default, deserialize_with = "de_flex_f64")]
+    logged_hours: Option<f64>,
     #[serde(default)]
     due_date: Option<String>,
 }
@@ -99,7 +104,7 @@ struct FieldChange {
 }
 
 /// A per-tenant task status (`GET /api/v1/task-statuses`).
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 struct RemoteTaskStatus {
     id: uuid::Uuid,
     #[serde(default)]
@@ -109,7 +114,7 @@ struct RemoteTaskStatus {
 }
 
 /// A user, used to resolve `assigned_to_id` / `project_manager_id` to a name.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 struct RemoteUser {
     id: uuid::Uuid,
     #[serde(default)]
@@ -175,8 +180,16 @@ fn fields_label(fields: &[String]) -> String {
 }
 
 /// "due_date" to "Due date" for a single field name.
+///
+/// PMS-370: column names for foreign-key fields end in `_id`
+/// (`project_manager_id`, `client_company_id`). The audit log records
+/// the raw column name, so without trimming the suffix the
+/// change-history feed reads "Project manager id" / "Client company id".
+/// Strip the trailing `_id` first so future FK fields render cleanly
+/// without a per-column allow-list.
 fn title_field(f: &str) -> String {
-    let mut s = f.replace('_', " ");
+    let trimmed = f.strip_suffix("_id").unwrap_or(f);
+    let mut s = trimmed.replace('_', " ");
     if let Some(first) = s.get_mut(0..1) {
         first.make_ascii_uppercase();
     }
@@ -204,6 +217,10 @@ fn fmt_change_value(v: &Option<serde_json::Value>) -> String {
             let t = s.trim();
             if t.is_empty() {
                 "(empty)".to_string()
+            } else if let Ok(d) = chrono::NaiveDate::parse_from_str(t, "%Y-%m-%d") {
+                // PMS-317: show dates the way the rest of the app does
+                // ("Mar 1, 2026"), not the raw yyyy-mm-dd the audit stores.
+                d.format("%b %-d, %Y").to_string()
             } else if looks_like_uuid(t) {
                 "(reference)".to_string()
             } else if t.chars().count() > 160 {
@@ -223,6 +240,27 @@ fn fmt_history_dt(dt: chrono::DateTime<chrono::Utc>) -> String {
     dt.format("%b %-d, %Y %H:%M").to_string()
 }
 
+/// Validate an optional `yyyy-mm-dd` date field (PMS-317 / PMS-346). Blank is
+/// allowed (`Ok`). A non-empty value must parse as a full calendar date within
+/// a sane year range. The Due Date inputs are native `<input type="date">`,
+/// which only ever emit a valid date or empty, so the real gap this guards is
+/// an out-of-range year (e.g. `0007`); the inputs carry matching min/max so
+/// the picker rejects it natively too. `label` names the field in the message.
+fn validate_opt_date(raw: &str, label: &str) -> Result<(), String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Ok(());
+    }
+    let d = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .map_err(|_| format!("{label} must be a valid date."))?;
+    let min = chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
+    let max = chrono::NaiveDate::from_ymd_opt(2100, 12, 31).unwrap();
+    if d < min || d > max {
+        return Err(format!("{label} must be between 2000 and 2100."));
+    }
+    Ok(())
+}
+
 /// Insert a date field, sending `null` (leaves the column unchanged under the
 /// server's COALESCE update) when the input is blank. PMS-184 edit forms.
 fn insert_opt_date(body: &mut serde_json::Map<String, serde_json::Value>, key: &str, v: &str) {
@@ -238,15 +276,48 @@ fn insert_opt_date(body: &mut serde_json::Map<String, serde_json::Value>, key: &
 }
 
 /// Insert a numeric field as a JSON number, or `null` when blank/unparseable.
-fn insert_opt_num(body: &mut serde_json::Map<String, serde_json::Value>, key: &str, v: &str) {
-    let parsed = v.trim().parse::<f64>().ok();
-    body.insert(
-        key.to_string(),
-        match parsed {
-            Some(n) => serde_json::json!(n),
-            None => serde_json::Value::Null,
-        },
-    );
+/// Max length for a project name. Mirrors the server's PMS-324 cap so the
+/// client rejects over-long names inline instead of waiting for a 422.
+const PROJECT_NAME_MAX: usize = 80;
+
+/// Validate a project name (MAPPS-176): required, trimmed, at most
+/// [`PROJECT_NAME_MAX`] characters. Returns the trimmed name or an inline
+/// error message for the Name field.
+fn validate_project_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err("Project name is required.".to_string());
+    }
+    if name.chars().count() > PROJECT_NAME_MAX {
+        return Err(format!(
+            "Project name must be {PROJECT_NAME_MAX} characters or fewer."
+        ));
+    }
+    Ok(name.to_string())
+}
+
+/// Validate an optional budget field (MAPPS-176). Blank -> `Ok(None)`.
+/// Otherwise it must be a non-negative number with at most two decimal places
+/// (matching the server's `DECIMAL(_, 2)` budget columns). Returns the parsed
+/// value or an inline error message for that field. `label` names the field in
+/// the message (e.g. "Budget amount").
+fn validate_budget(raw: &str, label: &str) -> Result<Option<f64>, String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Ok(None);
+    }
+    let value: f64 = s
+        .parse()
+        .map_err(|_| format!("{label} must be a number."))?;
+    if !value.is_finite() || value < 0.0 {
+        return Err(format!("{label} must not be negative."));
+    }
+    if let Some((_, frac)) = s.split_once('.') {
+        if frac.trim_end_matches('0').len() > 2 {
+            return Err(format!("{label} must have at most 2 decimal places."));
+        }
+    }
+    Ok(Some(value))
 }
 
 /// Insert a UUID-bearing field as its string form, or `null` when blank.
@@ -295,13 +366,8 @@ fn status_badge(status: &str) -> (BadgeVariant, &'static str) {
     }
 }
 
-/// Whole-dollar money, or "-" when absent.
-fn fmt_money(v: Option<f64>) -> String {
-    match v {
-        Some(n) => format!("${n:.0}"),
-        None => "-".to_string(),
-    }
-}
+// Money formatting is centralized in `crate::utils::money` (MAPPS-197).
+use crate::utils::money::format_money_f64;
 
 /// "Feb 28, 2025" from an ISO date string; raw string on parse failure,
 /// "-" when absent.
@@ -483,7 +549,7 @@ pub fn ProjectListPage() -> Element {
                                 None => "bg-gray-400",
                             };
                             let due = fmt_date(&p.target_end_date);
-                            let budget = fmt_money(p.budget_amount);
+                            let budget = format_money_f64(p.budget_amount);
                             let pid = p.id.to_string();
                             rsx! {
                                 Link {
@@ -552,6 +618,10 @@ pub fn ProjectNewPage() -> Element {
     let mut budget_hours = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // Per-field inline validation errors (MAPPS-176).
+    let mut name_err = use_signal(String::new);
+    let mut amount_err = use_signal(String::new);
+    let mut hours_err = use_signal(String::new);
 
     // Real company picker from the live companies list.
     let companies_resource = use_resource(|| async {
@@ -588,35 +658,43 @@ pub fn ProjectNewPage() -> Element {
                     onsubmit: move |e: FormEvent| {
                         e.prevent_default();
                         error.set(String::new());
-                        let project_name = name.read().trim().to_string();
+                        name_err.set(String::new());
+                        amount_err.set(String::new());
+                        hours_err.set(String::new());
                         let company_id = company.read().clone();
                         let desc = description.read().clone();
-                        let amount_raw = budget_amount.read().trim().to_string();
-                        let hours_raw = budget_hours.read().trim().to_string();
-                        if project_name.is_empty() {
-                            error.set("Please enter a project name.".to_string());
-                            return;
-                        }
-                        // Budgets are optional, but if supplied must parse.
-                        let amount: Option<f64> = if amount_raw.is_empty() {
-                            None
-                        } else {
-                            match amount_raw.parse() {
-                                Ok(v) => Some(v),
-                                Err(_) => {
-                                    error.set("Budget amount must be a number.".to_string());
-                                    return;
-                                }
+                        // Per-field client validation mirrors the server rules (MAPPS-176).
+                        let project_name = match validate_project_name(&name.read()) {
+                            Ok(n) => n,
+                            Err(msg) => {
+                                name_err.set(msg);
+                                return;
                             }
                         };
-                        let hours: Option<f64> = if hours_raw.is_empty() {
-                            None
-                        } else {
-                            match hours_raw.parse() {
-                                Ok(v) => Some(v),
-                                Err(_) => {
-                                    error.set("Budget hours must be a number.".to_string());
-                                    return;
+                        let amount = match validate_budget(&budget_amount.read(), "Budget amount") {
+                            Ok(v) => v,
+                            Err(msg) => {
+                                amount_err.set(msg);
+                                return;
+                            }
+                        };
+                        // Budget hours is a duration: accept decimal or H:MM
+                        // (PMS-340), reusing the Log Time parser. Blank leaves
+                        // it unset; an unparseable value errors inline.
+                        let hours: Option<f64> = {
+                            let raw = budget_hours.read().trim().to_string();
+                            if raw.is_empty() {
+                                None
+                            } else {
+                                match crate::utils::duration::parse_input_to_hours(&raw) {
+                                    Some(h) => Some(h),
+                                    None => {
+                                        hours_err.set(
+                                            "Budget hours must be a number (2.5) or H:MM (1:30)."
+                                                .to_string(),
+                                        );
+                                        return;
+                                    }
                                 }
                             }
                         };
@@ -667,6 +745,7 @@ pub fn ProjectNewPage() -> Element {
                         placeholder: "Enter project name",
                         required: true,
                         value: name.read().clone(),
+                        error: name_err(),
                         oninput: move |e: FormEvent| name.set(e.value()),
                     }
 
@@ -695,14 +774,19 @@ pub fn ProjectNewPage() -> Element {
                             r#type: "number",
                             placeholder: "0.00",
                             value: budget_amount.read().clone(),
+                            error: amount_err(),
                             oninput: move |e: FormEvent| budget_amount.set(e.value()),
                         }
                         crate::components::Input {
                             name: "budget_hours",
                             label: "Budget Hours",
-                            r#type: "number",
-                            placeholder: "0",
+                            // Free-text so H:MM (e.g. "1:30") can be typed; a
+                            // type="number" input blocks the colon. PMS-340.
+                            r#type: "text",
+                            placeholder: "2, 2.5, or 1:30",
+                            help: "Decimal hours or H:MM.",
                             value: budget_hours.read().clone(),
+                            error: hours_err(),
                             oninput: move |e: FormEvent| budget_hours.set(e.value()),
                         }
                     }
@@ -744,7 +828,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         }
     });
     let id_for_tasks = props.id.clone();
-    let tasks_resource = use_resource(move || {
+    let mut tasks_resource = use_resource(move || {
         let id = id_for_tasks.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -786,33 +870,15 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
     let mut pe_manager = use_signal(String::new);
     let mut pe_submitting = use_signal(|| false);
     let mut pe_error = use_signal(String::new);
+    // Per-field inline validation errors for the edit modal (MAPPS-176).
+    let mut pe_name_err = use_signal(String::new);
+    let mut pe_amount_err = use_signal(String::new);
+    let mut pe_hours_err = use_signal(String::new);
 
-    // PMS-184 task-edit modal state. `selected_task` (Some when the modal is
-    // open) drives both the modal and the per-task history fetch below.
-    let mut selected_task = use_signal(|| None::<uuid::Uuid>);
-    let mut te_title = use_signal(String::new);
-    let mut te_description = use_signal(String::new);
-    let mut te_status = use_signal(String::new);
-    let mut te_priority = use_signal(|| "medium".to_string());
-    let mut te_assignee = use_signal(String::new);
-    let mut te_estimated = use_signal(String::new);
-    let mut te_due = use_signal(String::new);
-    let mut te_submitting = use_signal(|| false);
-    let mut te_error = use_signal(String::new);
-
-    let task_history_resource = use_resource(move || async move {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        match selected_task() {
-            Some(tid) => crate::hooks::fetch::api::get_authed::<Paginated<HistoryEntry>>(&format!(
-                "/audit-log/entity/tasks/{tid}"
-            ))
-            .await
-            .ok()
-            .map(|p| p.data)
-            .unwrap_or_default(),
-            None => Vec::new(),
-        }
-    });
+    // PMS-184 task-edit modal state. `selected_task` is `Some` while the
+    // modal is open for that task; the form and per-task history live in the
+    // shared `TaskEditModal` component (MAPPS-165).
+    let mut selected_task = use_signal(|| None::<RemoteTask>);
     // PMS-205: the project's own change history (who/when + before/after).
     let id_for_proj_history = props.id.clone();
     let project_history_resource = use_resource(move || {
@@ -838,20 +904,6 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         .clone()
         .unwrap_or_default();
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
-    let task_history = task_history_resource
-        .read_unchecked()
-        .clone()
-        .unwrap_or_default();
-    // "Edited" marker for the open task: most recent recorded edit.
-    let task_edited = task_history.iter().find(|e| e.action == "update").map(|e| {
-        let who = actor_name(&users, &e.user_id);
-        let when = fmt_history_dt(e.timestamp);
-        if who.is_empty() {
-            format!("Edited {when}")
-        } else {
-            format!("Edited {when} by {who}")
-        }
-    });
     let project_history = project_history_resource
         .read_unchecked()
         .clone()
@@ -958,6 +1010,32 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "Add Task"
                     }
+                    if let Some(p) = project.clone() {
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            onclick: move |_| {
+                                pe_name.set(p.name.clone());
+                                pe_description.set(p.description.clone().unwrap_or_default());
+                                pe_status.set(p.status.clone());
+                                pe_start.set(p.start_date.clone().unwrap_or_default());
+                                pe_due.set(p.target_end_date.clone().unwrap_or_default());
+                                pe_budget_amount
+                                    .set(p.budget_amount.map(|v| v.to_string()).unwrap_or_default());
+                                pe_budget_hours.set(
+                                    p.budget_hours
+                                        .map(crate::utils::duration::fmt_input_hours)
+                                        .unwrap_or_default(),
+                                );
+                                pe_manager.set(
+                                    p.project_manager_id.map(|v| v.to_string()).unwrap_or_default(),
+                                );
+                                pe_error.set(String::new());
+                                show_proj_modal.set(true);
+                            },
+                            PencilIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                            "Edit"
+                        }
+                    }
                     Button {
                         variant: ButtonVariant::Danger,
                         loading: *deleting.read(),
@@ -1014,43 +1092,57 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                     let logged_h = p.actual_hours.unwrap_or(0.0);
                     let remaining_h = p.budget_hours.unwrap_or(0.0) - logged_h;
                     let description = p.description.clone().filter(|d| !d.trim().is_empty());
-                    // Seed + open the project-edit modal (PMS-184).
-                    let p_edit = p.clone();
-                    let open_proj_edit = move |_| {
-                        pe_name.set(p_edit.name.clone());
-                        pe_description.set(p_edit.description.clone().unwrap_or_default());
-                        pe_status.set(p_edit.status.clone());
-                        pe_start.set(p_edit.start_date.clone().unwrap_or_default());
-                        pe_due.set(p_edit.target_end_date.clone().unwrap_or_default());
-                        pe_budget_amount
-                            .set(p_edit.budget_amount.map(|v| v.to_string()).unwrap_or_default());
-                        pe_budget_hours
-                            .set(p_edit.budget_hours.map(|v| v.to_string()).unwrap_or_default());
-                        pe_manager.set(
-                            p_edit
-                                .project_manager_id
-                                .map(|v| v.to_string())
-                                .unwrap_or_default(),
-                        );
-                        pe_error.set(String::new());
-                        show_proj_modal.set(true);
-                    };
                     rsx! {
                         div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
                             // Main content
                             div { class: "lg:col-span-2 space-y-6",
                                 Card {
                                     title: "Overview",
-                                    actions: rsx! {
-                                        Button {
-                                            variant: ButtonVariant::Secondary,
-                                            onclick: open_proj_edit,
-                                            PencilIcon { size: IconSize::Small, class: "mr-1.5".to_string() }
-                                            "Edit"
-                                        }
-                                    },
                                     if let Some(d) = description {
-                                        p { class: "text-gray-700 dark:text-gray-300 whitespace-pre-wrap", "{d}" }
+                                        // PMS-309: render Markdown (sanitized). PMS-348:
+                                        // task-list checkboxes are clickable - toggling
+                                        // flips the source marker and persists.
+                                        {
+                                            let d_src = d.clone();
+                                            let pid = props.id.clone();
+                                            rsx! {
+                                                crate::components::Markdown {
+                                                    content: d,
+                                                    interactive: true,
+                                                    on_toggle: move |i: usize| {
+                                                        let Some(new_desc) =
+                                                            crate::utils::markdown::toggle_task(&d_src, i)
+                                                        else {
+                                                            return;
+                                                        };
+                                                        let pid = pid.clone();
+                                                        let mut pr = project_resource;
+                                                        let mut phr = project_history_resource;
+                                                        spawn(async move {
+                                                            let body = serde_json::json!({ "description": new_desc });
+                                                            match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
+                                                                    &format!("/projects/{pid}"),
+                                                                    &body,
+                                                                )
+                                                                .await
+                                                            {
+                                                                Ok(_) => {
+                                                                    pr.restart();
+                                                                    phr.restart();
+                                                                }
+                                                                Err(e) => {
+                                                                    crate::hooks::push_toast(
+                                                                        crate::components::AlertType::Error,
+                                                                        format!("Could not update checklist: {e}"),
+                                                                    );
+                                                                    pr.restart();
+                                                                }
+                                                            }
+                                                        });
+                                                    },
+                                                }
+                                            }
+                                        }
                                     } else {
                                         p { class: "text-sm text-gray-400 italic", "No description provided." }
                                     }
@@ -1069,30 +1161,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                     let who = user_name(&users, &t.assigned_to_id);
                                                     // Clicking a row opens the task in the edit modal.
                                                     let task = t.clone();
-                                                    let open_task = move |_| {
-                                                        te_title.set(task.title.clone());
-                                                        te_description
-                                                            .set(task.description.clone().unwrap_or_default());
-                                                        te_status.set(
-                                                            task.status_id.map(|v| v.to_string()).unwrap_or_default(),
-                                                        );
-                                                        te_priority.set(
-                                                            task.priority.clone().unwrap_or_else(|| "medium".into()),
-                                                        );
-                                                        te_assignee.set(
-                                                            task.assigned_to_id
-                                                                .map(|v| v.to_string())
-                                                                .unwrap_or_default(),
-                                                        );
-                                                        te_estimated.set(
-                                                            task.estimated_hours
-                                                                .map(|v| v.to_string())
-                                                                .unwrap_or_default(),
-                                                        );
-                                                        te_due.set(task.due_date.clone().unwrap_or_default());
-                                                        te_error.set(String::new());
-                                                        selected_task.set(Some(task.id));
-                                                    };
+                                                    let open_task = move |_| selected_task.set(Some(task.clone()));
                                                     rsx! {
                                                         div {
                                                             class: "flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors",
@@ -1143,11 +1212,11 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     div { class: "space-y-3",
                                         div { class: "flex justify-between",
                                             span { class: "text-sm text-gray-500", "Total Budget" }
-                                            span { class: "font-medium", "{fmt_money(p.budget_amount)}" }
+                                            span { class: "font-medium", "{format_money_f64(p.budget_amount)}" }
                                         }
                                         div { class: "flex justify-between",
                                             span { class: "text-sm text-gray-500", "Spent" }
-                                            span { class: "font-medium text-green-600", "{fmt_money(p.actual_amount)}" }
+                                            span { class: "font-medium text-green-600", "{format_money_f64(p.actual_amount)}" }
                                         }
                                         div { class: "flex justify-between",
                                             span { class: "text-sm text-gray-500", "Remaining" }
@@ -1263,13 +1332,24 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 t_error.set("Please pick a status.".to_string());
                                 return;
                             }
+                            // Reject a partial/invalid due date (PMS-317).
+                            if let Err(e) = validate_opt_date(&due, "Due date") {
+                                t_error.set(e);
+                                return;
+                            }
+                            // Accept decimal hours or H:MM (PMS-319), reusing
+                            // the Log Time parser; estimated_hours is stored as
+                            // fractional hours, so parse straight to hours.
                             let est: Option<f64> = if est_raw.is_empty() {
                                 None
                             } else {
-                                match est_raw.parse() {
-                                    Ok(v) => Some(v),
-                                    Err(_) => {
-                                        t_error.set("Estimated hours must be a number.".to_string());
+                                match crate::utils::duration::parse_input_to_hours(&est_raw) {
+                                    Some(h) => Some(h),
+                                    None => {
+                                        t_error.set(
+                                            "Estimated hours must be a number (2.5) or H:MM (1:30)."
+                                                .to_string(),
+                                        );
                                         return;
                                     }
                                 }
@@ -1359,15 +1439,17 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                         crate::components::Input {
                             name: "task_est",
                             label: "Estimated Hours",
-                            r#type: "number",
-                            placeholder: "0",
+                            // Free-text so H:MM (e.g. "1:30") can be typed; a
+                            // type="number" input blocks the colon. PMS-319.
+                            r#type: "text",
+                            placeholder: "2, 2.5, or 1:30",
+                            help: "Decimal hours or H:MM.",
                             value: t_estimated.read().clone(),
                             oninput: move |e: FormEvent| t_estimated.set(e.value()),
                         }
-                        crate::components::Input {
+                        crate::components::DateField {
                             name: "task_due",
                             label: "Due Date",
-                            r#type: "date",
                             value: t_due.read().clone(),
                             oninput: move |e: FormEvent| t_due.set(e.value()),
                         }
@@ -1384,22 +1466,62 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                     if pe_submitting() {
                         return;
                     }
-                    if pe_name().trim().is_empty() {
-                        pe_error.set("Project name is required.".to_string());
-                        return;
-                    }
+                    pe_error.set(String::new());
+                    pe_name_err.set(String::new());
+                    pe_amount_err.set(String::new());
+                    pe_hours_err.set(String::new());
+                    // Per-field client validation mirrors the server rules (MAPPS-176).
+                    let project_name = match validate_project_name(&pe_name()) {
+                        Ok(n) => n,
+                        Err(msg) => {
+                            pe_name_err.set(msg);
+                            return;
+                        }
+                    };
+                    let amount = match validate_budget(&pe_budget_amount(), "Budget amount") {
+                        Ok(v) => v,
+                        Err(msg) => {
+                            pe_amount_err.set(msg);
+                            return;
+                        }
+                    };
+                    // Budget hours: accept decimal or H:MM (PMS-340). Blank
+                    // leaves it unset; an unparseable value errors inline.
+                    let hours: Option<f64> = {
+                        let raw = pe_budget_hours();
+                        let raw = raw.trim();
+                        if raw.is_empty() {
+                            None
+                        } else {
+                            match crate::utils::duration::parse_input_to_hours(raw) {
+                                Some(h) => Some(h),
+                                None => {
+                                    pe_hours_err.set(
+                                        "Budget hours must be a number (2.5) or H:MM (1:30)."
+                                            .to_string(),
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                    };
                     let save_id = save_id.clone();
                     spawn(async move {
                         pe_submitting.set(true);
-                        pe_error.set(String::new());
                         let mut body = serde_json::Map::new();
-                        body.insert("name".into(), serde_json::json!(pe_name().trim()));
+                        body.insert("name".into(), serde_json::json!(project_name));
                         body.insert("description".into(), serde_json::json!(pe_description()));
                         body.insert("status".into(), serde_json::json!(pe_status()));
                         insert_opt_date(&mut body, "start_date", &pe_start());
                         insert_opt_date(&mut body, "target_end_date", &pe_due());
-                        insert_opt_num(&mut body, "budget_amount", &pe_budget_amount());
-                        insert_opt_num(&mut body, "budget_hours", &pe_budget_hours());
+                        body.insert(
+                            "budget_amount".into(),
+                            amount.map_or(serde_json::Value::Null, |a| serde_json::json!(a)),
+                        );
+                        body.insert(
+                            "budget_hours".into(),
+                            hours.map_or(serde_json::Value::Null, |h| serde_json::json!(h)),
+                        );
                         insert_opt_uuid(&mut body, "project_manager_id", &pe_manager());
                         let body = serde_json::Value::Object(body);
                         match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
@@ -1455,6 +1577,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 label: "Name",
                                 required: true,
                                 value: "{pe_name}",
+                                error: pe_name_err(),
                                 oninput: move |e: FormEvent| pe_name.set(e.value()),
                             }
                             Textarea {
@@ -1481,17 +1604,15 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 }
                             }
                             div { class: "grid grid-cols-2 gap-4",
-                                Input {
+                                crate::components::DateField {
                                     name: "pe-start",
                                     label: "Start Date",
-                                    r#type: "date",
                                     value: "{pe_start}",
                                     oninput: move |e: FormEvent| pe_start.set(e.value()),
                                 }
-                                Input {
+                                crate::components::DateField {
                                     name: "pe-due",
                                     label: "Target End Date",
-                                    r#type: "date",
                                     value: "{pe_due}",
                                     oninput: move |e: FormEvent| pe_due.set(e.value()),
                                 }
@@ -1502,13 +1623,18 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     label: "Budget Amount",
                                     r#type: "number",
                                     value: "{pe_budget_amount}",
+                                    error: pe_amount_err(),
                                     oninput: move |e: FormEvent| pe_budget_amount.set(e.value()),
                                 }
                                 Input {
                                     name: "pe-budget-hours",
                                     label: "Budget Hours",
-                                    r#type: "number",
+                                    // Free-text for H:MM input (PMS-340).
+                                    r#type: "text",
+                                    placeholder: "2, 2.5, or 1:30",
+                                    help: "Decimal hours or H:MM.",
                                     value: "{pe_budget_hours}",
+                                    error: pe_hours_err(),
                                     oninput: move |e: FormEvent| pe_budget_hours.set(e.value()),
                                 }
                             }
@@ -1517,209 +1643,18 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                 }
             }
 
-            // PMS-184 task-edit modal (view + edit + change history).
-            {
-                let mut tasks_res = tasks_resource;
-                let mut hist_res = task_history_resource;
-                let mut task_status_opts = vec![SelectOption::new("", "Select a status")];
-                task_status_opts.extend(
-                    statuses
-                        .iter()
-                        .map(|s| SelectOption::new(s.id.to_string(), s.name.clone())),
-                );
-                let task_priority_opts = vec![
-                    SelectOption::new("low", "Low"),
-                    SelectOption::new("medium", "Medium"),
-                    SelectOption::new("high", "High"),
-                    SelectOption::new("critical", "Critical"),
-                ];
-                let mut task_assignee_opts = vec![SelectOption::new("", "Unassigned")];
-                task_assignee_opts.extend(
-                    users
-                        .iter()
-                        .map(|u| SelectOption::new(u.id.to_string(), u.full_name.clone())),
-                );
-                let on_save = move |_| {
-                    if te_submitting() {
-                        return;
-                    }
-                    let tid = match selected_task() {
-                        Some(t) => t,
-                        None => return,
-                    };
-                    if te_title().trim().is_empty() {
-                        te_error.set("Task title is required.".to_string());
-                        return;
-                    }
-                    spawn(async move {
-                        te_submitting.set(true);
-                        te_error.set(String::new());
-                        let mut body = serde_json::Map::new();
-                        body.insert("title".into(), serde_json::json!(te_title().trim()));
-                        body.insert("description".into(), serde_json::json!(te_description()));
-                        body.insert("priority".into(), serde_json::json!(te_priority()));
-                        insert_opt_uuid(&mut body, "status_id", &te_status());
-                        insert_opt_uuid(&mut body, "assigned_to_id", &te_assignee());
-                        insert_opt_num(&mut body, "estimated_hours", &te_estimated());
-                        insert_opt_date(&mut body, "due_date", &te_due());
-                        let body = serde_json::Value::Object(body);
-                        match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
-                            &format!("/tasks/{tid}"),
-                            &body,
-                        )
-                        .await
-                        {
-                            Ok(_) => {
-                                te_submitting.set(false);
-                                selected_task.set(None);
-                                tasks_res.restart();
-                                hist_res.restart();
-                            }
-                            Err(err) => {
-                                te_submitting.set(false);
-                                te_error.set(err);
-                            }
-                        }
-                    });
-                };
-                let edited = task_edited.clone();
-                rsx! {
-                    Modal {
-                        open: selected_task().is_some(),
-                        title: "Edit Task",
-                        size: crate::components::ModalSize::Large,
-                        onclose: move |_| selected_task.set(None),
-                        footer: rsx! {
-                            Button {
-                                variant: ButtonVariant::Secondary,
-                                onclick: move |_| selected_task.set(None),
-                                "Cancel"
-                            }
-                            Button {
-                                variant: ButtonVariant::Primary,
-                                loading: te_submitting(),
-                                onclick: on_save,
-                                "Save Changes"
-                            }
-                        },
-                        div { class: "space-y-4",
-                            if !te_error().is_empty() {
-                                p { class: "text-sm text-red-600 dark:text-red-400", "{te_error}" }
-                            }
-                            if let Some(m) = edited {
-                                p { class: "text-xs text-gray-400 italic", "{m}" }
-                            }
-                            Input {
-                                name: "te-title",
-                                label: "Title",
-                                required: true,
-                                value: "{te_title}",
-                                oninput: move |e: FormEvent| te_title.set(e.value()),
-                            }
-                            Textarea {
-                                name: "te-description",
-                                label: "Description",
-                                rows: 4,
-                                value: "{te_description}",
-                                oninput: move |e: FormEvent| te_description.set(e.value()),
-                            }
-                            div { class: "grid grid-cols-2 gap-4",
-                                Select {
-                                    name: "te-status",
-                                    label: "Status",
-                                    options: task_status_opts.clone(),
-                                    value: "{te_status}",
-                                    onchange: move |e: FormEvent| te_status.set(e.value()),
-                                }
-                                Select {
-                                    name: "te-priority",
-                                    label: "Priority",
-                                    options: task_priority_opts.clone(),
-                                    value: "{te_priority}",
-                                    onchange: move |e: FormEvent| te_priority.set(e.value()),
-                                }
-                            }
-                            div { class: "grid grid-cols-2 gap-4",
-                                Select {
-                                    name: "te-assignee",
-                                    label: "Assignee",
-                                    options: task_assignee_opts.clone(),
-                                    value: "{te_assignee}",
-                                    onchange: move |e: FormEvent| te_assignee.set(e.value()),
-                                }
-                                Input {
-                                    name: "te-estimated",
-                                    label: "Estimated Hours",
-                                    r#type: "number",
-                                    value: "{te_estimated}",
-                                    oninput: move |e: FormEvent| te_estimated.set(e.value()),
-                                }
-                            }
-                            Input {
-                                name: "te-due",
-                                label: "Due Date",
-                                r#type: "date",
-                                value: "{te_due}",
-                                oninput: move |e: FormEvent| te_due.set(e.value()),
-                            }
-
-                            // Change history for this task.
-                            div { class: "border-t border-gray-200 dark:border-gray-700 pt-3",
-                                p { class: "text-sm font-medium text-gray-700 dark:text-gray-300 mb-2", "Change History" }
-                                if task_history.is_empty() {
-                                    p { class: "text-sm text-gray-400 italic", "No edits yet." }
-                                } else {
-                                    div { class: "space-y-2 text-sm max-h-48 overflow-y-auto",
-                                        for e in task_history.iter().take(20) {
-                                            {
-                                                let label = action_label(&e.action);
-                                                let fields = fields_label(&e.changed_fields);
-                                                let who = actor_name(&users, &e.user_id);
-                                                let when = fmt_history_dt(e.timestamp);
-                                                rsx! {
-                                                    div { class: "flex justify-between gap-2",
-                                                        div { class: "min-w-0",
-                                                            p { class: "text-gray-700 dark:text-gray-300",
-                                                                if fields.is_empty() {
-                                                                    "{label}"
-                                                                } else {
-                                                                    "{label}: {fields}"
-                                                                }
-                                                            }
-                                                            if !who.is_empty() {
-                                                                p { class: "text-xs text-gray-400", "by {who}" }
-                                                            }
-                                                            // PMS-204: actual before/after content.
-                                                            for c in e.changes.iter() {
-                                                                {
-                                                                    let old = fmt_change_value(&c.old);
-                                                                    let new = fmt_change_value(&c.new);
-                                                                    let fname = title_field(&c.field);
-                                                                    if old == "(reference)" && new == "(reference)" {
-                                                                        rsx! {}
-                                                                    } else {
-                                                                        rsx! {
-                                                                            p { class: "text-xs text-gray-500 dark:text-gray-400 mt-1",
-                                                                                span { class: "font-medium", "{fname}: " }
-                                                                                span { class: "line-through text-gray-400", "{old}" }
-                                                                                " → "
-                                                                                span { "{new}" }
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                        span { class: "text-gray-400 whitespace-nowrap", "{when}" }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+            // Task edit modal (MAPPS-165): the shared TaskEditModal is mounted
+            // only while a task is selected; it owns the form + change history.
+            if let Some(task) = selected_task() {
+                TaskEditModal {
+                    task,
+                    statuses: statuses.clone(),
+                    users: users.clone(),
+                    onclose: move |_| selected_task.set(None),
+                    onsaved: move |_| {
+                        selected_task.set(None);
+                        tasks_resource.restart();
+                    },
                 }
             }
         }
@@ -1735,7 +1670,7 @@ pub struct ProjectTasksPageProps {
 #[component]
 pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
     let id_for_tasks = props.id.clone();
-    let tasks_resource = use_resource(move || {
+    let mut tasks_resource = use_resource(move || {
         let id = id_for_tasks.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -1775,9 +1710,21 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
     let total = tasks.len();
 
+    // MAPPS-165: click-to-edit a task via the shared modal.
+    let mut selected_task = use_signal(|| None::<RemoteTask>);
+
     rsx! {
         AppLayout { title: "Project Tasks",
-            PageHeader { title: "Project Tasks", subtitle: "Tasks for this project" }
+            PageHeader {
+                title: "Project Tasks",
+                subtitle: "Tasks for this project",
+                actions: rsx! {
+                    Link {
+                        to: Route::ProjectDetail { id: props.id.clone() },
+                        Button { variant: ButtonVariant::Secondary, "Back to Project" }
+                    }
+                },
+            }
 
             DataTable {
                 total_items: total,
@@ -1813,14 +1760,18 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
                                     let (tv, tl) = task_status_badge(&statuses, &t.status_id);
                                     let who = user_name(&users, &t.assigned_to_id);
                                     let due = fmt_date(&t.due_date);
-                                    let hours = format!(
-                                        "{} / {}",
-                                        fmt_hours(t.actual_hours),
-                                        fmt_hours(t.estimated_hours),
-                                    );
+                                    // Logged = all non-rejected time (PMS-329),
+                                    // visible before approval; approved = the
+                                    // approval-gated total; est = the estimate.
+                                    let logged_h = fmt_hours(t.logged_hours);
+                                    let approved_h = fmt_hours(t.actual_hours);
+                                    let est_h = fmt_hours(t.estimated_hours);
                                     let unassigned = t.assigned_to_id.is_none();
+                                    let task = t.clone();
                                     rsx! {
                                         TableRow {
+                                            clickable: true,
+                                            onclick: move |_| selected_task.set(Some(task.clone())),
                                             TableCell { "{t.title}" }
                                             TableCell { Badge { variant: tv, "{tl}" } }
                                             TableCell {
@@ -1831,7 +1782,322 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
                                                 }
                                             }
                                             TableCell { "{due}" }
-                                            TableCell { "{hours}" }
+                                            TableCell {
+                                                div { class: "whitespace-nowrap font-medium", "Logged {logged_h} h" }
+                                                div {
+                                                    class: "text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap",
+                                                    "Approved {approved_h} h · Est {est_h} h"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(task) = selected_task() {
+                TaskEditModal {
+                    task,
+                    statuses: statuses.clone(),
+                    users: users.clone(),
+                    onclose: move |_| selected_task.set(None),
+                    onsaved: move |_| {
+                        selected_task.set(None);
+                        tasks_resource.restart();
+                    },
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Shared task-edit modal (MAPPS-165)
+//
+// Extracted from ProjectDetailPage so both the project detail page and the
+// project tasks overview can open the same click-to-edit experience. Mounted
+// only while a task is selected (the caller wraps it in `if let Some(task)`),
+// so it is always `open`. Seeds its own form signals from the `task` prop,
+// fetches that task's change history, PUTs `/tasks/{id}`, and reports back via
+// `onsaved` (the caller refreshes its task list and clears the selection).
+// ============================================================================
+
+#[derive(Props, Clone, PartialEq)]
+struct TaskEditModalProps {
+    task: RemoteTask,
+    statuses: Vec<RemoteTaskStatus>,
+    users: Vec<RemoteUser>,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn TaskEditModal(props: TaskEditModalProps) -> Element {
+    let task = props.task.clone();
+    let tid = task.id;
+    let statuses = props.statuses.clone();
+    let users = props.users.clone();
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+
+    let mut te_title = use_signal(|| task.title.clone());
+    let mut te_description = use_signal(|| task.description.clone().unwrap_or_default());
+    let mut te_status = use_signal(|| task.status_id.map(|v| v.to_string()).unwrap_or_default());
+    let mut te_priority = use_signal(|| {
+        task.priority
+            .clone()
+            .unwrap_or_else(|| "medium".to_string())
+    });
+    let mut te_assignee = use_signal(|| {
+        task.assigned_to_id
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+    });
+    let mut te_estimated = use_signal(|| {
+        // Pre-fill in the same preference-aware shape the Log Time field uses
+        // (PMS-319), so an estimate set as 1.5h shows as "1:30" / "1.5".
+        task.estimated_hours
+            .map(crate::utils::duration::fmt_input_hours)
+            .unwrap_or_default()
+    });
+    let mut te_due = use_signal(|| task.due_date.clone().unwrap_or_default());
+    let mut te_submitting = use_signal(|| false);
+    let mut te_error = use_signal(String::new);
+
+    let history_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<HistoryEntry>>(&format!(
+            "/audit-log/entity/tasks/{tid}"
+        ))
+        .await
+        .ok()
+        .map(|p| p.data)
+        .unwrap_or_default()
+    });
+    let task_history = history_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    let task_edited = task_history.iter().find(|e| e.action == "update").map(|e| {
+        let who = actor_name(&users, &e.user_id);
+        let when = fmt_history_dt(e.timestamp);
+        if who.is_empty() {
+            format!("Edited {when}")
+        } else {
+            format!("Edited {when} by {who}")
+        }
+    });
+
+    let mut task_status_opts = vec![SelectOption::new("", "Select a status")];
+    task_status_opts.extend(
+        statuses
+            .iter()
+            .map(|s| SelectOption::new(s.id.to_string(), s.name.clone())),
+    );
+    let task_priority_opts = vec![
+        SelectOption::new("low", "Low"),
+        SelectOption::new("medium", "Medium"),
+        SelectOption::new("high", "High"),
+        SelectOption::new("critical", "Critical"),
+    ];
+    let mut task_assignee_opts = vec![SelectOption::new("", "Unassigned")];
+    task_assignee_opts.extend(
+        users
+            .iter()
+            .map(|u| SelectOption::new(u.id.to_string(), u.full_name.clone())),
+    );
+
+    let on_save = move |_| {
+        if te_submitting() {
+            return;
+        }
+        if te_title().trim().is_empty() {
+            te_error.set("Task title is required.".to_string());
+            return;
+        }
+        // Reject a partial/invalid due date (PMS-317) before submit.
+        if let Err(e) = validate_opt_date(&te_due(), "Due date") {
+            te_error.set(e);
+            return;
+        }
+        // estimated_hours: accept decimal or H:MM (PMS-319). Empty clears it;
+        // an unparseable value is a hard error here, before submit, rather
+        // than silently sending null (which used to wipe the estimate).
+        let est_raw = te_estimated().trim().to_string();
+        let est_json = if est_raw.is_empty() {
+            serde_json::Value::Null
+        } else {
+            match crate::utils::duration::parse_input_to_hours(&est_raw) {
+                Some(h) => serde_json::json!(h),
+                None => {
+                    te_error
+                        .set("Estimated hours must be a number (2.5) or H:MM (1:30).".to_string());
+                    return;
+                }
+            }
+        };
+        spawn(async move {
+            te_submitting.set(true);
+            te_error.set(String::new());
+            let mut body = serde_json::Map::new();
+            body.insert("title".into(), serde_json::json!(te_title().trim()));
+            body.insert("description".into(), serde_json::json!(te_description()));
+            body.insert("priority".into(), serde_json::json!(te_priority()));
+            insert_opt_uuid(&mut body, "status_id", &te_status());
+            insert_opt_uuid(&mut body, "assigned_to_id", &te_assignee());
+            body.insert("estimated_hours".into(), est_json);
+            insert_opt_date(&mut body, "due_date", &te_due());
+            let body = serde_json::Value::Object(body);
+            match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
+                &format!("/tasks/{tid}"),
+                &body,
+            )
+            .await
+            {
+                Ok(_) => {
+                    te_submitting.set(false);
+                    onsaved.call(());
+                }
+                Err(err) => {
+                    te_submitting.set(false);
+                    te_error.set(err);
+                }
+            }
+        });
+    };
+
+    rsx! {
+        Modal {
+            open: true,
+            title: "Edit Task",
+            size: crate::components::ModalSize::Large,
+            onclose: move |_| onclose.call(()),
+            footer: rsx! {
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| onclose.call(()),
+                    "Cancel"
+                }
+                Button {
+                    variant: ButtonVariant::Primary,
+                    loading: te_submitting(),
+                    onclick: on_save,
+                    "Save Changes"
+                }
+            },
+            div { class: "space-y-4",
+                if !te_error().is_empty() {
+                    p { class: "text-sm text-red-600 dark:text-red-400", "{te_error}" }
+                }
+                if let Some(m) = task_edited {
+                    p { class: "text-xs text-gray-400 italic", "{m}" }
+                }
+                Input {
+                    name: "te-title",
+                    label: "Title",
+                    required: true,
+                    value: "{te_title}",
+                    oninput: move |e: FormEvent| te_title.set(e.value()),
+                }
+                Textarea {
+                    name: "te-description",
+                    label: "Description",
+                    rows: 4,
+                    value: "{te_description}",
+                    oninput: move |e: FormEvent| te_description.set(e.value()),
+                }
+                div { class: "grid grid-cols-2 gap-4",
+                    Select {
+                        name: "te-status",
+                        label: "Status",
+                        options: task_status_opts.clone(),
+                        value: "{te_status}",
+                        onchange: move |e: FormEvent| te_status.set(e.value()),
+                    }
+                    Select {
+                        name: "te-priority",
+                        label: "Priority",
+                        options: task_priority_opts.clone(),
+                        value: "{te_priority}",
+                        onchange: move |e: FormEvent| te_priority.set(e.value()),
+                    }
+                }
+                div { class: "grid grid-cols-2 gap-4",
+                    Select {
+                        name: "te-assignee",
+                        label: "Assignee",
+                        options: task_assignee_opts.clone(),
+                        value: "{te_assignee}",
+                        onchange: move |e: FormEvent| te_assignee.set(e.value()),
+                    }
+                    Input {
+                        name: "te-estimated",
+                        label: "Estimated Hours",
+                        // Free-text so H:MM can be typed (PMS-319).
+                        r#type: "text",
+                        placeholder: "2, 2.5, or 1:30",
+                        help: "Decimal hours or H:MM.",
+                        value: "{te_estimated}",
+                        oninput: move |e: FormEvent| te_estimated.set(e.value()),
+                    }
+                }
+                crate::components::DateField {
+                    name: "te-due",
+                    label: "Due Date",
+                    value: "{te_due}",
+                    oninput: move |e: FormEvent| te_due.set(e.value()),
+                }
+
+                // Change history for this task.
+                div { class: "border-t border-gray-200 dark:border-gray-700 pt-3",
+                    p { class: "text-sm font-medium text-gray-700 dark:text-gray-300 mb-2", "Change History" }
+                    if task_history.is_empty() {
+                        p { class: "text-sm text-gray-400 italic", "No edits yet." }
+                    } else {
+                        div { class: "space-y-2 text-sm max-h-48 overflow-y-auto",
+                            for e in task_history.iter().take(20) {
+                                {
+                                    let label = action_label(&e.action);
+                                    let fields = fields_label(&e.changed_fields);
+                                    let who = actor_name(&users, &e.user_id);
+                                    let when = fmt_history_dt(e.timestamp);
+                                    rsx! {
+                                        div { class: "flex justify-between gap-2",
+                                            div { class: "min-w-0",
+                                                p { class: "text-gray-700 dark:text-gray-300",
+                                                    if fields.is_empty() {
+                                                        "{label}"
+                                                    } else {
+                                                        "{label}: {fields}"
+                                                    }
+                                                }
+                                                if !who.is_empty() {
+                                                    p { class: "text-xs text-gray-400", "by {who}" }
+                                                }
+                                                for c in e.changes.iter() {
+                                                    {
+                                                        let old = fmt_change_value(&c.old);
+                                                        let new = fmt_change_value(&c.new);
+                                                        let fname = title_field(&c.field);
+                                                        if old == "(reference)" && new == "(reference)" {
+                                                            rsx! {}
+                                                        } else {
+                                                            rsx! {
+                                                                p { class: "text-xs text-gray-500 dark:text-gray-400 mt-1",
+                                                                    span { class: "font-medium", "{fname}: " }
+                                                                    span { class: "line-through text-gray-400", "{old}" }
+                                                                    " → "
+                                                                    span { "{new}" }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            span { class: "text-gray-400 whitespace-nowrap", "{when}" }
                                         }
                                     }
                                 }
@@ -1841,5 +2107,36 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::{validate_budget, validate_project_name, PROJECT_NAME_MAX};
+
+    #[test]
+    fn name_required_and_capped() {
+        assert!(validate_project_name("   ").is_err());
+        assert_eq!(validate_project_name("  Acme  ").unwrap(), "Acme");
+        assert!(validate_project_name(&"x".repeat(PROJECT_NAME_MAX)).is_ok());
+        assert!(validate_project_name(&"x".repeat(PROJECT_NAME_MAX + 1)).is_err());
+    }
+
+    #[test]
+    fn budget_optional_nonneg_two_dp() {
+        // Blank -> None.
+        assert_eq!(validate_budget("", "Budget amount").unwrap(), None);
+        assert_eq!(validate_budget("  ", "Budget amount").unwrap(), None);
+        // Valid numbers.
+        assert_eq!(
+            validate_budget("500", "Budget amount").unwrap(),
+            Some(500.0)
+        );
+        assert_eq!(validate_budget("8.5", "Budget hours").unwrap(), Some(8.5));
+        assert_eq!(validate_budget("8.50", "Budget hours").unwrap(), Some(8.5));
+        // Rejected: non-numeric, negative, more than 2 decimal places.
+        assert!(validate_budget("Bobby Tables", "Budget amount").is_err());
+        assert!(validate_budget("-1", "Budget amount").is_err());
+        assert!(validate_budget("1.234", "Budget hours").is_err());
     }
 }
