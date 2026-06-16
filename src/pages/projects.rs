@@ -809,7 +809,7 @@ pub fn ProjectNewPage() -> Element {
                             name: "budget_amount",
                             label: "Budget Amount ($)",
                             r#type: "number",
-                            min: "0",
+                            min: "0".to_string(),
                             max: BUDGET_AMOUNT_MAX.to_string(),
                             placeholder: "0.00",
                             value: budget_amount.read().clone(),
@@ -1198,6 +1198,16 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                 {
                                                     let (tv, tl) = task_status_badge(&statuses, &t.status_id);
                                                     let who = user_name(&users, &t.assigned_to_id);
+                                                    // MAPPS-205: surface logged vs approved vs
+                                                    // estimated hours on each task here in the
+                                                    // project view, mirroring the task overview, so
+                                                    // logged time is reflected on the task without
+                                                    // opening the edit modal. logged = all
+                                                    // non-rejected time (PMS-329); approved = the
+                                                    // approval-gated total (PMS-51); est = estimate.
+                                                    let logged_h = fmt_hours(t.logged_hours);
+                                                    let approved_h = fmt_hours(t.actual_hours);
+                                                    let est_h = fmt_hours(t.estimated_hours);
                                                     // Clicking a row opens the task in the edit modal.
                                                     let task = t.clone();
                                                     let open_task = move |_| selected_task.set(Some(task.clone()));
@@ -1209,7 +1219,17 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                                 p { class: "font-medium text-gray-900 dark:text-white", "{t.title}" }
                                                                 p { class: "text-sm text-gray-500 dark:text-gray-400", "{who}" }
                                                             }
-                                                            Badge { variant: tv, "{tl}" }
+                                                            div { class: "flex items-center gap-4",
+                                                                div { class: "text-right",
+                                                                    div { class: "text-sm font-medium text-gray-900 dark:text-white whitespace-nowrap",
+                                                                        "Logged {logged_h} h"
+                                                                    }
+                                                                    div { class: "text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap",
+                                                                        "Approved {approved_h} h · Est {est_h} h"
+                                                                    }
+                                                                }
+                                                                Badge { variant: tv, "{tl}" }
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -1652,7 +1672,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     name: "pe-budget-amount",
                                     label: "Budget Amount",
                                     r#type: "number",
-                                    min: "0",
+                                    min: "0".to_string(),
                                     max: BUDGET_AMOUNT_MAX.to_string(),
                                     value: "{pe_budget_amount}",
                                     error: pe_amount_err(),
