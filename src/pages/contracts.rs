@@ -1052,7 +1052,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                     name: "notes",
                     label: "Notes",
                     rows: 3,
-                    maxlength: CONTRACT_NOTES_MAX.to_string(),
+                    maxlength: CONTRACT_NOTES_MAX as i64,
                     value: notes.read().clone(),
                     error: notes_err(),
                     oninput: move |e: FormEvent| notes.set(e.value()),
@@ -1582,11 +1582,23 @@ fn ContractHourBalanceCard(
 
 /// Rate-card list page. Fetches `GET /rate-cards` (paginated).
 #[component]
-pub fn RateCardListPage() -> Element {
+pub fn RateCardListPage(
+    /// Open the create modal on mount. The `/rate-cards/new` route renders
+    /// this page with `open_create = true` so the URL lands on the create
+    /// form instead of mis-routing to a failed detail load (MAPPS-217).
+    #[props(default = false)]
+    open_create: bool,
+) -> Element {
     let can_edit = use_can_manage_billing();
     let navigator = use_navigator();
     let mut page = use_signal(|| 1usize);
-    let mut editing = use_signal(|| None::<RateCardFormState>);
+    let mut editing = use_signal(move || {
+        if open_create {
+            Some(RateCardFormState::new())
+        } else {
+            None
+        }
+    });
     let current_page = (*page.read()).max(1);
 
     let mut rate_cards_resource = use_resource(move || async move {
@@ -1951,18 +1963,36 @@ fn RateCardItemsCard(
         _ => 0,
     };
     let can_add = !work_types.is_empty() && used_count < work_types.len();
+    // When disabled, say why so the greyed-out button is not read as broken
+    // (MAPPS-217): either no work types exist, or every one already has a rate.
+    let disabled_reason = if work_types.is_empty() {
+        "Define a work type in Settings before adding a rate."
+    } else {
+        "Every work type already has a rate on this card."
+    };
     rsx! {
         Card {
             title: "Rates",
             padding: false,
             actions: if can_edit {
                 Some(rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        disabled: !can_add,
-                        onclick: move |_| editing_item.set(Some(RateCardItemFormState::new())),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "Add Rate"
+                    // Stack the reason under the button as visible helper text,
+                    // not just a `title` tooltip: a native tooltip on a disabled
+                    // <button> is suppressed in some browsers (e.g. Chrome), so
+                    // the explanation would never show. The tooltip is kept as a
+                    // bonus for browsers that do render it (MAPPS-217).
+                    div { class: "flex flex-col items-end gap-1",
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            disabled: !can_add,
+                            title: if can_add { None } else { Some(disabled_reason.to_string()) },
+                            onclick: move |_| editing_item.set(Some(RateCardItemFormState::new())),
+                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                            "Add Rate"
+                        }
+                        if !can_add {
+                            p { class: "text-xs text-gray-500 dark:text-gray-400", "{disabled_reason}" }
+                        }
                     }
                 })
             } else {

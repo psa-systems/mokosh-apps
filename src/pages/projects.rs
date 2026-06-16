@@ -799,7 +799,7 @@ pub fn ProjectNewPage() -> Element {
                         label: "Description",
                         placeholder: "Project description...",
                         rows: 4,
-                        maxlength: PROJECT_DESCRIPTION_MAX.to_string(),
+                        maxlength: PROJECT_DESCRIPTION_MAX as i64,
                         value: description.read().clone(),
                         oninput: move |e: FormEvent| description.set(e.value()),
                     }
@@ -1633,7 +1633,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 name: "pe-description",
                                 label: "Description",
                                 rows: 4,
-                                maxlength: PROJECT_DESCRIPTION_MAX.to_string(),
+                                maxlength: PROJECT_DESCRIPTION_MAX as i64,
                                 value: "{pe_description}",
                                 oninput: move |e: FormEvent| pe_description.set(e.value()),
                             }

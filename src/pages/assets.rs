@@ -465,6 +465,44 @@ pub fn AssetListPage() -> Element {
     }
 }
 
+// Field caps for the New Asset form's free-text inputs (MAPPS-216). These
+// mirror the mokosh-server column limits so over-long input is rejected
+// inline (and via `maxlength`) instead of failing later as an opaque 422.
+// Assumed to match the server's asset columns (VARCHAR(255)); revise if they
+// differ.
+const ASSET_NAME_MAX: usize = 255;
+const ASSET_SERIAL_MAX: usize = 255;
+const ASSET_MANUFACTURER_MAX: usize = 255;
+const ASSET_MODEL_MAX: usize = 255;
+
+/// Validate the required Name field (MAPPS-216): present, trimmed, within the
+/// length cap. Returns the trimmed value or an inline message for the field.
+fn validate_asset_name(raw: &str) -> Result<String, String> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return Err("Please enter an asset name.".to_string());
+    }
+    if t.chars().count() > ASSET_NAME_MAX {
+        return Err(format!(
+            "Name must be {ASSET_NAME_MAX} characters or fewer."
+        ));
+    }
+    Ok(t.to_string())
+}
+
+/// Validate an optional, length-capped asset text field (MAPPS-216). Blank ->
+/// `Ok(None)`; otherwise the trimmed value or an inline message for that field.
+fn validate_asset_optional(raw: &str, label: &str, max: usize) -> Result<Option<String>, String> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    if t.chars().count() > max {
+        return Err(format!("{label} must be {max} characters or fewer."));
+    }
+    Ok(Some(t.to_string()))
+}
+
 /// New asset page
 #[component]
 pub fn AssetNewPage() -> Element {
@@ -476,10 +514,19 @@ pub fn AssetNewPage() -> Element {
     let mut model = use_signal(String::new);
     let mut warranty = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
+    // Server/submit-time errors only (e.g. a failed POST). Required-field and
+    // length validation no longer routes through this banner (MAPPS-216).
     let mut error = use_signal(String::new);
-    // Per-field server validation message routed next to the Name input
-    // (MAPPS-210).
+    // Per-field inline validation errors (MAPPS-216): each failure is shown
+    // under its own field and highlights that field, rather than a single
+    // generic top banner. `name_error` also carries a server-flagged Name
+    // validation message (MAPPS-210).
     let mut name_error = use_signal(String::new);
+    let mut type_err = use_signal(String::new);
+    let mut company_err = use_signal(String::new);
+    let mut serial_err = use_signal(String::new);
+    let mut manufacturer_err = use_signal(String::new);
+    let mut model_err = use_signal(String::new);
 
     let types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -529,25 +576,78 @@ pub fn AssetNewPage() -> Element {
                         e.prevent_default();
                         error.set(String::new());
                         name_error.set(String::new());
-                        let asset_name = name.read().trim().to_string();
+                        type_err.set(String::new());
+                        company_err.set(String::new());
+                        serial_err.set(String::new());
+                        manufacturer_err.set(String::new());
+                        model_err.set(String::new());
+
+                        // Collect every field error before returning (MAPPS-216)
+                        // so the user sees all problems at once, each attached
+                        // to its own field, rather than the form aborting on
+                        // the first failure.
+                        let mut ok = true;
+
+                        let asset_name = match validate_asset_name(&name.read()) {
+                            Ok(v) => v,
+                            Err(msg) => {
+                                name_error.set(msg);
+                                ok = false;
+                                String::new()
+                            }
+                        };
                         let type_id = asset_type.read().clone();
-                        let company_id = company.read().clone();
-                        let serial_v = serial.read().clone();
-                        let manufacturer_v = manufacturer.read().clone();
-                        let model_v = model.read().clone();
-                        let warranty_v = warranty.read().clone();
-                        if asset_name.is_empty() {
-                            error.set("Please enter an asset name.".to_string());
-                            return;
-                        }
                         if type_id.is_empty() {
-                            error.set("Please pick an asset type.".to_string());
-                            return;
+                            type_err.set("Please pick an asset type.".to_string());
+                            ok = false;
                         }
+                        let company_id = company.read().clone();
                         if company_id.is_empty() {
-                            error.set("Please pick a company.".to_string());
+                            company_err.set("Please pick a company.".to_string());
+                            ok = false;
+                        }
+                        let serial_v = match validate_asset_optional(
+                            &serial.read(),
+                            "Serial number",
+                            ASSET_SERIAL_MAX,
+                        ) {
+                            Ok(v) => v,
+                            Err(msg) => {
+                                serial_err.set(msg);
+                                ok = false;
+                                None
+                            }
+                        };
+                        let manufacturer_v = match validate_asset_optional(
+                            &manufacturer.read(),
+                            "Manufacturer",
+                            ASSET_MANUFACTURER_MAX,
+                        ) {
+                            Ok(v) => v,
+                            Err(msg) => {
+                                manufacturer_err.set(msg);
+                                ok = false;
+                                None
+                            }
+                        };
+                        let model_v = match validate_asset_optional(
+                            &model.read(),
+                            "Model",
+                            ASSET_MODEL_MAX,
+                        ) {
+                            Ok(v) => v,
+                            Err(msg) => {
+                                model_err.set(msg);
+                                ok = false;
+                                None
+                            }
+                        };
+                        let warranty_v = warranty.read().clone();
+
+                        if !ok {
                             return;
                         }
+
                         is_submitting.set(true);
                         spawn(async move {
                             #[cfg(feature = "web")]
@@ -557,14 +657,14 @@ pub fn AssetNewPage() -> Element {
                                     "asset_type_id": type_id,
                                     "company_id": company_id,
                                 });
-                                if !serial_v.is_empty() {
-                                    body["serial_number"] = serde_json::json!(serial_v);
+                                if let Some(s) = serial_v {
+                                    body["serial_number"] = serde_json::json!(s);
                                 }
-                                if !manufacturer_v.is_empty() {
-                                    body["manufacturer"] = serde_json::json!(manufacturer_v);
+                                if let Some(m) = manufacturer_v {
+                                    body["manufacturer"] = serde_json::json!(m);
                                 }
-                                if !model_v.is_empty() {
-                                    body["model"] = serde_json::json!(model_v);
+                                if let Some(m) = model_v {
+                                    body["model"] = serde_json::json!(m);
                                 }
                                 if !warranty_v.is_empty() {
                                     body["warranty_expiry"] = serde_json::json!(warranty_v);
@@ -609,6 +709,7 @@ pub fn AssetNewPage() -> Element {
                             label: "Name",
                             placeholder: "e.g. Exchange Server 01",
                             required: true,
+                            maxlength: ASSET_NAME_MAX as i64,
                             error: name_error.read().clone(),
                             value: name.read().clone(),
                             oninput: move |e: FormEvent| {
@@ -623,7 +724,11 @@ pub fn AssetNewPage() -> Element {
                             value: asset_type.read().clone(),
                             placeholder: "Select a type",
                             required: true,
-                            onchange: move |e: FormEvent| asset_type.set(e.value()),
+                            error: type_err(),
+                            onchange: move |e: FormEvent| {
+                                type_err.set(String::new());
+                                asset_type.set(e.value());
+                            },
                         }
                     }
 
@@ -635,13 +740,22 @@ pub fn AssetNewPage() -> Element {
                             value: company.read().clone(),
                             placeholder: "Select a company",
                             required: true,
-                            onchange: move |e: FormEvent| company.set(e.value()),
+                            error: company_err(),
+                            onchange: move |e: FormEvent| {
+                                company_err.set(String::new());
+                                company.set(e.value());
+                            },
                         }
                         Input {
                             name: "serial",
                             label: "Serial Number",
+                            maxlength: ASSET_SERIAL_MAX as i64,
+                            error: serial_err(),
                             value: serial.read().clone(),
-                            oninput: move |e: FormEvent| serial.set(e.value()),
+                            oninput: move |e: FormEvent| {
+                                serial_err.set(String::new());
+                                serial.set(e.value());
+                            },
                         }
                     }
 
@@ -649,14 +763,24 @@ pub fn AssetNewPage() -> Element {
                         Input {
                             name: "manufacturer",
                             label: "Manufacturer",
+                            maxlength: ASSET_MANUFACTURER_MAX as i64,
+                            error: manufacturer_err(),
                             value: manufacturer.read().clone(),
-                            oninput: move |e: FormEvent| manufacturer.set(e.value()),
+                            oninput: move |e: FormEvent| {
+                                manufacturer_err.set(String::new());
+                                manufacturer.set(e.value());
+                            },
                         }
                         Input {
                             name: "model",
                             label: "Model",
+                            maxlength: ASSET_MODEL_MAX as i64,
+                            error: model_err(),
                             value: model.read().clone(),
-                            oninput: move |e: FormEvent| model.set(e.value()),
+                            oninput: move |e: FormEvent| {
+                                model_err.set(String::new());
+                                model.set(e.value());
+                            },
                         }
                         crate::components::DateField {
                             name: "warranty",
@@ -1426,5 +1550,44 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::{validate_asset_name, validate_asset_optional, ASSET_NAME_MAX, ASSET_SERIAL_MAX};
+
+    #[test]
+    fn name_required_and_trimmed() {
+        assert!(validate_asset_name("   ").is_err());
+        assert_eq!(validate_asset_name("  Server 01  ").unwrap(), "Server 01");
+    }
+
+    #[test]
+    fn name_capped() {
+        assert!(validate_asset_name(&"x".repeat(ASSET_NAME_MAX)).is_ok());
+        assert!(validate_asset_name(&"x".repeat(ASSET_NAME_MAX + 1)).is_err());
+    }
+
+    #[test]
+    fn optional_blank_is_none() {
+        assert_eq!(
+            validate_asset_optional("   ", "Serial number", ASSET_SERIAL_MAX).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn optional_trimmed_and_capped() {
+        assert_eq!(
+            validate_asset_optional("  SN-1  ", "Serial number", ASSET_SERIAL_MAX).unwrap(),
+            Some("SN-1".to_string())
+        );
+        assert!(validate_asset_optional(
+            &"x".repeat(ASSET_SERIAL_MAX + 1),
+            "Serial number",
+            ASSET_SERIAL_MAX
+        )
+        .is_err());
     }
 }

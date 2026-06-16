@@ -16,6 +16,7 @@
 //! `String` and rendered with a leading `$` via [`money`].
 
 use dioxus::prelude::*;
+use rust_decimal::Decimal;
 use serde::Deserialize;
 
 use crate::components::{
@@ -917,6 +918,11 @@ pub fn InvoiceNewPage() -> Element {
     let mut is_submitting = use_signal(|| false);
     let mut is_generating = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // Per-field messages so a bad value is flagged at the field rather than
+    // surfaced only as the generic 422 banner (MAPPS-214).
+    let mut due_date_error = use_signal(String::new);
+    let mut quantity_error = use_signal(String::new);
+    let mut unit_price_error = use_signal(String::new);
 
     let navigator = use_navigator();
 
@@ -927,6 +933,9 @@ pub fn InvoiceNewPage() -> Element {
             return;
         }
         error.set(String::new());
+        due_date_error.set(String::new());
+        quantity_error.set(String::new());
+        unit_price_error.set(String::new());
 
         let Some(company_uuid) = uuid::Uuid::parse_str(company_id.read().trim()).ok() else {
             error.set("A valid company ID (UUID) is required.".to_string());
@@ -936,6 +945,12 @@ pub fn InvoiceNewPage() -> Element {
         let due = due_date.read().trim().to_string();
         if inv_date.is_empty() || due.is_empty() {
             error.set("Invoice date and due date are required.".to_string());
+            return;
+        }
+        // Dates come from the native date picker as ISO `YYYY-MM-DD`, so a
+        // lexicographic compare is a correct date order check.
+        if due < inv_date {
+            due_date_error.set("Due date must be on or after the invoice date.".to_string());
             return;
         }
         let description = line_description.read().trim().to_string();
@@ -948,6 +963,31 @@ pub fn InvoiceNewPage() -> Element {
         if quantity.is_empty() || unit_price.is_empty() {
             error.set("Line item quantity and unit price are required.".to_string());
             return;
+        }
+        // Reject negatives (and non-numeric input) at the field. The native
+        // `min="0"` already blocks this, but validate here too so the message
+        // is explicit and the bad value never reaches the 422 path.
+        match quantity.parse::<f64>() {
+            Ok(q) if q >= 0.0 => {}
+            Ok(_) => {
+                quantity_error.set("Quantity cannot be negative.".to_string());
+                return;
+            }
+            Err(_) => {
+                quantity_error.set("Enter a valid quantity.".to_string());
+                return;
+            }
+        }
+        match unit_price.parse::<f64>() {
+            Ok(p) if p >= 0.0 => {}
+            Ok(_) => {
+                unit_price_error.set("Unit price cannot be negative.".to_string());
+                return;
+            }
+            Err(_) => {
+                unit_price_error.set("Enter a valid unit price.".to_string());
+                return;
+            }
         }
 
         is_submitting.set(true);
@@ -1085,13 +1125,18 @@ pub fn InvoiceNewPage() -> Element {
                             label: "Due Date",
                             required: true,
                             value: due_date.read().clone(),
-                            oninput: move |e: FormEvent| due_date.set(e.value()),
+                            error: due_date_error.read().clone(),
+                            oninput: move |e: FormEvent| {
+                                due_date_error.set(String::new());
+                                due_date.set(e.value());
+                            },
                         }
                     }
 
                     crate::components::Input {
                         name: "po_number",
                         label: "PO Number",
+                        maxlength: 100,
                         value: po_number.read().clone(),
                         oninput: move |e: FormEvent| po_number.set(e.value()),
                     }
@@ -1103,6 +1148,7 @@ pub fn InvoiceNewPage() -> Element {
                                 name: "line_description",
                                 label: "Description",
                                 required: true,
+                                maxlength: 1000,
                                 placeholder: "What was delivered",
                                 value: line_description.read().clone(),
                                 oninput: move |e: FormEvent| line_description.set(e.value()),
@@ -1112,18 +1158,30 @@ pub fn InvoiceNewPage() -> Element {
                                 label: "Quantity",
                                 r#type: "number",
                                 required: true,
+                                step: "0.01",
+                                min: "0",
                                 placeholder: "Qty",
                                 value: line_quantity.read().clone(),
-                                oninput: move |e: FormEvent| line_quantity.set(e.value()),
+                                error: quantity_error.read().clone(),
+                                oninput: move |e: FormEvent| {
+                                    quantity_error.set(String::new());
+                                    line_quantity.set(e.value());
+                                },
                             }
                             crate::components::Input {
                                 name: "line_unit_price",
                                 label: "Unit Price",
                                 r#type: "number",
                                 required: true,
+                                step: "0.01",
+                                min: "0",
                                 placeholder: "0.00",
                                 value: line_unit_price.read().clone(),
-                                oninput: move |e: FormEvent| line_unit_price.set(e.value()),
+                                error: unit_price_error.read().clone(),
+                                oninput: move |e: FormEvent| {
+                                    unit_price_error.set(String::new());
+                                    line_unit_price.set(e.value());
+                                },
                             }
                         }
                         p { class: "mt-2 text-xs text-gray-500",
@@ -1136,6 +1194,7 @@ pub fn InvoiceNewPage() -> Element {
                         label: "Notes",
                         placeholder: "Internal notes (not shown to the customer)",
                         rows: 3,
+                        maxlength: 2000,
                         value: notes.read().clone(),
                         oninput: move |e: FormEvent| notes.set(e.value()),
                     }
@@ -1419,6 +1478,18 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
     }
 }
 
+// Field caps for the Record Payment form's free-text inputs (MAPPS-215).
+// Mirror the mokosh-server column limits so over-long input is blocked inline
+// (via `maxlength`) instead of failing later as an opaque 422; the server
+// stays the source of truth.
+const PAYMENT_REFERENCE_MAX: usize = 100;
+const PAYMENT_NOTES_MAX: usize = 2000;
+
+/// Upper bound for the Amount field (MAPPS-215). Comfortably inside `Decimal`'s
+/// range while ruling out absurd magnitudes, so such input is caught with a
+/// clear "out of range" message rather than a misleading parse error.
+const PAYMENT_AMOUNT_MAX: i64 = 10_000_000_000;
+
 #[derive(Props, Clone, PartialEq)]
 struct RecordPaymentModalProps {
     // MAPPS-158: optional seeds so the invoice detail page can pre-fill the
@@ -1453,6 +1524,10 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
     let mut notes = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // Per-field inline validation errors (MAPPS-215): shown beneath the field
+    // they belong to instead of collapsing into the single form-level banner.
+    let mut amount_err = use_signal(String::new);
+    let mut invoice_err = use_signal(String::new);
 
     let method_options = vec![
         SelectOption::new("check", "Check"),
@@ -1471,6 +1546,8 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
             return;
         }
         error.set(String::new());
+        amount_err.set(String::new());
+        invoice_err.set(String::new());
 
         let Some(company_uuid) = uuid::Uuid::parse_str(company_id.read().trim()).ok() else {
             error.set("A valid company ID (UUID) is required.".to_string());
@@ -1481,19 +1558,80 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
             error.set("Payment date is required.".to_string());
             return;
         }
-        let amt = amount.read().trim().to_string();
-        if amt.is_empty() {
-            error.set("Amount is required.".to_string());
-            return;
-        }
-        // invoice_id is optional (an unapplied payment is allowed). Only
-        // send it when it parses.
-        let invoice_value = match uuid::Uuid::parse_str(invoice_id.read().trim()) {
-            Ok(id) => serde_json::Value::String(id.to_string()),
-            Err(_) => serde_json::Value::Null,
+
+        // Collect field-level errors so the user sees every problem at once,
+        // each attached to its own field (MAPPS-215).
+        let mut ok = true;
+
+        // Amount: required, strictly positive, at most 2 decimals, in range.
+        // `min`/`step` on the field block most bad input in the browser; this
+        // re-checks on submit so a pasted or scripted value can't slip a
+        // negative/zero or sub-cent amount past the form.
+        let amt = {
+            let s = amount.read().trim().to_string();
+            if s.is_empty() {
+                amount_err.set("Amount is required.".to_string());
+                ok = false;
+                String::new()
+            } else {
+                match s.parse::<Decimal>() {
+                    Ok(d) if d <= Decimal::ZERO => {
+                        amount_err.set("Amount must be greater than zero.".to_string());
+                        ok = false;
+                        String::new()
+                    }
+                    Ok(d) if d.scale() > 2 => {
+                        amount_err.set("Amount must have at most 2 decimal places.".to_string());
+                        ok = false;
+                        String::new()
+                    }
+                    Ok(d) if d > Decimal::from(PAYMENT_AMOUNT_MAX) => {
+                        amount_err.set("Amount is out of range.".to_string());
+                        ok = false;
+                        String::new()
+                    }
+                    Ok(_) => s,
+                    Err(_) => {
+                        amount_err.set("Amount must be a number.".to_string());
+                        ok = false;
+                        String::new()
+                    }
+                }
+            }
         };
 
+        // Invoice ID is optional (an unapplied payment is allowed). When
+        // present it must be a valid UUID; existence is confirmed below before
+        // the payment is recorded. A malformed value is no longer silently
+        // dropped (which produced an unintended unapplied payment).
+        let invoice_uuid = {
+            let raw = invoice_id.read().trim().to_string();
+            if raw.is_empty() {
+                None
+            } else {
+                match uuid::Uuid::parse_str(&raw) {
+                    Ok(id) => Some(id),
+                    Err(_) => {
+                        invoice_err.set(
+                            "Invoice ID must be a valid UUID, or leave it blank for an unapplied payment."
+                                .to_string(),
+                        );
+                        ok = false;
+                        None
+                    }
+                }
+            }
+        };
+
+        if !ok {
+            return;
+        }
+
         saving.set(true);
+        let invoice_value = match invoice_uuid {
+            Some(id) => serde_json::Value::String(id.to_string()),
+            None => serde_json::Value::Null,
+        };
         let body = serde_json::json!({
             "company_id": company_uuid,
             "invoice_id": invoice_value,
@@ -1506,6 +1644,22 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
+                // For an applied payment, confirm the invoice exists (and is
+                // visible to this tenant) before recording, so a well-formed
+                // but unknown ID gets a field message instead of an opaque
+                // server FK error (MAPPS-215).
+                if let Some(id) = invoice_uuid {
+                    if crate::hooks::fetch::api::get_authed::<InvoiceDetail>(&format!(
+                        "/invoices/{id}"
+                    ))
+                    .await
+                    .is_err()
+                    {
+                        invoice_err.set("No invoice found with that ID.".to_string());
+                        saving.set(false);
+                        return;
+                    }
+                }
                 match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
                     "/payments",
                     &body,
@@ -1563,6 +1717,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                     label: "Invoice ID (UUID, optional)",
                     help: "Leave blank for an unapplied payment.",
                     value: invoice_id.read().clone(),
+                    error: invoice_err(),
                     oninput: move |e: FormEvent| invoice_id.set(e.value()),
                 }
                 div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
@@ -1577,8 +1732,13 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                         name: "payment_amount",
                         label: "Amount",
                         r#type: "number",
+                        // `min`/`step` make the browser reject non-positive and
+                        // sub-cent amounts; submit-time validation re-checks.
+                        min: "0.01".to_string(),
+                        step: "0.01".to_string(),
                         required: true,
                         value: amount.read().clone(),
+                        error: amount_err(),
                         oninput: move |e: FormEvent| amount.set(e.value()),
                     }
                 }
@@ -1592,6 +1752,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                 crate::components::Input {
                     name: "payment_reference",
                     label: "Reference Number",
+                    maxlength: PAYMENT_REFERENCE_MAX as i64,
                     value: reference_number.read().clone(),
                     oninput: move |e: FormEvent| reference_number.set(e.value()),
                 }
@@ -1599,6 +1760,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                     name: "payment_notes",
                     label: "Notes",
                     rows: 2,
+                    maxlength: PAYMENT_NOTES_MAX as i64,
                     value: notes.read().clone(),
                     oninput: move |e: FormEvent| notes.set(e.value()),
                 }
