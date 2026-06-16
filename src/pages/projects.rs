@@ -1439,13 +1439,9 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                             value: t_estimated.read().clone(),
                             oninput: move |e: FormEvent| t_estimated.set(e.value()),
                         }
-                        crate::components::Input {
+                        crate::components::DateField {
                             name: "task_due",
                             label: "Due Date",
-                            r#type: "date",
-                            // Bound the picker to a sane range (PMS-346).
-                            min: "2000-01-01",
-                            max: "2100-12-31",
                             value: t_due.read().clone(),
                             oninput: move |e: FormEvent| t_due.set(e.value()),
                         }
@@ -1600,17 +1596,15 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 }
                             }
                             div { class: "grid grid-cols-2 gap-4",
-                                Input {
+                                crate::components::DateField {
                                     name: "pe-start",
                                     label: "Start Date",
-                                    r#type: "date",
                                     value: "{pe_start}",
                                     oninput: move |e: FormEvent| pe_start.set(e.value()),
                                 }
-                                Input {
+                                crate::components::DateField {
                                     name: "pe-due",
                                     label: "Target End Date",
-                                    r#type: "date",
                                     value: "{pe_due}",
                                     oninput: move |e: FormEvent| pe_due.set(e.value()),
                                 }
@@ -2042,13 +2036,9 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                         oninput: move |e: FormEvent| te_estimated.set(e.value()),
                     }
                 }
-                Input {
+                crate::components::DateField {
                     name: "te-due",
                     label: "Due Date",
-                    r#type: "date",
-                    // Bound the picker to a sane range (PMS-346).
-                    min: "2000-01-01",
-                    max: "2100-12-31",
                     value: "{te_due}",
                     oninput: move |e: FormEvent| te_due.set(e.value()),
                 }

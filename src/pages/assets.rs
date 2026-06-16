@@ -605,10 +605,9 @@ pub fn AssetNewPage() -> Element {
                             value: model.read().clone(),
                             oninput: move |e: FormEvent| model.set(e.value()),
                         }
-                        Input {
+                        crate::components::DateField {
                             name: "warranty",
                             label: "Warranty Expires",
-                            r#type: "date",
                             value: warranty.read().clone(),
                             oninput: move |e: FormEvent| warranty.set(e.value()),
                         }
@@ -1289,17 +1288,15 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 oninput: move |e: FormEvent| e_serial.set(e.value()),
                             }
                             div { class: "grid grid-cols-2 gap-4",
-                                Input {
+                                crate::components::DateField {
                                     name: "edit-purchase",
                                     label: "Purchase Date",
-                                    r#type: "date".to_string(),
                                     value: "{e_purchase}",
                                     oninput: move |e: FormEvent| e_purchase.set(e.value()),
                                 }
-                                Input {
+                                crate::components::DateField {
                                     name: "edit-warranty",
                                     label: "Warranty Expiry",
-                                    r#type: "date".to_string(),
                                     value: "{e_warranty}",
                                     oninput: move |e: FormEvent| e_warranty.set(e.value()),
                                 }
