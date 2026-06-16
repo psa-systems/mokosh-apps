@@ -281,6 +281,9 @@ fn section_route(route: &Route) -> Route {
         Route::ContactDetail { .. } => Route::ContactList {},
         Route::ContractDetail { .. } => Route::ContractList {},
         Route::RateCardDetail { .. } => Route::RateCardList {},
+        // `/rate-cards/new` renders the list page with the create modal open,
+        // so it stays under the Rate Cards section (MAPPS-217).
+        Route::RateCardNew { .. } => Route::RateCardList {},
         Route::InvoiceDetail { .. } => Route::InvoiceList {},
         Route::AssetDetail { .. } => Route::AssetList {},
         Route::KBArticleDetail { .. } => Route::KBHome {},

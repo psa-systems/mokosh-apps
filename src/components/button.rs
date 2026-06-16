@@ -74,6 +74,10 @@ pub struct ButtonProps {
     /// set, emitted as `data-testid="..."` on the rendered <button>.
     #[props(default)]
     data_testid: Option<String>,
+    /// Optional native tooltip text, emitted as the `title` attribute.
+    /// Used to explain why a disabled control is not actionable (MAPPS-217).
+    #[props(default)]
+    title: Option<String>,
 }
 
 /// Reusable button component
@@ -94,6 +98,7 @@ pub fn Button(props: ButtonProps) -> Element {
             class: "{class}",
             r#type: "{props.r#type}",
             disabled: props.disabled || props.loading,
+            title: props.title.as_deref(),
             "data-testid": props.data_testid.as_deref(),
             onclick: move |e| props.onclick.call(e),
             if props.loading {
