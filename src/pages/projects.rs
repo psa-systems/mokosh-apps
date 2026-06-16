@@ -663,6 +663,15 @@ pub fn ProjectNewPage() -> Element {
     let mut description = use_signal(String::new);
     let mut budget_amount = use_signal(String::new);
     let mut budget_hours = use_signal(String::new);
+    // PMS-361: New Project lacked the status / dates / manager fields the
+    // Edit modal exposes, so every project was born as "planning" and
+    // needed a follow-up edit. These signals make Create field-symmetric
+    // with Edit; "planning" stays the default to preserve existing
+    // behaviour for users who don't change the dropdown.
+    let mut status = use_signal(|| "planning".to_string());
+    let mut project_manager = use_signal(String::new);
+    let mut start_date = use_signal(String::new);
+    let mut target_end_date = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
     // Per-field inline validation errors (MAPPS-176).
@@ -689,6 +698,34 @@ pub fn ProjectNewPage() -> Element {
             .iter()
             .map(|c| SelectOption::new(c.id.to_string(), c.name.clone())),
     );
+
+    // PMS-361: users list for the Project Manager Select. Same endpoint
+    // and shape the Edit modal uses on the detail page.
+    let users_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteUser>>("/auth/users")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+    let users = users_resource.read_unchecked().clone().unwrap_or_default();
+    let mut manager_options = vec![SelectOption::new("", "Unassigned")];
+    manager_options.extend(
+        users
+            .iter()
+            .map(|u| SelectOption::new(u.id.to_string(), u.full_name.clone())),
+    );
+
+    // PMS-361: same status set the Edit modal offers, kept inline here
+    // because there is no tenant-configurable project-status lookup.
+    let status_options = vec![
+        SelectOption::new("planning", "Planning"),
+        SelectOption::new("active", "Active"),
+        SelectOption::new("on_hold", "On Hold"),
+        SelectOption::new("completed", "Completed"),
+        SelectOption::new("cancelled", "Cancelled"),
+    ];
 
     let err = error.read().clone();
 
@@ -737,12 +774,30 @@ pub fn ProjectNewPage() -> Element {
                             }
                         };
                         is_submitting.set(true);
+                        // PMS-361: snapshot the new fields so the spawn
+                        // doesn't reach back into the signal layer. Status
+                        // is always sent (defaulting to "planning" if the
+                        // user somehow cleared the Select); the rest go
+                        // in only when non-empty so the server doesn't see
+                        // an empty-string masquerading as a UUID/date.
+                        let status_v = {
+                            let s = status.read().trim().to_string();
+                            if s.is_empty() {
+                                "planning".to_string()
+                            } else {
+                                s
+                            }
+                        };
+                        let manager_v = project_manager.read().trim().to_string();
+                        let start_v = start_date.read().trim().to_string();
+                        let end_v = target_end_date.read().trim().to_string();
                         spawn(async move {
                             #[cfg(feature = "web")]
                             {
                                 let mut body = serde_json::json!({
                                     "name": project_name,
                                     "description": desc,
+                                    "status": status_v,
                                 });
                                 if !company_id.is_empty() {
                                     body["company_id"] = serde_json::json!(company_id);
@@ -752,6 +807,16 @@ pub fn ProjectNewPage() -> Element {
                                 }
                                 if let Some(h) = hours {
                                     body["budget_hours"] = serde_json::json!(h);
+                                }
+                                if !manager_v.is_empty() {
+                                    body["project_manager_id"] =
+                                        serde_json::json!(manager_v);
+                                }
+                                if !start_v.is_empty() {
+                                    body["start_date"] = serde_json::json!(start_v);
+                                }
+                                if !end_v.is_empty() {
+                                    body["target_end_date"] = serde_json::json!(end_v);
                                 }
                                 match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
                                         "/projects",
@@ -804,6 +869,43 @@ pub fn ProjectNewPage() -> Element {
                         maxlength: PROJECT_DESCRIPTION_MAX as i64,
                         value: description.read().clone(),
                         oninput: move |e: FormEvent| description.set(e.value()),
+                    }
+
+                    // PMS-361: status + project manager row, matching the
+                    // Edit modal's layout so the Create flow doesn't force
+                    // an immediate follow-up edit just to set these.
+                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                        Select {
+                            name: "status",
+                            label: "Status",
+                            options: status_options,
+                            value: status.read().clone(),
+                            onchange: move |e: FormEvent| status.set(e.value()),
+                        }
+                        Select {
+                            name: "project_manager_id",
+                            label: "Project Manager",
+                            options: manager_options.clone(),
+                            value: project_manager.read().clone(),
+                            onchange: move |e: FormEvent| project_manager.set(e.value()),
+                        }
+                    }
+
+                    // PMS-361: start + target end dates. Optional; blank
+                    // leaves them unset on the server.
+                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                        crate::components::DateField {
+                            name: "start_date",
+                            label: "Start Date",
+                            value: start_date.read().clone(),
+                            oninput: move |e: FormEvent| start_date.set(e.value()),
+                        }
+                        crate::components::DateField {
+                            name: "target_end_date",
+                            label: "Target End Date",
+                            value: target_end_date.read().clone(),
+                            oninput: move |e: FormEvent| target_end_date.set(e.value()),
+                        }
                     }
 
                     div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
