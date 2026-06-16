@@ -229,6 +229,11 @@ pub enum Route {
     #[route("/rate-cards")]
     RateCardList {},
 
+    // Static `/new` must precede the `:id` route so it is not parsed as a
+    // rate-card id (MAPPS-217).
+    #[route("/rate-cards/new")]
+    RateCardNew {},
+
     #[route("/rate-cards/:id")]
     RateCardDetail { id: String },
 
@@ -620,6 +625,11 @@ fn ContractEdit(id: String) -> Element {
 #[component]
 fn RateCardList() -> Element {
     rsx! { contracts::RateCardListPage {} }
+}
+
+#[component]
+fn RateCardNew() -> Element {
+    rsx! { contracts::RateCardListPage { open_create: true } }
 }
 
 #[component]

@@ -1582,11 +1582,23 @@ fn ContractHourBalanceCard(
 
 /// Rate-card list page. Fetches `GET /rate-cards` (paginated).
 #[component]
-pub fn RateCardListPage() -> Element {
+pub fn RateCardListPage(
+    /// Open the create modal on mount. The `/rate-cards/new` route renders
+    /// this page with `open_create = true` so the URL lands on the create
+    /// form instead of mis-routing to a failed detail load (MAPPS-217).
+    #[props(default = false)]
+    open_create: bool,
+) -> Element {
     let can_edit = use_can_manage_billing();
     let navigator = use_navigator();
     let mut page = use_signal(|| 1usize);
-    let mut editing = use_signal(|| None::<RateCardFormState>);
+    let mut editing = use_signal(move || {
+        if open_create {
+            Some(RateCardFormState::new())
+        } else {
+            None
+        }
+    });
     let current_page = (*page.read()).max(1);
 
     let mut rate_cards_resource = use_resource(move || async move {
@@ -1951,6 +1963,13 @@ fn RateCardItemsCard(
         _ => 0,
     };
     let can_add = !work_types.is_empty() && used_count < work_types.len();
+    // When disabled, say why so the greyed-out button is not read as broken
+    // (MAPPS-217): either no work types exist, or every one already has a rate.
+    let disabled_reason = if work_types.is_empty() {
+        "Define a work type in Settings before adding a rate."
+    } else {
+        "Every work type already has a rate on this card."
+    };
     rsx! {
         Card {
             title: "Rates",
@@ -1960,6 +1979,7 @@ fn RateCardItemsCard(
                     Button {
                         variant: ButtonVariant::Primary,
                         disabled: !can_add,
+                        title: if can_add { None } else { Some(disabled_reason.to_string()) },
                         onclick: move |_| editing_item.set(Some(RateCardItemFormState::new())),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "Add Rate"
