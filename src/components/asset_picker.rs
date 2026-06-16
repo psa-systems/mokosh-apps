@@ -58,6 +58,18 @@ pub struct AssetPickerProps {
 pub fn AssetPicker(props: AssetPickerProps) -> Element {
     let mut query = use_signal(String::new);
     let mut show_dropdown = use_signal(|| false);
+    // PMS-344 follow-up: when the picker has a selected_id from the
+    // parent (e.g. the inline ticket-detail editor showing the currently
+    // associated asset), clicking Change must surface the search input
+    // immediately - WITHOUT firing onclear. The previous implementation
+    // cleared the association server-side via onclear and waited for the
+    // refetched ticket to re-render with selected_id = None before the
+    // search input appeared; that round trip is invisible to the user,
+    // so they read it as "Change does nothing". The internal `editing`
+    // signal lets the picker swap to search mode locally without a
+    // network call. Selection in search mode then fires the standard
+    // onselect with the new asset and exits editing.
+    let mut editing = use_signal(|| false);
 
     // PMS-371: read the query signal INSIDE the use_resource closure so
     // Dioxus subscribes the resource to it (same pattern as the
@@ -79,36 +91,58 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
             .map(|p| p.data)
     });
 
+    // Chip view: parent supplied a selected_id AND the user is not
+    // currently in inline-edit mode. Change toggles `editing` so the
+    // search input mounts on the next render with no server round trip.
     if let Some(id) = &props.selected_id {
-        let id = id.clone();
-        let name = props.value.clone();
-        let onclear = props.onclear;
-        return rsx! {
-            div { class: "space-y-1",
-                label { class: "block text-sm font-medium text-gray-700 dark:text-gray-300",
-                    "{props.label}"
-                    if props.required {
-                        span { class: "text-red-500 ml-0.5", "*" }
+        if !editing() {
+            let id = id.clone();
+            let name = props.value.clone();
+            let onclear = props.onclear;
+            return rsx! {
+                div { class: "space-y-1",
+                    label { class: "block text-sm font-medium text-gray-700 dark:text-gray-300",
+                        "{props.label}"
+                        if props.required {
+                            span { class: "text-red-500 ml-0.5", "*" }
+                        }
+                    }
+                    div {
+                        class: "flex items-center justify-between border border-gray-300 dark:border-gray-700 rounded-md px-3 py-2 bg-gray-50 dark:bg-gray-900",
+                        div { class: "min-w-0",
+                            p { class: "text-sm font-medium text-gray-900 dark:text-gray-100 truncate", "{name}" }
+                            p { class: "text-xs text-gray-500 truncate", "{id}" }
+                        }
+                        div { class: "flex items-center gap-1 shrink-0",
+                            button {
+                                r#type: "button",
+                                class: "text-xs text-blue-600 hover:text-blue-500 px-2 py-1",
+                                onclick: move |_| {
+                                    query.set(String::new());
+                                    editing.set(true);
+                                    show_dropdown.set(true);
+                                },
+                                "Change"
+                            }
+                            // PMS-344 follow-up: explicit "Unassign"
+                            // affordance so the user can drop the asset
+                            // association without picking a replacement.
+                            // Fires the parent's onclear (which PUTs
+                            // asset_id = null on a ticket inline editor).
+                            button {
+                                r#type: "button",
+                                class: "text-xs text-gray-500 hover:text-red-600 px-2 py-1",
+                                onclick: move |_| {
+                                    onclear.call(());
+                                    query.set(String::new());
+                                },
+                                "Unassign"
+                            }
+                        }
                     }
                 }
-                div {
-                    class: "flex items-center justify-between border border-gray-300 dark:border-gray-700 rounded-md px-3 py-2 bg-gray-50 dark:bg-gray-900",
-                    div { class: "min-w-0",
-                        p { class: "text-sm font-medium text-gray-900 dark:text-gray-100 truncate", "{name}" }
-                        p { class: "text-xs text-gray-500 truncate", "{id}" }
-                    }
-                    button {
-                        r#type: "button",
-                        class: "text-xs text-blue-600 hover:text-blue-500 px-2 py-1",
-                        onclick: move |_| {
-                            onclear.call(());
-                            query.set(String::new());
-                        },
-                        "Change"
-                    }
-                }
-            }
-        };
+            };
+        }
     }
 
     let snap = results.read_unchecked();
@@ -128,10 +162,15 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
             }
             if *show_dropdown.read() {
                 // Backdrop dismisses the dropdown on click-outside; sits
-                // below the dropdown's z-20 so rows stay clickable.
+                // below the dropdown's z-20 so rows stay clickable. Also
+                // exits inline-edit mode so the chip view returns when
+                // the user cancels by clicking outside without picking.
                 div {
                     class: "fixed inset-0 z-10",
-                    onclick: move |_| show_dropdown.set(false),
+                    onclick: move |_| {
+                        show_dropdown.set(false);
+                        editing.set(false);
+                    },
                 }
                 div {
                     class: "absolute z-20 left-0 right-0 mt-1 max-h-72 overflow-y-auto rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg",
@@ -175,6 +214,7 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                                                         onclick: move |_| {
                                                             onselect.call((id_for_click.clone(), name_for_click.clone()));
                                                             show_dropdown.set(false);
+                                                            editing.set(false);
                                                             query.set(name_for_click.clone());
                                                         },
                                                         span { class: "font-medium", "{name}" }
