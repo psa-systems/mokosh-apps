@@ -45,6 +45,45 @@ const TAG_FETCH_LIMIT: usize = 200;
 /// How many recent articles the home page surfaces.
 const RECENT_LIMIT: usize = 5;
 
+/// Client-side `maxlength` caps for the article form's text fields, mirroring
+/// the server's KB article column limits so over-long input is blocked at the
+/// field rather than failing as an opaque 422 (MAPPS-218). The slug column is
+/// `length(min = 1, max = 255)` (see [`slugify`]); title and summary share the
+/// 255-char varchar cap; the body is a large TEXT column, capped here only to
+/// stop an absurd paste. The server stays the source of truth.
+const TITLE_MAX: usize = 255;
+const SLUG_MAX: usize = 255;
+const SUMMARY_MAX: usize = 255;
+const BODY_MAX: usize = 100_000;
+
+/// Per-tag character cap. Tags render as inline chips and feed the tag
+/// taxonomy (search/filter), so a single tag longer than this is almost
+/// certainly garbage (MAPPS-218).
+const TAG_MAX: usize = 50;
+
+/// Split a comma-separated tag string into clean tags: strip markup (`<`/`>`)
+/// and control characters, trim, cap each tag at [`TAG_MAX`] characters, and
+/// drop empties. Mirrors the issue's "tags are length-capped and stripped of
+/// markup/control characters" requirement so junk like `<script>` or an
+/// unbounded blob never reaches the tag taxonomy (MAPPS-218).
+fn sanitize_tags(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .filter_map(|t| {
+            let cleaned: String = t
+                .chars()
+                .filter(|c| !c.is_control() && !matches!(c, '<' | '>'))
+                .collect();
+            let capped: String = cleaned.trim().chars().take(TAG_MAX).collect();
+            let tag = capped.trim().to_string();
+            if tag.is_empty() {
+                None
+            } else {
+                Some(tag)
+            }
+        })
+        .collect()
+}
+
 /// Derive a URL slug from a title: lowercase, non-alphanumerics collapse
 /// to single hyphens, trimmed. Mirrors the obvious server expectation
 /// (`slug` is required, `length(min = 1, max = 255)`). Empty input yields
@@ -1239,13 +1278,17 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         is_submitting.set(true);
         error.set(String::new());
 
-        // Slug: use the author's value, else derive from the title.
+        // Slug: normalize through `slugify` so the stored value is always
+        // URL-safe (lowercase, hyphen-separated, no spaces/`<>`/punctuation),
+        // whether it was author-supplied or derived from the title when blank.
+        // `slugify` is idempotent on an already-valid slug (MAPPS-218).
         let slug_raw = slug.read().trim().to_string();
-        let slug_val = if slug_raw.is_empty() {
-            slugify(&title_val)
+        let slug_source = if slug_raw.is_empty() {
+            &title_val
         } else {
-            slug_raw
+            &slug_raw
         };
+        let slug_val = slugify(slug_source);
         let summary_val = summary.read().trim().to_string();
         let summary_opt = if summary_val.is_empty() {
             None
@@ -1262,12 +1305,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         };
         let visibility_val = visibility.read().clone();
         let status_val = status.read().clone();
-        let tags_vec: Vec<String> = tags
-            .read()
-            .split(',')
-            .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty())
-            .collect();
+        let tags_vec: Vec<String> = sanitize_tags(&tags.read());
 
         let mode = mode.clone();
         spawn(async move {
@@ -1337,6 +1375,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     label: "Title",
                     placeholder: "How to ...",
                     required: true,
+                    maxlength: TITLE_MAX as i64,
                     value: title.read().clone(),
                     oninput: move |e: FormEvent| {
                         title.set(e.value());
@@ -1350,7 +1389,8 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     name: "slug",
                     label: "Slug",
                     placeholder: "Leave blank to derive from the title",
-                    help: "URL-safe identifier; auto-generated from the title when blank.",
+                    help: "URL-safe identifier; normalized to lowercase hyphenated form on save, and auto-generated from the title when blank.",
+                    maxlength: SLUG_MAX as i64,
                     value: slug.read().clone(),
                     oninput: move |e: FormEvent| {
                         slug_touched.set(true);
@@ -1362,6 +1402,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     name: "summary",
                     label: "Summary",
                     placeholder: "Short one-line description (optional)",
+                    maxlength: SUMMARY_MAX as i64,
                     value: summary.read().clone(),
                     oninput: move |e: FormEvent| summary.set(e.value()),
                 }
@@ -1411,6 +1452,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                                 placeholder: "## Overview\n\nWrite the article in Markdown...",
                                 rows: 16,
                                 required: true,
+                                maxlength: BODY_MAX.to_string(),
                                 value: content.read().clone(),
                                 oninput: move |e: FormEvent| content.set(e.value()),
                             }
@@ -1762,5 +1804,37 @@ mod tests {
     fn slug_follows_title_until_touched() {
         assert_eq!(next_slug("My Article", false), Some(slugify("My Article")));
         assert_eq!(next_slug("My Article", true), None);
+    }
+
+    #[test]
+    fn slugify_normalizes_unsafe_author_input() {
+        // The repro value from MAPPS-218 becomes URL-safe.
+        assert_eq!(
+            slugify("Bad Slug With Spaces!!! <>"),
+            "bad-slug-with-spaces"
+        );
+        // Already-valid slugs survive unchanged (idempotent).
+        assert_eq!(slugify("my-valid-slug"), "my-valid-slug");
+    }
+
+    #[test]
+    fn sanitize_tags_strips_markup_and_caps_length() {
+        let tags = sanitize_tags(&format!("tag1, <script>, {}", "x".repeat(100)));
+        // Markup chars are stripped, the over-long tag is capped to TAG_MAX.
+        assert_eq!(
+            tags,
+            vec![
+                "tag1".to_string(),
+                "script".to_string(),
+                "x".repeat(TAG_MAX)
+            ]
+        );
+    }
+
+    #[test]
+    fn sanitize_tags_drops_empty_and_control_only() {
+        // Whitespace-only, comma-only, and control-character-only entries drop out.
+        assert_eq!(sanitize_tags("  , \t , a , "), vec!["a".to_string()]);
+        assert!(sanitize_tags("").is_empty());
     }
 }
