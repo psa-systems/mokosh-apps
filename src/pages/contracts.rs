@@ -950,7 +950,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                         label: "Name",
                         placeholder: "e.g. Managed Services Agreement",
                         required: true,
-                        maxlength: CONTRACT_NAME_MAX.to_string(),
+                        maxlength: CONTRACT_NAME_MAX as i64,
                         value: name.read().clone(),
                         error: name_err(),
                         oninput: move |e: FormEvent| name.set(e.value()),
@@ -1030,7 +1030,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                         name: "contract_number",
                         label: "Contract Number",
                         placeholder: "Optional reference",
-                        maxlength: CONTRACT_NUMBER_MAX.to_string(),
+                        maxlength: CONTRACT_NUMBER_MAX as i64,
                         value: contract_number.read().clone(),
                         error: number_err(),
                         oninput: move |e: FormEvent| contract_number.set(e.value()),
@@ -1092,7 +1092,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                                             crate::components::Input {
                                                 name: "item_name_{idx}",
                                                 label: "Name",
-                                                maxlength: ITEM_NAME_MAX.to_string(),
+                                                maxlength: ITEM_NAME_MAX as i64,
                                                 value: item.name.clone(),
                                                 error: item.name_err.clone(),
                                                 oninput: move |e: FormEvent| {
