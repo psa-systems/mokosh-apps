@@ -35,6 +35,7 @@ use crate::components::{
     PlusIcon, Select, SelectOption, SettingFormModal, Table, TableBody, TableCell, TableEmpty,
     TableHead, TableHeader, TableLoading, TableRow,
 };
+use crate::utils::money::format_money_str;
 use crate::utils::Paginated;
 use crate::Route;
 
@@ -486,7 +487,8 @@ pub fn WorkTypesSettingsPage() -> Element {
                                     let rate_display = if rate.trim().is_empty() {
                                         "-".to_string()
                                     } else {
-                                        format!("${rate}")
+                                        // PMS-365: shared formatter for consistent $1,234.00.
+                                        format_money_str(&rate)
                                     };
                                     rsx! {
                                         TableRow { key: "{key}", clickable: true,

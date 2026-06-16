@@ -489,7 +489,9 @@ pub fn ProjectListPage() -> Element {
     } else {
         total_value
     };
-    let total_value_label = format!("${total_value:.0}");
+    // PMS-365: route through the shared formatter so the stat matches the
+    // project card / budget panel ($1,234.00) instead of a bare $1234.
+    let total_value_label = format_money_f64(Some(total_value));
 
     // Client-side search + status filter.
     let needle = search.read().to_lowercase();
@@ -1279,7 +1281,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                         }
                                         div { class: "flex justify-between",
                                             span { class: "text-sm text-gray-500", "Remaining" }
-                                            span { class: "font-medium", "${remaining:.0}" }
+                                            span { class: "font-medium", "{format_money_f64(Some(remaining))}" }
                                         }
                                         div { class: "w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 mt-2",
                                             div { class: "bg-green-600 h-2 rounded-full", style: "width: {util}%" }
