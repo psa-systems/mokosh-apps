@@ -102,7 +102,10 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                     XMarkIcon { size: IconSize::Large }
                 }
             }
-            SidebarContent {}
+            // Mobile drawer closes on every navigation (its open state
+            // lives in the re-mounting AppLayout), so there is no scroll
+            // position worth preserving here.
+            SidebarContent { persist_scroll: false }
         }
 
         // Desktop sidebar - sits below the top bar in the flex column
@@ -112,13 +115,37 @@ pub fn Sidebar(props: SidebarProps) -> Element {
         // scroll, the user sees the affordance instead of silently
         // clipping behind the main panel's own scrollbar (PMC-22).
         aside { class: "hidden lg:flex lg:w-64 lg:flex-col bg-gray-900 border-r border-gray-700 overflow-y-auto overscroll-contain scrollbar-thin",
-            SidebarContent {}
+            SidebarContent { persist_scroll: true }
         }
     }
 }
 
+/// DOM id of the desktop sidebar's scroll container, used to restore and
+/// record its scroll offset across re-mounts (MAPPS-203). Only the
+/// persistent desktop instance carries this id, so `getElementById` is
+/// unambiguous even though the mobile drawer renders the same component.
+const SIDEBAR_NAV_ID: &str = "mokosh-sidebar-nav";
+
+/// Read the current scroll offset of the sidebar nav from the DOM.
+fn read_sidebar_scroll() -> Option<i32> {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(SIDEBAR_NAV_ID))
+        .map(|el| el.scroll_top())
+}
+
+/// Restore a previously recorded scroll offset onto the sidebar nav.
+fn restore_sidebar_scroll(top: i32) {
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(SIDEBAR_NAV_ID))
+    {
+        el.set_scroll_top(top);
+    }
+}
+
 #[component]
-fn SidebarContent() -> Element {
+fn SidebarContent(persist_scroll: bool) -> Element {
     // Admin-only nav (audit log, SLA management): rendered only for
     // admin/super_admin users (reactive on sign-in). The pages re-check
     // server-side, so this is a UX affordance, not a security boundary.
@@ -130,6 +157,15 @@ fn SidebarContent() -> Element {
         .map(|u| u.role.is_admin())
         .unwrap_or(false);
 
+    // MAPPS-203: App-root-owned scroll offset that survives the
+    // AppLayout re-mount on each navigation. Only the persistent desktop
+    // sidebar (`persist_scroll`) reads/writes it; the mobile drawer
+    // closes on nav so it has nothing to preserve.
+    let mut sidebar_scroll = crate::hooks::use_sidebar_scroll();
+    // Carry the id only on the persistent instance so the two SidebarContent
+    // mounts (mobile + desktop) never share a DOM id.
+    let nav_id = if persist_scroll { SIDEBAR_NAV_ID } else { "" };
+
     rsx! {
         div { class: "flex flex-col flex-1 min-h-0",
             // The nav itself is the scroll container (flex-1 + min-h-0 +
@@ -138,7 +174,29 @@ fn SidebarContent() -> Element {
             // `aside` has no overflow of its own, where the lower groups
             // (Analytics / Admin) were otherwise unreachable. The footer
             // below stays pinned.
-            nav { class: "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin px-2 py-4 space-y-1",
+            nav {
+                id: nav_id,
+                class: "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin px-2 py-4 space-y-1",
+                // On mount of the persistent desktop sidebar, jump straight
+                // to the offset recorded before the last navigation so the
+                // re-mount is invisible. `peek` so reading it here never
+                // subscribes this component to its own scroll writes.
+                onmounted: move |_| {
+                    if persist_scroll {
+                        let top = sidebar_scroll.peek().0;
+                        if top != 0 {
+                            restore_sidebar_scroll(top);
+                        }
+                    }
+                },
+                // Record every scroll so the next re-mount can restore it.
+                onscroll: move |_| {
+                    if persist_scroll {
+                        if let Some(top) = read_sidebar_scroll() {
+                            sidebar_scroll.set(crate::hooks::SidebarScroll(top));
+                        }
+                    }
+                },
                 NavItem { to: Route::Dashboard {}, icon: rsx!(HomeIcon {}), label: "Dashboard" }
 
             NavSection { title: "Service Desk",
