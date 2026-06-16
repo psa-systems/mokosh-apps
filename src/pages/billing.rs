@@ -1073,18 +1073,16 @@ pub fn InvoiceNewPage() -> Element {
                     }
 
                     div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
-                        crate::components::Input {
+                        crate::components::DateField {
                             name: "invoice_date",
                             label: "Invoice Date",
-                            r#type: "date",
                             required: true,
                             value: invoice_date.read().clone(),
                             oninput: move |e: FormEvent| invoice_date.set(e.value()),
                         }
-                        crate::components::Input {
+                        crate::components::DateField {
                             name: "due_date",
                             label: "Due Date",
-                            r#type: "date",
                             required: true,
                             value: due_date.read().clone(),
                             oninput: move |e: FormEvent| due_date.set(e.value()),
@@ -1568,10 +1566,9 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                     oninput: move |e: FormEvent| invoice_id.set(e.value()),
                 }
                 div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
-                    crate::components::Input {
+                    crate::components::DateField {
                         name: "payment_date",
                         label: "Payment Date",
-                        r#type: "date",
                         required: true,
                         value: payment_date.read().clone(),
                         oninput: move |e: FormEvent| payment_date.set(e.value()),
@@ -1747,18 +1744,16 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                     }
                 }
                 div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
-                    crate::components::Input {
+                    crate::components::DateField {
                         name: "invoice_date",
                         label: "Invoice Date",
-                        r#type: "date",
                         required: true,
                         value: invoice_date.read().clone(),
                         oninput: move |e: FormEvent| invoice_date.set(e.value()),
                     }
-                    crate::components::Input {
+                    crate::components::DateField {
                         name: "due_date",
                         label: "Due Date",
-                        r#type: "date",
                         required: true,
                         value: due_date.read().clone(),
                         oninput: move |e: FormEvent| due_date.set(e.value()),

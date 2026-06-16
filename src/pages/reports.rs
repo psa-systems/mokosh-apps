@@ -698,23 +698,19 @@ fn CustomReportBuilder() -> Element {
                             // Optional date range
                             if cur.has_date_range {
                                 div { class: "grid grid-cols-2 gap-3",
-                                    div {
-                                        label { class: "block text-xs text-gray-500 mb-1", "From" }
-                                        input {
-                                            r#type: "date",
-                                            class: "w-full rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-2 py-1 text-sm",
-                                            value: "{from}",
-                                            onchange: move |e| from.set(e.value()),
-                                        }
+                                    // MAPPS-204: shared DateField so the report
+                                    // range filters match every other date input.
+                                    crate::components::DateField {
+                                        name: "report-from",
+                                        label: "From",
+                                        value: "{from}",
+                                        oninput: move |e: FormEvent| from.set(e.value()),
                                     }
-                                    div {
-                                        label { class: "block text-xs text-gray-500 mb-1", "To" }
-                                        input {
-                                            r#type: "date",
-                                            class: "w-full rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-2 py-1 text-sm",
-                                            value: "{to}",
-                                            onchange: move |e| to.set(e.value()),
-                                        }
+                                    crate::components::DateField {
+                                        name: "report-to",
+                                        label: "To",
+                                        value: "{to}",
+                                        oninput: move |e: FormEvent| to.set(e.value()),
                                     }
                                 }
                             }

@@ -246,20 +246,18 @@ fn AuditLogContent() -> Element {
                             page.set(1);
                         },
                     }
-                    crate::components::Input {
+                    crate::components::DateField {
                         name: "from",
                         label: "From",
-                        r#type: "date",
                         value: from_filter.read().clone(),
                         oninput: move |e: FormEvent| {
                             from_filter.set(e.value());
                             page.set(1);
                         },
                     }
-                    crate::components::Input {
+                    crate::components::DateField {
                         name: "to",
                         label: "To",
-                        r#type: "date",
                         value: to_filter.read().clone(),
                         oninput: move |e: FormEvent| {
                             to_filter.set(e.value());

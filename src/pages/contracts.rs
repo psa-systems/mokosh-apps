@@ -785,18 +785,16 @@ fn ContractForm(props: ContractFormProps) -> Element {
                 }
 
                 div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
-                    crate::components::Input {
+                    crate::components::DateField {
                         name: "start_date",
                         label: "Start Date",
-                        r#type: "date",
                         required: true,
                         value: start_date.read().clone(),
                         oninput: move |e: FormEvent| start_date.set(e.value()),
                     }
-                    crate::components::Input {
+                    crate::components::DateField {
                         name: "end_date",
                         label: "End Date",
-                        r#type: "date",
                         value: end_date.read().clone(),
                         oninput: move |e: FormEvent| end_date.set(e.value()),
                     }

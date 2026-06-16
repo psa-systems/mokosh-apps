@@ -1378,10 +1378,9 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
                     value: hours.read().clone(),
                     oninput: move |e: FormEvent| hours.set(e.value()),
                 }
-                crate::components::Input {
+                crate::components::DateField {
                     name: "edit_date",
                     label: "Date",
-                    r#type: "date",
                     required: true,
                     value: date.read().clone(),
                     oninput: move |e: FormEvent| date.set(e.value()),
