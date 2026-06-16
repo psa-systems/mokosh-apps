@@ -593,8 +593,9 @@ struct NotificationPage {
 ///
 /// Thin wrapper around [`crate::utils::datetime::format_user_datetime`]:
 /// pulls the active user's format pref off the AuthContext, then
-/// delegates. Users without a preference get the legacy browser-locale
-/// rendering.
+/// delegates. The instant is rendered in the user's profile timezone
+/// (MAPPS-208); users without a format preference get a locale
+/// rendering still pinned to that timezone.
 fn format_local_datetime(dt: chrono::DateTime<chrono::Utc>) -> String {
     let pref = crate::utils::datetime::user_format_pref();
     crate::utils::datetime::format_user_datetime(dt, pref.as_deref())
