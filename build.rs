@@ -8,6 +8,12 @@ fn main() {
     // commit via `GIT_SHA` (the builder stage exports it as an env), so
     // prefer that; fall back to git for local/dev builds.
     println!("cargo:rerun-if-env-changed=GIT_SHA");
+    // Re-bake APP_GIT_TAG when the Cargo.toml `version` bumps. The displayed
+    // version is read from CARGO_PKG_VERSION below; declare it explicitly so
+    // the rerun does not silently depend on the `env!` fallback staying in
+    // this file. Without it, a version bump could leave the footer stale
+    // (the MAPPS-200 bug).
+    println!("cargo:rerun-if-env-changed=CARGO_PKG_VERSION");
     // Re-run when HEAD or any ref moves so the embedded commit hash tracks
     // the current commit on local builds. Without these, cargo caches the
     // build script result and the displayed hash drifts from the actual
