@@ -917,6 +917,11 @@ pub fn InvoiceNewPage() -> Element {
     let mut is_submitting = use_signal(|| false);
     let mut is_generating = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // Per-field messages so a bad value is flagged at the field rather than
+    // surfaced only as the generic 422 banner (MAPPS-214).
+    let mut due_date_error = use_signal(String::new);
+    let mut quantity_error = use_signal(String::new);
+    let mut unit_price_error = use_signal(String::new);
 
     let navigator = use_navigator();
 
@@ -927,6 +932,9 @@ pub fn InvoiceNewPage() -> Element {
             return;
         }
         error.set(String::new());
+        due_date_error.set(String::new());
+        quantity_error.set(String::new());
+        unit_price_error.set(String::new());
 
         let Some(company_uuid) = uuid::Uuid::parse_str(company_id.read().trim()).ok() else {
             error.set("A valid company ID (UUID) is required.".to_string());
@@ -936,6 +944,12 @@ pub fn InvoiceNewPage() -> Element {
         let due = due_date.read().trim().to_string();
         if inv_date.is_empty() || due.is_empty() {
             error.set("Invoice date and due date are required.".to_string());
+            return;
+        }
+        // Dates come from the native date picker as ISO `YYYY-MM-DD`, so a
+        // lexicographic compare is a correct date order check.
+        if due < inv_date {
+            due_date_error.set("Due date must be on or after the invoice date.".to_string());
             return;
         }
         let description = line_description.read().trim().to_string();
@@ -948,6 +962,31 @@ pub fn InvoiceNewPage() -> Element {
         if quantity.is_empty() || unit_price.is_empty() {
             error.set("Line item quantity and unit price are required.".to_string());
             return;
+        }
+        // Reject negatives (and non-numeric input) at the field. The native
+        // `min="0"` already blocks this, but validate here too so the message
+        // is explicit and the bad value never reaches the 422 path.
+        match quantity.parse::<f64>() {
+            Ok(q) if q >= 0.0 => {}
+            Ok(_) => {
+                quantity_error.set("Quantity cannot be negative.".to_string());
+                return;
+            }
+            Err(_) => {
+                quantity_error.set("Enter a valid quantity.".to_string());
+                return;
+            }
+        }
+        match unit_price.parse::<f64>() {
+            Ok(p) if p >= 0.0 => {}
+            Ok(_) => {
+                unit_price_error.set("Unit price cannot be negative.".to_string());
+                return;
+            }
+            Err(_) => {
+                unit_price_error.set("Enter a valid unit price.".to_string());
+                return;
+            }
         }
 
         is_submitting.set(true);
@@ -1085,13 +1124,18 @@ pub fn InvoiceNewPage() -> Element {
                             label: "Due Date",
                             required: true,
                             value: due_date.read().clone(),
-                            oninput: move |e: FormEvent| due_date.set(e.value()),
+                            error: due_date_error.read().clone(),
+                            oninput: move |e: FormEvent| {
+                                due_date_error.set(String::new());
+                                due_date.set(e.value());
+                            },
                         }
                     }
 
                     crate::components::Input {
                         name: "po_number",
                         label: "PO Number",
+                        maxlength: 100,
                         value: po_number.read().clone(),
                         oninput: move |e: FormEvent| po_number.set(e.value()),
                     }
@@ -1103,6 +1147,7 @@ pub fn InvoiceNewPage() -> Element {
                                 name: "line_description",
                                 label: "Description",
                                 required: true,
+                                maxlength: 1000,
                                 placeholder: "What was delivered",
                                 value: line_description.read().clone(),
                                 oninput: move |e: FormEvent| line_description.set(e.value()),
@@ -1112,18 +1157,30 @@ pub fn InvoiceNewPage() -> Element {
                                 label: "Quantity",
                                 r#type: "number",
                                 required: true,
+                                step: "0.01",
+                                min: "0",
                                 placeholder: "Qty",
                                 value: line_quantity.read().clone(),
-                                oninput: move |e: FormEvent| line_quantity.set(e.value()),
+                                error: quantity_error.read().clone(),
+                                oninput: move |e: FormEvent| {
+                                    quantity_error.set(String::new());
+                                    line_quantity.set(e.value());
+                                },
                             }
                             crate::components::Input {
                                 name: "line_unit_price",
                                 label: "Unit Price",
                                 r#type: "number",
                                 required: true,
+                                step: "0.01",
+                                min: "0",
                                 placeholder: "0.00",
                                 value: line_unit_price.read().clone(),
-                                oninput: move |e: FormEvent| line_unit_price.set(e.value()),
+                                error: unit_price_error.read().clone(),
+                                oninput: move |e: FormEvent| {
+                                    unit_price_error.set(String::new());
+                                    line_unit_price.set(e.value());
+                                },
                             }
                         }
                         p { class: "mt-2 text-xs text-gray-500",
@@ -1136,6 +1193,7 @@ pub fn InvoiceNewPage() -> Element {
                         label: "Notes",
                         placeholder: "Internal notes (not shown to the customer)",
                         rows: 3,
+                        maxlength: "2000",
                         value: notes.read().clone(),
                         oninput: move |e: FormEvent| notes.set(e.value()),
                     }

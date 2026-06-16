@@ -176,7 +176,9 @@ pub struct CreateInvoiceRequest {
     pub discount_amount: Option<Decimal>,
     #[validate(length(max = 3))]
     pub currency: Option<String>,
+    #[validate(length(max = 2000))]
     pub notes: Option<String>,
+    #[validate(length(max = 100))]
     pub po_number: Option<String>,
     #[validate(length(min = 1, message = "At least one line item is required"))]
     pub lines: Vec<CreateInvoiceLineRequest>,
@@ -197,7 +199,9 @@ pub struct CreateInvoiceFromTimeEntriesRequest {
     pub payment_terms: Option<String>,
     #[validate(length(max = 3))]
     pub currency: Option<String>,
+    #[validate(length(max = 2000))]
     pub notes: Option<String>,
+    #[validate(length(max = 100))]
     pub po_number: Option<String>,
     /// Restrict to these entries. `None` bills every eligible entry.
     pub time_entry_ids: Option<Vec<Uuid>>,
@@ -214,7 +218,9 @@ pub struct UpdateInvoiceRequest {
     pub payment_terms: Option<String>,
     pub tax_amount: Option<Decimal>,
     pub discount_amount: Option<Decimal>,
+    #[validate(length(max = 2000))]
     pub notes: Option<String>,
+    #[validate(length(max = 100))]
     pub po_number: Option<String>,
     /// `Some` -> replace all lines (transactional). `None` -> leave alone.
     pub lines: Option<Vec<CreateInvoiceLineRequest>>,
