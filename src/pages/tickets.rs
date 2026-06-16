@@ -1112,7 +1112,37 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let mut e_error = use_signal(String::new);
     let id_for_save = props.id.clone();
 
-    let ticket = ticket_resource.read_unchecked().clone().flatten();
+    // MAPPS-198: keep the failure state distinct from the in-flight one.
+    // Each resource yields `Option<Option<T>>`: `None` while in flight,
+    // `Some(None)` on a failed fetch (e.g. a 404 for a missing/deleted/
+    // cross-tenant ticket). `.flatten()` collapses both to `None`, so on its
+    // own it cannot tell loading from a 404 and the page hangs on "Loading…"
+    // forever. Capture the failure before flattening and short-circuit to a
+    // "Ticket not found" state, mirroring the explicit `Some(None)` arm on the
+    // invoice/contract/company detail pages.
+    let ticket_snapshot = ticket_resource.read_unchecked().clone();
+    let ticket_fetch_failed = matches!(ticket_snapshot, Some(None));
+    let ticket = ticket_snapshot.flatten();
+    if ticket_fetch_failed {
+        return rsx! {
+            AppLayout { title: "Ticket not found",
+                PageHeader { title: "Ticket not found" }
+                Card {
+                    div { class: "py-8 text-center",
+                        p {
+                            class: "text-sm text-red-600 dark:text-red-300 mb-2",
+                            "Ticket not found. It may have been deleted, or the link may be incorrect."
+                        }
+                        Link {
+                            to: Route::TicketList {},
+                            class: "text-sm text-blue-600 hover:text-blue-500",
+                            "Back to tickets"
+                        }
+                    }
+                }
+            }
+        };
+    }
     let history = history_resource
         .read_unchecked()
         .clone()
