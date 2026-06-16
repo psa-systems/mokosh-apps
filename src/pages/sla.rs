@@ -658,12 +658,12 @@ fn TargetRow(props: TargetRowProps) -> Element {
     let mut operational_hours = use_signal(|| init_ops.clone());
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
-    // PMS-369: the Remove button used to block-confirm via
-    // `window.confirm_with_message`, which the cc-reviews/mokosh-2
-    // reviewer correctly flagged as the kind of unstyled native dialog
-    // that reads like "no confirmation". Switch to the polished
-    // ConfirmDialog component so the destructive action gets a styled
-    // modal consistent with the rest of the app.
+    // PMS-369: the Remove button used to block-confirm via the native
+    // browser confirm dialog, which the cc-reviews/mokosh-2 reviewer
+    // correctly flagged as the kind of unstyled native dialog that reads
+    // like "no confirmation". Switch to the polished ConfirmDialog
+    // component so the destructive action gets a styled modal consistent
+    // with the rest of the app.
     let mut confirming_delete = use_signal(|| false);
 
     let onsaved = props.onsaved;

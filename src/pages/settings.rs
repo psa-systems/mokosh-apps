@@ -636,7 +636,7 @@ fn WorkTypeFormModal(props: WorkTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                match delete_lookup(&id, "/work-types", "work type").await {
+                match delete_lookup(&id, "/work-types").await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
                     Err(err) => error.set(format!("Could not delete work type: {err}")),
@@ -950,7 +950,7 @@ fn TaskStatusFormModal(props: TaskStatusFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                match delete_lookup(&id, "/task-statuses", "task status").await {
+                match delete_lookup(&id, "/task-statuses").await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
                     Err(err) => error.set(format!("Could not delete task status: {err}")),
@@ -1234,7 +1234,7 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                match delete_lookup(&id, "/asset-types", "asset type").await {
+                match delete_lookup(&id, "/asset-types").await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
                     Err(err) => error.set(format!("Could not delete asset type: {err}")),
@@ -1527,7 +1527,7 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                match delete_lookup(&id, "/project-types", "project type").await {
+                match delete_lookup(&id, "/project-types").await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
                     Err(err) => error.set(format!("Could not delete project type: {err}")),
@@ -1824,7 +1824,7 @@ fn PaymentTermFormModal(props: PaymentTermFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                match delete_lookup(&id, "/payment-terms", "payment term").await {
+                match delete_lookup(&id, "/payment-terms").await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
                     Err(err) => error.set(format!("Could not delete payment term: {err}")),
@@ -2128,7 +2128,7 @@ fn TicketStatusFormModal(props: TicketStatusFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                match delete_lookup(&id, "/tickets/statuses", "status").await {
+                match delete_lookup(&id, "/tickets/statuses").await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
                     Err(err) => error.set(format!("Could not delete status: {err}")),
@@ -2451,7 +2451,7 @@ fn TicketPriorityFormModal(props: TicketPriorityFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                match delete_lookup(&id, "/tickets/priorities", "priority").await {
+                match delete_lookup(&id, "/tickets/priorities").await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
                     Err(err) => error.set(format!("Could not delete priority: {err}")),
@@ -2761,7 +2761,7 @@ fn TicketTypeFormModal(props: TicketTypeFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                match delete_lookup(&id, "/tickets/types", "type").await {
+                match delete_lookup(&id, "/tickets/types").await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
                     Err(err) => error.set(format!("Could not delete type: {err}")),
@@ -3074,7 +3074,7 @@ fn TicketQueueFormModal(props: TicketQueueFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                match delete_lookup(&id, "/tickets/queues", "queue").await {
+                match delete_lookup(&id, "/tickets/queues").await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
                     Err(err) => error.set(format!("Could not delete queue: {err}")),
@@ -3435,7 +3435,7 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                match delete_lookup(&id, "/tickets/categories", "category").await {
+                match delete_lookup(&id, "/tickets/categories").await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
                     Err(err) => error.set(format!("Could not delete category: {err}")),
@@ -3585,26 +3585,11 @@ async fn save_lookup(
     }
 }
 
-/// Native confirm dialog for a destructive lookup delete. `kind` is the
-/// singular noun, e.g. "status".
+/// DELETE a lookup row at `{base}/{id}`. Returns `Ok(true)` when deleted,
+/// `Err` on failure. Confirmation is handled up-front by the styled
+/// `SettingFormModal` ConfirmDialog (MAPPS-189), so this no longer prompts.
 #[cfg(feature = "web")]
-fn confirm_delete(kind: &str) -> bool {
-    web_sys::window()
-        .and_then(|w| {
-            w.confirm_with_message(&format!("Delete this {kind}? This cannot be undone."))
-                .ok()
-        })
-        .unwrap_or(false)
-}
-
-/// Confirm then DELETE a lookup row at `{base}/{id}`. Returns `Ok(true)`
-/// when deleted, `Ok(false)` when the user cancelled, `Err` on failure.
-/// `kind` is the singular noun shown in the confirm dialog.
-#[cfg(feature = "web")]
-async fn delete_lookup(id: &str, base: &str, kind: &str) -> Result<bool, String> {
-    if !confirm_delete(kind) {
-        return Ok(false);
-    }
+async fn delete_lookup(id: &str, base: &str) -> Result<bool, String> {
     crate::hooks::fetch::api::delete_authed(&format!("{base}/{id}"))
         .await
         .map(|_| true)

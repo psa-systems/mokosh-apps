@@ -544,8 +544,49 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     let id_for_void = props.id.clone();
     let act_err = action_error.read().clone();
 
+    // MAPPS-189: the Void button opens the styled ConfirmDialog; the void
+    // PUT fires from `on_confirm_void` once the user confirms.
+    let mut confirming_void = use_signal(|| false);
+    let on_confirm_void = move |_: ()| {
+        if *busy.read() {
+            return;
+        }
+        busy.set(true);
+        action_error.set(String::new());
+        let path = format!("/invoices/{id_for_void}");
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let body = serde_json::json!({ "status": "void" });
+                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
+                    .await
+                {
+                    Ok(_) => invoice_resource.restart(),
+                    Err(err) => action_error.set(format!("Could not void invoice: {err}")),
+                }
+            }
+            busy.set(false);
+            confirming_void.set(false);
+        });
+    };
+
     rsx! {
         AppLayout { title: "{header_title}",
+            crate::components::ConfirmDialog {
+                open: confirming_void(),
+                title: "Void invoice".to_string(),
+                message: "Void this invoice? This cannot be undone.".to_string(),
+                confirm_text: "Void".to_string(),
+                cancel_text: "Cancel".to_string(),
+                destructive: true,
+                loading: *busy.read(),
+                onconfirm: on_confirm_void,
+                oncancel: move |_| {
+                    if !*busy.read() {
+                        confirming_void.set(false);
+                    }
+                },
+            }
             PageHeader {
                 title: "{header_title}",
                 actions: rsx! {
@@ -604,39 +645,9 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                             variant: ButtonVariant::Danger,
                             loading: *busy.read(),
                             onclick: move |_| {
-                                if *busy.read() {
-                                    return;
+                                if !*busy.read() {
+                                    confirming_void.set(true);
                                 }
-                                busy.set(true);
-                                action_error.set(String::new());
-                                let path = format!("/invoices/{id_for_void}");
-                                spawn(async move {
-                                    #[cfg(feature = "web")]
-                                    {
-                                        let confirmed = web_sys::window()
-                                            .and_then(|w| {
-                                                w.confirm_with_message(
-                                                    "Void this invoice? This cannot be undone.",
-                                                )
-                                                .ok()
-                                            })
-                                            .unwrap_or(false);
-                                        if confirmed {
-                                            let body = serde_json::json!({ "status": "void" });
-                                            match crate::hooks::fetch::api::put_authed::<
-                                                serde_json::Value,
-                                                _,
-                                            >(&path, &body)
-                                                .await
-                                            {
-                                                Ok(_) => invoice_resource.restart(),
-                                                Err(err) => action_error
-                                                    .set(format!("Could not void invoice: {err}")),
-                                            }
-                                        }
-                                    }
-                                    busy.set(false);
-                                });
                             },
                             "Void"
                         }
@@ -1393,6 +1404,29 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
     let mut error = use_signal(String::new);
     let on_deleted = props.on_deleted;
     let delete_id = props.id.clone();
+    // MAPPS-189: the Delete button opens the styled ConfirmDialog; the
+    // DELETE fires from `on_confirm_delete` once the user confirms.
+    let mut confirming_delete = use_signal(|| false);
+    let on_confirm_delete = move |_: ()| {
+        if *deleting.read() {
+            return;
+        }
+        let id = delete_id.clone();
+        deleting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let path = format!("/payments/{id}");
+                match crate::hooks::fetch::api::delete_authed(&path).await {
+                    Ok(()) => on_deleted.call(()),
+                    Err(err) => error.set(format!("Could not delete payment: {err}")),
+                }
+            }
+            deleting.set(false);
+            confirming_delete.set(false);
+        });
+    };
     // Prefer the human invoice number; fall back to a generic label if the
     // payment is applied but the number could not be resolved.
     let invoice_label = if props.invoice_number.is_empty() {
@@ -1441,38 +1475,31 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
                     variant: ButtonVariant::Danger,
                     loading: *deleting.read(),
                     onclick: move |_| {
-                        let id = delete_id.clone();
-                        deleting.set(true);
-                        error.set(String::new());
-                        spawn(async move {
-                            #[cfg(feature = "web")]
-                            {
-                                let confirmed = web_sys::window()
-                                    .and_then(|w| {
-                                        w.confirm_with_message(
-                                            "Delete this payment? The linked invoice balance will be restored.",
-                                        )
-                                        .ok()
-                                    })
-                                    .unwrap_or(false);
-                                if confirmed {
-                                    let path = format!("/payments/{id}");
-                                    match crate::hooks::fetch::api::delete_authed(&path).await {
-                                        Ok(()) => on_deleted.call(()),
-                                        Err(err) => {
-                                            error.set(format!("Could not delete payment: {err}"))
-                                        }
-                                    }
-                                }
-                            }
-                            deleting.set(false);
-                        });
+                        if !*deleting.read() {
+                            confirming_delete.set(true);
+                        }
                     },
                     "Delete"
                 }
                 if !error.read().is_empty() {
                     p { class: "mt-1 text-xs text-red-600", "{error.read()}" }
                 }
+            }
+            crate::components::ConfirmDialog {
+                open: confirming_delete(),
+                title: "Delete payment".to_string(),
+                message: "Delete this payment? The linked invoice balance will be restored."
+                    .to_string(),
+                confirm_text: "Delete".to_string(),
+                cancel_text: "Cancel".to_string(),
+                destructive: true,
+                loading: *deleting.read(),
+                onconfirm: on_confirm_delete,
+                oncancel: move |_| {
+                    if !*deleting.read() {
+                        confirming_delete.set(false);
+                    }
+                },
             }
         }
     }
@@ -2213,9 +2240,19 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
     };
 
     let delete_id = initial.id.clone();
+    let can_delete = delete_id.is_some();
+    // MAPPS-189: Delete opens the styled ConfirmDialog; the DELETE runs
+    // from `on_confirm_delete` once the user confirms.
+    let mut confirming_delete = use_signal(|| false);
     let handle_delete = move |_| {
+        if !can_delete || *saving.read() || *deleting.read() {
+            return;
+        }
+        confirming_delete.set(true);
+    };
+    let on_confirm_delete = move |_: ()| {
         let Some(id) = delete_id.clone() else { return };
-        if *saving.read() || *deleting.read() {
+        if *deleting.read() {
             return;
         }
         deleting.set(true);
@@ -2223,21 +2260,14 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let confirmed = web_sys::window()
-                    .and_then(|w| {
-                        w.confirm_with_message("Delete this tax rate? This cannot be undone.")
-                            .ok()
-                    })
-                    .unwrap_or(false);
-                if confirmed {
-                    let path = format!("/tax-rates/{id}");
-                    match crate::hooks::fetch::api::delete_authed(&path).await {
-                        Ok(()) => onsaved.call(()),
-                        Err(err) => error.set(format!("Could not delete tax rate: {err}")),
-                    }
+                let path = format!("/tax-rates/{id}");
+                match crate::hooks::fetch::api::delete_authed(&path).await {
+                    Ok(()) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not delete tax rate: {err}")),
                 }
             }
             deleting.set(false);
+            confirming_delete.set(false);
         });
     };
 
@@ -2315,6 +2345,21 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
                     },
                 }
             }
+        }
+        crate::components::ConfirmDialog {
+            open: confirming_delete(),
+            title: "Delete tax rate".to_string(),
+            message: "Delete this tax rate? This cannot be undone.".to_string(),
+            confirm_text: "Delete".to_string(),
+            cancel_text: "Cancel".to_string(),
+            destructive: true,
+            loading: *deleting.read(),
+            onconfirm: on_confirm_delete,
+            oncancel: move |_| {
+                if !*deleting.read() {
+                    confirming_delete.set(false);
+                }
+            },
         }
     }
 }
@@ -2589,8 +2634,17 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
     };
 
     let delete_provider = initial.provider.clone();
+    // MAPPS-189: Remove opens the styled ConfirmDialog; the DELETE runs
+    // from `on_confirm_delete` once the user confirms.
+    let mut confirming_delete = use_signal(|| false);
     let handle_delete = move |_| {
         if !provider_locked || *saving.read() || *deleting.read() {
+            return;
+        }
+        confirming_delete.set(true);
+    };
+    let on_confirm_delete = move |_: ()| {
+        if *deleting.read() {
             return;
         }
         deleting.set(true);
@@ -2599,21 +2653,14 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let confirmed = web_sys::window()
-                    .and_then(|w| {
-                        w.confirm_with_message("Remove this gateway configuration?")
-                            .ok()
-                    })
-                    .unwrap_or(false);
-                if confirmed {
-                    let path = format!("/payment-gateways/{provider}");
-                    match crate::hooks::fetch::api::delete_authed(&path).await {
-                        Ok(()) => onsaved.call(()),
-                        Err(err) => error.set(format!("Could not remove gateway: {err}")),
-                    }
+                let path = format!("/payment-gateways/{provider}");
+                match crate::hooks::fetch::api::delete_authed(&path).await {
+                    Ok(()) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not remove gateway: {err}")),
                 }
             }
             deleting.set(false);
+            confirming_delete.set(false);
         });
     };
 
@@ -2691,6 +2738,21 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                     oninput: move |e: FormEvent| config_json.set(e.value()),
                 }
             }
+        }
+        crate::components::ConfirmDialog {
+            open: confirming_delete(),
+            title: "Remove gateway".to_string(),
+            message: "Remove this gateway configuration?".to_string(),
+            confirm_text: "Remove".to_string(),
+            cancel_text: "Cancel".to_string(),
+            destructive: true,
+            loading: *deleting.read(),
+            onconfirm: on_confirm_delete,
+            oncancel: move |_| {
+                if !*deleting.read() {
+                    confirming_delete.set(false);
+                }
+            },
         }
     }
 }

@@ -1110,6 +1110,29 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
     let mut deleting = use_signal(|| false);
     let id_for_delete = props.id.clone();
 
+    // MAPPS-189: the Delete button opens the styled ConfirmDialog; the
+    // actual DELETE fires from `on_confirm_delete` when confirmed.
+    let mut confirming_delete = use_signal(|| false);
+
+    let on_confirm_delete = move |_: ()| {
+        if *deleting.read() {
+            return;
+        }
+        let id = id_for_delete.clone();
+        deleting.set(true);
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let path = format!("/projects/{id}");
+                if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
+                    navigator.push(Route::ProjectList {});
+                }
+            }
+            deleting.set(false);
+            confirming_delete.set(false);
+        });
+    };
+
     let header_title = match project.as_ref() {
         Some(p) if !p.name.trim().is_empty() => p.name.clone(),
         Some(_) => format!("Project {}", props.id),
@@ -1137,6 +1160,21 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
 
     rsx! {
         AppLayout { title: "{header_title}",
+            crate::components::ConfirmDialog {
+                open: confirming_delete(),
+                title: "Delete project".to_string(),
+                message: "Delete this project? This cannot be undone.".to_string(),
+                confirm_text: "Delete".to_string(),
+                cancel_text: "Cancel".to_string(),
+                destructive: true,
+                loading: *deleting.read(),
+                onconfirm: on_confirm_delete,
+                oncancel: move |_| {
+                    if !*deleting.read() {
+                        confirming_delete.set(false);
+                    }
+                },
+            }
             PageHeader {
                 title: "{header_title}",
                 actions: rsx! {
@@ -1183,28 +1221,9 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                         variant: ButtonVariant::Danger,
                         loading: *deleting.read(),
                         onclick: move |_| {
-                            let id = id_for_delete.clone();
-                            deleting.set(true);
-                            spawn(async move {
-                                #[cfg(feature = "web")]
-                                {
-                                    let confirmed = web_sys::window()
-                                        .and_then(|w| {
-                                            w.confirm_with_message(
-                                                "Delete this project? This cannot be undone.",
-                                            )
-                                            .ok()
-                                        })
-                                        .unwrap_or(false);
-                                    if confirmed {
-                                        let path = format!("/projects/{id}");
-                                        if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
-                                            navigator.push(Route::ProjectList {});
-                                        }
-                                    }
-                                }
-                                deleting.set(false);
-                            });
+                            if !*deleting.read() {
+                                confirming_delete.set(true);
+                            }
                         },
                         "Delete"
                     }
