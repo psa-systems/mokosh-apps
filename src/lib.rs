@@ -337,6 +337,13 @@ pub enum Route {
     SettingsTicketQueues {},
     #[route("/settings/ticket-categories")]
     SettingsTicketCategories {},
+    // MAPPS-199: RMM integration admin UI (server CRUD from PMS-102/103/104/105).
+    #[route("/settings/rmm/connections")]
+    SettingsRmmConnections {},
+    #[route("/settings/rmm/device-mappings")]
+    SettingsRmmDeviceMappings {},
+    #[route("/settings/rmm/alert-rules")]
+    SettingsRmmAlertRules {},
 
     // Mokosh-side profile. Edits the tenant-scoped fields on the
     // user row (name, title, phone, mobile, timezone). Cross-app
@@ -802,6 +809,22 @@ fn SettingsTicketQueues() -> Element {
 #[component]
 fn SettingsTicketCategories() -> Element {
     rsx! { settings::TicketCategoriesSettingsPage {} }
+}
+
+// MAPPS-199 RMM integration admin UI.
+#[component]
+fn SettingsRmmConnections() -> Element {
+    rsx! { settings::RmmConnectionsSettingsPage {} }
+}
+
+#[component]
+fn SettingsRmmDeviceMappings() -> Element {
+    rsx! { settings::RmmDeviceMappingsSettingsPage {} }
+}
+
+#[component]
+fn SettingsRmmAlertRules() -> Element {
+    rsx! { settings::RmmAlertRulesSettingsPage {} }
 }
 
 #[component]
