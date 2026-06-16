@@ -1083,8 +1083,10 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     // at a time and we always clear before the next attempt.
     let mut field_error = use_signal(String::new);
 
-    // PMS-182 description edit state.
+    // PMS-182 description edit state. MAPPS-188 folds the title into the
+    // same modal, so the edit form now carries both `e_title` and `e_desc`.
     let mut editing_desc = use_signal(|| false);
+    let mut e_title = use_signal(String::new);
     let mut e_desc = use_signal(String::new);
     let mut e_submitting = use_signal(|| false);
     let mut e_error = use_signal(String::new);
@@ -1184,7 +1186,14 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                             .as_ref()
                             .and_then(|t| t.description.clone())
                             .unwrap_or_default();
+                        // MAPPS-188: seed the title field from the saved ticket
+                        // so the edit modal opens with the current title too.
+                        let cur_title = ticket
+                            .as_ref()
+                            .map(|t| t.title.clone())
+                            .unwrap_or_default();
                         let open_edit = move |_| {
+                            e_title.set(cur_title.clone());
                             e_desc.set(cur_desc.clone());
                             e_error.set(String::new());
                             editing_desc.set(true);
@@ -1715,11 +1724,22 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     if e_submitting() {
                         return;
                     }
+                    // MAPPS-188: title is required (server validates
+                    // length >= 1). Bail with an inline message instead of
+                    // PUTting a blank title that the server would reject.
+                    let title_v = e_title().trim().to_string();
+                    if title_v.is_empty() {
+                        e_error.set("Title cannot be empty.".to_string());
+                        return;
+                    }
                     let save_id = save_id.clone();
                     spawn(async move {
                         e_submitting.set(true);
                         e_error.set(String::new());
-                        let body = serde_json::json!({ "description": e_desc() });
+                        let body = serde_json::json!({
+                            "title": title_v,
+                            "description": e_desc(),
+                        });
                         match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
                             &format!("/tickets/{save_id}"),
                             &body,
@@ -1742,7 +1762,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                 rsx! {
                     Modal {
                         open: editing_desc(),
-                        title: "Edit Description",
+                        title: "Edit Ticket",
                         size: crate::components::ModalSize::Large,
                         onclose: move |_| editing_desc.set(false),
                         footer: rsx! {
@@ -1761,6 +1781,15 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         div { class: "space-y-3",
                             if !e_error().is_empty() {
                                 p { class: "text-sm text-red-600 dark:text-red-400", "{e_error}" }
+                            }
+                            // MAPPS-188: title is now editable alongside the
+                            // description (previously description-only).
+                            crate::components::Input {
+                                name: "edit-title",
+                                label: "Title",
+                                required: true,
+                                value: "{e_title}",
+                                oninput: move |e: FormEvent| e_title.set(e.value()),
                             }
                             Textarea {
                                 name: "edit-description",
