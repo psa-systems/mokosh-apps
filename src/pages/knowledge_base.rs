@@ -1452,7 +1452,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                                 placeholder: "## Overview\n\nWrite the article in Markdown...",
                                 rows: 16,
                                 required: true,
-                                maxlength: BODY_MAX.to_string(),
+                                maxlength: BODY_MAX as i64,
                                 value: content.read().clone(),
                                 oninput: move |e: FormEvent| content.set(e.value()),
                             }
