@@ -13,7 +13,7 @@
 use dioxus::prelude::*;
 
 use crate::components::{IconSize, XMarkIcon};
-use crate::hooks::use_auth;
+use crate::hooks::{use_auth, use_version_cache};
 use crate::modules::system::{get_version, SystemVersion};
 
 const DISMISS_KEY_PREFIX: &str = "mokosh-update-dismissed-";
@@ -70,6 +70,16 @@ pub fn UpdateBanner() -> Element {
     let auth = use_auth();
     let is_admin = use_memo(move || auth.read().user.as_ref().is_some_and(|u| u.role.is_admin()));
     let mut dismissed_local = use_signal(|| false);
+    // MAPPS-203: read the cached App-root version signal first. If it
+    // already carries a result, the banner skips its `Reserving` state
+    // entirely on this mount - no reserve-then-collapse animation, no
+    // page jump. Only the very first admin mount of the App's lifetime
+    // sees `None` here and falls through to the local `use_resource`.
+    let mut cached_version = use_version_cache();
+    // Keep the local fetch so the banner refreshes on each admin
+    // navigation; the cache is updated when it resolves so subsequent
+    // mounts benefit. The non-admin early-out below means we still
+    // skip the network call entirely for non-admins (MAPPS-187).
     let version_resource = use_resource(move || {
         let admin = is_admin();
         async move {
@@ -79,28 +89,45 @@ pub fn UpdateBanner() -> Element {
             get_version().await
         }
     });
+    // Each time the resource resolves, write through to the App-root
+    // cache so the next AppLayout re-mount (any nav click) starts at a
+    // resolved state instead of `Reserving`.
+    use_effect(move || {
+        if let Some(result) = version_resource.read().as_ref() {
+            let snapshot: Result<SystemVersion, String> = match result {
+                Ok(v) => Ok(v.clone()),
+                Err(e) => Err(e.clone()),
+            };
+            cached_version.set(Some(snapshot));
+        }
+    });
 
     if !is_admin() {
         return rsx! {};
     }
 
-    // PMS-313: zero layout shift. The async version check used to make
-    // this component render nothing until a result arrived, then pop a
-    // ~40px banner in and shove the TopBar / sidebar / content down
-    // (non-zero CLS on every admin login on a stale client).
+    // PMS-313 + MAPPS-203: zero layout shift across both first paint
+    // AND every subsequent navigation.
     //
-    // Fix: for admins the outer container ALWAYS renders, so the
-    // banner's height is reserved from first paint. While the check is
-    // in flight we reserve that height invisibly (`Reserving`); once it
-    // resolves we either fade the banner into the already-reserved space
-    // (`Show`, zero shift) or collapse the reserved height away
-    // (`Collapsed`) with a deliberate 200ms transition. The collapse
-    // uses the `grid-template-rows: 1fr -> 0fr` pattern so it animates to
-    // the content's natural height with no hard-coded pixel value and no
-    // clipping of a wrapped multi-line banner on narrow viewports.
+    // PMS-313 fixed the first-paint case: the async version check used
+    // to make this component render nothing until a result arrived,
+    // then pop a ~40px banner in and shove the TopBar / sidebar /
+    // content down on every admin login.
     //
+    // MAPPS-203 fixes the subsequent-nav case: because every page
+    // re-mounts AppLayout (and therefore this component), the local
+    // `use_resource` started at `None` every time, dropping us into
+    // `Reserving` for one tick before transitioning to `Collapsed`,
+    // which animated the row from 1fr to 0fr over 200ms - visibly
+    // shifting the layout below on every nav click. The App-root
+    // `cached_version` signal short-circuits that: on any mount where
+    // the App has already seen a result, we derive the final state
+    // (`Show` or `Collapsed`) directly with no intermediate
+    // `Reserving` row, so the transition never runs.
+    //
+    // Resolution order: cached -> live resource -> Reserving.
     // `read()` (not `read_unchecked()`) so the component re-renders when
-    // the resource transitions Loading -> Ready.
+    // either signal transitions.
     enum BannerState {
         /// Version check in flight: reserve height, paint nothing.
         Reserving,
@@ -110,18 +137,25 @@ pub fn UpdateBanner() -> Element {
         Collapsed,
     }
 
-    let state = match &*version_resource.read() {
-        None => BannerState::Reserving,
-        Some(Ok(v)) => {
-            let has_update = v.server.update_available() || v.client.update_available();
-            let dismissed = *dismissed_local.read() || is_dismissed(&dismissal_key(v));
-            if has_update && !dismissed {
-                BannerState::Show(v.clone())
-            } else {
-                BannerState::Collapsed
-            }
+    let derive_state = |v: &SystemVersion| -> BannerState {
+        let has_update = v.server.update_available() || v.client.update_available();
+        let dismissed = *dismissed_local.read() || is_dismissed(&dismissal_key(v));
+        if has_update && !dismissed {
+            BannerState::Show(v.clone())
+        } else {
+            BannerState::Collapsed
         }
-        Some(Err(_)) => BannerState::Collapsed,
+    };
+
+    let state = match (
+        cached_version.read().as_ref(),
+        version_resource.read().as_ref(),
+    ) {
+        (Some(Ok(v)), _) => derive_state(v),
+        (Some(Err(_)), _) => BannerState::Collapsed,
+        (None, Some(Ok(v))) => derive_state(v),
+        (None, Some(Err(_))) => BannerState::Collapsed,
+        (None, None) => BannerState::Reserving,
     };
 
     // `1fr` reserves/keeps the row's natural height; `0fr` collapses it.

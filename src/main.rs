@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 use mokosh_apps::hooks::{
     use_apply_theme, use_auth_provider, use_bfcache_invalidator, use_current_user_loader,
     use_memberships_loader, use_sidebar_provider, use_token_refresh, use_update_check,
+    use_version_cache_provider,
 };
 use mokosh_apps::Route;
 
@@ -23,6 +24,11 @@ fn main() {
 fn App() -> Element {
     use_auth_provider();
     use_sidebar_provider();
+    // MAPPS-203: cache the result of GET /api/v1/version at App root so
+    // the admin UpdateBanner does not re-run its async fetch (and the
+    // 200ms reserve-then-collapse animation that goes with the
+    // resource's None -> Some(...) transition) on every page navigation.
+    use_version_cache_provider();
     // Background loop: rotates access tokens before expiry. No-op when
     // the user is not signed in. Mounted once at the app root so it
     // keeps running across navigations.
