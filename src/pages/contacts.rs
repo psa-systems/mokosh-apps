@@ -9,7 +9,9 @@ use crate::components::{
     TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::modules::contacts::Address;
+use crate::utils::money::format_money_str;
 use crate::utils::url::{safe_href, urlencoding_minimal};
+use crate::utils::Paginated;
 use crate::Route;
 
 /// Rows per page for the client-side paginated list views (F3).
@@ -907,6 +909,10 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     let company_id_for_contacts = company_id_str.clone();
     let company_id_for_sites = company_id_str.clone();
     let company_id_for_tickets = company_id_str.clone();
+    let company_id_for_contracts = company_id_str.clone();
+    let company_id_for_projects = company_id_str.clone();
+    let company_id_for_invoices = company_id_str.clone();
+    let company_id_for_assets = company_id_str.clone();
     let company_id_for_edit = company_id_str.clone();
     let company_id_for_delete = company_id_str.clone();
 
@@ -958,6 +964,71 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
             .ok()
         }
     });
+    // MAPPS-195: surface the company's other first-class relationships
+    // (contracts, projects, invoices, assets) alongside contacts/sites/tickets.
+    // Each reuses the module's existing `company_id` list filter; `meta.total`
+    // from the same envelope feeds the Statistics counts so no extra count
+    // endpoints are needed.
+    let contracts_resource = use_resource(move || {
+        let id = company_id_for_contracts.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<Paginated<ContractSummary>>(&format!(
+                "/contracts?company_id={id}&per_page=5"
+            ))
+            .await
+            .ok()
+        }
+    });
+    let projects_resource = use_resource(move || {
+        let id = company_id_for_projects.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<Paginated<ProjectSummary>>(&format!(
+                "/projects?company_id={id}&per_page=5"
+            ))
+            .await
+            .ok()
+        }
+    });
+    let invoices_resource = use_resource(move || {
+        let id = company_id_for_invoices.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<Paginated<InvoiceSummary>>(&format!(
+                "/invoices?company_id={id}&per_page=5"
+            ))
+            .await
+            .ok()
+        }
+    });
+    let assets_resource = use_resource(move || {
+        let id = company_id_for_assets.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<Paginated<AssetSummary>>(&format!(
+                "/assets?company_id={id}&per_page=5"
+            ))
+            .await
+            .ok()
+        }
+    });
+    // Asset rows carry only `asset_type_id`; load the type list once to render
+    // a human-readable type name in the Assets card.
+    let asset_types_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<AssetTypeOption>>(
+            "/asset-types?per_page=100",
+        )
+        .await
+        .ok()
+    });
+
+    // Statistics counts pulled from each list envelope's `meta.total`.
+    let contract_count = paginated_total(&contracts_resource);
+    let project_count = paginated_total(&projects_resource);
+    let invoice_count = paginated_total(&invoices_resource);
+    let asset_count = paginated_total(&assets_resource);
 
     let company_snapshot = company_resource.read_unchecked();
     let header_title = match &*company_snapshot {
@@ -1086,6 +1157,14 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                 }
                                 // Recent tickets
                                 CompanyTicketsCard { tickets_resource }
+                                // Contracts (MAPPS-195)
+                                CompanyContractsCard { contracts_resource }
+                                // Projects (MAPPS-195)
+                                CompanyProjectsCard { projects_resource }
+                                // Invoices (MAPPS-195)
+                                CompanyInvoicesCard { invoices_resource }
+                                // Assets (MAPPS-195)
+                                CompanyAssetsCard { assets_resource, asset_types_resource }
                             }
                             // Sidebar
                             div { class: "space-y-6",
@@ -1167,6 +1246,23 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                         div { class: "flex justify-between",
                                             span { class: "text-sm text-gray-500", "Sites" }
                                             span { class: "font-medium", "{site_count}" }
+                                        }
+                                        // MAPPS-195: counts for the newly surfaced relationships.
+                                        div { class: "flex justify-between",
+                                            span { class: "text-sm text-gray-500", "Contracts" }
+                                            span { class: "font-medium", "{contract_count}" }
+                                        }
+                                        div { class: "flex justify-between",
+                                            span { class: "text-sm text-gray-500", "Projects" }
+                                            span { class: "font-medium", "{project_count}" }
+                                        }
+                                        div { class: "flex justify-between",
+                                            span { class: "text-sm text-gray-500", "Invoices" }
+                                            span { class: "font-medium", "{invoice_count}" }
+                                        }
+                                        div { class: "flex justify-between",
+                                            span { class: "text-sm text-gray-500", "Assets" }
+                                            span { class: "font-medium", "{asset_count}" }
                                         }
                                     }
                                 }
@@ -1830,6 +1926,437 @@ fn CompanyTicketsCard(tickets_resource: Resource<Option<PaginatedTicketSummaries
                                                 TableCell {
                                                     Badge { variant, "{status_name}" }
                                                 }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// MAPPS-195: company-scoped relationship cards (Contracts, Projects, Invoices,
+// Assets). Each decodes a lightweight subset of its module's list response.
+// Status/money helpers are kept local (the per-module versions are private)
+// so this stays a single-file change.
+// ============================================================================
+
+/// Read the `meta.total` of a list resource, defaulting to 0 while loading or
+/// on fetch failure. Feeds the Statistics counts without a separate count call.
+fn paginated_total<T: 'static>(res: &Resource<Option<Paginated<T>>>) -> u64 {
+    match &*res.read_unchecked() {
+        Some(Some(p)) => p.meta.total,
+        _ => 0,
+    }
+}
+
+/// Money fields arrive either as a JSON string (rust_decimal's serde form) or
+/// a bare number depending on the endpoint. Decode either into the raw string
+/// so `format_money_str` can render it; absent -> `None`.
+fn de_money_opt<'de, D>(d: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        Some(serde_json::Value::String(s)) => Some(s),
+        Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    })
+}
+
+/// Render an optional money string; `None` -> `-`.
+fn money_label(v: &Option<String>) -> String {
+    match v {
+        Some(s) => format_money_str(s),
+        None => "-".to_string(),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct ContractSummary {
+    id: uuid::Uuid,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default, deserialize_with = "de_money_opt")]
+    billing_amount: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct ProjectSummary {
+    id: uuid::Uuid,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default, deserialize_with = "de_money_opt")]
+    budget_amount: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct InvoiceSummary {
+    id: uuid::Uuid,
+    #[serde(default)]
+    invoice_number: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default, deserialize_with = "de_money_opt")]
+    balance_due: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct AssetSummary {
+    id: uuid::Uuid,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    asset_type_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    status: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct AssetTypeOption {
+    id: uuid::Uuid,
+    #[serde(default)]
+    name: String,
+}
+
+/// (badge variant, label) for a contract status, mirroring contracts.rs.
+fn contract_status_badge(raw: &str) -> (BadgeVariant, String) {
+    let variant = match raw {
+        "active" => BadgeVariant::Green,
+        "expired" => BadgeVariant::Red,
+        "cancelled" | "canceled" => BadgeVariant::Gray,
+        "pending" => BadgeVariant::Yellow,
+        "draft" => BadgeVariant::Blue,
+        _ => BadgeVariant::Gray,
+    };
+    let label = match raw {
+        "active" => "Active",
+        "expired" => "Expired",
+        "cancelled" | "canceled" => "Cancelled",
+        "pending" => "Pending",
+        "draft" => "Draft",
+        other => other,
+    };
+    (variant, label.to_string())
+}
+
+/// (badge variant, label) for a project status, mirroring projects.rs.
+fn project_status_badge(raw: &str) -> (BadgeVariant, String) {
+    let (variant, label) = match raw {
+        "active" => (BadgeVariant::Green, "Active"),
+        "on_hold" => (BadgeVariant::Yellow, "On Hold"),
+        "completed" => (BadgeVariant::Blue, "Completed"),
+        "cancelled" => (BadgeVariant::Gray, "Cancelled"),
+        "planning" => (BadgeVariant::Gray, "Planning"),
+        _ => (BadgeVariant::Gray, "Unknown"),
+    };
+    (variant, label.to_string())
+}
+
+/// (badge variant, label) for an invoice status, mirroring billing.rs.
+fn invoice_status_badge(raw: &str) -> (BadgeVariant, String) {
+    let variant = match raw {
+        "paid" => BadgeVariant::Green,
+        "sent" | "pending" => BadgeVariant::Blue,
+        "partially_paid" => BadgeVariant::Yellow,
+        "void" | "written_off" => BadgeVariant::Red,
+        _ => BadgeVariant::Gray,
+    };
+    let label = match raw {
+        "draft" => "Draft",
+        "pending" => "Pending",
+        "sent" => "Sent",
+        "paid" => "Paid",
+        "partially_paid" => "Partially Paid",
+        "void" => "Void",
+        "written_off" => "Written Off",
+        other => other,
+    };
+    (variant, label.to_string())
+}
+
+/// (badge variant, label) for an asset status, mirroring assets.rs.
+fn asset_status_badge(raw: &str) -> (BadgeVariant, String) {
+    let (variant, label) = match raw {
+        "active" => (BadgeVariant::Green, "Active"),
+        "in_repair" => (BadgeVariant::Yellow, "In Repair"),
+        "in_stock" => (BadgeVariant::Blue, "In Stock"),
+        "retired" => (BadgeVariant::Red, "Retired"),
+        "inactive" => (BadgeVariant::Gray, "Inactive"),
+        _ => (BadgeVariant::Gray, "Unknown"),
+    };
+    (variant, label.to_string())
+}
+
+#[component]
+fn CompanyContractsCard(
+    contracts_resource: Resource<Option<Paginated<ContractSummary>>>,
+) -> Element {
+    let snap = contracts_resource.read_unchecked();
+    rsx! {
+        Card {
+            title: "Contracts",
+            actions: rsx! {
+                Link {
+                    to: Route::ContractList {},
+                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    "View All"
+                }
+            },
+            padding: false,
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Contract" }
+                        TableHeader { "Value" }
+                        TableHeader { "Status" }
+                    }
+                }
+                match &*snap {
+                    None => rsx! { TableLoading { columns: 3, rows: 3 } },
+                    Some(None) => rsx! { TableEmpty { columns: 3, message: "Could not load contracts.".to_string() } },
+                    Some(Some(page)) if page.data.is_empty() => rsx! {
+                        TableEmpty { columns: 3, message: "No contracts for this company yet.".to_string() }
+                    },
+                    Some(Some(page)) => {
+                        let rows = page.data.clone();
+                        rsx! {
+                            TableBody {
+                                for contract in rows.into_iter() {
+                                    {
+                                        let id = contract.id.to_string();
+                                        let key = id.clone();
+                                        let name = contract.name.clone();
+                                        let value = money_label(&contract.billing_amount);
+                                        let (variant, label) = contract_status_badge(&contract.status);
+                                        rsx! {
+                                            TableRow { key: "{key}",
+                                                TableCell {
+                                                    Link {
+                                                        to: Route::ContractDetail { id: id.clone() },
+                                                        class: "font-medium text-blue-600 hover:text-blue-500",
+                                                        "{name}"
+                                                    }
+                                                }
+                                                TableCell { class: "font-medium", "{value}" }
+                                                TableCell { Badge { variant, "{label}" } }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn CompanyProjectsCard(projects_resource: Resource<Option<Paginated<ProjectSummary>>>) -> Element {
+    let snap = projects_resource.read_unchecked();
+    rsx! {
+        Card {
+            title: "Projects",
+            actions: rsx! {
+                Link {
+                    to: Route::ProjectList {},
+                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    "View All"
+                }
+            },
+            padding: false,
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Project" }
+                        TableHeader { "Budget" }
+                        TableHeader { "Status" }
+                    }
+                }
+                match &*snap {
+                    None => rsx! { TableLoading { columns: 3, rows: 3 } },
+                    Some(None) => rsx! { TableEmpty { columns: 3, message: "Could not load projects.".to_string() } },
+                    Some(Some(page)) if page.data.is_empty() => rsx! {
+                        TableEmpty { columns: 3, message: "No projects for this company yet.".to_string() }
+                    },
+                    Some(Some(page)) => {
+                        let rows = page.data.clone();
+                        rsx! {
+                            TableBody {
+                                for project in rows.into_iter() {
+                                    {
+                                        let id = project.id.to_string();
+                                        let key = id.clone();
+                                        let name = project.name.clone();
+                                        let budget = money_label(&project.budget_amount);
+                                        let (variant, label) = project_status_badge(&project.status);
+                                        rsx! {
+                                            TableRow { key: "{key}",
+                                                TableCell {
+                                                    Link {
+                                                        to: Route::ProjectDetail { id: id.clone() },
+                                                        class: "font-medium text-blue-600 hover:text-blue-500",
+                                                        "{name}"
+                                                    }
+                                                }
+                                                TableCell { class: "font-medium", "{budget}" }
+                                                TableCell { Badge { variant, "{label}" } }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn CompanyInvoicesCard(invoices_resource: Resource<Option<Paginated<InvoiceSummary>>>) -> Element {
+    let snap = invoices_resource.read_unchecked();
+    rsx! {
+        Card {
+            title: "Invoices",
+            actions: rsx! {
+                Link {
+                    to: Route::InvoiceList {},
+                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    "View All"
+                }
+            },
+            padding: false,
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Invoice" }
+                        TableHeader { "Balance" }
+                        TableHeader { "Status" }
+                    }
+                }
+                match &*snap {
+                    None => rsx! { TableLoading { columns: 3, rows: 3 } },
+                    Some(None) => rsx! { TableEmpty { columns: 3, message: "Could not load invoices.".to_string() } },
+                    Some(Some(page)) if page.data.is_empty() => rsx! {
+                        TableEmpty { columns: 3, message: "No invoices for this company yet.".to_string() }
+                    },
+                    Some(Some(page)) => {
+                        let rows = page.data.clone();
+                        rsx! {
+                            TableBody {
+                                for invoice in rows.into_iter() {
+                                    {
+                                        let id = invoice.id.to_string();
+                                        let key = id.clone();
+                                        let number = invoice.invoice_number.clone();
+                                        let balance = money_label(&invoice.balance_due);
+                                        let (variant, label) = invoice_status_badge(&invoice.status);
+                                        rsx! {
+                                            TableRow { key: "{key}",
+                                                TableCell {
+                                                    Link {
+                                                        to: Route::InvoiceDetail { id: id.clone() },
+                                                        class: "font-medium text-blue-600 hover:text-blue-500",
+                                                        "{number}"
+                                                    }
+                                                }
+                                                TableCell { class: "font-medium", "{balance}" }
+                                                TableCell { Badge { variant, "{label}" } }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn CompanyAssetsCard(
+    assets_resource: Resource<Option<Paginated<AssetSummary>>>,
+    asset_types_resource: Resource<Option<Paginated<AssetTypeOption>>>,
+) -> Element {
+    let snap = assets_resource.read_unchecked();
+    let types_snap = asset_types_resource.read_unchecked();
+    // Build an id -> type-name lookup from the (best-effort) type list.
+    let type_name = |id: &Option<uuid::Uuid>| -> String {
+        match id {
+            Some(tid) => match &*types_snap {
+                Some(Some(page)) => page
+                    .data
+                    .iter()
+                    .find(|t| &t.id == tid)
+                    .map(|t| t.name.clone())
+                    .unwrap_or_default(),
+                _ => String::new(),
+            },
+            None => String::new(),
+        }
+    };
+    rsx! {
+        Card {
+            title: "Assets",
+            actions: rsx! {
+                Link {
+                    to: Route::AssetList {},
+                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    "View All"
+                }
+            },
+            padding: false,
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Asset" }
+                        TableHeader { "Type" }
+                        TableHeader { "Status" }
+                    }
+                }
+                match &*snap {
+                    None => rsx! { TableLoading { columns: 3, rows: 3 } },
+                    Some(None) => rsx! { TableEmpty { columns: 3, message: "Could not load assets.".to_string() } },
+                    Some(Some(page)) if page.data.is_empty() => rsx! {
+                        TableEmpty { columns: 3, message: "No assets for this company yet.".to_string() }
+                    },
+                    Some(Some(page)) => {
+                        let rows = page.data.clone();
+                        rsx! {
+                            TableBody {
+                                for asset in rows.into_iter() {
+                                    {
+                                        let id = asset.id.to_string();
+                                        let key = id.clone();
+                                        let name = asset.name.clone();
+                                        let tname = type_name(&asset.asset_type_id);
+                                        let (variant, label) = asset_status_badge(&asset.status);
+                                        rsx! {
+                                            TableRow { key: "{key}",
+                                                TableCell {
+                                                    Link {
+                                                        to: Route::AssetDetail { id: id.clone() },
+                                                        class: "font-medium text-blue-600 hover:text-blue-500",
+                                                        "{name}"
+                                                    }
+                                                }
+                                                TableCell { class: "text-gray-500", "{tname}" }
+                                                TableCell { Badge { variant, "{label}" } }
                                             }
                                         }
                                     }
