@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{AppLayout, Card, ChartIcon, IconSize, PageHeader};
+use crate::utils::money::format_money_str;
 use crate::Route;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -458,15 +459,15 @@ async fn build_view(report_type: &str) -> ReportView {
             ReportView {
                 supported: true,
                 summary: vec![
-                    ("Invoiced".into(), format!("${}", billing.invoiced)),
-                    ("Paid".into(), format!("${}", billing.paid)),
-                    ("Outstanding".into(), format!("${}", billing.outstanding)),
+                    ("Invoiced".into(), format_money_str(&billing.invoiced)),
+                    ("Paid".into(), format_money_str(&billing.paid)),
+                    ("Outstanding".into(), format_money_str(&billing.outstanding)),
                 ],
                 breakdown_title: "A/R aging".into(),
                 breakdown: billing
                     .aging
                     .iter()
-                    .map(|a| (a.bucket.clone(), format!("${}", a.total)))
+                    .map(|a| (a.bucket.clone(), format_money_str(&a.total)))
                     .collect(),
             }
         }
@@ -480,8 +481,8 @@ async fn build_view(report_type: &str) -> ReportView {
                 summary: vec![
                     ("Budget hours".into(), format!("{:.1}", pf(&p.budget_hours))),
                     ("Actual hours".into(), format!("{:.1}", pf(&p.actual_hours))),
-                    ("Budget $".into(), format!("${:.0}", pf(&p.budget_amount))),
-                    ("Actual $".into(), format!("${:.0}", pf(&p.actual_amount))),
+                    ("Budget $".into(), format_money_str(&p.budget_amount)),
+                    ("Actual $".into(), format_money_str(&p.actual_amount)),
                     ("Tasks done".into(), tasks),
                     ("Overdue".into(), p.overdue.to_string()),
                 ],

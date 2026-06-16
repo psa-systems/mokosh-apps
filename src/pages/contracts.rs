@@ -76,6 +76,20 @@ fn humanize_contract_status(raw: &str) -> String {
     }
 }
 
+/// Title-case a billing-cycle enum for display (PMS-365). Mirrors the
+/// `cycle_options` labels in the contract form so the detail panel does not
+/// leak the raw lowercase value (e.g. `monthly`).
+fn humanize_billing_cycle(raw: &str) -> String {
+    match raw {
+        "monthly" => "Monthly".to_string(),
+        "quarterly" => "Quarterly".to_string(),
+        "annually" | "annual" => "Annually".to_string(),
+        "one_time" => "One-time".to_string(),
+        "" => "-".to_string(),
+        other => other.to_string(),
+    }
+}
+
 fn status_variant(raw: &str) -> BadgeVariant {
     match raw {
         "active" => BadgeVariant::Green,
@@ -1378,7 +1392,8 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                 Some(Some(contract)) => {
                     let type_label = humanize_contract_type(&contract.contract_type);
                     let status_label = humanize_contract_status(&contract.status);
-                    let billing_cycle = contract.billing_cycle.clone();
+                    // PMS-365: title-case the enum instead of leaking raw `monthly`.
+                    let billing_cycle = humanize_billing_cycle(&contract.billing_cycle);
                     let billing_amount = format_money_opt(contract.billing_amount);
                     let start = contract.start_date.format("%b %-d, %Y").to_string();
                     let end = contract
