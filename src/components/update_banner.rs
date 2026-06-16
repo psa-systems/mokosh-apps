@@ -59,16 +59,19 @@ pub fn UpdateBanner() -> Element {
     // render and then add them on the next render if the user becomes
     // admin (tenant switch, late hydration), violating that invariant.
     //
-    // The resource's outer closure reads `auth` so the reactivity
-    // tracker re-runs the fetch when auth flips, AND skips the
-    // network call entirely while the user is not an admin - that
-    // keeps the hook order stable without burning a
-    // `GET /api/v1/version` round-trip on every non-admin
-    // layout mount.
+    // The resource keys on a memoized admin flag (not the raw `auth`
+    // context): it re-runs the fetch when admin-ness flips and skips the
+    // network call entirely while the user is not an admin, keeping the
+    // hook order stable without burning a `GET /api/v1/version` on every
+    // non-admin mount. MAPPS-187: reading `auth` directly re-fired this
+    // resource because the context is written more than once during startup
+    // (OIDC callback, then rehydration) with the same user; the memo only
+    // notifies when the bool actually changes, so /version is fetched once.
     let auth = use_auth();
+    let is_admin = use_memo(move || auth.read().user.as_ref().is_some_and(|u| u.role.is_admin()));
     let mut dismissed_local = use_signal(|| false);
     let version_resource = use_resource(move || {
-        let admin = auth.read().user.as_ref().is_some_and(|u| u.role.is_admin());
+        let admin = is_admin();
         async move {
             if !admin {
                 return Err("not admin".to_string());
@@ -77,8 +80,7 @@ pub fn UpdateBanner() -> Element {
         }
     });
 
-    let is_admin = auth.read().user.as_ref().is_some_and(|u| u.role.is_admin());
-    if !is_admin {
+    if !is_admin() {
         return rsx! {};
     }
 
