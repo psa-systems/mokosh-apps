@@ -892,7 +892,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                                 }
                                 Ok(new_id)
                             }
-                            Err(err) => Err(err.user_message()),
+                            Err(err) => Err(err),
                         }
                     }
                     ContractFormMode::Edit { id } => {
@@ -915,15 +915,22 @@ fn ContractForm(props: ContractFormProps) -> Element {
                         )
                         .await
                         .map(|_| id.clone())
-                        .map_err(|err| err.user_message())
                     }
                 };
                 match result {
                     Ok(id) => {
                         navigator.push(Route::ContractDetail { id });
                     }
-                    Err(msg) => {
-                        error.set(msg);
+                    Err(err) => {
+                        // PMS-364: the end < start cross-field rule comes back
+                        // keyed on `end_date`; show it inline under that field.
+                        // Server errors without a field target fall back to the
+                        // top-of-form banner.
+                        if let Some(msg) = err.field_message("end_date") {
+                            end_err.set(msg);
+                        } else {
+                            error.set(err.user_message());
+                        }
                     }
                 }
             }
