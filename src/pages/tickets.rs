@@ -1549,6 +1549,18 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                             label: "Asset",
                                             value: rsx! {
                                                 crate::components::AssetPicker {
+                                                    // PMS-344 follow-up
+                                                    // (layout): suppress
+                                                    // the picker's own
+                                                    // label here because
+                                                    // DetailItem already
+                                                    // renders "Asset" on
+                                                    // the left, matching
+                                                    // how the inline
+                                                    // Status/Priority/
+                                                    // Assignee Select
+                                                    // editors mount.
+                                                    label: String::new(),
                                                     value: current_asset_name,
                                                     selected_id: current_asset_id,
                                                     onselect: move |(id, _name): (String, String)| {
@@ -1860,14 +1872,24 @@ struct DetailItemProps {
 
 #[component]
 fn DetailItem(props: DetailItemProps) -> Element {
+    // `flex-1 min-w-0` on dd so the value cell grows to fill the row
+    // after the (shrink-0) label, instead of being sized to its content.
+    // The Select-based inline editors stay visually unchanged because
+    // their content is small and stays right-anchored by `text-right`,
+    // but the AssetPicker chip (PMS-344) can now `w-full` itself into
+    // the dd cell and truncate its long asset name / uuid inline rather
+    // than escaping the row and rendering on top of the next field.
+    // `items-start` (instead of `items-baseline`) keeps a multi-line
+    // value cell (chip + buttons) aligned to the label's top, not its
+    // baseline.
     let dd_class = if props.nowrap {
-        "text-sm text-gray-900 dark:text-white text-right whitespace-nowrap"
+        "text-sm text-gray-900 dark:text-white text-right whitespace-nowrap flex-1 min-w-0"
     } else {
-        "text-sm text-gray-900 dark:text-white text-right"
+        "text-sm text-gray-900 dark:text-white text-right flex-1 min-w-0"
     };
     rsx! {
-        div { class: "flex justify-between items-baseline gap-3",
-            dt { class: "text-sm text-gray-500 dark:text-gray-400 flex-shrink-0", "{props.label}" }
+        div { class: "flex justify-between items-start gap-3",
+            dt { class: "text-sm text-gray-500 dark:text-gray-400 flex-shrink-0 pt-0.5", "{props.label}" }
             dd { class: "{dd_class}", {props.value} }
         }
     }
