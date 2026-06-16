@@ -125,6 +125,33 @@ struct UserOpt {
     full_name: String,
 }
 
+/// PMS-344: shallow ticket row for the "Related Tickets" section on the
+/// asset detail page. Hits `GET /tickets?asset_id=<id>` and renders the
+/// few fields a technician needs to recognise a ticket without leaving
+/// the asset view: number, title, status, priority.
+#[derive(Clone, Debug, Deserialize)]
+struct RelatedTicket {
+    id: uuid::Uuid,
+    #[serde(default)]
+    ticket_number: String,
+    #[serde(default)]
+    title: String,
+    status: RelatedTicketStatus,
+    priority: RelatedTicketPriority,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct RelatedTicketStatus {
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct RelatedTicketPriority {
+    #[serde(default)]
+    name: String,
+}
+
 /// The before/after value of one changed column (PMS-204). `update_asset`
 /// stores these as an array in the audit row's `changes` column.
 #[derive(Clone, Debug, Deserialize)]
@@ -705,6 +732,24 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
             .unwrap_or_default()
         }
     });
+    // PMS-344: tickets that reference this asset. Server-side filter on
+    // `asset_id` was added in the same change; per_page=50 keeps the
+    // payload one round trip without pagination UI since the typical
+    // asset has only a handful of related tickets.
+    let id_for_tickets = props.id.clone();
+    let tickets_resource = use_resource(move || {
+        let id = id_for_tickets.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<Paginated<RelatedTicket>>(&format!(
+                "/tickets?asset_id={id}&per_page=50"
+            ))
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+        }
+    });
     let types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_authed::<Paginated<AssetTypeOpt>>("/asset-types")
@@ -763,6 +808,10 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     let config_items = cfg_resource.read_unchecked().clone().unwrap_or_default();
     let credentials = cred_resource.read_unchecked().clone().unwrap_or_default();
     let audit = audit_resource.read_unchecked().clone().unwrap_or_default();
+    let related_tickets = tickets_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
     let types = types_resource.read_unchecked().clone().unwrap_or_default();
     let companies = companies_resource
         .read_unchecked()
@@ -950,6 +999,51 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                                     to: Route::AssetDetail { id: child.clone() },
                                                                     class: "text-sm text-blue-600 hover:text-blue-500 font-mono",
                                                                     "{child}"
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // PMS-344: tickets that reference this
+                                // asset. Click-through to the ticket
+                                // detail page; the asset detail and the
+                                // ticket detail both surface the link
+                                // (bidirectional).
+                                Card { title: "Related Tickets",
+                                    if related_tickets.is_empty() {
+                                        p { class: "text-sm text-gray-400 italic", "No related tickets." }
+                                    } else {
+                                        div { class: "space-y-2",
+                                            for t in related_tickets.iter() {
+                                                {
+                                                    let tid = t.id.to_string();
+                                                    let number = t.ticket_number.clone();
+                                                    let title = t.title.clone();
+                                                    let status_name = t.status.name.clone();
+                                                    let priority_name = t.priority.name.clone();
+                                                    rsx! {
+                                                        div { class: "flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-800 rounded gap-3",
+                                                            div { class: "min-w-0 flex-1",
+                                                                Link {
+                                                                    to: Route::TicketDetail { id: tid.clone() },
+                                                                    class: "text-sm font-medium text-blue-600 hover:text-blue-500",
+                                                                    if !number.is_empty() {
+                                                                        span { class: "font-mono mr-2", "{number}" }
+                                                                    }
+                                                                    span { "{title}" }
+                                                                }
+                                                            }
+                                                            div { class: "flex items-center gap-2 shrink-0",
+                                                                if !priority_name.is_empty() {
+                                                                    Badge { variant: BadgeVariant::Gray, "{priority_name}" }
+                                                                }
+                                                                if !status_name.is_empty() {
+                                                                    Badge { variant: BadgeVariant::Blue, "{status_name}" }
                                                                 }
                                                             }
                                                         }

@@ -75,6 +75,15 @@ struct RemoteTicketDetail {
     // the id in the cached `/auth/users` list); dropped from the
     // deserialise shape entirely to keep the type honest. The list page
     // still reads `RemoteTicket.assigned_to_name`.
+    /// PMS-344: the asset this ticket is associated with, if any. Both
+    /// the id (for the inline AssetPicker editor + the asset-detail
+    /// link) and the name (so the sidebar can render the asset's
+    /// display name without an extra fetch) come straight off the
+    /// server's joined TicketResponse.
+    #[serde(default)]
+    asset_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    asset_name: Option<String>,
     #[serde(default)]
     created_by_name: String,
     created_at: DateTime<Utc>,
@@ -722,6 +731,11 @@ pub fn TicketNewPage() -> Element {
     // contract. Fetch the tenant's priorities on mount, default to the row
     // flagged `is_default = true`, and bind the Select's value to the UUID.
     let mut priority_id = use_signal(String::new);
+    // PMS-344: optional asset association. Empty signals = no asset.
+    // Both id and human name are tracked so the AssetPicker can render
+    // its "selected chip" state without an extra fetch.
+    let mut asset_id = use_signal(String::new);
+    let mut asset_name = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
 
@@ -791,6 +805,9 @@ pub fn TicketNewPage() -> Element {
         let priority_uuid: Option<uuid::Uuid> =
             uuid::Uuid::parse_str(priority_id.read().as_str()).ok();
 
+        // PMS-344: asset is optional. Empty string = not picked.
+        let asset_uuid: Option<uuid::Uuid> = uuid::Uuid::parse_str(asset_id.read().as_str()).ok();
+
         // Snapshot signals so the spawn doesn't need to read them.
         let title_v = title.read().clone();
         let description_v = description.read().clone();
@@ -803,6 +820,7 @@ pub fn TicketNewPage() -> Element {
                     "description": if description_v.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(description_v) },
                     "company_id": company_uuid,
                     "priority_id": priority_uuid,
+                    "asset_id": asset_uuid,
                 });
 
                 #[derive(serde::Deserialize)]
@@ -905,6 +923,32 @@ pub fn TicketNewPage() -> Element {
                             options: priority_options,
                             value: priority_id.read().clone(),
                             onchange: move |e: FormEvent| priority_id.set(e.value()),
+                        }
+
+                        // PMS-344: optional asset on create. Wires to the
+                        // server's `asset_id` field on TicketCreateRequest;
+                        // empty signal sends null (no asset).
+                        {
+                            let picker_asset_selected_id: Option<String> =
+                                if uuid::Uuid::parse_str(asset_id.read().as_str()).is_ok() {
+                                    Some(asset_id.read().clone())
+                                } else {
+                                    None
+                                };
+                            rsx! {
+                                crate::components::AssetPicker {
+                                    value: asset_name.read().clone(),
+                                    selected_id: picker_asset_selected_id,
+                                    onselect: move |(id, name): (String, String)| {
+                                        asset_id.set(id);
+                                        asset_name.set(name);
+                                    },
+                                    onclear: move |_| {
+                                        asset_id.set(String::new());
+                                        asset_name.set(String::new());
+                                    },
+                                }
+                            }
                         }
                     }
 
@@ -1447,6 +1491,69 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                 if !field_error.read().is_empty() {
                                     p { class: "text-xs text-red-600 dark:text-red-400",
                                         "{field_error}"
+                                    }
+                                }
+                                // PMS-344: Asset row with inline AssetPicker.
+                                // Selecting an asset fires PUT /tickets/{id}
+                                // with `asset_id`, the same shape the inline
+                                // status/priority/assignee editors above use.
+                                // Clearing the picker sends `null` so the
+                                // server unsets the association.
+                                {
+                                    let current_asset_id = t.asset_id.map(|u| u.to_string());
+                                    let current_asset_name =
+                                        t.asset_name.clone().unwrap_or_default();
+                                    let save_id = props.id.clone();
+                                    let mut tr = ticket_resource;
+                                    let mut hr = history_resource;
+                                    let put_asset = move |new_id: Option<uuid::Uuid>| {
+                                        let save_id = save_id.clone();
+                                        spawn(async move {
+                                            field_error.set(String::new());
+                                            let body = serde_json::json!({
+                                                "asset_id": new_id,
+                                            });
+                                            match crate::hooks::fetch::api::put_authed::<
+                                                serde_json::Value,
+                                                _,
+                                            >(
+                                                &format!("/tickets/{save_id}"),
+                                                &body,
+                                            )
+                                            .await
+                                            {
+                                                Ok(_) => {
+                                                    tr.restart();
+                                                    hr.restart();
+                                                }
+                                                Err(err) => {
+                                                    field_error.set(format!(
+                                                        "Could not update asset: {err}"
+                                                    ));
+                                                }
+                                            }
+                                        });
+                                    };
+                                    let put_asset_for_select = put_asset.clone();
+                                    let put_asset_for_clear = put_asset.clone();
+                                    rsx! {
+                                        DetailItem {
+                                            label: "Asset",
+                                            value: rsx! {
+                                                crate::components::AssetPicker {
+                                                    value: current_asset_name,
+                                                    selected_id: current_asset_id,
+                                                    onselect: move |(id, _name): (String, String)| {
+                                                        if let Ok(uid) = uuid::Uuid::parse_str(&id) {
+                                                            put_asset_for_select(Some(uid));
+                                                        }
+                                                    },
+                                                    onclear: move |_| {
+                                                        put_asset_for_clear(None);
+                                                    },
+                                                }
+                                            },
+                                        }
                                     }
                                 }
                                 if !t.company_name.is_empty() {
