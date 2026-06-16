@@ -59,22 +59,24 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
     let mut query = use_signal(String::new);
     let mut show_dropdown = use_signal(|| false);
 
+    // PMS-371: read the query signal INSIDE the use_resource closure so
+    // Dioxus subscribes the resource to it (same pattern as the
+    // CompanyPicker fix). Reading outside the closure only subscribes
+    // the parent component, leaving the fetch firing once with the
+    // initial empty query and ignoring subsequent keystrokes.
     let query_text = query.read().trim().to_string();
-    let resource_q = query_text.clone();
-    let results = use_resource(move || {
-        let q = resource_q.clone();
-        async move {
-            let _gen = crate::hooks::fetch::active_tenant_generation();
-            let path = if q.is_empty() {
-                "/assets?per_page=20".to_string()
-            } else {
-                format!("/assets?q={}&per_page=20", urlencoding_minimal(&q))
-            };
-            crate::hooks::fetch::api::get_authed::<PickerPage>(&path)
-                .await
-                .ok()
-                .map(|p| p.data)
-        }
+    let results = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let q = query.read().trim().to_string();
+        let path = if q.is_empty() {
+            "/assets?per_page=20".to_string()
+        } else {
+            format!("/assets?q={}&per_page=20", urlencoding_minimal(&q))
+        };
+        crate::hooks::fetch::api::get_authed::<PickerPage>(&path)
+            .await
+            .ok()
+            .map(|p| p.data)
     });
 
     if let Some(id) = &props.selected_id {

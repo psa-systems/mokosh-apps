@@ -81,27 +81,30 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
     let mut creating = use_signal(|| false);
     let mut create_error = use_signal(String::new);
 
+    // PMS-371: read the query signal INSIDE the use_resource closure so
+    // Dioxus subscribes the resource to it. The prior pattern (read
+    // outside, capture the String) only subscribed the parent component,
+    // not the resource, so keystrokes never re-fetched and the dropdown
+    // showed the unfiltered initial result list regardless of what the
+    // user had typed.
     let query_text = query.read().trim().to_string();
-    let resource_q = query_text.clone();
-    let results = use_resource(move || {
-        let q = resource_q.clone();
-        async move {
-            let _gen = crate::hooks::fetch::active_tenant_generation();
-            let path = if q.is_empty() {
-                "/contacts/companies?per_page=20".to_string()
-            } else {
-                // The server stores names as-is and matches with ILIKE so
-                // we can pass the trimmed query straight through.
-                format!(
-                    "/contacts/companies?q={}&per_page=20",
-                    urlencoding_minimal(&q)
-                )
-            };
-            crate::hooks::fetch::api::get_authed::<PickerPage>(&path)
-                .await
-                .ok()
-                .map(|p| p.data)
-        }
+    let results = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let q = query.read().trim().to_string();
+        let path = if q.is_empty() {
+            "/contacts/companies?per_page=20".to_string()
+        } else {
+            // The server stores names as-is and matches with ILIKE so
+            // we can pass the trimmed query straight through.
+            format!(
+                "/contacts/companies?q={}&per_page=20",
+                urlencoding_minimal(&q)
+            )
+        };
+        crate::hooks::fetch::api::get_authed::<PickerPage>(&path)
+            .await
+            .ok()
+            .map(|p| p.data)
     });
 
     if let Some(id) = &props.selected_id {
@@ -239,6 +242,12 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                                 // searching for a similar-name company that
                                 // is not actually in the list can still
                                 // create one without leaving the form.
+                                // PMS-371: echo the typed text in the label
+                                // when non-empty (`+ Create "Wile E. Coyote
+                                // Demolition"`) so the affordance matches
+                                // the empty-list branch and gives the user
+                                // a clear preview of what name will be
+                                // submitted.
                                 if allow_inline_create {
                                     div { class: "border-t border-gray-100 dark:border-gray-800",
                                         button {
@@ -250,7 +259,14 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                                                 show_dropdown.set(false);
                                                 show_create_modal.set(true);
                                             },
-                                            "+ Create new company"
+                                            if query_text.is_empty() {
+                                                "+ Create new company"
+                                            } else {
+                                                {
+                                                    let q = query_text.clone();
+                                                    rsx! { "+ Create \"{q}\"" }
+                                                }
+                                            }
                                         }
                                     }
                                 }
