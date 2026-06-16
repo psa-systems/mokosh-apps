@@ -657,7 +657,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         placeholder: "Enter company name",
                         required: true,
                         // Mirror the server cap (CreateCompanyRequest.name: max 255).
-                        maxlength: "255",
+                        maxlength: 255,
                         value: name.read().clone(),
                         oninput: move |e: FormEvent| name.set(e.value()),
                     }
@@ -672,7 +672,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         name: "industry",
                         label: "Industry",
                         placeholder: "e.g. Healthcare",
-                        maxlength: "255",
+                        maxlength: 255,
                         value: industry.read().clone(),
                         oninput: move |e: FormEvent| industry.set(e.value()),
                     }
@@ -680,7 +680,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         name: "website",
                         label: "Website",
                         placeholder: "https://example.com",
-                        maxlength: "255",
+                        maxlength: 255,
                         value: website.read().clone(),
                         error: website_err(),
                         oninput: move |e: FormEvent| website.set(e.value()),
@@ -702,28 +702,28 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                     crate::components::Input {
                         name: "address_line1",
                         label: "Street",
-                        maxlength: "255",
+                        maxlength: 255,
                         value: line1.read().clone(),
                         oninput: move |e: FormEvent| line1.set(e.value()),
                     }
                     crate::components::Input {
                         name: "address_line2",
                         label: "Street (line 2)",
-                        maxlength: "255",
+                        maxlength: 255,
                         value: line2.read().clone(),
                         oninput: move |e: FormEvent| line2.set(e.value()),
                     }
                     crate::components::Input {
                         name: "address_city",
                         label: "City",
-                        maxlength: "255",
+                        maxlength: 255,
                         value: city.read().clone(),
                         oninput: move |e: FormEvent| city.set(e.value()),
                     }
                     crate::components::Input {
                         name: "address_state",
                         label: "State / Region",
-                        maxlength: "255",
+                        maxlength: 255,
                         value: state.read().clone(),
                         oninput: move |e: FormEvent| state.set(e.value()),
                     }
@@ -731,7 +731,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         name: "address_postal_code",
                         label: "Postal Code",
                         // Matches the client postal rule (max 12 chars).
-                        maxlength: "12",
+                        maxlength: 12,
                         value: postal.read().clone(),
                         error: postal_err(),
                         oninput: move |e: FormEvent| postal.set(e.value()),
@@ -741,7 +741,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         label: "Country",
                         placeholder: "US",
                         // 2-letter ISO code (see validate_country_field).
-                        maxlength: "2",
+                        maxlength: 2,
                         value: country.read().clone(),
                         error: country_err(),
                         oninput: move |e: FormEvent| country.set(e.value()),

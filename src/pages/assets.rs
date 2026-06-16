@@ -477,6 +477,9 @@ pub fn AssetNewPage() -> Element {
     let mut warranty = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // Per-field server validation message routed next to the Name input
+    // (MAPPS-210).
+    let mut name_error = use_signal(String::new);
 
     let types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -525,6 +528,7 @@ pub fn AssetNewPage() -> Element {
                     onsubmit: move |e: FormEvent| {
                         e.prevent_default();
                         error.set(String::new());
+                        name_error.set(String::new());
                         let asset_name = name.read().trim().to_string();
                         let type_id = asset_type.read().clone();
                         let company_id = company.read().clone();
@@ -565,17 +569,27 @@ pub fn AssetNewPage() -> Element {
                                 if !warranty_v.is_empty() {
                                     body["warranty_expiry"] = serde_json::json!(warranty_v);
                                 }
-                                match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
-                                        "/assets",
-                                        &body,
-                                    )
+                                match crate::hooks::fetch::api::post_authed_typed::<
+                                        serde_json::Value,
+                                        _,
+                                    >("/assets", &body)
                                     .await
                                 {
                                     Ok(_) => {
                                         dioxus::prelude::navigator().push(Route::AssetList {});
                                     }
                                     Err(e) => {
-                                        error.set(format!("Could not create asset: {e}"));
+                                        // Route a server-flagged Name validation
+                                        // message next to that input; otherwise
+                                        // show the general message (MAPPS-210).
+                                        if let Some(msg) = e.field_message("name") {
+                                            name_error.set(msg);
+                                        } else {
+                                            error
+                                                .set(
+                                                    format!("Could not create asset: {}", e.user_message()),
+                                                );
+                                        }
                                     }
                                 }
                             }
@@ -595,8 +609,12 @@ pub fn AssetNewPage() -> Element {
                             label: "Name",
                             placeholder: "e.g. Exchange Server 01",
                             required: true,
+                            error: name_error.read().clone(),
                             value: name.read().clone(),
-                            oninput: move |e: FormEvent| name.set(e.value()),
+                            oninput: move |e: FormEvent| {
+                                name_error.set(String::new());
+                                name.set(e.value());
+                            },
                         }
                         Select {
                             name: "type",

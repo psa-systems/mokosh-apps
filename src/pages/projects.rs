@@ -280,6 +280,17 @@ fn insert_opt_date(body: &mut serde_json::Map<String, serde_json::Value>, key: &
 /// client rejects over-long names inline instead of waiting for a 422.
 const PROJECT_NAME_MAX: usize = 80;
 
+/// Maximum project budget amount (MAPPS-212). Mirrors the server's
+/// `DECIMAL(14, 2)` budget columns (12 integer digits) so an over-large amount
+/// is rejected inline with a field message instead of overflowing opaquely
+/// server-side. Assumed precision; revise if the server column differs.
+const BUDGET_AMOUNT_MAX: f64 = 999_999_999_999.99;
+
+/// Maximum project description length (MAPPS-212). Caps the textarea client-side
+/// so over-long text is blocked inline instead of failing later server-side.
+/// Assumed to match the server's project description column; revise if it differs.
+const PROJECT_DESCRIPTION_MAX: usize = 2000;
+
 /// Validate a project name (MAPPS-176): required, trimmed, at most
 /// [`PROJECT_NAME_MAX`] characters. Returns the trimmed name or an inline
 /// error message for the Name field.
@@ -312,12 +323,46 @@ fn validate_budget(raw: &str, label: &str) -> Result<Option<f64>, String> {
     if !value.is_finite() || value < 0.0 {
         return Err(format!("{label} must not be negative."));
     }
+    if value > BUDGET_AMOUNT_MAX {
+        return Err(format!("{label} must be at most {BUDGET_AMOUNT_MAX:.2}."));
+    }
     if let Some((_, frac)) = s.split_once('.') {
         if frac.trim_end_matches('0').len() > 2 {
             return Err(format!("{label} must have at most 2 decimal places."));
         }
     }
     Ok(Some(value))
+}
+
+/// Validate the optional Budget Hours field (MAPPS-212). Blank -> `Ok(None)`.
+/// Accepts decimal hours or `H:MM` (reusing the Log Time parser) and requires a
+/// value greater than zero. Distinguishes a well-formed but out-of-range value
+/// (e.g. `-9`, `0`) from genuinely non-numeric input, so a negative number is
+/// no longer misreported as "must be a number".
+fn validate_budget_hours(raw: &str) -> Result<Option<f64>, String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Ok(None);
+    }
+    match crate::utils::duration::parse_input_to_hours(s) {
+        Some(h) if h > 0.0 => Ok(Some(h)),
+        // The parser accepts 0, but a budget of zero hours is out of range.
+        Some(_) => Err("Budget hours must be greater than 0.".to_string()),
+        // The parser rejects negatives by returning `None`; a value that parses
+        // once its leading '-' is stripped is a negative number (out of range),
+        // not malformed.
+        None if is_negative_duration(s) => Err("Budget hours must be greater than 0.".to_string()),
+        None => Err("Budget hours must be a number (2.5) or H:MM (1:30).".to_string()),
+    }
+}
+
+/// True when `s` is a well-formed duration prefixed with a minus sign (e.g.
+/// `-9`, `-2.5`, `-1:30`): a negative number rather than malformed input.
+fn is_negative_duration(s: &str) -> bool {
+    s.strip_prefix('-')
+        .map(str::trim)
+        .and_then(crate::utils::duration::parse_input_to_hours)
+        .is_some()
 }
 
 /// Insert a UUID-bearing field as its string form, or `null` when blank.
@@ -680,22 +725,13 @@ pub fn ProjectNewPage() -> Element {
                         };
                         // Budget hours is a duration: accept decimal or H:MM
                         // (PMS-340), reusing the Log Time parser. Blank leaves
-                        // it unset; an unparseable value errors inline.
-                        let hours: Option<f64> = {
-                            let raw = budget_hours.read().trim().to_string();
-                            if raw.is_empty() {
-                                None
-                            } else {
-                                match crate::utils::duration::parse_input_to_hours(&raw) {
-                                    Some(h) => Some(h),
-                                    None => {
-                                        hours_err.set(
-                                            "Budget hours must be a number (2.5) or H:MM (1:30)."
-                                                .to_string(),
-                                        );
-                                        return;
-                                    }
-                                }
+                        // it unset; out-of-range or malformed values error inline
+                        // with distinct messages (MAPPS-212).
+                        let hours: Option<f64> = match validate_budget_hours(&budget_hours.read()) {
+                            Ok(h) => h,
+                            Err(msg) => {
+                                hours_err.set(msg);
+                                return;
                             }
                         };
                         is_submitting.set(true);
@@ -763,6 +799,7 @@ pub fn ProjectNewPage() -> Element {
                         label: "Description",
                         placeholder: "Project description...",
                         rows: 4,
+                        maxlength: PROJECT_DESCRIPTION_MAX.to_string(),
                         value: description.read().clone(),
                         oninput: move |e: FormEvent| description.set(e.value()),
                     }
@@ -772,6 +809,8 @@ pub fn ProjectNewPage() -> Element {
                             name: "budget_amount",
                             label: "Budget Amount ($)",
                             r#type: "number",
+                            min: "0".to_string(),
+                            max: BUDGET_AMOUNT_MAX.to_string(),
                             placeholder: "0.00",
                             value: budget_amount.read().clone(),
                             error: amount_err(),
@@ -1159,6 +1198,16 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                 {
                                                     let (tv, tl) = task_status_badge(&statuses, &t.status_id);
                                                     let who = user_name(&users, &t.assigned_to_id);
+                                                    // MAPPS-205: surface logged vs approved vs
+                                                    // estimated hours on each task here in the
+                                                    // project view, mirroring the task overview, so
+                                                    // logged time is reflected on the task without
+                                                    // opening the edit modal. logged = all
+                                                    // non-rejected time (PMS-329); approved = the
+                                                    // approval-gated total (PMS-51); est = estimate.
+                                                    let logged_h = fmt_hours(t.logged_hours);
+                                                    let approved_h = fmt_hours(t.actual_hours);
+                                                    let est_h = fmt_hours(t.estimated_hours);
                                                     // Clicking a row opens the task in the edit modal.
                                                     let task = t.clone();
                                                     let open_task = move |_| selected_task.set(Some(task.clone()));
@@ -1170,7 +1219,17 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                                 p { class: "font-medium text-gray-900 dark:text-white", "{t.title}" }
                                                                 p { class: "text-sm text-gray-500 dark:text-gray-400", "{who}" }
                                                             }
-                                                            Badge { variant: tv, "{tl}" }
+                                                            div { class: "flex items-center gap-4",
+                                                                div { class: "text-right",
+                                                                    div { class: "text-sm font-medium text-gray-900 dark:text-white whitespace-nowrap",
+                                                                        "Logged {logged_h} h"
+                                                                    }
+                                                                    div { class: "text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap",
+                                                                        "Approved {approved_h} h · Est {est_h} h"
+                                                                    }
+                                                                }
+                                                                Badge { variant: tv, "{tl}" }
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -1486,23 +1545,13 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                         }
                     };
                     // Budget hours: accept decimal or H:MM (PMS-340). Blank
-                    // leaves it unset; an unparseable value errors inline.
-                    let hours: Option<f64> = {
-                        let raw = pe_budget_hours();
-                        let raw = raw.trim();
-                        if raw.is_empty() {
-                            None
-                        } else {
-                            match crate::utils::duration::parse_input_to_hours(raw) {
-                                Some(h) => Some(h),
-                                None => {
-                                    pe_hours_err.set(
-                                        "Budget hours must be a number (2.5) or H:MM (1:30)."
-                                            .to_string(),
-                                    );
-                                    return;
-                                }
-                            }
+                    // leaves it unset; out-of-range or malformed values error
+                    // inline with distinct messages (MAPPS-212).
+                    let hours: Option<f64> = match validate_budget_hours(&pe_budget_hours()) {
+                        Ok(h) => h,
+                        Err(msg) => {
+                            pe_hours_err.set(msg);
+                            return;
                         }
                     };
                     let save_id = save_id.clone();
@@ -1584,6 +1633,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 name: "pe-description",
                                 label: "Description",
                                 rows: 4,
+                                maxlength: PROJECT_DESCRIPTION_MAX.to_string(),
                                 value: "{pe_description}",
                                 oninput: move |e: FormEvent| pe_description.set(e.value()),
                             }
@@ -1622,6 +1672,8 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     name: "pe-budget-amount",
                                     label: "Budget Amount",
                                     r#type: "number",
+                                    min: "0".to_string(),
+                                    max: BUDGET_AMOUNT_MAX.to_string(),
                                     value: "{pe_budget_amount}",
                                     error: pe_amount_err(),
                                     oninput: move |e: FormEvent| pe_budget_amount.set(e.value()),
@@ -2112,7 +2164,10 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
 
 #[cfg(test)]
 mod validation_tests {
-    use super::{validate_budget, validate_project_name, PROJECT_NAME_MAX};
+    use super::{
+        validate_budget, validate_budget_hours, validate_project_name, BUDGET_AMOUNT_MAX,
+        PROJECT_NAME_MAX,
+    };
 
     #[test]
     fn name_required_and_capped() {
@@ -2138,5 +2193,41 @@ mod validation_tests {
         assert!(validate_budget("Bobby Tables", "Budget amount").is_err());
         assert!(validate_budget("-1", "Budget amount").is_err());
         assert!(validate_budget("1.234", "Budget hours").is_err());
+    }
+
+    #[test]
+    fn budget_amount_rejects_out_of_magnitude() {
+        // The documented maximum is accepted; anything larger is rejected with a
+        // field message before it can overflow server-side (MAPPS-212).
+        assert_eq!(
+            validate_budget(&format!("{BUDGET_AMOUNT_MAX:.2}"), "Budget amount").unwrap(),
+            Some(BUDGET_AMOUNT_MAX)
+        );
+        assert!(validate_budget("1000000000000", "Budget amount").is_err());
+        // The 41-digit value from the repro must not pass.
+        assert!(validate_budget(&"9".repeat(41), "Budget amount").is_err());
+    }
+
+    #[test]
+    fn budget_hours_distinguishes_out_of_range_from_non_numeric() {
+        // Blank -> None; well-formed positive values pass.
+        assert_eq!(validate_budget_hours("").unwrap(), None);
+        assert_eq!(validate_budget_hours("  ").unwrap(), None);
+        assert_eq!(validate_budget_hours("2.5").unwrap(), Some(2.5));
+        assert_eq!(validate_budget_hours("1:30").unwrap(), Some(1.5));
+
+        // Negative / zero are out of range, not "not a number" (the MAPPS-212 bug).
+        let neg = validate_budget_hours("-9").unwrap_err();
+        assert!(neg.contains("greater than 0"), "got: {neg}");
+        assert!(validate_budget_hours("-1:30")
+            .unwrap_err()
+            .contains("greater than 0"));
+        assert!(validate_budget_hours("0")
+            .unwrap_err()
+            .contains("greater than 0"));
+
+        // Genuinely non-numeric input still reports the format message.
+        let bad = validate_budget_hours("abc").unwrap_err();
+        assert!(bad.contains("must be a number"), "got: {bad}");
     }
 }

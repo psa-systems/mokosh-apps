@@ -14,6 +14,7 @@ claims. The same audit produced matching documentation in
 | --- | --- |
 | [`codebase-state.md`](codebase-state.md) | What this client looks like to a user today: cross-cutting bugs, the 27 ranked UI/UX issues, the per-page status, and the proposed fixes (`F1..F19`). |
 | [`client-server-integration.md`](client-server-integration.md) | How `mokosh-apps` and `mokosh-server` fit together. Section-by-section gap table, shared-DTO pattern, and the recommended order in which to wire UI to backend. |
+| [`versioning.md`](versioning.md) | Where the displayed version comes from (build-time wiring in `build.rs` -> footer/banner) and how staging-vs-production update targets work. |
 
 ## Recommended reading order
 

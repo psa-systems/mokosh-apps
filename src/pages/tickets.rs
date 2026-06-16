@@ -746,6 +746,9 @@ pub fn TicketNewPage() -> Element {
     let mut asset_name = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // Per-field server validation message routed next to the Title input
+    // (MAPPS-210). Cleared on each submit and on edit.
+    let mut title_error = use_signal(String::new);
 
     // Fetch the tenant's ticket priorities on mount. The Paginated envelope
     // matches the server's PaginatedResponse wire shape; meta is ignored
@@ -797,6 +800,7 @@ pub fn TicketNewPage() -> Element {
         e.prevent_default();
         is_submitting.set(true);
         error.set(String::new());
+        title_error.set(String::new());
 
         // The CompanyPicker only ever reports real company UUIDs, but a
         // user can submit before picking one. Validate up front and bail
@@ -836,8 +840,10 @@ pub fn TicketNewPage() -> Element {
                     id: uuid::Uuid,
                 }
 
-                match crate::hooks::fetch::api::post_authed::<CreatedTicket, _>("/tickets", &body)
-                    .await
+                match crate::hooks::fetch::api::post_authed_typed::<CreatedTicket, _>(
+                    "/tickets", &body,
+                )
+                .await
                 {
                     Ok(created) => {
                         navigator.push(Route::TicketDetail {
@@ -847,8 +853,15 @@ pub fn TicketNewPage() -> Element {
                     Err(err) => {
                         // Surface the failure in the form and keep it
                         // mounted so the user can retry without losing
-                        // their text.
-                        error.set(format!("Could not create ticket: {err}"));
+                        // their text. Route a server-flagged Title
+                        // validation message next to that input; otherwise
+                        // fall back to the general user-facing message
+                        // (MAPPS-210).
+                        if let Some(msg) = err.field_message("title") {
+                            title_error.set(msg);
+                        } else {
+                            error.set(format!("Could not create ticket: {}", err.user_message()));
+                        }
                     }
                 }
             }
@@ -889,8 +902,15 @@ pub fn TicketNewPage() -> Element {
                             label: "Title",
                             placeholder: "Brief description of the issue",
                             required: true,
+                            // Server caps the title at 500 chars; mirror it
+                            // client-side as a UX nicety (MAPPS-210).
+                            maxlength: 500,
+                            error: title_error.read().clone(),
                             value: title.read().clone(),
-                            oninput: move |e: FormEvent| title.set(e.value()),
+                            oninput: move |e: FormEvent| {
+                                title_error.set(String::new());
+                                title.set(e.value());
+                            },
                         }
 
                         crate::components::CompanyPicker {
