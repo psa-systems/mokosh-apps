@@ -70,6 +70,117 @@ fn pretty_json(value: &Option<serde_json::Value>) -> String {
     }
 }
 
+/// A user row used to resolve FK ids in the diff to a display name (PMS-365).
+/// Reuses the shape and `/auth/users` endpoint the project pickers already use.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct RemoteUser {
+    id: uuid::Uuid,
+    #[serde(default)]
+    full_name: String,
+}
+
+/// Field keys whose values are user ids the SPA can resolve to a name. Other
+/// FK ids (companies, contacts, etc.) stay as their raw value because the
+/// audit page does not cache those lists (PMS-365).
+fn is_user_fk(key: &str) -> bool {
+    matches!(
+        key,
+        "project_manager_id"
+            | "manager_id"
+            | "assigned_to_id"
+            | "assigned_to"
+            | "assigned_technician_id"
+            | "technician_id"
+            | "user_id"
+            | "owner_id"
+            | "created_by"
+            | "updated_by"
+    )
+}
+
+/// Turn a snake_case field key into a display label, dropping a trailing `_id`
+/// so a FK reads as the entity ("project_manager_id" -> "Project manager")
+/// instead of the raw column name (PMS-365).
+fn humanize_field_key(key: &str) -> String {
+    let base = key.strip_suffix("_id").unwrap_or(key);
+    let spaced = base.replace('_', " ");
+    let mut chars = spaced.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => spaced,
+    }
+}
+
+/// Render one JSON field value for the diff. Resolves user-FK fields to a name
+/// when the SPA has that user cached; otherwise shows the scalar. Absent, null,
+/// or empty renders as `(empty)` (PMS-365).
+fn display_field_value(
+    key: &str,
+    value: Option<&serde_json::Value>,
+    users: &[RemoteUser],
+) -> String {
+    match value {
+        None | Some(serde_json::Value::Null) => "(empty)".to_string(),
+        Some(serde_json::Value::String(s)) if s.trim().is_empty() => "(empty)".to_string(),
+        Some(serde_json::Value::String(s)) => {
+            if is_user_fk(key) {
+                if let Ok(id) = uuid::Uuid::parse_str(s) {
+                    if let Some(u) = users.iter().find(|u| u.id == id) {
+                        if !u.full_name.trim().is_empty() {
+                            return u.full_name.clone();
+                        }
+                    }
+                    // Known FK field but the user is not in our cache (deleted,
+                    // or beyond this page of /auth/users): short prefix, not the
+                    // full noisy UUID.
+                    return s.chars().take(8).collect();
+                }
+            }
+            s.clone()
+        }
+        Some(other) => other.to_string(),
+    }
+}
+
+/// Build the per-field diff rows `(label, old, new)` from the entry's
+/// `old_values` / `new_values` JSON objects. Returns an empty vec when neither
+/// payload is a JSON object, so the caller can fall back to raw JSON (PMS-365).
+fn field_diff_rows(
+    old: &Option<serde_json::Value>,
+    new: &Option<serde_json::Value>,
+    users: &[RemoteUser],
+) -> Vec<(String, String, String)> {
+    let old_obj = old.as_ref().and_then(|v| v.as_object());
+    let new_obj = new.as_ref().and_then(|v| v.as_object());
+    if old_obj.is_none() && new_obj.is_none() {
+        return Vec::new();
+    }
+    // New keys first (the update case lists what changed), then any key present
+    // only in the old payload.
+    let mut keys: Vec<String> = Vec::new();
+    if let Some(o) = new_obj {
+        keys.extend(o.keys().cloned());
+    }
+    if let Some(o) = old_obj {
+        for k in o.keys() {
+            if !keys.contains(k) {
+                keys.push(k.clone());
+            }
+        }
+    }
+    keys.into_iter()
+        .map(|k| {
+            let old_v = old_obj.and_then(|o| o.get(&k));
+            let new_v = new_obj.and_then(|o| o.get(&k));
+            (
+                humanize_field_key(&k),
+                display_field_value(&k, old_v, users),
+                display_field_value(&k, new_v, users),
+            )
+        })
+        .collect()
+}
+
 /// Admin-gated audit-log page.
 ///
 /// This outer component holds only the role gate so its hook order stays
@@ -190,6 +301,20 @@ fn AuditLogContent() -> Element {
         }
     });
 
+    // PMS-365: fetch the tenant's users once so the diff can resolve user-FK
+    // ids (project_manager_id, assigned_to_id, ...) to names. Re-fetches on org
+    // switch via the generation read; an error just leaves ids unresolved.
+    let users_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteUser>>("/auth/users")
+            .await
+            .ok()
+    });
+    let users: Vec<RemoteUser> = match &*users_resource.read_unchecked() {
+        Some(Some(resp)) => resp.data.clone(),
+        _ => Vec::new(),
+    };
+
     let resource_snapshot = audit_resource.read_unchecked();
     let is_loading = resource_snapshot.is_none();
     let error_message: Option<String> = match &*resource_snapshot {
@@ -308,7 +433,7 @@ fn AuditLogContent() -> Element {
                     } else {
                         TableBody {
                             for entry in page_rows.iter().cloned() {
-                                AuditRow { key: "{entry.id}", entry }
+                                AuditRow { key: "{entry.id}", entry, users: users.clone() }
                             }
                         }
                     }
@@ -321,6 +446,7 @@ fn AuditLogContent() -> Element {
 #[derive(Props, Clone, PartialEq)]
 struct AuditRowProps {
     entry: AuditLogEntry,
+    users: Vec<RemoteUser>,
 }
 
 /// One audit row plus a collapsible detail row holding the pretty-printed
@@ -328,7 +454,7 @@ struct AuditRowProps {
 /// opening one entry does not affect the others.
 #[component]
 fn AuditRow(props: AuditRowProps) -> Element {
-    let entry = props.entry;
+    let AuditRowProps { entry, users } = props;
     let mut expanded = use_signal(|| false);
 
     let has_detail =
@@ -342,6 +468,10 @@ fn AuditRow(props: AuditRowProps) -> Element {
 
     let old_json = pretty_json(&entry.old_values);
     let new_json = pretty_json(&entry.new_values);
+    // PMS-365: field-by-field diff with humanized labels + user-FK resolution.
+    // Empty when the payloads are not JSON objects; then we fall back to the
+    // raw pretty-printed JSON below.
+    let diff_rows = field_diff_rows(&entry.old_values, &entry.new_values, &users);
     let user_agent = entry.user_agent.clone().unwrap_or_default();
     let entity_id_full = entry
         .entity_id
@@ -428,19 +558,38 @@ fn AuditRow(props: AuditRowProps) -> Element {
                                 dd { class: "text-gray-900 dark:text-gray-100 break-all", "{user_agent}" }
                             }
                         }
-                        div {
-                            dt { class: "font-medium text-gray-500 dark:text-gray-400 mb-1", "Old values" }
-                            dd {
-                                pre { class: "overflow-x-auto rounded-md bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 p-3 font-mono text-gray-900 dark:text-gray-100",
-                                    "{old_json}"
+                        if diff_rows.is_empty() {
+                            // Non-object payloads: keep the raw JSON view.
+                            div {
+                                dt { class: "font-medium text-gray-500 dark:text-gray-400 mb-1", "Old values" }
+                                dd {
+                                    pre { class: "overflow-x-auto rounded-md bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 p-3 font-mono text-gray-900 dark:text-gray-100",
+                                        "{old_json}"
+                                    }
                                 }
                             }
-                        }
-                        div {
-                            dt { class: "font-medium text-gray-500 dark:text-gray-400 mb-1", "New values" }
-                            dd {
-                                pre { class: "overflow-x-auto rounded-md bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 p-3 font-mono text-gray-900 dark:text-gray-100",
-                                    "{new_json}"
+                            div {
+                                dt { class: "font-medium text-gray-500 dark:text-gray-400 mb-1", "New values" }
+                                dd {
+                                    pre { class: "overflow-x-auto rounded-md bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 p-3 font-mono text-gray-900 dark:text-gray-100",
+                                        "{new_json}"
+                                    }
+                                }
+                            }
+                        } else {
+                            div { class: "sm:col-span-2",
+                                dt { class: "font-medium text-gray-500 dark:text-gray-400 mb-1", "Changes" }
+                                dd {
+                                    div { class: "space-y-1",
+                                        for (label , oldv , newv) in diff_rows.iter().cloned() {
+                                            div { class: "flex flex-wrap items-baseline gap-x-2 gap-y-0.5",
+                                                span { class: "font-medium text-gray-700 dark:text-gray-300", "{label}" }
+                                                span { class: "text-gray-500 dark:text-gray-400 line-through break-all", "{oldv}" }
+                                                span { class: "text-gray-400", "\u{2192}" }
+                                                span { class: "text-gray-900 dark:text-gray-100 break-all", "{newv}" }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -448,5 +597,93 @@ fn AuditRow(props: AuditRowProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn jane() -> RemoteUser {
+        RemoteUser {
+            id: uuid::Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+            full_name: "Jane Doe".to_string(),
+        }
+    }
+
+    #[test]
+    fn humanize_field_key_strips_id_suffix_and_sentence_cases() {
+        assert_eq!(humanize_field_key("project_manager_id"), "Project manager");
+        assert_eq!(humanize_field_key("assigned_to_id"), "Assigned to");
+        assert_eq!(humanize_field_key("company_id"), "Company");
+        assert_eq!(humanize_field_key("status"), "Status");
+    }
+
+    #[test]
+    fn display_field_value_resolves_user_fk_to_name() {
+        let users = vec![jane()];
+        let v = json!("11111111-1111-1111-1111-111111111111");
+        assert_eq!(
+            display_field_value("project_manager_id", Some(&v), &users),
+            "Jane Doe"
+        );
+    }
+
+    #[test]
+    fn display_field_value_unknown_user_fk_falls_back_to_short_prefix() {
+        let v = json!("22222222-2222-2222-2222-222222222222");
+        assert_eq!(
+            display_field_value("assigned_to_id", Some(&v), &[]),
+            "22222222"
+        );
+    }
+
+    #[test]
+    fn display_field_value_null_and_empty_render_empty() {
+        assert_eq!(display_field_value("status", None, &[]), "(empty)");
+        assert_eq!(
+            display_field_value("status", Some(&serde_json::Value::Null), &[]),
+            "(empty)"
+        );
+        assert_eq!(
+            display_field_value("status", Some(&json!("")), &[]),
+            "(empty)"
+        );
+    }
+
+    #[test]
+    fn display_field_value_non_user_fk_passes_through() {
+        // A non-user FK id is shown raw, not resolved.
+        let v = json!("11111111-1111-1111-1111-111111111111");
+        assert_eq!(
+            display_field_value("company_id", Some(&v), &[jane()]),
+            "11111111-1111-1111-1111-111111111111"
+        );
+    }
+
+    #[test]
+    fn field_diff_rows_unions_keys_new_first_then_old_only() {
+        let old = Some(json!({"status": "open", "title": "A"}));
+        let new = Some(json!({"title": "B", "priority": "high"}));
+        let rows = field_diff_rows(&old, &new, &[]);
+        let labels: Vec<&str> = rows.iter().map(|(l, _, _)| l.as_str()).collect();
+        // serde_json's Map is a BTreeMap, so keys are alphabetical within each
+        // group: new keys first (priority, title), then old-only (status).
+        assert_eq!(labels, vec!["Priority", "Title", "Status"]);
+        // title changed A -> B.
+        let title = rows.iter().find(|(l, _, _)| l == "Title").unwrap();
+        assert_eq!(title.1, "A");
+        assert_eq!(title.2, "B");
+        // priority only in new -> old is (empty).
+        let prio = rows.iter().find(|(l, _, _)| l == "Priority").unwrap();
+        assert_eq!(prio.1, "(empty)");
+        assert_eq!(prio.2, "high");
+    }
+
+    #[test]
+    fn field_diff_rows_empty_for_non_object_payloads() {
+        assert!(field_diff_rows(&None, &None, &[]).is_empty());
+        assert!(field_diff_rows(&Some(json!("scalar")), &None, &[]).is_empty());
     }
 }

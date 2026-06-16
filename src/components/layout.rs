@@ -102,7 +102,10 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                     XMarkIcon { size: IconSize::Large }
                 }
             }
-            SidebarContent {}
+            // Mobile drawer closes on every navigation (its open state
+            // lives in the re-mounting AppLayout), so there is no scroll
+            // position worth preserving here.
+            SidebarContent { persist_scroll: false }
         }
 
         // Desktop sidebar - sits below the top bar in the flex column
@@ -112,13 +115,37 @@ pub fn Sidebar(props: SidebarProps) -> Element {
         // scroll, the user sees the affordance instead of silently
         // clipping behind the main panel's own scrollbar (PMC-22).
         aside { class: "hidden lg:flex lg:w-64 lg:flex-col bg-gray-900 border-r border-gray-700 overflow-y-auto overscroll-contain scrollbar-thin",
-            SidebarContent {}
+            SidebarContent { persist_scroll: true }
         }
     }
 }
 
+/// DOM id of the desktop sidebar's scroll container, used to restore and
+/// record its scroll offset across re-mounts (MAPPS-203). Only the
+/// persistent desktop instance carries this id, so `getElementById` is
+/// unambiguous even though the mobile drawer renders the same component.
+const SIDEBAR_NAV_ID: &str = "mokosh-sidebar-nav";
+
+/// Read the current scroll offset of the sidebar nav from the DOM.
+fn read_sidebar_scroll() -> Option<i32> {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(SIDEBAR_NAV_ID))
+        .map(|el| el.scroll_top())
+}
+
+/// Restore a previously recorded scroll offset onto the sidebar nav.
+fn restore_sidebar_scroll(top: i32) {
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(SIDEBAR_NAV_ID))
+    {
+        el.set_scroll_top(top);
+    }
+}
+
 #[component]
-fn SidebarContent() -> Element {
+fn SidebarContent(persist_scroll: bool) -> Element {
     // Admin-only nav (audit log, SLA management): rendered only for
     // admin/super_admin users (reactive on sign-in). The pages re-check
     // server-side, so this is a UX affordance, not a security boundary.
@@ -129,6 +156,23 @@ fn SidebarContent() -> Element {
         .as_ref()
         .map(|u| u.role.is_admin())
         .unwrap_or(false);
+    // Manager+ (manager/admin/super_admin) see the timesheet approvals queue,
+    // matching the server's RequireManager gate on approve/reject (MAPPS-194).
+    let can_manage = auth
+        .read()
+        .user
+        .as_ref()
+        .map(|u| u.role.can_manage_users())
+        .unwrap_or(false);
+
+    // MAPPS-203: App-root-owned scroll offset that survives the
+    // AppLayout re-mount on each navigation. Only the persistent desktop
+    // sidebar (`persist_scroll`) reads/writes it; the mobile drawer
+    // closes on nav so it has nothing to preserve.
+    let mut sidebar_scroll = crate::hooks::use_sidebar_scroll();
+    // Carry the id only on the persistent instance so the two SidebarContent
+    // mounts (mobile + desktop) never share a DOM id.
+    let nav_id = if persist_scroll { SIDEBAR_NAV_ID } else { "" };
 
     rsx! {
         div { class: "flex flex-col flex-1 min-h-0",
@@ -138,13 +182,38 @@ fn SidebarContent() -> Element {
             // `aside` has no overflow of its own, where the lower groups
             // (Analytics / Admin) were otherwise unreachable. The footer
             // below stays pinned.
-            nav { class: "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin px-2 py-4 space-y-1",
+            nav {
+                id: nav_id,
+                class: "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin px-2 py-4 space-y-1",
+                // On mount of the persistent desktop sidebar, jump straight
+                // to the offset recorded before the last navigation so the
+                // re-mount is invisible. `peek` so reading it here never
+                // subscribes this component to its own scroll writes.
+                onmounted: move |_| {
+                    if persist_scroll {
+                        let top = sidebar_scroll.peek().0;
+                        if top != 0 {
+                            restore_sidebar_scroll(top);
+                        }
+                    }
+                },
+                // Record every scroll so the next re-mount can restore it.
+                onscroll: move |_| {
+                    if persist_scroll {
+                        if let Some(top) = read_sidebar_scroll() {
+                            sidebar_scroll.set(crate::hooks::SidebarScroll(top));
+                        }
+                    }
+                },
                 NavItem { to: Route::Dashboard {}, icon: rsx!(HomeIcon {}), label: "Dashboard" }
 
             NavSection { title: "Service Desk",
                 NavItem { to: Route::TicketList {}, icon: rsx!(TicketIcon {}), label: "Tickets" }
                 NavItem { to: Route::TimeEntryList {}, icon: rsx!(ClockIcon {}), label: "Time Entries" }
                 NavItem { to: Route::Timesheets {}, icon: rsx!(DocumentIcon {}), label: "Timesheets" }
+                if can_manage {
+                    NavItem { to: Route::TimesheetApprovals {}, icon: rsx!(DocumentIcon {}), label: "Timesheet Approvals" }
+                }
             }
 
             NavSection { title: "Projects",
@@ -281,6 +350,9 @@ fn section_route(route: &Route) -> Route {
         Route::ContactDetail { .. } => Route::ContactList {},
         Route::ContractDetail { .. } => Route::ContractList {},
         Route::RateCardDetail { .. } => Route::RateCardList {},
+        // `/rate-cards/new` renders the list page with the create modal open,
+        // so it stays under the Rate Cards section (MAPPS-217).
+        Route::RateCardNew { .. } => Route::RateCardList {},
         Route::InvoiceDetail { .. } => Route::InvoiceList {},
         Route::AssetDetail { .. } => Route::AssetList {},
         Route::KBArticleDetail { .. } => Route::KBHome {},
@@ -532,8 +604,9 @@ struct NotificationPage {
 ///
 /// Thin wrapper around [`crate::utils::datetime::format_user_datetime`]:
 /// pulls the active user's format pref off the AuthContext, then
-/// delegates. Users without a preference get the legacy browser-locale
-/// rendering.
+/// delegates. The instant is rendered in the user's profile timezone
+/// (MAPPS-208); users without a format preference get a locale
+/// rendering still pinned to that timezone.
 fn format_local_datetime(dt: chrono::DateTime<chrono::Utc>) -> String {
     let pref = crate::utils::datetime::user_format_pref();
     crate::utils::datetime::format_user_datetime(dt, pref.as_deref())

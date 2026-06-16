@@ -33,3 +33,33 @@ pub fn use_sidebar_state() -> Signal<SidebarState> {
 pub fn is_section_collapsed(state: &SidebarState, title: &str) -> bool {
     *state.collapsed.get(title).unwrap_or(&false)
 }
+
+/// Last-known scroll offset (px) of the desktop sidebar nav.
+///
+/// MAPPS-203: the sidebar lives inside `AppLayout`, and every page wraps
+/// its content in a fresh `AppLayout`, so each SPA navigation tears the
+/// sidebar down and re-mounts it. A re-mounted scroll container starts at
+/// `scrollTop = 0`, which is the user-reported "sidebar scrolls all the
+/// way to the top on every click" symptom. Holding the offset in a signal
+/// owned by the App root (which outlives the navigation, exactly like the
+/// collapse state above) lets the nav restore its prior position on each
+/// re-mount.
+///
+/// A newtype rather than a bare `Signal<i32>` so the context lookup is
+/// unambiguous: a plain int signal could collide with any other int
+/// provided at the root.
+#[derive(Clone, Copy, Default)]
+pub struct SidebarScroll(pub i32);
+
+/// Provide the sidebar scroll-offset signal at the App root. Mirrors
+/// [`use_sidebar_provider`].
+pub fn use_sidebar_scroll_provider() -> Signal<SidebarScroll> {
+    let state = use_signal(SidebarScroll::default);
+    use_context_provider(|| state);
+    state
+}
+
+/// Consume the sidebar scroll-offset signal in the sidebar nav.
+pub fn use_sidebar_scroll() -> Signal<SidebarScroll> {
+    use_context::<Signal<SidebarScroll>>()
+}

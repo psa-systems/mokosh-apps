@@ -280,6 +280,17 @@ fn insert_opt_date(body: &mut serde_json::Map<String, serde_json::Value>, key: &
 /// client rejects over-long names inline instead of waiting for a 422.
 const PROJECT_NAME_MAX: usize = 80;
 
+/// Maximum project budget amount (MAPPS-212). Mirrors the server's
+/// `DECIMAL(14, 2)` budget columns (12 integer digits) so an over-large amount
+/// is rejected inline with a field message instead of overflowing opaquely
+/// server-side. Assumed precision; revise if the server column differs.
+const BUDGET_AMOUNT_MAX: f64 = 999_999_999_999.99;
+
+/// Maximum project description length (MAPPS-212). Caps the textarea client-side
+/// so over-long text is blocked inline instead of failing later server-side.
+/// Assumed to match the server's project description column; revise if it differs.
+const PROJECT_DESCRIPTION_MAX: usize = 2000;
+
 /// Validate a project name (MAPPS-176): required, trimmed, at most
 /// [`PROJECT_NAME_MAX`] characters. Returns the trimmed name or an inline
 /// error message for the Name field.
@@ -312,12 +323,46 @@ fn validate_budget(raw: &str, label: &str) -> Result<Option<f64>, String> {
     if !value.is_finite() || value < 0.0 {
         return Err(format!("{label} must not be negative."));
     }
+    if value > BUDGET_AMOUNT_MAX {
+        return Err(format!("{label} must be at most {BUDGET_AMOUNT_MAX:.2}."));
+    }
     if let Some((_, frac)) = s.split_once('.') {
         if frac.trim_end_matches('0').len() > 2 {
             return Err(format!("{label} must have at most 2 decimal places."));
         }
     }
     Ok(Some(value))
+}
+
+/// Validate the optional Budget Hours field (MAPPS-212). Blank -> `Ok(None)`.
+/// Accepts decimal hours or `H:MM` (reusing the Log Time parser) and requires a
+/// value greater than zero. Distinguishes a well-formed but out-of-range value
+/// (e.g. `-9`, `0`) from genuinely non-numeric input, so a negative number is
+/// no longer misreported as "must be a number".
+fn validate_budget_hours(raw: &str) -> Result<Option<f64>, String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Ok(None);
+    }
+    match crate::utils::duration::parse_input_to_hours(s) {
+        Some(h) if h > 0.0 => Ok(Some(h)),
+        // The parser accepts 0, but a budget of zero hours is out of range.
+        Some(_) => Err("Budget hours must be greater than 0.".to_string()),
+        // The parser rejects negatives by returning `None`; a value that parses
+        // once its leading '-' is stripped is a negative number (out of range),
+        // not malformed.
+        None if is_negative_duration(s) => Err("Budget hours must be greater than 0.".to_string()),
+        None => Err("Budget hours must be a number (2.5) or H:MM (1:30).".to_string()),
+    }
+}
+
+/// True when `s` is a well-formed duration prefixed with a minus sign (e.g.
+/// `-9`, `-2.5`, `-1:30`): a negative number rather than malformed input.
+fn is_negative_duration(s: &str) -> bool {
+    s.strip_prefix('-')
+        .map(str::trim)
+        .and_then(crate::utils::duration::parse_input_to_hours)
+        .is_some()
 }
 
 /// Insert a UUID-bearing field as its string form, or `null` when blank.
@@ -444,7 +489,9 @@ pub fn ProjectListPage() -> Element {
     } else {
         total_value
     };
-    let total_value_label = format!("${total_value:.0}");
+    // PMS-365: route through the shared formatter so the stat matches the
+    // project card / budget panel ($1,234.00) instead of a bare $1234.
+    let total_value_label = format_money_f64(Some(total_value));
 
     // Client-side search + status filter.
     let needle = search.read().to_lowercase();
@@ -616,6 +663,15 @@ pub fn ProjectNewPage() -> Element {
     let mut description = use_signal(String::new);
     let mut budget_amount = use_signal(String::new);
     let mut budget_hours = use_signal(String::new);
+    // PMS-361: New Project lacked the status / dates / manager fields the
+    // Edit modal exposes, so every project was born as "planning" and
+    // needed a follow-up edit. These signals make Create field-symmetric
+    // with Edit; "planning" stays the default to preserve existing
+    // behaviour for users who don't change the dropdown.
+    let mut status = use_signal(|| "planning".to_string());
+    let mut project_manager = use_signal(String::new);
+    let mut start_date = use_signal(String::new);
+    let mut target_end_date = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
     // Per-field inline validation errors (MAPPS-176).
@@ -642,6 +698,34 @@ pub fn ProjectNewPage() -> Element {
             .iter()
             .map(|c| SelectOption::new(c.id.to_string(), c.name.clone())),
     );
+
+    // PMS-361: users list for the Project Manager Select. Same endpoint
+    // and shape the Edit modal uses on the detail page.
+    let users_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteUser>>("/auth/users")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+    let users = users_resource.read_unchecked().clone().unwrap_or_default();
+    let mut manager_options = vec![SelectOption::new("", "Unassigned")];
+    manager_options.extend(
+        users
+            .iter()
+            .map(|u| SelectOption::new(u.id.to_string(), u.full_name.clone())),
+    );
+
+    // PMS-361: same status set the Edit modal offers, kept inline here
+    // because there is no tenant-configurable project-status lookup.
+    let status_options = vec![
+        SelectOption::new("planning", "Planning"),
+        SelectOption::new("active", "Active"),
+        SelectOption::new("on_hold", "On Hold"),
+        SelectOption::new("completed", "Completed"),
+        SelectOption::new("cancelled", "Cancelled"),
+    ];
 
     let err = error.read().clone();
 
@@ -680,31 +764,40 @@ pub fn ProjectNewPage() -> Element {
                         };
                         // Budget hours is a duration: accept decimal or H:MM
                         // (PMS-340), reusing the Log Time parser. Blank leaves
-                        // it unset; an unparseable value errors inline.
-                        let hours: Option<f64> = {
-                            let raw = budget_hours.read().trim().to_string();
-                            if raw.is_empty() {
-                                None
-                            } else {
-                                match crate::utils::duration::parse_input_to_hours(&raw) {
-                                    Some(h) => Some(h),
-                                    None => {
-                                        hours_err.set(
-                                            "Budget hours must be a number (2.5) or H:MM (1:30)."
-                                                .to_string(),
-                                        );
-                                        return;
-                                    }
-                                }
+                        // it unset; out-of-range or malformed values error inline
+                        // with distinct messages (MAPPS-212).
+                        let hours: Option<f64> = match validate_budget_hours(&budget_hours.read()) {
+                            Ok(h) => h,
+                            Err(msg) => {
+                                hours_err.set(msg);
+                                return;
                             }
                         };
                         is_submitting.set(true);
+                        // PMS-361: snapshot the new fields so the spawn
+                        // doesn't reach back into the signal layer. Status
+                        // is always sent (defaulting to "planning" if the
+                        // user somehow cleared the Select); the rest go
+                        // in only when non-empty so the server doesn't see
+                        // an empty-string masquerading as a UUID/date.
+                        let status_v = {
+                            let s = status.read().trim().to_string();
+                            if s.is_empty() {
+                                "planning".to_string()
+                            } else {
+                                s
+                            }
+                        };
+                        let manager_v = project_manager.read().trim().to_string();
+                        let start_v = start_date.read().trim().to_string();
+                        let end_v = target_end_date.read().trim().to_string();
                         spawn(async move {
                             #[cfg(feature = "web")]
                             {
                                 let mut body = serde_json::json!({
                                     "name": project_name,
                                     "description": desc,
+                                    "status": status_v,
                                 });
                                 if !company_id.is_empty() {
                                     body["company_id"] = serde_json::json!(company_id);
@@ -714,6 +807,16 @@ pub fn ProjectNewPage() -> Element {
                                 }
                                 if let Some(h) = hours {
                                     body["budget_hours"] = serde_json::json!(h);
+                                }
+                                if !manager_v.is_empty() {
+                                    body["project_manager_id"] =
+                                        serde_json::json!(manager_v);
+                                }
+                                if !start_v.is_empty() {
+                                    body["start_date"] = serde_json::json!(start_v);
+                                }
+                                if !end_v.is_empty() {
+                                    body["target_end_date"] = serde_json::json!(end_v);
                                 }
                                 match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
                                         "/projects",
@@ -763,8 +866,46 @@ pub fn ProjectNewPage() -> Element {
                         label: "Description",
                         placeholder: "Project description...",
                         rows: 4,
+                        maxlength: PROJECT_DESCRIPTION_MAX as i64,
                         value: description.read().clone(),
                         oninput: move |e: FormEvent| description.set(e.value()),
+                    }
+
+                    // PMS-361: status + project manager row, matching the
+                    // Edit modal's layout so the Create flow doesn't force
+                    // an immediate follow-up edit just to set these.
+                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                        Select {
+                            name: "status",
+                            label: "Status",
+                            options: status_options,
+                            value: status.read().clone(),
+                            onchange: move |e: FormEvent| status.set(e.value()),
+                        }
+                        Select {
+                            name: "project_manager_id",
+                            label: "Project Manager",
+                            options: manager_options.clone(),
+                            value: project_manager.read().clone(),
+                            onchange: move |e: FormEvent| project_manager.set(e.value()),
+                        }
+                    }
+
+                    // PMS-361: start + target end dates. Optional; blank
+                    // leaves them unset on the server.
+                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                        crate::components::DateField {
+                            name: "start_date",
+                            label: "Start Date",
+                            value: start_date.read().clone(),
+                            oninput: move |e: FormEvent| start_date.set(e.value()),
+                        }
+                        crate::components::DateField {
+                            name: "target_end_date",
+                            label: "Target End Date",
+                            value: target_end_date.read().clone(),
+                            oninput: move |e: FormEvent| target_end_date.set(e.value()),
+                        }
                     }
 
                     div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
@@ -772,6 +913,8 @@ pub fn ProjectNewPage() -> Element {
                             name: "budget_amount",
                             label: "Budget Amount ($)",
                             r#type: "number",
+                            min: "0".to_string(),
+                            max: BUDGET_AMOUNT_MAX.to_string(),
                             placeholder: "0.00",
                             value: budget_amount.read().clone(),
                             error: amount_err(),
@@ -967,6 +1110,29 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
     let mut deleting = use_signal(|| false);
     let id_for_delete = props.id.clone();
 
+    // MAPPS-189: the Delete button opens the styled ConfirmDialog; the
+    // actual DELETE fires from `on_confirm_delete` when confirmed.
+    let mut confirming_delete = use_signal(|| false);
+
+    let on_confirm_delete = move |_: ()| {
+        if *deleting.read() {
+            return;
+        }
+        let id = id_for_delete.clone();
+        deleting.set(true);
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let path = format!("/projects/{id}");
+                if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
+                    navigator.push(Route::ProjectList {});
+                }
+            }
+            deleting.set(false);
+            confirming_delete.set(false);
+        });
+    };
+
     let header_title = match project.as_ref() {
         Some(p) if !p.name.trim().is_empty() => p.name.clone(),
         Some(_) => format!("Project {}", props.id),
@@ -994,6 +1160,21 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
 
     rsx! {
         AppLayout { title: "{header_title}",
+            crate::components::ConfirmDialog {
+                open: confirming_delete(),
+                title: "Delete project".to_string(),
+                message: "Delete this project? This cannot be undone.".to_string(),
+                confirm_text: "Delete".to_string(),
+                cancel_text: "Cancel".to_string(),
+                destructive: true,
+                loading: *deleting.read(),
+                onconfirm: on_confirm_delete,
+                oncancel: move |_| {
+                    if !*deleting.read() {
+                        confirming_delete.set(false);
+                    }
+                },
+            }
             PageHeader {
                 title: "{header_title}",
                 actions: rsx! {
@@ -1040,28 +1221,9 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                         variant: ButtonVariant::Danger,
                         loading: *deleting.read(),
                         onclick: move |_| {
-                            let id = id_for_delete.clone();
-                            deleting.set(true);
-                            spawn(async move {
-                                #[cfg(feature = "web")]
-                                {
-                                    let confirmed = web_sys::window()
-                                        .and_then(|w| {
-                                            w.confirm_with_message(
-                                                "Delete this project? This cannot be undone.",
-                                            )
-                                            .ok()
-                                        })
-                                        .unwrap_or(false);
-                                    if confirmed {
-                                        let path = format!("/projects/{id}");
-                                        if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
-                                            navigator.push(Route::ProjectList {});
-                                        }
-                                    }
-                                }
-                                deleting.set(false);
-                            });
+                            if !*deleting.read() {
+                                confirming_delete.set(true);
+                            }
                         },
                         "Delete"
                     }
@@ -1159,6 +1321,16 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                 {
                                                     let (tv, tl) = task_status_badge(&statuses, &t.status_id);
                                                     let who = user_name(&users, &t.assigned_to_id);
+                                                    // MAPPS-205: surface logged vs approved vs
+                                                    // estimated hours on each task here in the
+                                                    // project view, mirroring the task overview, so
+                                                    // logged time is reflected on the task without
+                                                    // opening the edit modal. logged = all
+                                                    // non-rejected time (PMS-329); approved = the
+                                                    // approval-gated total (PMS-51); est = estimate.
+                                                    let logged_h = fmt_hours(t.logged_hours);
+                                                    let approved_h = fmt_hours(t.actual_hours);
+                                                    let est_h = fmt_hours(t.estimated_hours);
                                                     // Clicking a row opens the task in the edit modal.
                                                     let task = t.clone();
                                                     let open_task = move |_| selected_task.set(Some(task.clone()));
@@ -1170,7 +1342,17 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                                 p { class: "font-medium text-gray-900 dark:text-white", "{t.title}" }
                                                                 p { class: "text-sm text-gray-500 dark:text-gray-400", "{who}" }
                                                             }
-                                                            Badge { variant: tv, "{tl}" }
+                                                            div { class: "flex items-center gap-4",
+                                                                div { class: "text-right",
+                                                                    div { class: "text-sm font-medium text-gray-900 dark:text-white whitespace-nowrap",
+                                                                        "Logged {logged_h} h"
+                                                                    }
+                                                                    div { class: "text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap",
+                                                                        "Approved {approved_h} h · Est {est_h} h"
+                                                                    }
+                                                                }
+                                                                Badge { variant: tv, "{tl}" }
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -1220,7 +1402,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                         }
                                         div { class: "flex justify-between",
                                             span { class: "text-sm text-gray-500", "Remaining" }
-                                            span { class: "font-medium", "${remaining:.0}" }
+                                            span { class: "font-medium", "{format_money_f64(Some(remaining))}" }
                                         }
                                         div { class: "w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 mt-2",
                                             div { class: "bg-green-600 h-2 rounded-full", style: "width: {util}%" }
@@ -1486,23 +1668,13 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                         }
                     };
                     // Budget hours: accept decimal or H:MM (PMS-340). Blank
-                    // leaves it unset; an unparseable value errors inline.
-                    let hours: Option<f64> = {
-                        let raw = pe_budget_hours();
-                        let raw = raw.trim();
-                        if raw.is_empty() {
-                            None
-                        } else {
-                            match crate::utils::duration::parse_input_to_hours(raw) {
-                                Some(h) => Some(h),
-                                None => {
-                                    pe_hours_err.set(
-                                        "Budget hours must be a number (2.5) or H:MM (1:30)."
-                                            .to_string(),
-                                    );
-                                    return;
-                                }
-                            }
+                    // leaves it unset; out-of-range or malformed values error
+                    // inline with distinct messages (MAPPS-212).
+                    let hours: Option<f64> = match validate_budget_hours(&pe_budget_hours()) {
+                        Ok(h) => h,
+                        Err(msg) => {
+                            pe_hours_err.set(msg);
+                            return;
                         }
                     };
                     let save_id = save_id.clone();
@@ -1584,6 +1756,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 name: "pe-description",
                                 label: "Description",
                                 rows: 4,
+                                maxlength: PROJECT_DESCRIPTION_MAX as i64,
                                 value: "{pe_description}",
                                 oninput: move |e: FormEvent| pe_description.set(e.value()),
                             }
@@ -1622,6 +1795,8 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     name: "pe-budget-amount",
                                     label: "Budget Amount",
                                     r#type: "number",
+                                    min: "0".to_string(),
+                                    max: BUDGET_AMOUNT_MAX.to_string(),
                                     value: "{pe_budget_amount}",
                                     error: pe_amount_err(),
                                     oninput: move |e: FormEvent| pe_budget_amount.set(e.value()),
@@ -2112,7 +2287,10 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
 
 #[cfg(test)]
 mod validation_tests {
-    use super::{validate_budget, validate_project_name, PROJECT_NAME_MAX};
+    use super::{
+        validate_budget, validate_budget_hours, validate_project_name, BUDGET_AMOUNT_MAX,
+        PROJECT_NAME_MAX,
+    };
 
     #[test]
     fn name_required_and_capped() {
@@ -2138,5 +2316,41 @@ mod validation_tests {
         assert!(validate_budget("Bobby Tables", "Budget amount").is_err());
         assert!(validate_budget("-1", "Budget amount").is_err());
         assert!(validate_budget("1.234", "Budget hours").is_err());
+    }
+
+    #[test]
+    fn budget_amount_rejects_out_of_magnitude() {
+        // The documented maximum is accepted; anything larger is rejected with a
+        // field message before it can overflow server-side (MAPPS-212).
+        assert_eq!(
+            validate_budget(&format!("{BUDGET_AMOUNT_MAX:.2}"), "Budget amount").unwrap(),
+            Some(BUDGET_AMOUNT_MAX)
+        );
+        assert!(validate_budget("1000000000000", "Budget amount").is_err());
+        // The 41-digit value from the repro must not pass.
+        assert!(validate_budget(&"9".repeat(41), "Budget amount").is_err());
+    }
+
+    #[test]
+    fn budget_hours_distinguishes_out_of_range_from_non_numeric() {
+        // Blank -> None; well-formed positive values pass.
+        assert_eq!(validate_budget_hours("").unwrap(), None);
+        assert_eq!(validate_budget_hours("  ").unwrap(), None);
+        assert_eq!(validate_budget_hours("2.5").unwrap(), Some(2.5));
+        assert_eq!(validate_budget_hours("1:30").unwrap(), Some(1.5));
+
+        // Negative / zero are out of range, not "not a number" (the MAPPS-212 bug).
+        let neg = validate_budget_hours("-9").unwrap_err();
+        assert!(neg.contains("greater than 0"), "got: {neg}");
+        assert!(validate_budget_hours("-1:30")
+            .unwrap_err()
+            .contains("greater than 0"));
+        assert!(validate_budget_hours("0")
+            .unwrap_err()
+            .contains("greater than 0"));
+
+        // Genuinely non-numeric input still reports the format message.
+        let bad = validate_budget_hours("abc").unwrap_err();
+        assert!(bad.contains("must be a number"), "got: {bad}");
     }
 }

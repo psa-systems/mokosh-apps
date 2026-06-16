@@ -3,8 +3,8 @@
 use dioxus::prelude::*;
 use mokosh_apps::hooks::{
     use_apply_theme, use_auth_provider, use_bfcache_invalidator, use_current_user_loader,
-    use_memberships_loader, use_sidebar_provider, use_token_refresh, use_update_check,
-    use_version_cache_provider,
+    use_memberships_loader, use_sidebar_provider, use_sidebar_scroll_provider, use_token_refresh,
+    use_update_check, use_version_cache_provider,
 };
 use mokosh_apps::Route;
 
@@ -24,6 +24,11 @@ fn main() {
 fn App() -> Element {
     use_auth_provider();
     use_sidebar_provider();
+    // MAPPS-203: hold the desktop sidebar's scroll offset at the App root
+    // so it survives the AppLayout re-mount on every navigation. Without
+    // it the re-mounted sidebar starts at scrollTop 0 and visibly jumps to
+    // the top on every nav click.
+    use_sidebar_scroll_provider();
     // MAPPS-203: cache the result of GET /api/v1/version at App root so
     // the admin UpdateBanner does not re-run its async fetch (and the
     // 200ms reserve-then-collapse animation that goes with the

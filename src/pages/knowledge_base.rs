@@ -45,6 +45,45 @@ const TAG_FETCH_LIMIT: usize = 200;
 /// How many recent articles the home page surfaces.
 const RECENT_LIMIT: usize = 5;
 
+/// Client-side `maxlength` caps for the article form's text fields, mirroring
+/// the server's KB article column limits so over-long input is blocked at the
+/// field rather than failing as an opaque 422 (MAPPS-218). The slug column is
+/// `length(min = 1, max = 255)` (see [`slugify`]); title and summary share the
+/// 255-char varchar cap; the body is a large TEXT column, capped here only to
+/// stop an absurd paste. The server stays the source of truth.
+const TITLE_MAX: usize = 255;
+const SLUG_MAX: usize = 255;
+const SUMMARY_MAX: usize = 255;
+const BODY_MAX: usize = 100_000;
+
+/// Per-tag character cap. Tags render as inline chips and feed the tag
+/// taxonomy (search/filter), so a single tag longer than this is almost
+/// certainly garbage (MAPPS-218).
+const TAG_MAX: usize = 50;
+
+/// Split a comma-separated tag string into clean tags: strip markup (`<`/`>`)
+/// and control characters, trim, cap each tag at [`TAG_MAX`] characters, and
+/// drop empties. Mirrors the issue's "tags are length-capped and stripped of
+/// markup/control characters" requirement so junk like `<script>` or an
+/// unbounded blob never reaches the tag taxonomy (MAPPS-218).
+fn sanitize_tags(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .filter_map(|t| {
+            let cleaned: String = t
+                .chars()
+                .filter(|c| !c.is_control() && !matches!(c, '<' | '>'))
+                .collect();
+            let capped: String = cleaned.trim().chars().take(TAG_MAX).collect();
+            let tag = capped.trim().to_string();
+            if tag.is_empty() {
+                None
+            } else {
+                Some(tag)
+            }
+        })
+        .collect()
+}
+
 /// Derive a URL slug from a title: lowercase, non-alphanumerics collapse
 /// to single hyphens, trimmed. Mirrors the obvious server expectation
 /// (`slug` is required, `length(min = 1, max = 255)`). Empty input yields
@@ -269,6 +308,7 @@ pub fn KBHomePage() -> Element {
         navigator.push(Route::KBArticleList {
             q,
             tag: String::new(),
+            category: String::new(),
         });
     };
 
@@ -322,6 +362,7 @@ pub fn KBHomePage() -> Element {
                     for category in categories.iter().cloned() {
                         CategoryCard {
                             key: "{category.id}",
+                            id: category.id.to_string(),
                             title: category.name,
                             description: category.description.unwrap_or_default(),
                         }
@@ -364,6 +405,7 @@ pub fn KBHomePage() -> Element {
 
 #[derive(Props, Clone, PartialEq)]
 struct CategoryCardProps {
+    id: String,
     title: String,
     description: String,
 }
@@ -371,9 +413,10 @@ struct CategoryCardProps {
 #[component]
 fn CategoryCard(props: CategoryCardProps) -> Element {
     let navigator = use_navigator();
-    // The list route carries no query string, so the category filter is
-    // not pre-applied; clicking lands on the full article list where the
-    // category dropdown is the canonical filter.
+    let category_id = props.id.clone();
+    // Clicking lands on the article list pre-filtered to this category: the
+    // id rides the route's `?category=` query so the list pre-selects the
+    // dropdown and fetches `GET /kb/articles?category_id=...`.
     rsx! {
         button {
             r#type: "button",
@@ -382,6 +425,7 @@ fn CategoryCard(props: CategoryCardProps) -> Element {
                 navigator.push(Route::KBArticleList {
                     q: String::new(),
                     tag: String::new(),
+                    category: category_id.clone(),
                 });
             },
             Card { class: "hover:shadow-lg transition-shadow cursor-pointer",
@@ -438,15 +482,20 @@ fn ArticleItem(props: ArticleItemProps) -> Element {
 /// home search carries the typed term through to this list. `initial_tag`
 /// seeds the tag filter from the `?tag=` route query so clicking a tag chip
 /// (on a row or the detail view) lands on the list filtered to that tag.
+/// `initial_category` seeds the category dropdown from the `?category=` route
+/// query so clicking a category card (or breadcrumb) lands on the list
+/// pre-filtered to that category.
 #[component]
 pub fn KBArticleListPage(
     #[props(default)] initial_q: String,
     #[props(default)] initial_tag: String,
+    #[props(default)] initial_category: String,
 ) -> Element {
     let mut search = use_signal(|| initial_q.clone());
-    let mut category_filter = use_signal(String::new);
+    let mut category_filter = use_signal(|| initial_category.clone());
     let mut tag_filter = use_signal(|| initial_tag.clone());
     let mut page = use_signal(|| 1usize);
+    let navigator = use_navigator();
 
     // Keep the tag filter in sync with the `?tag=` route query: navigating
     // from one tag chip to another re-renders this component with a new
@@ -456,6 +505,16 @@ pub fn KBArticleListPage(
     use_effect(use_reactive!(|initial_tag| {
         if *tag_filter.peek() != initial_tag {
             tag_filter.set(initial_tag.clone());
+            page.set(1);
+        }
+    }));
+
+    // Keep the category filter in sync with the `?category=` route query for
+    // the same reason: navigating from one category card to another re-renders
+    // this component with a new `initial_category` prop without remounting.
+    use_effect(use_reactive!(|initial_category| {
+        if *category_filter.peek() != initial_category {
+            category_filter.set(initial_category.clone());
             page.set(1);
         }
     }));
@@ -568,10 +627,22 @@ pub fn KBArticleListPage(
     };
     let has_filters = !search_text.is_empty() || !category_text.is_empty() || tag_active;
 
+    // Heading reflects the active category filter: show the category name when
+    // one is selected, otherwise the generic "All Articles".
+    let heading = if category_text.is_empty() {
+        "All Articles".to_string()
+    } else {
+        categories
+            .iter()
+            .find(|c| c.id.to_string() == category_text)
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "All Articles".to_string())
+    };
+
     rsx! {
         AppLayout { title: "Articles",
             PageHeader {
-                title: "All Articles",
+                title: "{heading}",
                 actions: rsx! {
                     Link {
                         to: Route::KBArticleNew {},
@@ -611,8 +682,17 @@ pub fn KBArticleListPage(
                                 options: category_options,
                                 value: category_filter.read().clone(),
                                 onchange: move |e: FormEvent| {
-                                    category_filter.set(e.value());
+                                    let value = e.value();
+                                    category_filter.set(value.clone());
                                     page.set(1);
+                                    // Reflect the chosen category in the URL so the filtered
+                                    // view is shareable and survives the back button. Clearing
+                                    // to "All Categories" pushes an empty `?category=`.
+                                    navigator.push(Route::KBArticleList {
+                                        q: search.read().trim().to_string(),
+                                        tag: tag_filter.read().trim().to_string(),
+                                        category: value,
+                                    });
                                 },
                             }
                         }
@@ -623,7 +703,7 @@ pub fn KBArticleListPage(
                             span { class: "text-gray-500 dark:text-gray-400", "Filtered by tag:" }
                             Badge { variant: BadgeVariant::Blue, "#{tag_text}" }
                             Link {
-                                to: Route::KBArticleList { q: search_text.clone(), tag: String::new() },
+                                to: Route::KBArticleList { q: search_text.clone(), tag: String::new(), category: category_text.clone() },
                                 class: "text-blue-600 hover:text-blue-500",
                                 "Clear filter"
                             }
@@ -748,7 +828,7 @@ fn TagChips(tags: Vec<String>, #[props(default)] class: String) -> Element {
             for tag in tags.iter().cloned() {
                 Link {
                     key: "{tag}",
-                    to: Route::KBArticleList { q: String::new(), tag: tag.clone() },
+                    to: Route::KBArticleList { q: String::new(), tag: tag.clone(), category: String::new() },
                     class: "inline-flex items-center rounded-full bg-blue-50 dark:bg-blue-900/40 px-2 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/70",
                     "#{tag}"
                 }
@@ -1239,13 +1319,17 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         is_submitting.set(true);
         error.set(String::new());
 
-        // Slug: use the author's value, else derive from the title.
+        // Slug: normalize through `slugify` so the stored value is always
+        // URL-safe (lowercase, hyphen-separated, no spaces/`<>`/punctuation),
+        // whether it was author-supplied or derived from the title when blank.
+        // `slugify` is idempotent on an already-valid slug (MAPPS-218).
         let slug_raw = slug.read().trim().to_string();
-        let slug_val = if slug_raw.is_empty() {
-            slugify(&title_val)
+        let slug_source = if slug_raw.is_empty() {
+            &title_val
         } else {
-            slug_raw
+            &slug_raw
         };
+        let slug_val = slugify(slug_source);
         let summary_val = summary.read().trim().to_string();
         let summary_opt = if summary_val.is_empty() {
             None
@@ -1262,12 +1346,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         };
         let visibility_val = visibility.read().clone();
         let status_val = status.read().clone();
-        let tags_vec: Vec<String> = tags
-            .read()
-            .split(',')
-            .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty())
-            .collect();
+        let tags_vec: Vec<String> = sanitize_tags(&tags.read());
 
         let mode = mode.clone();
         spawn(async move {
@@ -1337,6 +1416,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     label: "Title",
                     placeholder: "How to ...",
                     required: true,
+                    maxlength: TITLE_MAX as i64,
                     value: title.read().clone(),
                     oninput: move |e: FormEvent| {
                         title.set(e.value());
@@ -1350,7 +1430,8 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     name: "slug",
                     label: "Slug",
                     placeholder: "Leave blank to derive from the title",
-                    help: "URL-safe identifier; auto-generated from the title when blank.",
+                    help: "URL-safe identifier; normalized to lowercase hyphenated form on save, and auto-generated from the title when blank.",
+                    maxlength: SLUG_MAX as i64,
                     value: slug.read().clone(),
                     oninput: move |e: FormEvent| {
                         slug_touched.set(true);
@@ -1362,6 +1443,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     name: "summary",
                     label: "Summary",
                     placeholder: "Short one-line description (optional)",
+                    maxlength: SUMMARY_MAX as i64,
                     value: summary.read().clone(),
                     oninput: move |e: FormEvent| summary.set(e.value()),
                 }
@@ -1411,6 +1493,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                                 placeholder: "## Overview\n\nWrite the article in Markdown...",
                                 rows: 16,
                                 required: true,
+                                maxlength: BODY_MAX as i64,
                                 value: content.read().clone(),
                                 oninput: move |e: FormEvent| content.set(e.value()),
                             }
@@ -1453,7 +1536,7 @@ fn KbBreadcrumb(path: Vec<KbCategory>, title: String) -> Element {
             for cat in path.iter() {
                 ChevronRightIcon { size: IconSize::Small }
                 Link {
-                    to: Route::KBArticleList { q: String::new(), tag: String::new() },
+                    to: Route::KBArticleList { q: String::new(), tag: String::new(), category: cat.id.to_string() },
                     class: "hover:text-gray-700 dark:hover:text-gray-200",
                     "{cat.name}"
                 }
@@ -1762,5 +1845,37 @@ mod tests {
     fn slug_follows_title_until_touched() {
         assert_eq!(next_slug("My Article", false), Some(slugify("My Article")));
         assert_eq!(next_slug("My Article", true), None);
+    }
+
+    #[test]
+    fn slugify_normalizes_unsafe_author_input() {
+        // The repro value from MAPPS-218 becomes URL-safe.
+        assert_eq!(
+            slugify("Bad Slug With Spaces!!! <>"),
+            "bad-slug-with-spaces"
+        );
+        // Already-valid slugs survive unchanged (idempotent).
+        assert_eq!(slugify("my-valid-slug"), "my-valid-slug");
+    }
+
+    #[test]
+    fn sanitize_tags_strips_markup_and_caps_length() {
+        let tags = sanitize_tags(&format!("tag1, <script>, {}", "x".repeat(100)));
+        // Markup chars are stripped, the over-long tag is capped to TAG_MAX.
+        assert_eq!(
+            tags,
+            vec![
+                "tag1".to_string(),
+                "script".to_string(),
+                "x".repeat(TAG_MAX)
+            ]
+        );
+    }
+
+    #[test]
+    fn sanitize_tags_drops_empty_and_control_only() {
+        // Whitespace-only, comma-only, and control-character-only entries drop out.
+        assert_eq!(sanitize_tags("  , \t , a , "), vec!["a".to_string()]);
+        assert!(sanitize_tags("").is_empty());
     }
 }
