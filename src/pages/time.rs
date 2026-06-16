@@ -1019,11 +1019,26 @@ pub fn TimesheetsPage() -> Element {
                                     }
                                 }
                             } else if !has_entries {
+                                // MAPPS-201: empty-week prompt + one-click path
+                                // to a new entry for the current week. Submit
+                                // stays disabled until an entry exists.
                                 tr {
                                     td {
-                                        class: "px-6 py-8 text-center text-sm text-gray-500",
+                                        class: "px-6 py-8 text-center",
                                         colspan: "9",
-                                        "No time logged this week."
+                                        p { class: "text-sm text-gray-500 dark:text-gray-400",
+                                            "No time logged this week yet. Select a time to log for this week."
+                                        }
+                                        div { class: "mt-3",
+                                            Link {
+                                                to: Route::TimeEntryNew {},
+                                                Button {
+                                                    variant: ButtonVariant::Primary,
+                                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                                    "Log Time"
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             } else {
