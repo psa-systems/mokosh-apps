@@ -1512,7 +1512,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                     name: "appt_description",
                     label: "Description",
                     rows: 3,
-                    maxlength: APPT_DESCRIPTION_MAX.to_string(),
+                    maxlength: APPT_DESCRIPTION_MAX,
                     value: description.read().clone(),
                     oninput: move |e: FormEvent| description.set(e.value()),
                 }

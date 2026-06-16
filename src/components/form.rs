@@ -194,8 +194,9 @@ pub struct TextareaProps {
     help: String,
     /// `maxlength` attribute. Caps how many characters the textarea accepts so
     /// over-long text is blocked at the input rather than failing server-side.
+    /// `i64` to match [`Input::maxlength`] so both take a bare integer cap.
     #[props(default)]
-    maxlength: Option<String>,
+    maxlength: Option<i64>,
     #[props(default)]
     class: String,
     #[props(default)]
@@ -230,7 +231,7 @@ pub fn Textarea(props: TextareaProps) -> Element {
                 class: "{class}",
                 placeholder: "{props.placeholder}",
                 rows: "{props.rows}",
-                maxlength: props.maxlength.as_deref(),
+                maxlength: props.maxlength,
                 required: props.required,
                 disabled: props.disabled,
                 oninput: move |e| props.oninput.call(e),

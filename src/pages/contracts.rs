@@ -1052,7 +1052,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                     name: "notes",
                     label: "Notes",
                     rows: 3,
-                    maxlength: CONTRACT_NOTES_MAX.to_string(),
+                    maxlength: CONTRACT_NOTES_MAX as i64,
                     value: notes.read().clone(),
                     error: notes_err(),
                     oninput: move |e: FormEvent| notes.set(e.value()),
