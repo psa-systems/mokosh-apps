@@ -1061,11 +1061,51 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
 
     let navigator = use_navigator();
     let mut deleting = use_signal(|| false);
+    // MAPPS-189: the Delete button opens the styled ConfirmDialog; the
+    // actual DELETE fires from `on_confirm_delete` when confirmed.
+    let mut confirming_delete = use_signal(|| false);
     let edit_id = id_for_edit.clone();
     let delete_id = id_for_delete.clone();
 
+    let on_confirm_delete = move |_: ()| {
+        if *deleting.read() {
+            return;
+        }
+        let id = delete_id.clone();
+        deleting.set(true);
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let path = format!("/contracts/{id}");
+                if crate::hooks::fetch::api::delete_authed_typed(&path)
+                    .await
+                    .is_ok()
+                {
+                    navigator.push(Route::ContractList {});
+                }
+            }
+            deleting.set(false);
+            confirming_delete.set(false);
+        });
+    };
+
     rsx! {
         AppLayout { title: "{header_title}",
+            crate::components::ConfirmDialog {
+                open: confirming_delete(),
+                title: "Delete contract".to_string(),
+                message: "Delete this contract? This cannot be undone.".to_string(),
+                confirm_text: "Delete".to_string(),
+                cancel_text: "Cancel".to_string(),
+                destructive: true,
+                loading: *deleting.read(),
+                onconfirm: on_confirm_delete,
+                oncancel: move |_| {
+                    if !*deleting.read() {
+                        confirming_delete.set(false);
+                    }
+                },
+            }
             PageHeader {
                 title: "{header_title}",
                 breadcrumbs: rsx! {
@@ -1091,31 +1131,9 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                         variant: ButtonVariant::Danger,
                         loading: *deleting.read(),
                         onclick: move |_| {
-                            let id = delete_id.clone();
-                            deleting.set(true);
-                            spawn(async move {
-                                #[cfg(feature = "web")]
-                                {
-                                    let confirmed = web_sys::window()
-                                        .and_then(|w| {
-                                            w.confirm_with_message(
-                                                "Delete this contract? This cannot be undone.",
-                                            )
-                                            .ok()
-                                        })
-                                        .unwrap_or(false);
-                                    if confirmed {
-                                        let path = format!("/contracts/{id}");
-                                        if crate::hooks::fetch::api::delete_authed_typed(&path)
-                                            .await
-                                            .is_ok()
-                                        {
-                                            navigator.push(Route::ContractList {});
-                                        }
-                                    }
-                                }
-                                deleting.set(false);
-                            });
+                            if !*deleting.read() {
+                                confirming_delete.set(true);
+                            }
                         },
                         "Delete"
                     }
@@ -1960,21 +1978,13 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
+            // MAPPS-189: confirmation is handled by the SettingFormModal
+            // ConfirmDialog before this fires, so just perform the delete.
             #[cfg(feature = "web")]
             {
-                let confirmed = web_sys::window()
-                    .and_then(|w| {
-                        w.confirm_with_message("Delete this rate card? This cannot be undone.")
-                            .ok()
-                    })
-                    .unwrap_or(false);
-                if confirmed {
-                    match crate::hooks::fetch::api::delete_authed(&format!("/rate-cards/{id}"))
-                        .await
-                    {
-                        Ok(()) => ondeleted.call(()),
-                        Err(err) => error.set(format!("Could not delete rate card: {err}")),
-                    }
+                match crate::hooks::fetch::api::delete_authed(&format!("/rate-cards/{id}")).await {
+                    Ok(()) => ondeleted.call(()),
+                    Err(err) => error.set(format!("Could not delete rate card: {err}")),
                 }
             }
             deleting.set(false);
@@ -1989,6 +1999,8 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
             deleting: *deleting.read(),
             error: error.read().clone(),
             create_label: "Create Rate Card".to_string(),
+            delete_title: "Delete rate card".to_string(),
+            delete_message: "Delete this rate card? This cannot be undone.".to_string(),
             onclose: move |_| onclose.call(()),
             onsave: handle_save,
             ondelete: handle_delete,
@@ -2189,23 +2201,15 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
+            // MAPPS-189: confirmation is handled by the SettingFormModal
+            // ConfirmDialog before this fires, so just perform the delete.
             #[cfg(feature = "web")]
             {
-                let confirmed = web_sys::window()
-                    .and_then(|w| {
-                        w.confirm_with_message("Delete this rate? This cannot be undone.")
-                            .ok()
-                    })
-                    .unwrap_or(false);
-                if confirmed {
-                    match crate::hooks::fetch::api::delete_authed(&format!(
-                        "/rate-card-items/{iid}"
-                    ))
+                match crate::hooks::fetch::api::delete_authed(&format!("/rate-card-items/{iid}"))
                     .await
-                    {
-                        Ok(()) => onsaved.call(()),
-                        Err(err) => error.set(format!("Could not delete rate: {err}")),
-                    }
+                {
+                    Ok(()) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not delete rate: {err}")),
                 }
             }
             deleting.set(false);
@@ -2220,6 +2224,8 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
             deleting: *deleting.read(),
             error: error.read().clone(),
             create_label: "Add Rate".to_string(),
+            delete_title: "Delete rate".to_string(),
+            delete_message: "Delete this rate? This cannot be undone.".to_string(),
             onclose: move |_| onclose.call(()),
             onsave: handle_save,
             ondelete: handle_delete,

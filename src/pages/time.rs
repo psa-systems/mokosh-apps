@@ -1317,8 +1317,18 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
         });
     };
 
+    // MAPPS-189: the Delete button opens the styled ConfirmDialog instead
+    // of the native window.confirm(); the DELETE fires from
+    // `on_confirm_delete` once the user confirms.
+    let mut confirming_delete = use_signal(|| false);
     let handle_delete = move |_| {
         if *saving.read() || *deleting.read() {
+            return;
+        }
+        confirming_delete.set(true);
+    };
+    let on_confirm_delete = move |_: ()| {
+        if *deleting.read() {
             return;
         }
         deleting.set(true);
@@ -1326,22 +1336,14 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let confirmed = web_sys::window()
-                    .and_then(|w| {
-                        w.confirm_with_message("Delete this time entry? This cannot be undone.")
-                            .ok()
-                    })
-                    .unwrap_or(false);
-                if confirmed {
-                    match crate::hooks::fetch::api::delete_authed(&format!("/time-entries/{eid}"))
-                        .await
-                    {
-                        Ok(()) => onsaved.call(()),
-                        Err(e) => error.set(format!("Could not delete time entry: {e}")),
-                    }
+                match crate::hooks::fetch::api::delete_authed(&format!("/time-entries/{eid}")).await
+                {
+                    Ok(()) => onsaved.call(()),
+                    Err(e) => error.set(format!("Could not delete time entry: {e}")),
                 }
             }
             deleting.set(false);
+            confirming_delete.set(false);
         });
     };
 
@@ -1425,6 +1427,21 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
                     },
                 }
             }
+        }
+        crate::components::ConfirmDialog {
+            open: confirming_delete(),
+            title: "Delete time entry".to_string(),
+            message: "Delete this time entry? This cannot be undone.".to_string(),
+            confirm_text: "Delete".to_string(),
+            cancel_text: "Cancel".to_string(),
+            destructive: true,
+            loading: *deleting.read(),
+            onconfirm: on_confirm_delete,
+            oncancel: move |_| {
+                if !*deleting.read() {
+                    confirming_delete.set(false);
+                }
+            },
         }
     }
 }

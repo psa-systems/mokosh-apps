@@ -900,9 +900,43 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     let mut deleting = use_signal(|| false);
     let edit_id = company_id_for_edit.clone();
     let delete_id = company_id_for_delete.clone();
+    let mut confirming_delete = use_signal(|| false);
+    let on_confirm_delete = move |_: ()| {
+        if *deleting.read() {
+            return;
+        }
+        let id = delete_id.clone();
+        deleting.set(true);
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let path = format!("/contacts/companies/{id}");
+                if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
+                    navigator.push(Route::CompanyList {});
+                }
+            }
+            deleting.set(false);
+            confirming_delete.set(false);
+        });
+    };
 
     rsx! {
         AppLayout { title: "{header_title}",
+            crate::components::ConfirmDialog {
+                open: confirming_delete(),
+                title: "Delete company".to_string(),
+                message: "Delete this company? This will also remove its sites and unlink its contacts/tickets.".to_string(),
+                confirm_text: "Delete".to_string(),
+                cancel_text: "Cancel".to_string(),
+                destructive: true,
+                loading: *deleting.read(),
+                onconfirm: on_confirm_delete,
+                oncancel: move |_| {
+                    if !*deleting.read() {
+                        confirming_delete.set(false);
+                    }
+                },
+            }
             PageHeader {
                 title: "{header_title}",
                 actions: rsx! {
@@ -917,28 +951,9 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                         variant: ButtonVariant::Danger,
                         loading: *deleting.read(),
                         onclick: move |_| {
-                            let id = delete_id.clone();
-                            deleting.set(true);
-                            spawn(async move {
-                                #[cfg(feature = "web")]
-                                {
-                                    let confirmed = web_sys::window()
-                                        .and_then(|w| {
-                                            w.confirm_with_message(
-                                                "Delete this company? This will also remove its sites and unlink its contacts/tickets.",
-                                            )
-                                            .ok()
-                                        })
-                                        .unwrap_or(false);
-                                    if confirmed {
-                                        let path = format!("/contacts/companies/{id}");
-                                        if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
-                                            navigator.push(Route::CompanyList {});
-                                        }
-                                    }
-                                }
-                                deleting.set(false);
-                            });
+                            if !*deleting.read() {
+                                confirming_delete.set(true);
+                            }
                         },
                         "Delete"
                     }
@@ -1515,9 +1530,19 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
     };
 
     let delete_id = initial.site_id.clone();
+    let can_delete = delete_id.is_some();
+    // MAPPS-189: Delete opens the styled ConfirmDialog; the DELETE runs
+    // from `on_confirm_delete` once the user confirms.
+    let mut confirming_delete = use_signal(|| false);
     let handle_delete = move |_| {
+        if !can_delete || saving() || deleting() {
+            return;
+        }
+        confirming_delete.set(true);
+    };
+    let on_confirm_delete = move |_: ()| {
         let Some(id) = delete_id.clone() else { return };
-        if saving() || deleting() {
+        if deleting() {
             return;
         }
         deleting.set(true);
@@ -1525,21 +1550,14 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let confirmed = web_sys::window()
-                    .and_then(|w| {
-                        w.confirm_with_message("Delete this site? This cannot be undone.")
-                            .ok()
-                    })
-                    .unwrap_or(false);
-                if confirmed {
-                    let path = format!("/contacts/sites/{id}");
-                    match crate::hooks::fetch::api::delete_authed(&path).await {
-                        Ok(()) => onsaved.call(()),
-                        Err(err) => error.set(format!("Could not delete site: {err}")),
-                    }
+                let path = format!("/contacts/sites/{id}");
+                match crate::hooks::fetch::api::delete_authed(&path).await {
+                    Ok(()) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not delete site: {err}")),
                 }
             }
             deleting.set(false);
+            confirming_delete.set(false);
         });
     };
 
@@ -1655,6 +1673,21 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
                     },
                 }
             }
+        }
+        crate::components::ConfirmDialog {
+            open: confirming_delete(),
+            title: "Delete site".to_string(),
+            message: "Delete this site? This cannot be undone.".to_string(),
+            confirm_text: "Delete".to_string(),
+            cancel_text: "Cancel".to_string(),
+            destructive: true,
+            loading: *deleting.read(),
+            onconfirm: on_confirm_delete,
+            oncancel: move |_| {
+                if !*deleting.read() {
+                    confirming_delete.set(false);
+                }
+            },
         }
     }
 }
@@ -2410,9 +2443,43 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     let portal_toggling = use_signal(|| false);
     let edit_id = id_for_edit.clone();
     let delete_id = id_for_delete.clone();
+    let mut confirming_delete = use_signal(|| false);
+    let on_confirm_delete = move |_: ()| {
+        if *deleting.read() {
+            return;
+        }
+        let id = delete_id.clone();
+        deleting.set(true);
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let path = format!("/contacts/contacts/{id}");
+                if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
+                    navigator.push(Route::ContactList {});
+                }
+            }
+            deleting.set(false);
+            confirming_delete.set(false);
+        });
+    };
 
     rsx! {
         AppLayout { title: "{header_title}",
+            crate::components::ConfirmDialog {
+                open: confirming_delete(),
+                title: "Delete contact".to_string(),
+                message: "Delete this contact? This cannot be undone.".to_string(),
+                confirm_text: "Delete".to_string(),
+                cancel_text: "Cancel".to_string(),
+                destructive: true,
+                loading: *deleting.read(),
+                onconfirm: on_confirm_delete,
+                oncancel: move |_| {
+                    if !*deleting.read() {
+                        confirming_delete.set(false);
+                    }
+                },
+            }
             PageHeader {
                 title: "{header_title}",
                 actions: rsx! {
@@ -2424,28 +2491,9 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                         variant: ButtonVariant::Danger,
                         loading: *deleting.read(),
                         onclick: move |_| {
-                            let id = delete_id.clone();
-                            deleting.set(true);
-                            spawn(async move {
-                                #[cfg(feature = "web")]
-                                {
-                                    let confirmed = web_sys::window()
-                                        .and_then(|w| {
-                                            w.confirm_with_message(
-                                                "Delete this contact? This cannot be undone.",
-                                            )
-                                            .ok()
-                                        })
-                                        .unwrap_or(false);
-                                    if confirmed {
-                                        let path = format!("/contacts/contacts/{id}");
-                                        if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
-                                            navigator.push(Route::ContactList {});
-                                        }
-                                    }
-                                }
-                                deleting.set(false);
-                            });
+                            if !*deleting.read() {
+                                confirming_delete.set(true);
+                            }
                         },
                         "Delete"
                     }

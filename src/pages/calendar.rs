@@ -1176,9 +1176,19 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
     };
 
     // ---- Delete (edit mode only, non-recurring) ----
+    // MAPPS-189: the Delete button opens the styled ConfirmDialog instead
+    // of the native window.confirm(); the DELETE fires from
+    // `on_confirm_delete` once the user confirms.
+    let mut confirming_delete = use_signal(|| false);
     let handle_delete = move |_| {
+        if edit_id.is_none() || saving() || deleting() {
+            return;
+        }
+        confirming_delete.set(true);
+    };
+    let on_confirm_delete = move |_: ()| {
         let Some(id) = edit_id else { return };
-        if saving() || deleting() {
+        if deleting() {
             return;
         }
         deleting.set(true);
@@ -1186,21 +1196,13 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let confirmed = web_sys::window()
-                    .and_then(|w| {
-                        w.confirm_with_message("Delete this appointment? This cannot be undone.")
-                            .ok()
-                    })
-                    .unwrap_or(false);
-                if confirmed {
-                    let path = format!("/appointments/{id}");
-                    match crate::hooks::fetch::api::delete_authed_typed(&path).await {
-                        Ok(()) => onsaved.call(()),
-                        Err(e) => error.set(format!(
-                            "Could not delete appointment: {}",
-                            e.user_message()
-                        )),
-                    }
+                let path = format!("/appointments/{id}");
+                match crate::hooks::fetch::api::delete_authed_typed(&path).await {
+                    Ok(()) => onsaved.call(()),
+                    Err(e) => error.set(format!(
+                        "Could not delete appointment: {}",
+                        e.user_message()
+                    )),
                 }
             }
             #[cfg(not(feature = "web"))]
@@ -1208,6 +1210,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                 let _ = id;
             }
             deleting.set(false);
+            confirming_delete.set(false);
         });
     };
 
@@ -1331,6 +1334,21 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                     oninput: move |e: FormEvent| description.set(e.value()),
                 }
             }
+        }
+        crate::components::ConfirmDialog {
+            open: confirming_delete(),
+            title: "Delete appointment".to_string(),
+            message: "Delete this appointment? This cannot be undone.".to_string(),
+            confirm_text: "Delete".to_string(),
+            cancel_text: "Cancel".to_string(),
+            destructive: true,
+            loading: *deleting.read(),
+            onconfirm: on_confirm_delete,
+            oncancel: move |_| {
+                if !*deleting.read() {
+                    confirming_delete.set(false);
+                }
+            },
         }
     }
 }
