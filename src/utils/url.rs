@@ -22,6 +22,31 @@ pub fn urlencoding_minimal(s: &str) -> String {
     out
 }
 
+/// Extract the explicit URL scheme from `value`, lower-cased, if present.
+///
+/// Returns `None` for a scheme-less / relative reference. The scheme is the
+/// text before the first `:` and never contains `/`: a `:` that appears after
+/// a `/` belongs to a path or port, not a scheme.
+///
+/// ASCII whitespace and control bytes are stripped before the scheme is
+/// resolved, because browsers strip those before resolving the scheme
+/// (e.g. `java\tscript:alert(1)` runs as `javascript:`). Sharing this helper
+/// means the client-side field validators reject the same whitespace tricks
+/// that [`safe_href`] guards against at render time (MAPPS-213).
+pub fn scheme_of(value: &str) -> Option<String> {
+    let collapsed: String = value
+        .trim()
+        .chars()
+        .filter(|c| !c.is_whitespace() && (*c as u32) >= 0x20)
+        .collect();
+    let colon = collapsed.find(':')?;
+    let scheme = &collapsed[..colon];
+    if scheme.is_empty() || scheme.contains('/') {
+        return None;
+    }
+    Some(scheme.to_ascii_lowercase())
+}
+
 /// Return a value only when it is safe to place in an `href` attribute.
 ///
 /// Browsers execute `javascript:`, `data:`, and `vbscript:` URLs, so a
@@ -31,37 +56,60 @@ pub fn urlencoding_minimal(s: &str) -> String {
 /// so the caller can fall back to rendering plain text instead of a live
 /// link. Scheme-less / relative references carry no executable scheme and
 /// are returned unchanged.
-///
-/// The scheme check ignores ASCII whitespace and control bytes embedded in
-/// the value, because browsers strip those before resolving the scheme
-/// (e.g. `java\tscript:alert(1)` runs as `javascript:`).
 pub fn safe_href(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return None;
     }
-    let collapsed: String = trimmed
-        .chars()
-        .filter(|c| !c.is_whitespace() && (*c as u32) >= 0x20)
-        .collect();
-    // The scheme is the text before the first ':' and never contains '/'.
-    // A ':' that appears after a '/' belongs to a path/port, not a scheme.
-    if let Some(colon) = collapsed.find(':') {
-        let scheme = &collapsed[..colon];
-        if !scheme.is_empty() && !scheme.contains('/') {
-            return match scheme.to_ascii_lowercase().as_str() {
-                "http" | "https" | "mailto" => Some(trimmed.to_string()),
-                _ => None,
-            };
-        }
+    match scheme_of(trimmed) {
+        // Explicit scheme: only the allowlisted ones may become a live link.
+        Some(scheme) => match scheme.as_str() {
+            "http" | "https" | "mailto" => Some(trimmed.to_string()),
+            _ => None,
+        },
+        // No scheme: relative reference, safe to link as-is.
+        None => Some(trimmed.to_string()),
     }
-    // No scheme: relative reference, safe to link as-is.
-    Some(trimmed.to_string())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::safe_href;
+    use super::{safe_href, scheme_of};
+
+    #[test]
+    fn scheme_of_extracts_explicit_scheme_lowercased() {
+        assert_eq!(scheme_of("https://example.com"), Some("https".to_string()));
+        assert_eq!(scheme_of("HTTP://example.com"), Some("http".to_string()));
+        assert_eq!(
+            scheme_of("mailto:a@example.com"),
+            Some("mailto".to_string())
+        );
+        assert_eq!(
+            scheme_of("javascript:alert(1)"),
+            Some("javascript".to_string())
+        );
+    }
+
+    #[test]
+    fn scheme_of_collapses_whitespace_tricks() {
+        assert_eq!(
+            scheme_of("java\tscript:alert(1)"),
+            Some("javascript".to_string())
+        );
+        assert_eq!(
+            scheme_of("  JavaScript:alert(1)  "),
+            Some("javascript".to_string())
+        );
+    }
+
+    #[test]
+    fn scheme_of_is_none_for_scheme_less() {
+        assert_eq!(scheme_of("example.com"), None);
+        assert_eq!(scheme_of("/internal/path"), None);
+        // A ':' after a '/' is a path/port, not a scheme.
+        assert_eq!(scheme_of("example.com/a:b"), None);
+        assert_eq!(scheme_of(""), None);
+    }
 
     #[test]
     fn allows_http_and_https_and_mailto() {

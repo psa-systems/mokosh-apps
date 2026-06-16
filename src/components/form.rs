@@ -28,8 +28,8 @@ pub struct InputProps {
     max: Option<String>,
     /// `maxlength` attribute for text inputs. A client-side UX nicety that
     /// stops the field from exceeding a known server limit (e.g. ticket
-    /// Title at 500, contract Name at 200); the server stays the source of
-    /// truth (MAPPS-210 / MAPPS-211).
+    /// Title at 500, contract Name at 200, company fields at 255); the server
+    /// stays the source of truth (MAPPS-210 / MAPPS-211 / MAPPS-213).
     #[props(default)]
     maxlength: Option<i64>,
     /// Placeholder text
