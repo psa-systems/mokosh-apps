@@ -19,9 +19,17 @@ pub struct SettingFormModalProps {
     /// `is_system` lookups).
     #[props(default = true)]
     pub deletable: bool,
+    /// Title shown on the destructive-confirmation dialog (MAPPS-189).
+    #[props(default = "Confirm deletion".to_string())]
+    pub delete_title: String,
+    /// Message shown on the destructive-confirmation dialog (MAPPS-189).
+    /// Override per editor for a more specific prompt.
+    #[props(default = "Are you sure you want to delete this item? This action cannot be undone.".to_string())]
+    pub delete_message: String,
     pub onclose: EventHandler<()>,
     pub onsave: EventHandler<MouseEvent>,
-    pub ondelete: EventHandler<MouseEvent>,
+    /// Fired once the user confirms the delete in the styled dialog.
+    pub ondelete: EventHandler<()>,
     pub children: Element,
 }
 
@@ -32,13 +40,20 @@ pub fn SettingFormModal(props: SettingFormModalProps) -> Element {
     let ondelete = props.ondelete;
     let is_edit = props.is_edit;
     let deletable = props.deletable;
+    let deleting = props.deleting;
+
+    // MAPPS-189: destructive deletes confirm through the styled, themed,
+    // focus-trapped ConfirmDialog instead of the native window.confirm().
+    // The footer Delete button only opens the dialog; the caller's
+    // `ondelete` fires from the dialog's confirm action below.
+    let mut confirming = use_signal(|| false);
 
     let footer = rsx! {
         if is_edit && deletable {
             Button {
                 variant: ButtonVariant::Danger,
                 loading: props.deleting,
-                onclick: move |e| ondelete.call(e),
+                onclick: move |_| confirming.set(true),
                 "Delete"
             }
         }
@@ -72,6 +87,24 @@ pub fn SettingFormModal(props: SettingFormModalProps) -> Element {
                 }
                 {props.children}
             }
+        }
+        crate::components::ConfirmDialog {
+            open: confirming(),
+            title: props.delete_title.clone(),
+            message: props.delete_message.clone(),
+            confirm_text: "Delete".to_string(),
+            cancel_text: "Cancel".to_string(),
+            destructive: true,
+            loading: deleting,
+            onconfirm: move |_| {
+                confirming.set(false);
+                ondelete.call(());
+            },
+            oncancel: move |_| {
+                if !deleting {
+                    confirming.set(false);
+                }
+            },
         }
     }
 }

@@ -167,6 +167,10 @@ pub enum Route {
     #[route("/timesheets")]
     Timesheets {},
 
+    // MAPPS-194: manager/admin queue to approve/reject submitted timesheets.
+    #[route("/timesheets/approvals")]
+    TimesheetApprovals {},
+
     // Projects
     #[route("/projects")]
     ProjectList {},
@@ -229,6 +233,11 @@ pub enum Route {
     #[route("/rate-cards")]
     RateCardList {},
 
+    // Static `/new` must precede the `:id` route so it is not parsed as a
+    // rate-card id (MAPPS-217).
+    #[route("/rate-cards/new")]
+    RateCardNew {},
+
     #[route("/rate-cards/:id")]
     RateCardDetail { id: String },
 
@@ -265,8 +274,8 @@ pub enum Route {
     #[route("/kb")]
     KBHome {},
 
-    #[route("/kb/articles?:q&:tag")]
-    KBArticleList { q: String, tag: String },
+    #[route("/kb/articles?:q&:tag&:category")]
+    KBArticleList { q: String, tag: String, category: String },
 
     #[route("/kb/articles/new")]
     KBArticleNew {},
@@ -337,6 +346,13 @@ pub enum Route {
     SettingsTicketQueues {},
     #[route("/settings/ticket-categories")]
     SettingsTicketCategories {},
+    // MAPPS-199: RMM integration admin UI (server CRUD from PMS-102/103/104/105).
+    #[route("/settings/rmm/connections")]
+    SettingsRmmConnections {},
+    #[route("/settings/rmm/device-mappings")]
+    SettingsRmmDeviceMappings {},
+    #[route("/settings/rmm/alert-rules")]
+    SettingsRmmAlertRules {},
 
     // Mokosh-side profile. Edits the tenant-scoped fields on the
     // user row (name, title, phone, mobile, timezone). Cross-app
@@ -528,6 +544,11 @@ fn Timesheets() -> Element {
 }
 
 #[component]
+fn TimesheetApprovals() -> Element {
+    rsx! { time::TimesheetApprovalsPage {} }
+}
+
+#[component]
 fn ProjectList() -> Element {
     rsx! { projects::ProjectListPage {} }
 }
@@ -623,6 +644,11 @@ fn RateCardList() -> Element {
 }
 
 #[component]
+fn RateCardNew() -> Element {
+    rsx! { contracts::RateCardListPage { open_create: true } }
+}
+
+#[component]
 fn RateCardDetail(id: String) -> Element {
     rsx! { contracts::RateCardDetailPage { id } }
 }
@@ -678,8 +704,8 @@ fn KBHome() -> Element {
 }
 
 #[component]
-fn KBArticleList(q: String, tag: String) -> Element {
-    rsx! { knowledge_base::KBArticleListPage { initial_q: q, initial_tag: tag } }
+fn KBArticleList(q: String, tag: String, category: String) -> Element {
+    rsx! { knowledge_base::KBArticleListPage { initial_q: q, initial_tag: tag, initial_category: category } }
 }
 
 #[component]
@@ -802,6 +828,22 @@ fn SettingsTicketQueues() -> Element {
 #[component]
 fn SettingsTicketCategories() -> Element {
     rsx! { settings::TicketCategoriesSettingsPage {} }
+}
+
+// MAPPS-199 RMM integration admin UI.
+#[component]
+fn SettingsRmmConnections() -> Element {
+    rsx! { settings::RmmConnectionsSettingsPage {} }
+}
+
+#[component]
+fn SettingsRmmDeviceMappings() -> Element {
+    rsx! { settings::RmmDeviceMappingsSettingsPage {} }
+}
+
+#[component]
+fn SettingsRmmAlertRules() -> Element {
+    rsx! { settings::RmmAlertRulesSettingsPage {} }
 }
 
 #[component]

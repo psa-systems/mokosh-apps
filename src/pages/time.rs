@@ -154,6 +154,28 @@ pub fn TimeEntryListPage() -> Element {
     // MAPPS-166: click-to-edit a time entry via the modal below.
     let mut selected_entry = use_signal(|| None::<RemoteTimeEntry>);
 
+    // MAPPS-202: resolve each entry's `work_type_id` to the work type's human
+    // name for display, so the list shows e.g. "On-site Support" rather than a
+    // bare UUID. Mirrors how the timesheet resolves ticket/project names
+    // client-side from a fetched lookup list.
+    let work_types_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOption>>(
+            "/work-types?per_page=100",
+        )
+        .await
+        .ok()
+        .map(|p| p.data)
+        .unwrap_or_default()
+    });
+    let work_type_name_by_id: std::collections::HashMap<uuid::Uuid, String> = work_types_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|w| (w.id, w.name))
+        .collect();
+
     let snapshot = entries_resource.read_unchecked().clone();
     // `None` while loading; `Some(None)` on fetch failure; `Some(Some(rows))`.
     let is_loading = snapshot.is_none();
@@ -218,12 +240,13 @@ pub fn TimeEntryListPage() -> Element {
                 total_items: total,
                 current_page: 1,
                 per_page: if total == 0 { 25 } else { total },
-                columns: 5,
+                columns: 6,
                 Table {
                     TableHead {
                         TableRow {
                             TableHeader { "Date" }
                             TableHeader { "Work Item" }
+                            TableHeader { "Work Type" }
                             TableHeader { "Description" }
                             TableHeader { "Hours" }
                             TableHeader { "Billable" }
@@ -247,6 +270,10 @@ pub fn TimeEntryListPage() -> Element {
                                         .unwrap_or_else(|| "-".to_string());
                                     let status = e.billing_status.clone();
                                     let wi_label = work_item_label(e);
+                                    let wt_label = e
+                                        .work_type_id
+                                        .and_then(|id| work_type_name_by_id.get(&id).cloned())
+                                        .unwrap_or_else(|| "-".to_string());
                                     let entry = e.clone();
                                     rsx! {
                                         TableRow {
@@ -281,6 +308,7 @@ pub fn TimeEntryListPage() -> Element {
                                                     span { class: "text-gray-400", "-" }
                                                 }
                                             }
+                                            TableCell { class: "text-gray-500", "{wt_label}" }
                                             TableCell { class: "max-w-xs truncate", "{note}" }
                                             TableCell { class: "font-medium", "{hrs}" }
                                             TableCell {
@@ -370,11 +398,13 @@ pub fn TimeEntryNewPage() -> Element {
     });
     let work_types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOption>>("/work-types")
-            .await
-            .ok()
-            .map(|p| p.data)
-            .unwrap_or_default()
+        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOption>>(
+            "/work-types?per_page=100",
+        )
+        .await
+        .ok()
+        .map(|p| p.data)
+        .unwrap_or_default()
     });
     // Tasks for the selected project (only when a project work item is
     // picked); re-runs when `work_item` changes.
@@ -1193,6 +1223,452 @@ pub fn TimesheetsPage() -> Element {
 }
 
 // ============================================================================
+// Timesheet approvals (MAPPS-194)
+//
+// Manager/admin surface for the approval half of the timesheet workflow.
+// The employee side (submit/withdraw + status badge) lives in
+// `TimesheetsPage` above; submitted weeks had no reachable approve/reject
+// control, so they sat in "pending" forever. This page lists every user's
+// week summary (`GET /timesheets?week=` with no `user_id` -> tenant-wide),
+// keeps the ones still awaiting approval, and wires Approve / Reject per row.
+// ============================================================================
+
+/// A week summary row from `GET /timesheets` (no `user_id` filter aggregates
+/// every user). The badge-only `RemoteTimesheet` above drops everything but
+/// the status; the approvals queue needs the user, totals and entry count to
+/// render and act on a row.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct ApprovalSummary {
+    user_id: uuid::Uuid,
+    #[serde(default)]
+    total_minutes: i64,
+    #[serde(default)]
+    billable_minutes: i64,
+    #[serde(default)]
+    entry_count: i64,
+    #[serde(default)]
+    approval_status: String,
+}
+
+/// A user for resolving a summary's `user_id` to a name on the queue
+/// (`GET /auth/users`, server-gated to Admin / Manager).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct ApprovalUser {
+    id: uuid::Uuid,
+    #[serde(default)]
+    full_name: String,
+    #[serde(default)]
+    first_name: String,
+    #[serde(default)]
+    last_name: String,
+}
+
+impl ApprovalUser {
+    fn display_name(&self) -> String {
+        if !self.full_name.trim().is_empty() {
+            return self.full_name.clone();
+        }
+        let joined = format!("{} {}", self.first_name, self.last_name);
+        let joined = joined.trim();
+        if joined.is_empty() {
+            "Unknown user".to_string()
+        } else {
+            joined.to_string()
+        }
+    }
+}
+
+/// Manager/admin timesheet approvals queue.
+#[component]
+pub fn TimesheetApprovalsPage() -> Element {
+    let auth = crate::hooks::auth::use_auth();
+    // Match the server's `RequireManager` gate on approve/reject (manager,
+    // admin, super_admin). The page re-checks server-side, so this is a UX
+    // affordance, not a security boundary.
+    let can_manage = auth
+        .read()
+        .user
+        .as_ref()
+        .is_some_and(|u| u.role.can_manage_users());
+
+    let today = Utc::now().date_naive();
+    let mut week_start = use_signal(|| monday_of_week(today));
+    let mut action_msg = use_signal(String::new);
+    let mut action_err = use_signal(String::new);
+    // Per-row approve in flight (so only the pressed row shows a spinner).
+    let mut approving = use_signal::<Option<uuid::Uuid>>(|| None);
+    // Reject modal: the (user_id, display name) of the row being rejected,
+    // plus the required reason and an in-flight flag.
+    let mut reject_target = use_signal::<Option<(uuid::Uuid, String)>>(|| None);
+    let mut reject_reason = use_signal(String::new);
+    let mut is_rejecting = use_signal(|| false);
+
+    // Every user's summary for the selected week. No `user_id` filter, so the
+    // server aggregates tenant-wide. Lower roles would get a 403, so skip the
+    // fetch for them entirely (the gate below renders a notice instead).
+    let summaries_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let can = auth
+            .read()
+            .user
+            .as_ref()
+            .is_some_and(|u| u.role.can_manage_users());
+        if !can {
+            return None;
+        }
+        let start = week_start();
+        let path = format!("/timesheets?week={start}");
+        crate::hooks::fetch::api::get_authed::<Paginated<ApprovalSummary>>(&path)
+            .await
+            .ok()
+            .map(|p| p.data)
+    });
+
+    // Names for the user_ids in the summaries.
+    let users_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let can = auth
+            .read()
+            .user
+            .as_ref()
+            .is_some_and(|u| u.role.can_manage_users());
+        if !can {
+            return Vec::<ApprovalUser>::new();
+        }
+        crate::hooks::fetch::api::get_authed::<Paginated<ApprovalUser>>("/auth/users?per_page=100")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+
+    if !can_manage {
+        return rsx! {
+            AppLayout { title: "Timesheet Approvals",
+                PageHeader {
+                    title: "Timesheet Approvals",
+                    subtitle: "Review and approve submitted timesheets",
+                }
+                Card {
+                    p { class: "text-sm text-gray-500 dark:text-gray-400",
+                        "You need a manager or admin role to review timesheets."
+                    }
+                }
+            }
+        };
+    }
+
+    let start = week_start();
+    let end = start + Duration::days(6);
+    let current_week = monday_of_week(today);
+    let is_current_week = start == current_week;
+    let week_label = format!(
+        "Week of {} {}-{}, {}",
+        crate::utils::datetime::month_name(start.month()),
+        start.day(),
+        end.day(),
+        start.year()
+    );
+
+    let snapshot = summaries_resource.read_unchecked().clone();
+    // `None` while loading; `Some(None)` on fetch failure; `Some(Some(rows))`.
+    let is_loading = snapshot.is_none();
+    let load_failed = matches!(&snapshot, Some(None));
+    let summaries: Vec<ApprovalSummary> = snapshot.flatten().unwrap_or_default();
+
+    let users = users_resource.read_unchecked().clone().unwrap_or_default();
+    let name_of = |uid: uuid::Uuid| -> String {
+        users
+            .iter()
+            .find(|u| u.id == uid)
+            .map(|u| u.display_name())
+            .unwrap_or_else(|| format!("User {}", short_id(uid)))
+    };
+
+    // A "submitted, awaiting approval" week is `pending` with entries. The
+    // summary rolls per-entry approval_status up to pending when not all
+    // entries are approved/rejected; an empty week never appears here.
+    let pending: Vec<ApprovalSummary> = summaries
+        .iter()
+        .filter(|s| s.approval_status == "pending" && s.entry_count > 0)
+        .cloned()
+        .collect();
+    let pending_count = pending.len();
+
+    let approving_id = *approving.read();
+    let msg = action_msg.read().clone();
+    let err = action_err.read().clone();
+
+    rsx! {
+        AppLayout { title: "Timesheet Approvals",
+            PageHeader {
+                title: "Timesheet Approvals",
+                subtitle: "Review and approve submitted timesheets",
+                actions: rsx! {
+                    Badge { variant: BadgeVariant::Yellow, "{pending_count} awaiting approval" }
+                },
+            }
+
+            if !msg.is_empty() {
+                div { class: "mb-4 rounded-md bg-green-50 dark:bg-green-900/20 p-3",
+                    p { class: "text-sm text-green-700 dark:text-green-400", "{msg}" }
+                }
+            }
+            if !err.is_empty() {
+                div { class: "mb-4 rounded-md bg-red-50 dark:bg-red-900/20 p-3",
+                    p { class: "text-sm text-red-600 dark:text-red-400", "{err}" }
+                }
+            }
+
+            // Week selector (mirrors the employee timesheet page).
+            Card { class: "mb-6",
+                div { class: "flex items-center justify-between",
+                    button {
+                        r#type: "button",
+                        class: "p-2 text-gray-400 hover:text-gray-600",
+                        title: "Previous week",
+                        onclick: move |_| {
+                            action_msg.set(String::new());
+                            action_err.set(String::new());
+                            week_start.set(week_start() - Duration::days(7));
+                        },
+                        ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
+                    }
+                    div { class: "flex flex-col items-center gap-1",
+                        span { class: "text-lg font-medium text-gray-900 dark:text-white",
+                            "{week_label}"
+                        }
+                        if !is_current_week {
+                            button {
+                                r#type: "button",
+                                class: "text-xs font-medium text-blue-600 hover:text-blue-500 dark:text-blue-400",
+                                onclick: move |_| {
+                                    action_msg.set(String::new());
+                                    action_err.set(String::new());
+                                    week_start.set(current_week);
+                                },
+                                "Jump to current week"
+                            }
+                        }
+                    }
+                    button {
+                        r#type: "button",
+                        class: "p-2 text-gray-400 hover:text-gray-600",
+                        title: "Next week",
+                        onclick: move |_| {
+                            action_msg.set(String::new());
+                            action_err.set(String::new());
+                            week_start.set(week_start() + Duration::days(7));
+                        },
+                        ChevronRightIcon { class: "h-5 w-5".to_string() }
+                    }
+                }
+            }
+
+            DataTable {
+                total_items: pending_count,
+                current_page: 1,
+                per_page: if pending_count == 0 { 25 } else { pending_count },
+                columns: 5,
+                Table {
+                    TableHead {
+                        TableRow {
+                            TableHeader { "Employee" }
+                            TableHeader { "Total" }
+                            TableHeader { "Billable" }
+                            TableHeader { "Entries" }
+                            TableHeader { "" }
+                        }
+                    }
+                    TableBody {
+                        if is_loading {
+                            TableRow {
+                                TableCell { class: "text-gray-400", "Loading…" }
+                            }
+                        } else if load_failed {
+                            TableRow {
+                                TableCell { class: "text-red-500",
+                                    "Could not load timesheets. The time-tracking service may be unavailable."
+                                }
+                            }
+                        } else if pending.is_empty() {
+                            TableRow {
+                                TableCell { class: "text-gray-400 italic",
+                                    "No timesheets awaiting approval for this week."
+                                }
+                            }
+                        } else {
+                            for s in pending.iter() {
+                                {
+                                    let uid = s.user_id;
+                                    let name = name_of(uid);
+                                    let name_for_reject = name.clone();
+                                    let total = fmt_hours(s.total_minutes);
+                                    let billable = fmt_hours(s.billable_minutes);
+                                    let entries = s.entry_count;
+                                    let row_busy = approving_id == Some(uid) || is_rejecting();
+                                    rsx! {
+                                        TableRow { key: "{uid}",
+                                            TableCell { class: "font-medium text-gray-900 dark:text-white", "{name}" }
+                                            TableCell { "{total}" }
+                                            TableCell { class: "text-green-600", "{billable}" }
+                                            TableCell { "{entries}" }
+                                            TableCell {
+                                                div { class: "flex justify-end gap-2",
+                                                    Button {
+                                                        variant: ButtonVariant::Secondary,
+                                                        disabled: row_busy,
+                                                        onclick: move |_| {
+                                                            action_msg.set(String::new());
+                                                            action_err.set(String::new());
+                                                            reject_reason.set(String::new());
+                                                            reject_target.set(Some((uid, name_for_reject.clone())));
+                                                        },
+                                                        "Reject"
+                                                    }
+                                                    Button {
+                                                        variant: ButtonVariant::Primary,
+                                                        loading: approving_id == Some(uid),
+                                                        disabled: row_busy,
+                                                        onclick: move |_| {
+                                                            action_msg.set(String::new());
+                                                            action_err.set(String::new());
+                                                            approving.set(Some(uid));
+                                                            let start = week_start();
+                                                            let mut sr = summaries_resource;
+                                                            spawn(async move {
+                                                                #[cfg(feature = "web")]
+                                                                {
+                                                                    let path = format!("/timesheets/{uid}/{start}/approve");
+                                                                    match crate::hooks::fetch::api::post_authed::<
+                                                                        serde_json::Value,
+                                                                        _,
+                                                                    >(&path, &serde_json::json!({}))
+                                                                        .await
+                                                                    {
+                                                                        Ok(_) => {
+                                                                            action_msg.set("Timesheet approved.".to_string());
+                                                                            sr.restart();
+                                                                        }
+                                                                        Err(e) => {
+                                                                            action_err
+                                                                                .set(format!("Could not approve timesheet: {e}"));
+                                                                        }
+                                                                    }
+                                                                }
+                                                                approving.set(None);
+                                                            });
+                                                        },
+                                                        "Approve"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Reject reason modal (MAPPS-189: in-app modal, not window.prompt).
+            {
+                let target = reject_target.read().clone();
+                let open = target.is_some();
+                let reject_name = target
+                    .as_ref()
+                    .map(|(_, n)| n.clone())
+                    .unwrap_or_default();
+                let rejecting = is_rejecting();
+                let reason_empty = reject_reason.read().trim().is_empty();
+                let do_reject = move |_| {
+                    let Some((uid, _)) = reject_target.read().clone() else {
+                        return;
+                    };
+                    let reason = reject_reason.read().trim().to_string();
+                    if reason.is_empty() || rejecting {
+                        return;
+                    }
+                    is_rejecting.set(true);
+                    let start = week_start();
+                    let mut sr = summaries_resource;
+                    spawn(async move {
+                        #[cfg(feature = "web")]
+                        {
+                            let path = format!("/timesheets/{uid}/{start}/reject");
+                            match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
+                                &path,
+                                &serde_json::json!({ "reason": reason }),
+                            )
+                            .await
+                            {
+                                Ok(_) => {
+                                    action_msg
+                                        .set("Timesheet rejected; the employee will see the reason.".to_string());
+                                    reject_target.set(None);
+                                    reject_reason.set(String::new());
+                                    sr.restart();
+                                }
+                                Err(e) => {
+                                    action_err.set(format!("Could not reject timesheet: {e}"));
+                                }
+                            }
+                        }
+                        is_rejecting.set(false);
+                    });
+                };
+                rsx! {
+                    Modal {
+                        open,
+                        title: "Reject Timesheet",
+                        size: crate::components::ModalSize::Medium,
+                        onclose: move |_| {
+                            if !is_rejecting() {
+                                reject_target.set(None);
+                            }
+                        },
+                        footer: rsx! {
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                disabled: rejecting,
+                                onclick: move |_| {
+                                    if !is_rejecting() {
+                                        reject_target.set(None);
+                                    }
+                                },
+                                "Cancel"
+                            }
+                            Button {
+                                variant: ButtonVariant::Danger,
+                                loading: rejecting,
+                                disabled: reason_empty,
+                                onclick: do_reject,
+                                "Reject Timesheet"
+                            }
+                        },
+                        div { class: "space-y-4",
+                            p { class: "text-sm text-gray-600 dark:text-gray-300",
+                                "Reject {reject_name}'s timesheet for this week. A reason is required and is shown to the employee so they can correct and resubmit."
+                            }
+                            crate::components::Textarea {
+                                name: "reject_reason",
+                                label: "Reason",
+                                placeholder: "Explain what needs to change before resubmitting.",
+                                rows: 3,
+                                required: true,
+                                value: reject_reason.read().clone(),
+                                oninput: move |e: FormEvent| reject_reason.set(e.value()),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
 // Time-entry edit modal (MAPPS-166)
 //
 // Click-to-edit a logged time entry. Edits the common fields (work type,
@@ -1224,11 +1700,13 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
 
     let work_types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOption>>("/work-types")
-            .await
-            .ok()
-            .map(|p| p.data)
-            .unwrap_or_default()
+        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOption>>(
+            "/work-types?per_page=100",
+        )
+        .await
+        .ok()
+        .map(|p| p.data)
+        .unwrap_or_default()
     });
     let work_types = work_types_resource
         .read_unchecked()
@@ -1317,8 +1795,18 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
         });
     };
 
+    // MAPPS-189: the Delete button opens the styled ConfirmDialog instead
+    // of the native window.confirm(); the DELETE fires from
+    // `on_confirm_delete` once the user confirms.
+    let mut confirming_delete = use_signal(|| false);
     let handle_delete = move |_| {
         if *saving.read() || *deleting.read() {
+            return;
+        }
+        confirming_delete.set(true);
+    };
+    let on_confirm_delete = move |_: ()| {
+        if *deleting.read() {
             return;
         }
         deleting.set(true);
@@ -1326,22 +1814,14 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let confirmed = web_sys::window()
-                    .and_then(|w| {
-                        w.confirm_with_message("Delete this time entry? This cannot be undone.")
-                            .ok()
-                    })
-                    .unwrap_or(false);
-                if confirmed {
-                    match crate::hooks::fetch::api::delete_authed(&format!("/time-entries/{eid}"))
-                        .await
-                    {
-                        Ok(()) => onsaved.call(()),
-                        Err(e) => error.set(format!("Could not delete time entry: {e}")),
-                    }
+                match crate::hooks::fetch::api::delete_authed(&format!("/time-entries/{eid}")).await
+                {
+                    Ok(()) => onsaved.call(()),
+                    Err(e) => error.set(format!("Could not delete time entry: {e}")),
                 }
             }
             deleting.set(false);
+            confirming_delete.set(false);
         });
     };
 
@@ -1425,6 +1905,21 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
                     },
                 }
             }
+        }
+        crate::components::ConfirmDialog {
+            open: confirming_delete(),
+            title: "Delete time entry".to_string(),
+            message: "Delete this time entry? This cannot be undone.".to_string(),
+            confirm_text: "Delete".to_string(),
+            cancel_text: "Cancel".to_string(),
+            destructive: true,
+            loading: *deleting.read(),
+            onconfirm: on_confirm_delete,
+            oncancel: move |_| {
+                if !*deleting.read() {
+                    confirming_delete.set(false);
+                }
+            },
         }
     }
 }

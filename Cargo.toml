@@ -72,6 +72,9 @@ features = [
     "wasmbind",
 ]
 
+[dependencies.chrono-tz]
+version = "0.10"
+
 [dependencies.rust_decimal]
 version = "1"
 features = ["serde"]

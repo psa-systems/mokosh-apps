@@ -79,6 +79,20 @@ fn humanize_contract_status(raw: &str) -> String {
     }
 }
 
+/// Title-case a billing-cycle enum for display (PMS-365). Mirrors the
+/// `cycle_options` labels in the contract form so the detail panel does not
+/// leak the raw lowercase value (e.g. `monthly`).
+fn humanize_billing_cycle(raw: &str) -> String {
+    match raw {
+        "monthly" => "Monthly".to_string(),
+        "quarterly" => "Quarterly".to_string(),
+        "annually" | "annual" => "Annually".to_string(),
+        "one_time" => "One-time".to_string(),
+        "" => "-".to_string(),
+        other => other.to_string(),
+    }
+}
+
 fn status_variant(raw: &str) -> BadgeVariant {
     match raw {
         "active" => BadgeVariant::Green,
@@ -440,9 +454,108 @@ pub fn ContractEditPage(props: ContractEditPageProps) -> Element {
     }
 }
 
+// Field caps for the contract form's free-text inputs (MAPPS-211). These
+// mirror the mokosh-server column limits so over-long input is rejected
+// inline (and via `maxlength`) instead of failing later as an opaque 422.
+const CONTRACT_NAME_MAX: usize = 200;
+const CONTRACT_NUMBER_MAX: usize = 100;
+const CONTRACT_NOTES_MAX: usize = 2000;
+const ITEM_NAME_MAX: usize = 200;
+
+/// Upper bound for money/quantity fields (MAPPS-211). Comfortably inside
+/// `Decimal`'s range while ruling out absurd magnitudes (e.g. a ~50-digit
+/// paste), so such input is caught with a clear "out of range" message
+/// rather than the misleading "not a number" the bare parse produced.
+const VALUE_MAX: i64 = 10_000_000_000;
+
+/// Validate a required, length-capped text field (MAPPS-211). Returns the
+/// trimmed value or an inline message for that field.
+fn validate_text_required(raw: &str, label: &str, max: usize) -> Result<String, String> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return Err(format!("{label} is required."));
+    }
+    if t.chars().count() > max {
+        return Err(format!("{label} must be {max} characters or fewer."));
+    }
+    Ok(t.to_string())
+}
+
+/// Validate an optional, length-capped text field (MAPPS-211). Blank ->
+/// `Ok(None)`; otherwise the trimmed value or an inline message.
+fn validate_text_optional(raw: &str, label: &str, max: usize) -> Result<Option<String>, String> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    if t.chars().count() > max {
+        return Err(format!("{label} must be {max} characters or fewer."));
+    }
+    Ok(Some(t.to_string()))
+}
+
+/// Classify a string that failed to parse as a `Decimal`: numeric-looking but
+/// out of range (e.g. a ~50-digit value beyond `Decimal`'s capacity) vs.
+/// genuinely non-numeric. Lets the money/quantity validators give a precise
+/// message instead of the old misleading "must be a number" (MAPPS-211).
+fn decimal_parse_error(raw: &str, label: &str) -> String {
+    if raw.parse::<f64>().map(|f| f.is_finite()).unwrap_or(false) {
+        format!("{label} is out of range.")
+    } else {
+        format!("{label} must be a number.")
+    }
+}
+
+/// Validate an optional money amount (MAPPS-211). Blank -> `Ok(None)`.
+/// Rejects negatives, more than two decimal places, and out-of-range values,
+/// distinguishing a non-numeric entry from one that is numeric but too large.
+fn validate_money(raw: &str, label: &str) -> Result<Option<Decimal>, String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Ok(None);
+    }
+    match s.parse::<Decimal>() {
+        Ok(d) => {
+            if d < Decimal::ZERO {
+                return Err(format!("{label} must not be negative."));
+            }
+            if d.scale() > 2 {
+                return Err(format!("{label} must have at most 2 decimal places."));
+            }
+            if d > Decimal::from(VALUE_MAX) {
+                return Err(format!("{label} is out of range."));
+            }
+            Ok(Some(d))
+        }
+        Err(_) => Err(decimal_parse_error(s, label)),
+    }
+}
+
+/// Validate a required quantity (MAPPS-211): present, non-negative, in range.
+/// Allows fractional quantities (the server column is `Decimal`).
+fn validate_quantity(raw: &str, label: &str) -> Result<Decimal, String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Err(format!("{label} is required."));
+    }
+    match s.parse::<Decimal>() {
+        Ok(d) => {
+            if d < Decimal::ZERO {
+                return Err(format!("{label} must not be negative."));
+            }
+            if d > Decimal::from(VALUE_MAX) {
+                return Err(format!("{label} is out of range."));
+            }
+            Ok(d)
+        }
+        Err(_) => Err(decimal_parse_error(s, label)),
+    }
+}
+
 /// One editable line item in the create form. Mirrors the fields the
 /// server's `UpsertContractItemRequest` requires; decimals are held as
-/// strings while editing and parsed on submit.
+/// strings while editing and parsed on submit. The `*_err` fields hold the
+/// inline validation message for each input (MAPPS-211).
 #[derive(Clone, Debug, PartialEq, Default)]
 struct ItemFormValues {
     name: String,
@@ -450,6 +563,9 @@ struct ItemFormValues {
     quantity: String,
     unit_price: String,
     included_hours: String,
+    name_err: String,
+    qty_err: String,
+    price_err: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -521,7 +637,19 @@ fn ContractForm(props: ContractFormProps) -> Element {
     let mut notes = use_signal(|| initial.notes.clone());
     let mut items = use_signal(|| initial.items.clone());
     let mut is_submitting = use_signal(|| false);
+    // Server/submit-time errors only (e.g. a failed POST). Field validation
+    // no longer routes through this banner (MAPPS-211).
     let mut error = use_signal(String::new);
+    // Per-field inline validation errors (MAPPS-211): each failure is shown
+    // under its own field and highlights that field, rather than a single
+    // generic top banner.
+    let mut name_err = use_signal(String::new);
+    let mut company_err = use_signal(String::new);
+    let mut billing_err = use_signal(String::new);
+    let mut start_err = use_signal(String::new);
+    let mut end_err = use_signal(String::new);
+    let mut number_err = use_signal(String::new);
+    let mut notes_err = use_signal(String::new);
 
     // Company dropdown options (create flow needs to pick a company; the
     // server forbids changing it on update so the edit flow disables it).
@@ -577,19 +705,74 @@ fn ContractForm(props: ContractFormProps) -> Element {
             return;
         }
         error.set(String::new());
+        name_err.set(String::new());
+        company_err.set(String::new());
+        billing_err.set(String::new());
+        start_err.set(String::new());
+        end_err.set(String::new());
+        number_err.set(String::new());
+        notes_err.set(String::new());
 
-        // Validate the required start date up front (the server rejects a
-        // missing/blank date with a 422, but catch it locally for a
-        // clearer message).
-        let start_raw = start_date.read().trim().to_string();
-        if start_raw.is_empty() {
-            error.set("Start date is required.".to_string());
-            return;
-        }
-        let Ok(start) = chrono::NaiveDate::parse_from_str(&start_raw, "%Y-%m-%d") else {
-            error.set("Start date is invalid.".to_string());
-            return;
+        // Collect every field error before returning (MAPPS-211) so the user
+        // sees all problems at once, each attached to its own field, rather
+        // than the form aborting on the first failure.
+        let mut ok = true;
+
+        // Name (required, length-capped).
+        let name_val = match validate_text_required(&name.read(), "Name", CONTRACT_NAME_MAX) {
+            Ok(v) => v,
+            Err(msg) => {
+                name_err.set(msg);
+                ok = false;
+                String::new()
+            }
         };
+
+        // Company is required on create; the edit flow disables the field and
+        // preserves the existing company, so it isn't re-validated there.
+        let company_uuid = if is_edit {
+            None
+        } else {
+            match uuid::Uuid::parse_str(company_id.read().trim()) {
+                Ok(u) => Some(u),
+                Err(_) => {
+                    company_err.set("Please pick a company.".to_string());
+                    ok = false;
+                    None
+                }
+            }
+        };
+
+        // Value (USD): optional money, non-negative, in range, <= 2 decimals.
+        let billing = match validate_money(&billing_amount.read(), "Value") {
+            Ok(v) => v,
+            Err(msg) => {
+                billing_err.set(msg);
+                ok = false;
+                None
+            }
+        };
+
+        // Start date (required).
+        let start = {
+            let raw = start_date.read().trim().to_string();
+            if raw.is_empty() {
+                start_err.set("Start date is required.".to_string());
+                ok = false;
+                None
+            } else {
+                match chrono::NaiveDate::parse_from_str(&raw, "%Y-%m-%d") {
+                    Ok(d) => Some(d),
+                    Err(_) => {
+                        start_err.set("Start date is invalid.".to_string());
+                        ok = false;
+                        None
+                    }
+                }
+            }
+        };
+
+        // End date (optional).
         let end = {
             let raw = end_date.read().trim().to_string();
             if raw.is_empty() {
@@ -598,36 +781,84 @@ fn ContractForm(props: ContractFormProps) -> Element {
                 match chrono::NaiveDate::parse_from_str(&raw, "%Y-%m-%d") {
                     Ok(d) => Some(d),
                     Err(_) => {
-                        error.set("End date is invalid.".to_string());
-                        return;
-                    }
-                }
-            }
-        };
-        let billing = {
-            let raw = billing_amount.read().trim().to_string();
-            if raw.is_empty() {
-                None
-            } else {
-                match raw.parse::<Decimal>() {
-                    Ok(d) => Some(d),
-                    Err(_) => {
-                        error.set("Value must be a number.".to_string());
-                        return;
+                        end_err.set("End date is invalid.".to_string());
+                        ok = false;
+                        None
                     }
                 }
             }
         };
 
+        // Cross-field: end must be on or after start.
+        if let (Some(s), Some(e)) = (start, end) {
+            if e < s {
+                end_err.set("End date must be on or after the start date.".to_string());
+                ok = false;
+            }
+        }
+
+        // Contract number / notes (optional, length-capped).
+        let number_val = match validate_text_optional(
+            &contract_number.read(),
+            "Contract number",
+            CONTRACT_NUMBER_MAX,
+        ) {
+            Ok(v) => v,
+            Err(msg) => {
+                number_err.set(msg);
+                ok = false;
+                None
+            }
+        };
+        let notes_val = match validate_text_optional(&notes.read(), "Notes", CONTRACT_NOTES_MAX) {
+            Ok(v) => v,
+            Err(msg) => {
+                notes_err.set(msg);
+                ok = false;
+                None
+            }
+        };
+
+        // Line items (create flow only): validate each populated row and
+        // attach errors to its own fields. Blank rows are skipped on submit
+        // (see `create_items`), so they aren't validated.
+        if !is_edit {
+            let mut next_items = items.read().clone();
+            for item in next_items.iter_mut() {
+                item.name_err.clear();
+                item.qty_err.clear();
+                item.price_err.clear();
+                if item.name.trim().is_empty() {
+                    continue;
+                }
+                if item.name.chars().count() > ITEM_NAME_MAX {
+                    item.name_err = format!("Name must be {ITEM_NAME_MAX} characters or fewer.");
+                    ok = false;
+                }
+                if let Err(msg) = validate_quantity(&item.quantity, "Qty") {
+                    item.qty_err = msg;
+                    ok = false;
+                }
+                if let Err(msg) = validate_money(&item.unit_price, "Unit price") {
+                    item.price_err = msg;
+                    ok = false;
+                }
+            }
+            items.set(next_items);
+        }
+
+        if !ok {
+            return;
+        }
+
+        // Validated above: when `ok` holds, the required start date parsed.
+        let start = start.expect("start date validated above");
+
         is_submitting.set(true);
         let mode = mode.clone();
-        let name_val = name.read().trim().to_string();
-        let company_val = company_id.read().clone();
         let type_val = contract_type.read().clone();
         let status_val = status.read().clone();
         let cycle_val = billing_cycle.read().clone();
-        let number_val = optional_trimmed(&contract_number.read());
-        let notes_val = optional_trimmed(&notes.read());
         let items_snapshot = items.read().clone();
 
         spawn(async move {
@@ -635,11 +866,10 @@ fn ContractForm(props: ContractFormProps) -> Element {
             {
                 let result = match &mode {
                     ContractFormMode::Create => {
-                        let Ok(company_uuid) = uuid::Uuid::parse_str(&company_val) else {
-                            error.set("Please pick a company first.".to_string());
-                            is_submitting.set(false);
-                            return;
-                        };
+                        // Validated before the spawn (MAPPS-211); `company_uuid`
+                        // is `Some` whenever we reach the create branch.
+                        let company_uuid =
+                            company_uuid.expect("company validated above for the create flow");
                         let body = CreateContractRequest {
                             contract_number: number_val.clone(),
                             name: name_val.clone(),
@@ -675,7 +905,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                                 }
                                 Ok(new_id)
                             }
-                            Err(err) => Err(err.user_message()),
+                            Err(err) => Err(err),
                         }
                     }
                     ContractFormMode::Edit { id } => {
@@ -698,15 +928,22 @@ fn ContractForm(props: ContractFormProps) -> Element {
                         )
                         .await
                         .map(|_| id.clone())
-                        .map_err(|err| err.user_message())
                     }
                 };
                 match result {
                     Ok(id) => {
                         navigator.push(Route::ContractDetail { id });
                     }
-                    Err(msg) => {
-                        error.set(msg);
+                    Err(err) => {
+                        // PMS-364: the end < start cross-field rule comes back
+                        // keyed on `end_date`; show it inline under that field.
+                        // Server errors without a field target fall back to the
+                        // top-of-form banner.
+                        if let Some(msg) = err.field_message("end_date") {
+                            end_err.set(msg);
+                        } else {
+                            error.set(err.user_message());
+                        }
                     }
                 }
             }
@@ -733,7 +970,9 @@ fn ContractForm(props: ContractFormProps) -> Element {
                         label: "Name",
                         placeholder: "e.g. Managed Services Agreement",
                         required: true,
+                        maxlength: CONTRACT_NAME_MAX as i64,
                         value: name.read().clone(),
+                        error: name_err(),
                         oninput: move |e: FormEvent| name.set(e.value()),
                     }
                     Select {
@@ -743,6 +982,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                         value: company_id.read().clone(),
                         required: true,
                         disabled: is_edit,
+                        error: company_err(),
                         onchange: move |e: FormEvent| company_id.set(e.value()),
                     }
                 }
@@ -778,7 +1018,11 @@ fn ContractForm(props: ContractFormProps) -> Element {
                         label: "Value (USD)",
                         r#type: "number",
                         placeholder: "0.00",
+                        min: "0".to_string(),
+                        max: VALUE_MAX.to_string(),
+                        step: "0.01".to_string(),
                         value: billing_amount.read().clone(),
+                        error: billing_err(),
                         oninput: move |e: FormEvent| billing_amount.set(e.value()),
                     }
                 }
@@ -789,12 +1033,14 @@ fn ContractForm(props: ContractFormProps) -> Element {
                         label: "Start Date",
                         required: true,
                         value: start_date.read().clone(),
+                        error: start_err(),
                         oninput: move |e: FormEvent| start_date.set(e.value()),
                     }
                     crate::components::DateField {
                         name: "end_date",
                         label: "End Date",
                         value: end_date.read().clone(),
+                        error: end_err(),
                         oninput: move |e: FormEvent| end_date.set(e.value()),
                     }
                 }
@@ -804,7 +1050,9 @@ fn ContractForm(props: ContractFormProps) -> Element {
                         name: "contract_number",
                         label: "Contract Number",
                         placeholder: "Optional reference",
+                        maxlength: CONTRACT_NUMBER_MAX as i64,
                         value: contract_number.read().clone(),
+                        error: number_err(),
                         oninput: move |e: FormEvent| contract_number.set(e.value()),
                     }
                 }
@@ -824,7 +1072,9 @@ fn ContractForm(props: ContractFormProps) -> Element {
                     name: "notes",
                     label: "Notes",
                     rows: 3,
+                    maxlength: CONTRACT_NOTES_MAX as i64,
                     value: notes.read().clone(),
+                    error: notes_err(),
                     oninput: move |e: FormEvent| notes.set(e.value()),
                 }
 
@@ -862,7 +1112,9 @@ fn ContractForm(props: ContractFormProps) -> Element {
                                             crate::components::Input {
                                                 name: "item_name_{idx}",
                                                 label: "Name",
+                                                maxlength: ITEM_NAME_MAX as i64,
                                                 value: item.name.clone(),
+                                                error: item.name_err.clone(),
                                                 oninput: move |e: FormEvent| {
                                                     let mut next = items.read().clone();
                                                     next[idx].name = e.value();
@@ -885,7 +1137,11 @@ fn ContractForm(props: ContractFormProps) -> Element {
                                             name: "item_qty_{idx}",
                                             label: "Qty",
                                             r#type: "number",
+                                            min: "0".to_string(),
+                                            max: VALUE_MAX.to_string(),
+                                            step: "0.01".to_string(),
                                             value: item.quantity.clone(),
+                                            error: item.qty_err.clone(),
                                             oninput: move |e: FormEvent| {
                                                 let mut next = items.read().clone();
                                                 next[idx].quantity = e.value();
@@ -896,7 +1152,11 @@ fn ContractForm(props: ContractFormProps) -> Element {
                                             name: "item_price_{idx}",
                                             label: "Unit Price",
                                             r#type: "number",
+                                            min: "0".to_string(),
+                                            max: VALUE_MAX.to_string(),
+                                            step: "0.01".to_string(),
                                             value: item.unit_price.clone(),
+                                            error: item.price_err.clone(),
                                             oninput: move |e: FormEvent| {
                                                 let mut next = items.read().clone();
                                                 next[idx].unit_price = e.value();
@@ -991,15 +1251,6 @@ async fn create_items(contract_id: &str, items: &[ItemFormValues]) -> Result<(),
     Ok(())
 }
 
-fn optional_trimmed(value: &str) -> Option<String> {
-    let t = value.trim();
-    if t.is_empty() {
-        None
-    } else {
-        Some(t.to_string())
-    }
-}
-
 // ============================================================================
 // DETAIL
 // ============================================================================
@@ -1062,11 +1313,51 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
     let navigator = use_navigator();
     let mut deleting = use_signal(|| false);
     let mut editing_item = use_signal(|| None::<ContractItemFormState>);
+    // MAPPS-189: the Delete button opens the styled ConfirmDialog; the
+    // actual DELETE fires from `on_confirm_delete` when confirmed.
+    let mut confirming_delete = use_signal(|| false);
     let edit_id = id_for_edit.clone();
     let delete_id = id_for_delete.clone();
 
+    let on_confirm_delete = move |_: ()| {
+        if *deleting.read() {
+            return;
+        }
+        let id = delete_id.clone();
+        deleting.set(true);
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let path = format!("/contracts/{id}");
+                if crate::hooks::fetch::api::delete_authed_typed(&path)
+                    .await
+                    .is_ok()
+                {
+                    navigator.push(Route::ContractList {});
+                }
+            }
+            deleting.set(false);
+            confirming_delete.set(false);
+        });
+    };
+
     rsx! {
         AppLayout { title: "{header_title}",
+            crate::components::ConfirmDialog {
+                open: confirming_delete(),
+                title: "Delete contract".to_string(),
+                message: "Delete this contract? This cannot be undone.".to_string(),
+                confirm_text: "Delete".to_string(),
+                cancel_text: "Cancel".to_string(),
+                destructive: true,
+                loading: *deleting.read(),
+                onconfirm: on_confirm_delete,
+                oncancel: move |_| {
+                    if !*deleting.read() {
+                        confirming_delete.set(false);
+                    }
+                },
+            }
             PageHeader {
                 title: "{header_title}",
                 breadcrumbs: rsx! {
@@ -1092,31 +1383,9 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                         variant: ButtonVariant::Danger,
                         loading: *deleting.read(),
                         onclick: move |_| {
-                            let id = delete_id.clone();
-                            deleting.set(true);
-                            spawn(async move {
-                                #[cfg(feature = "web")]
-                                {
-                                    let confirmed = web_sys::window()
-                                        .and_then(|w| {
-                                            w.confirm_with_message(
-                                                "Delete this contract? This cannot be undone.",
-                                            )
-                                            .ok()
-                                        })
-                                        .unwrap_or(false);
-                                    if confirmed {
-                                        let path = format!("/contracts/{id}");
-                                        if crate::hooks::fetch::api::delete_authed_typed(&path)
-                                            .await
-                                            .is_ok()
-                                        {
-                                            navigator.push(Route::ContractList {});
-                                        }
-                                    }
-                                }
-                                deleting.set(false);
-                            });
+                            if !*deleting.read() {
+                                confirming_delete.set(true);
+                            }
                         },
                         "Delete"
                     }
@@ -1142,7 +1411,8 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                 Some(Some(contract)) => {
                     let type_label = humanize_contract_type(&contract.contract_type);
                     let status_label = humanize_contract_status(&contract.status);
-                    let billing_cycle = contract.billing_cycle.clone();
+                    // PMS-365: title-case the enum instead of leaking raw `monthly`.
+                    let billing_cycle = humanize_billing_cycle(&contract.billing_cycle);
                     let billing_amount = format_money_opt(contract.billing_amount);
                     let start = contract.start_date.format("%b %-d, %Y").to_string();
                     let end = contract
@@ -1685,11 +1955,23 @@ fn ContractHourBalanceCard(
 
 /// Rate-card list page. Fetches `GET /rate-cards` (paginated).
 #[component]
-pub fn RateCardListPage() -> Element {
+pub fn RateCardListPage(
+    /// Open the create modal on mount. The `/rate-cards/new` route renders
+    /// this page with `open_create = true` so the URL lands on the create
+    /// form instead of mis-routing to a failed detail load (MAPPS-217).
+    #[props(default = false)]
+    open_create: bool,
+) -> Element {
     let can_edit = use_can_manage_billing();
     let navigator = use_navigator();
     let mut page = use_signal(|| 1usize);
-    let mut editing = use_signal(|| None::<RateCardFormState>);
+    let mut editing = use_signal(move || {
+        if open_create {
+            Some(RateCardFormState::new())
+        } else {
+            None
+        }
+    });
     let current_page = (*page.read()).max(1);
 
     let mut rate_cards_resource = use_resource(move || async move {
@@ -2054,18 +2336,36 @@ fn RateCardItemsCard(
         _ => 0,
     };
     let can_add = !work_types.is_empty() && used_count < work_types.len();
+    // When disabled, say why so the greyed-out button is not read as broken
+    // (MAPPS-217): either no work types exist, or every one already has a rate.
+    let disabled_reason = if work_types.is_empty() {
+        "Define a work type in Settings before adding a rate."
+    } else {
+        "Every work type already has a rate on this card."
+    };
     rsx! {
         Card {
             title: "Rates",
             padding: false,
             actions: if can_edit {
                 Some(rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        disabled: !can_add,
-                        onclick: move |_| editing_item.set(Some(RateCardItemFormState::new())),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "Add Rate"
+                    // Stack the reason under the button as visible helper text,
+                    // not just a `title` tooltip: a native tooltip on a disabled
+                    // <button> is suppressed in some browsers (e.g. Chrome), so
+                    // the explanation would never show. The tooltip is kept as a
+                    // bonus for browsers that do render it (MAPPS-217).
+                    div { class: "flex flex-col items-end gap-1",
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            disabled: !can_add,
+                            title: if can_add { None } else { Some(disabled_reason.to_string()) },
+                            onclick: move |_| editing_item.set(Some(RateCardItemFormState::new())),
+                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                            "Add Rate"
+                        }
+                        if !can_add {
+                            p { class: "text-xs text-gray-500 dark:text-gray-400", "{disabled_reason}" }
+                        }
                     }
                 })
             } else {
@@ -2293,21 +2593,13 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
+            // MAPPS-189: confirmation is handled by the SettingFormModal
+            // ConfirmDialog before this fires, so just perform the delete.
             #[cfg(feature = "web")]
             {
-                let confirmed = web_sys::window()
-                    .and_then(|w| {
-                        w.confirm_with_message("Delete this rate card? This cannot be undone.")
-                            .ok()
-                    })
-                    .unwrap_or(false);
-                if confirmed {
-                    match crate::hooks::fetch::api::delete_authed(&format!("/rate-cards/{id}"))
-                        .await
-                    {
-                        Ok(()) => ondeleted.call(()),
-                        Err(err) => error.set(format!("Could not delete rate card: {err}")),
-                    }
+                match crate::hooks::fetch::api::delete_authed(&format!("/rate-cards/{id}")).await {
+                    Ok(()) => ondeleted.call(()),
+                    Err(err) => error.set(format!("Could not delete rate card: {err}")),
                 }
             }
             deleting.set(false);
@@ -2322,6 +2614,8 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
             deleting: *deleting.read(),
             error: error.read().clone(),
             create_label: "Create Rate Card".to_string(),
+            delete_title: "Delete rate card".to_string(),
+            delete_message: "Delete this rate card? This cannot be undone.".to_string(),
             onclose: move |_| onclose.call(()),
             onsave: handle_save,
             ondelete: handle_delete,
@@ -2522,23 +2816,15 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
         deleting.set(true);
         error.set(String::new());
         spawn(async move {
+            // MAPPS-189: confirmation is handled by the SettingFormModal
+            // ConfirmDialog before this fires, so just perform the delete.
             #[cfg(feature = "web")]
             {
-                let confirmed = web_sys::window()
-                    .and_then(|w| {
-                        w.confirm_with_message("Delete this rate? This cannot be undone.")
-                            .ok()
-                    })
-                    .unwrap_or(false);
-                if confirmed {
-                    match crate::hooks::fetch::api::delete_authed(&format!(
-                        "/rate-card-items/{iid}"
-                    ))
+                match crate::hooks::fetch::api::delete_authed(&format!("/rate-card-items/{iid}"))
                     .await
-                    {
-                        Ok(()) => onsaved.call(()),
-                        Err(err) => error.set(format!("Could not delete rate: {err}")),
-                    }
+                {
+                    Ok(()) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not delete rate: {err}")),
                 }
             }
             deleting.set(false);
@@ -2553,6 +2839,8 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
             deleting: *deleting.read(),
             error: error.read().clone(),
             create_label: "Add Rate".to_string(),
+            delete_title: "Delete rate".to_string(),
+            delete_message: "Delete this rate? This cannot be undone.".to_string(),
             onclose: move |_| onclose.call(()),
             onsave: handle_save,
             ondelete: handle_delete,
@@ -2595,5 +2883,97 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
                 oninput: move |e: FormEvent| emergency.set(e.value()),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        validate_money, validate_quantity, validate_text_optional, validate_text_required,
+        CONTRACT_NAME_MAX, CONTRACT_NOTES_MAX, VALUE_MAX,
+    };
+    use rust_decimal::Decimal;
+
+    #[test]
+    fn text_required_flags_empty_and_overlong() {
+        assert!(validate_text_required("  ", "Name", CONTRACT_NAME_MAX).is_err());
+        assert!(validate_text_required("Acme", "Name", CONTRACT_NAME_MAX).is_ok());
+        assert!(
+            validate_text_required(&"x".repeat(CONTRACT_NAME_MAX), "Name", CONTRACT_NAME_MAX)
+                .is_ok()
+        );
+        assert!(validate_text_required(
+            &"x".repeat(CONTRACT_NAME_MAX + 1),
+            "Name",
+            CONTRACT_NAME_MAX
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn text_optional_blank_is_none_overlong_errs() {
+        assert_eq!(
+            validate_text_optional("  ", "Notes", CONTRACT_NOTES_MAX),
+            Ok(None)
+        );
+        assert_eq!(
+            validate_text_optional(" hi ", "Notes", CONTRACT_NOTES_MAX),
+            Ok(Some("hi".to_string()))
+        );
+        assert!(validate_text_optional(
+            &"x".repeat(CONTRACT_NOTES_MAX + 1),
+            "Notes",
+            CONTRACT_NOTES_MAX
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn money_blank_is_none() {
+        assert_eq!(validate_money("", "Value"), Ok(None));
+        assert_eq!(validate_money("   ", "Value"), Ok(None));
+    }
+
+    #[test]
+    fn money_rejects_negative_and_overscale() {
+        assert!(validate_money("-1", "Value")
+            .unwrap_err()
+            .contains("negative"));
+        assert!(validate_money("1.234", "Value")
+            .unwrap_err()
+            .contains("decimal"));
+        assert_eq!(
+            validate_money("1234.56", "Value"),
+            Ok(Some(Decimal::new(123456, 2)))
+        );
+    }
+
+    #[test]
+    fn money_distinguishes_out_of_range_from_non_numeric() {
+        // A ~50-digit numeric paste is out of range, not "must be a number".
+        let big = "2".repeat(50);
+        assert!(validate_money(&big, "Value")
+            .unwrap_err()
+            .contains("out of range"));
+        // A value within Decimal but above the documented cap is out of range.
+        let over_cap = (VALUE_MAX + 1).to_string();
+        assert!(validate_money(&over_cap, "Value")
+            .unwrap_err()
+            .contains("out of range"));
+        // Genuinely non-numeric input keeps the "must be a number" message.
+        assert!(validate_money("abc", "Value")
+            .unwrap_err()
+            .contains("must be a number"));
+    }
+
+    #[test]
+    fn quantity_required_and_non_negative() {
+        assert!(validate_quantity("", "Qty")
+            .unwrap_err()
+            .contains("required"));
+        assert!(validate_quantity("-3", "Qty")
+            .unwrap_err()
+            .contains("negative"));
+        assert_eq!(validate_quantity("2.5", "Qty"), Ok(Decimal::new(25, 1)));
     }
 }
