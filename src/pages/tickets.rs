@@ -1083,8 +1083,10 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     // at a time and we always clear before the next attempt.
     let mut field_error = use_signal(String::new);
 
-    // PMS-182 description edit state.
+    // PMS-182 description edit state. MAPPS-188 folds the title into the
+    // same modal, so the edit form now carries both `e_title` and `e_desc`.
     let mut editing_desc = use_signal(|| false);
+    let mut e_title = use_signal(String::new);
     let mut e_desc = use_signal(String::new);
     let mut e_submitting = use_signal(|| false);
     let mut e_error = use_signal(String::new);
@@ -1184,7 +1186,14 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                             .as_ref()
                             .and_then(|t| t.description.clone())
                             .unwrap_or_default();
+                        // MAPPS-188: seed the title field from the saved ticket
+                        // so the edit modal opens with the current title too.
+                        let cur_title = ticket
+                            .as_ref()
+                            .map(|t| t.title.clone())
+                            .unwrap_or_default();
                         let open_edit = move |_| {
+                            e_title.set(cur_title.clone());
                             e_desc.set(cur_desc.clone());
                             e_error.set(String::new());
                             editing_desc.set(true);
@@ -1549,6 +1558,18 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                             label: "Asset",
                                             value: rsx! {
                                                 crate::components::AssetPicker {
+                                                    // PMS-344 follow-up
+                                                    // (layout): suppress
+                                                    // the picker's own
+                                                    // label here because
+                                                    // DetailItem already
+                                                    // renders "Asset" on
+                                                    // the left, matching
+                                                    // how the inline
+                                                    // Status/Priority/
+                                                    // Assignee Select
+                                                    // editors mount.
+                                                    label: String::new(),
                                                     value: current_asset_name,
                                                     selected_id: current_asset_id,
                                                     onselect: move |(id, _name): (String, String)| {
@@ -1703,11 +1724,22 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     if e_submitting() {
                         return;
                     }
+                    // MAPPS-188: title is required (server validates
+                    // length >= 1). Bail with an inline message instead of
+                    // PUTting a blank title that the server would reject.
+                    let title_v = e_title().trim().to_string();
+                    if title_v.is_empty() {
+                        e_error.set("Title cannot be empty.".to_string());
+                        return;
+                    }
                     let save_id = save_id.clone();
                     spawn(async move {
                         e_submitting.set(true);
                         e_error.set(String::new());
-                        let body = serde_json::json!({ "description": e_desc() });
+                        let body = serde_json::json!({
+                            "title": title_v,
+                            "description": e_desc(),
+                        });
                         match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
                             &format!("/tickets/{save_id}"),
                             &body,
@@ -1730,7 +1762,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                 rsx! {
                     Modal {
                         open: editing_desc(),
-                        title: "Edit Description",
+                        title: "Edit Ticket",
                         size: crate::components::ModalSize::Large,
                         onclose: move |_| editing_desc.set(false),
                         footer: rsx! {
@@ -1749,6 +1781,15 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         div { class: "space-y-3",
                             if !e_error().is_empty() {
                                 p { class: "text-sm text-red-600 dark:text-red-400", "{e_error}" }
+                            }
+                            // MAPPS-188: title is now editable alongside the
+                            // description (previously description-only).
+                            crate::components::Input {
+                                name: "edit-title",
+                                label: "Title",
+                                required: true,
+                                value: "{e_title}",
+                                oninput: move |e: FormEvent| e_title.set(e.value()),
                             }
                             Textarea {
                                 name: "edit-description",
@@ -1860,14 +1901,24 @@ struct DetailItemProps {
 
 #[component]
 fn DetailItem(props: DetailItemProps) -> Element {
+    // `flex-1 min-w-0` on dd so the value cell grows to fill the row
+    // after the (shrink-0) label, instead of being sized to its content.
+    // The Select-based inline editors stay visually unchanged because
+    // their content is small and stays right-anchored by `text-right`,
+    // but the AssetPicker chip (PMS-344) can now `w-full` itself into
+    // the dd cell and truncate its long asset name / uuid inline rather
+    // than escaping the row and rendering on top of the next field.
+    // `items-start` (instead of `items-baseline`) keeps a multi-line
+    // value cell (chip + buttons) aligned to the label's top, not its
+    // baseline.
     let dd_class = if props.nowrap {
-        "text-sm text-gray-900 dark:text-white text-right whitespace-nowrap"
+        "text-sm text-gray-900 dark:text-white text-right whitespace-nowrap flex-1 min-w-0"
     } else {
-        "text-sm text-gray-900 dark:text-white text-right"
+        "text-sm text-gray-900 dark:text-white text-right flex-1 min-w-0"
     };
     rsx! {
-        div { class: "flex justify-between items-baseline gap-3",
-            dt { class: "text-sm text-gray-500 dark:text-gray-400 flex-shrink-0", "{props.label}" }
+        div { class: "flex justify-between items-start gap-3",
+            dt { class: "text-sm text-gray-500 dark:text-gray-400 flex-shrink-0 pt-0.5", "{props.label}" }
             dd { class: "{dd_class}", {props.value} }
         }
     }
