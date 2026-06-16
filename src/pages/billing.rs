@@ -18,6 +18,7 @@
 use dioxus::prelude::*;
 use rust_decimal::Decimal;
 use serde::Deserialize;
+use std::str::FromStr;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize,
@@ -108,6 +109,47 @@ async fn load_companies() -> Vec<CompanyOption> {
         .await
         .map(|p| p.data)
         .unwrap_or_default()
+}
+
+/// Load the tenant's tax rates for the invoice pickers (MAPPS-192). Reuses the
+/// `RemoteTaxRate` model from the Tax Rates settings view. Best-effort: an
+/// empty list on error so a form still renders.
+async fn load_tax_rates() -> Vec<RemoteTaxRate> {
+    crate::hooks::fetch::api::get_authed::<Paginated<RemoteTaxRate>>("/tax-rates?per_page=100")
+        .await
+        .map(|p| p.data)
+        .unwrap_or_default()
+}
+
+/// Build `[("", "No tax"), (id, "name (rate%)"), ...]` select options from a
+/// loaded tax-rate list, keeping only active rates (MAPPS-192).
+fn tax_rate_select_options(rates: &[RemoteTaxRate]) -> Vec<SelectOption> {
+    let mut opts = vec![SelectOption::new("", "No tax")];
+    opts.extend(
+        rates.iter().filter(|r| r.is_active).map(|r| {
+            SelectOption::new(r.id.to_string(), format!("{} ({}%)", r.name, r.rate.trim()))
+        }),
+    );
+    opts
+}
+
+/// Compute a tax amount from a line subtotal and a selected tax rate
+/// (MAPPS-192). `rate_id` is matched against `rates`; an empty id, an unknown
+/// id, or an unparseable subtotal/rate yields an empty string (no tax). Rates
+/// are stored as a percentage (PMS-339), so tax = subtotal * rate / 100,
+/// rounded to two decimals.
+fn computed_tax_amount(rates: &[RemoteTaxRate], rate_id: &str, subtotal: &str) -> String {
+    if rate_id.is_empty() {
+        return String::new();
+    }
+    let Some(rate) = rates.iter().find(|r| r.id.to_string() == rate_id) else {
+        return String::new();
+    };
+    let rate_pct = Decimal::from_str(rate.rate.trim()).unwrap_or_default();
+    let sub = Decimal::from_str(subtotal.trim()).unwrap_or_default();
+    ((sub * rate_pct) / Decimal::from(100))
+        .round_dp(2)
+        .to_string()
 }
 
 /// Build `[("", placeholder), (id, name), ...]` select options from a
@@ -877,6 +919,9 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                         payment_term_id: inv.payment_term_id.clone().unwrap_or_default(),
                         po_number: inv.po_number.clone().unwrap_or_default(),
                         notes: inv.notes.clone().unwrap_or_default(),
+                        subtotal: inv.subtotal.clone(),
+                        tax_amount: inv.tax_amount.clone(),
+                        discount_amount: inv.discount_amount.clone(),
                         onclose: move |_| show_edit.set(false),
                         onsaved: move |_| {
                             show_edit.set(false);
@@ -926,6 +971,10 @@ pub fn InvoiceNewPage() -> Element {
     let mut line_description = use_signal(String::new);
     let mut line_quantity = use_signal(|| "1".to_string());
     let mut line_unit_price = use_signal(String::new);
+    let mut tax_rate_id = use_signal(String::new);
+    // `None` => follow the rate-computed tax; `Some` => a manual override.
+    let mut tax_override = use_signal(|| None::<String>);
+    let mut discount_amount = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut is_generating = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -934,6 +983,30 @@ pub fn InvoiceNewPage() -> Element {
     let mut due_date_error = use_signal(String::new);
     let mut quantity_error = use_signal(String::new);
     let mut unit_price_error = use_signal(String::new);
+
+    let tax_rates_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        load_tax_rates().await
+    });
+    let tax_rate_options = tax_rate_select_options(
+        &tax_rates_resource
+            .read_unchecked()
+            .clone()
+            .unwrap_or_default(),
+    );
+    // Tax computed from the selected rate and the single line's subtotal
+    // (qty * unit price); recomputes as either input changes. A manual edit to
+    // the Tax field overrides it until another rate is picked.
+    let computed_tax = use_memo(move || {
+        let qty = Decimal::from_str(line_quantity.read().trim()).unwrap_or_default();
+        let price = Decimal::from_str(line_unit_price.read().trim()).unwrap_or_default();
+        let subtotal = (qty * price).to_string();
+        let rates = tax_rates_resource
+            .read_unchecked()
+            .clone()
+            .unwrap_or_default();
+        computed_tax_amount(&rates, &tax_rate_id.read(), &subtotal)
+    });
 
     let navigator = use_navigator();
 
@@ -1002,12 +1075,21 @@ pub fn InvoiceNewPage() -> Element {
         }
 
         is_submitting.set(true);
+        // Effective tax: a manual override if present, else the rate-computed
+        // value. Both tax and discount are optional; an empty string sends
+        // null so the server keeps its 0 default (existing flow unchanged).
+        let tax_str = tax_override
+            .read()
+            .clone()
+            .unwrap_or_else(|| computed_tax.read().clone());
         let body = serde_json::json!({
             "company_id": company_uuid,
             "invoice_date": inv_date,
             "due_date": due,
             "po_number": optional_string(&po_number.read()),
             "notes": optional_string(&notes.read()),
+            "tax_amount": optional_string(&tax_str),
+            "discount_amount": optional_string(&discount_amount.read()),
             "lines": [{
                 "line_type": "service",
                 "description": description,
@@ -1093,6 +1175,11 @@ pub fn InvoiceNewPage() -> Element {
             is_generating.set(false);
         });
     };
+
+    let tax_value = tax_override
+        .read()
+        .clone()
+        .unwrap_or_else(|| computed_tax.read().clone());
 
     rsx! {
         AppLayout { title: "New Invoice",
@@ -1197,6 +1284,44 @@ pub fn InvoiceNewPage() -> Element {
                         }
                         p { class: "mt-2 text-xs text-gray-500",
                             "Manual invoices start with a single service line. Add more lines by editing the invoice after it is created."
+                        }
+                    }
+
+                    div {
+                        h3 { class: "text-sm font-medium text-gray-700 dark:text-gray-300 mb-3", "Tax & Discount" }
+                        div { class: "grid grid-cols-1 gap-3 sm:grid-cols-3",
+                            Select {
+                                name: "tax_rate_id",
+                                label: "Tax Rate",
+                                options: tax_rate_options,
+                                value: tax_rate_id.read().clone(),
+                                onchange: move |e: FormEvent| {
+                                    tax_rate_id.set(e.value());
+                                    // Re-follow the computed value for the new rate.
+                                    tax_override.set(None);
+                                },
+                            }
+                            crate::components::Input {
+                                name: "tax_amount",
+                                label: "Tax",
+                                r#type: "number",
+                                step: "0.01".to_string(),
+                                min: "0".to_string(),
+                                placeholder: "0.00",
+                                help: "Auto-computed from the tax rate; edit to override.",
+                                value: tax_value.clone(),
+                                oninput: move |e: FormEvent| tax_override.set(Some(e.value())),
+                            }
+                            crate::components::Input {
+                                name: "discount_amount",
+                                label: "Discount",
+                                r#type: "number",
+                                step: "0.01".to_string(),
+                                min: "0".to_string(),
+                                placeholder: "0.00",
+                                value: discount_amount.read().clone(),
+                                oninput: move |e: FormEvent| discount_amount.set(e.value()),
+                            }
                         }
                     }
 
@@ -1805,6 +1930,12 @@ struct InvoiceEditModalProps {
     payment_term_id: String,
     po_number: String,
     notes: String,
+    /// Stored line subtotal, used to compute tax from a selected rate (MAPPS-192).
+    subtotal: String,
+    /// Current tax amount, seeded as the editable Tax field (MAPPS-192).
+    tax_amount: String,
+    /// Current discount amount, seeded as the editable Discount field (MAPPS-192).
+    discount_amount: String,
     onclose: EventHandler<()>,
     onsaved: EventHandler<()>,
 }
@@ -1831,8 +1962,34 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
     let mut payment_term_id = use_signal(|| props.payment_term_id.clone());
     let mut po_number = use_signal(|| props.po_number.clone());
     let mut notes = use_signal(|| props.notes.clone());
+    let mut tax_rate_id = use_signal(String::new);
+    // Seed the override with the invoice's current tax so it shows on open;
+    // picking a rate clears it back to the rate-computed value (MAPPS-192).
+    let mut tax_override = use_signal(|| Some(props.tax_amount.clone()));
+    let mut discount_amount = use_signal(|| props.discount_amount.clone());
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+
+    // Tax-rate picker (MAPPS-192): compute tax from the stored line subtotal and
+    // the selected rate; the Tax field stays editable as a manual override.
+    let tax_rates_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        load_tax_rates().await
+    });
+    let tax_rate_options = tax_rate_select_options(
+        &tax_rates_resource
+            .read_unchecked()
+            .clone()
+            .unwrap_or_default(),
+    );
+    let subtotal_for_tax = props.subtotal.clone();
+    let computed_tax = use_memo(move || {
+        let rates = tax_rates_resource
+            .read_unchecked()
+            .clone()
+            .unwrap_or_default();
+        computed_tax_amount(&rates, &tax_rate_id.read(), &subtotal_for_tax)
+    });
 
     // Payment-term options from the settings-managed lookup (PMS-333). Only
     // active terms are offered; the entry keeps its current term even if that
@@ -1882,12 +2039,21 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
         }
         saving.set(true);
         let path = format!("/invoices/{invoice_id}");
+        // Effective tax: a manual override if present, else the rate-computed
+        // value. Empty sends null, so the server COALESCE keeps the current
+        // amount (existing zero-tax invoices stay unchanged unless edited).
+        let tax_str = tax_override
+            .read()
+            .clone()
+            .unwrap_or_else(|| computed_tax.read().clone());
         let body = serde_json::json!({
             "invoice_date": inv_date,
             "due_date": due,
             "payment_term_id": optional_string(&payment_term_id.read()),
             "po_number": optional_string(&po_number.read()),
             "notes": optional_string(&notes.read()),
+            "tax_amount": optional_string(&tax_str),
+            "discount_amount": optional_string(&discount_amount.read()),
         });
         spawn(async move {
             #[cfg(feature = "web")]
@@ -1917,6 +2083,11 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             "Save"
         }
     };
+
+    let tax_value = tax_override
+        .read()
+        .clone()
+        .unwrap_or_else(|| computed_tax.read().clone());
 
     rsx! {
         Modal {
@@ -1960,6 +2131,39 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                     label: "PO Number",
                     value: po_number.read().clone(),
                     oninput: move |e: FormEvent| po_number.set(e.value()),
+                }
+                div { class: "grid grid-cols-1 gap-4 sm:grid-cols-3",
+                    Select {
+                        name: "tax_rate_id",
+                        label: "Tax Rate",
+                        options: tax_rate_options,
+                        value: tax_rate_id.read().clone(),
+                        onchange: move |e: FormEvent| {
+                            tax_rate_id.set(e.value());
+                            tax_override.set(None);
+                        },
+                    }
+                    crate::components::Input {
+                        name: "tax_amount",
+                        label: "Tax",
+                        r#type: "number",
+                        step: "0.01".to_string(),
+                        min: "0".to_string(),
+                        placeholder: "0.00",
+                        help: "Auto-computed from the tax rate; edit to override.",
+                        value: tax_value.clone(),
+                        oninput: move |e: FormEvent| tax_override.set(Some(e.value())),
+                    }
+                    crate::components::Input {
+                        name: "discount_amount",
+                        label: "Discount",
+                        r#type: "number",
+                        step: "0.01".to_string(),
+                        min: "0".to_string(),
+                        placeholder: "0.00",
+                        value: discount_amount.read().clone(),
+                        oninput: move |e: FormEvent| discount_amount.set(e.value()),
+                    }
                 }
                 crate::components::Textarea {
                     name: "invoice_notes",
