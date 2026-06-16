@@ -72,6 +72,21 @@ struct RemoteTicketDetail {
     sla_status: SlaStatus,
 }
 
+/// One row from `GET /tickets/priorities` (PMS-358). Tenant-scoped lookup
+/// the New Ticket form fetches on mount so the Priority Select renders the
+/// tenant's configured priorities with their canonical UUIDs as the option
+/// values, not the hardcoded "critical|high|medium|low" strings the form
+/// shipped with originally. The server's `CreateTicketRequest` accepts
+/// `priority_id: Option<Uuid>`, so any non-UUID would be silently coerced
+/// away.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteTicketPriority {
+    id: uuid::Uuid,
+    name: String,
+    #[serde(default)]
+    is_default: bool,
+}
+
 /// A ticket note (`GET /tickets/:id/notes`), rendered as an Activity item.
 #[derive(Clone, Debug, Deserialize)]
 struct RemoteNote {
@@ -684,16 +699,62 @@ pub fn TicketNewPage() -> Element {
     // create always failed against the server (MAPPS-122).
     let mut company_id = use_signal(String::new);
     let mut company_name = use_signal(String::new);
-    let mut priority = use_signal(|| "medium".to_string());
+    // PMS-358: priority is a tenant-scoped lookup whose IDs are UUIDs. The
+    // signal stores the selected UUID as a string (empty = "use tenant
+    // default"). The hardcoded ["critical", "high", "medium", "low"]
+    // string options the form used previously never landed in the request
+    // body at all (the submit handler did not read the signal), and even if
+    // they had they would not match the server's `priority_id: Option<Uuid>`
+    // contract. Fetch the tenant's priorities on mount, default to the row
+    // flagged `is_default = true`, and bind the Select's value to the UUID.
+    let mut priority_id = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
 
-    let priority_options = vec![
-        SelectOption::new("critical", "Critical"),
-        SelectOption::new("high", "High"),
-        SelectOption::new("medium", "Medium"),
-        SelectOption::new("low", "Low"),
-    ];
+    // Fetch the tenant's ticket priorities on mount. The Paginated envelope
+    // matches the server's PaginatedResponse wire shape; meta is ignored
+    // here (lookup tables are short enough to fit one page).
+    let priorities_resource = use_resource(|| async move {
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketPriority>>(
+            "/tickets/priorities",
+        )
+        .await
+        .map(|p| p.data)
+        .unwrap_or_default()
+    });
+
+    // Once priorities load, seed the signal with the tenant's default row
+    // (or the first row if none is flagged default). use_effect re-runs
+    // every time the resource transitions to Ready, but a non-empty
+    // priority_id signal short-circuits so an in-progress user selection
+    // is never clobbered by a late-arriving fetch.
+    use_effect(move || {
+        if !priority_id.read().is_empty() {
+            return;
+        }
+        if let Some(rows) = priorities_resource.read().as_ref() {
+            let chosen = rows
+                .iter()
+                .find(|p| p.is_default)
+                .or_else(|| rows.first())
+                .map(|p| p.id.to_string())
+                .unwrap_or_default();
+            if !chosen.is_empty() {
+                priority_id.set(chosen);
+            }
+        }
+    });
+
+    let priority_options: Vec<SelectOption> = match priorities_resource.read().as_ref() {
+        Some(rows) => rows
+            .iter()
+            .map(|p| SelectOption::new(p.id.to_string(), p.name.clone()))
+            .collect(),
+        // While the fetch is in flight, render an empty single-option
+        // placeholder so the Select component does not blow up; the
+        // effect above will populate the real options on the next tick.
+        None => vec![SelectOption::new("", "Loading…")],
+    };
 
     let navigator = use_navigator();
     let handle_submit = move |e: FormEvent| {
@@ -710,6 +771,12 @@ pub fn TicketNewPage() -> Element {
             return;
         };
 
+        // PMS-358: send the selected priority UUID. An empty string means
+        // the priorities fetch was still in flight; let the server apply
+        // its default rather than blocking the submit.
+        let priority_uuid: Option<uuid::Uuid> =
+            uuid::Uuid::parse_str(priority_id.read().as_str()).ok();
+
         // Snapshot signals so the spawn doesn't need to read them.
         let title_v = title.read().clone();
         let description_v = description.read().clone();
@@ -721,6 +788,7 @@ pub fn TicketNewPage() -> Element {
                     "title": title_v,
                     "description": if description_v.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(description_v) },
                     "company_id": company_uuid,
+                    "priority_id": priority_uuid,
                 });
 
                 #[derive(serde::Deserialize)]
@@ -815,8 +883,8 @@ pub fn TicketNewPage() -> Element {
                             name: "priority",
                             label: "Priority",
                             options: priority_options,
-                            value: priority.read().clone(),
-                            onchange: move |e: FormEvent| priority.set(e.value()),
+                            value: priority_id.read().clone(),
+                            onchange: move |e: FormEvent| priority_id.set(e.value()),
                         }
                     }
 
