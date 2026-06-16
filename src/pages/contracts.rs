@@ -1976,13 +1976,23 @@ fn RateCardItemsCard(
             padding: false,
             actions: if can_edit {
                 Some(rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        disabled: !can_add,
-                        title: if can_add { None } else { Some(disabled_reason.to_string()) },
-                        onclick: move |_| editing_item.set(Some(RateCardItemFormState::new())),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "Add Rate"
+                    // Stack the reason under the button as visible helper text,
+                    // not just a `title` tooltip: a native tooltip on a disabled
+                    // <button> is suppressed in some browsers (e.g. Chrome), so
+                    // the explanation would never show. The tooltip is kept as a
+                    // bonus for browsers that do render it (MAPPS-217).
+                    div { class: "flex flex-col items-end gap-1",
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            disabled: !can_add,
+                            title: if can_add { None } else { Some(disabled_reason.to_string()) },
+                            onclick: move |_| editing_item.set(Some(RateCardItemFormState::new())),
+                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                            "Add Rate"
+                        }
+                        if !can_add {
+                            p { class: "text-xs text-gray-500 dark:text-gray-400", "{disabled_reason}" }
+                        }
                     }
                 })
             } else {
