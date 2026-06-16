@@ -1061,6 +1061,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                 CompanySitesCard {
                                     company_id: company_id_str.clone(),
                                     sites_resource,
+                                    company_resource,
                                 }
                                 // Recent tickets
                                 CompanyTicketsCard { tickets_resource }
@@ -1303,6 +1304,11 @@ fn CompanyContactsCard(
 fn CompanySitesCard(
     company_id: String,
     mut sites_resource: Resource<Option<PaginatedSites>>,
+    // The Statistics counters (Sites, Contacts, Open Tickets) read denormalized
+    // counts off `company_resource`, not the child table resources. Restart it
+    // after an add so the Sites counter refreshes in the same render cycle
+    // instead of staying stale until a manual reload (PMS-363).
+    mut company_resource: Resource<Option<CompanyDetail>>,
 ) -> Element {
     let snap = sites_resource.read_unchecked();
     let mut editing = use_signal(|| None::<SiteFormState>);
@@ -1398,6 +1404,9 @@ fn CompanySitesCard(
                 onsaved: move |_| {
                     editing.set(None);
                     sites_resource.restart();
+                    // Refresh the denormalized counts so the Sites counter in
+                    // the Statistics card updates without a manual reload.
+                    company_resource.restart();
                 },
             }
         }
