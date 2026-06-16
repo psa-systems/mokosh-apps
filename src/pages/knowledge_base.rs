@@ -308,6 +308,7 @@ pub fn KBHomePage() -> Element {
         navigator.push(Route::KBArticleList {
             q,
             tag: String::new(),
+            category: String::new(),
         });
     };
 
@@ -361,6 +362,7 @@ pub fn KBHomePage() -> Element {
                     for category in categories.iter().cloned() {
                         CategoryCard {
                             key: "{category.id}",
+                            id: category.id.to_string(),
                             title: category.name,
                             description: category.description.unwrap_or_default(),
                         }
@@ -403,6 +405,7 @@ pub fn KBHomePage() -> Element {
 
 #[derive(Props, Clone, PartialEq)]
 struct CategoryCardProps {
+    id: String,
     title: String,
     description: String,
 }
@@ -410,9 +413,10 @@ struct CategoryCardProps {
 #[component]
 fn CategoryCard(props: CategoryCardProps) -> Element {
     let navigator = use_navigator();
-    // The list route carries no query string, so the category filter is
-    // not pre-applied; clicking lands on the full article list where the
-    // category dropdown is the canonical filter.
+    let category_id = props.id.clone();
+    // Clicking lands on the article list pre-filtered to this category: the
+    // id rides the route's `?category=` query so the list pre-selects the
+    // dropdown and fetches `GET /kb/articles?category_id=...`.
     rsx! {
         button {
             r#type: "button",
@@ -421,6 +425,7 @@ fn CategoryCard(props: CategoryCardProps) -> Element {
                 navigator.push(Route::KBArticleList {
                     q: String::new(),
                     tag: String::new(),
+                    category: category_id.clone(),
                 });
             },
             Card { class: "hover:shadow-lg transition-shadow cursor-pointer",
@@ -477,15 +482,20 @@ fn ArticleItem(props: ArticleItemProps) -> Element {
 /// home search carries the typed term through to this list. `initial_tag`
 /// seeds the tag filter from the `?tag=` route query so clicking a tag chip
 /// (on a row or the detail view) lands on the list filtered to that tag.
+/// `initial_category` seeds the category dropdown from the `?category=` route
+/// query so clicking a category card (or breadcrumb) lands on the list
+/// pre-filtered to that category.
 #[component]
 pub fn KBArticleListPage(
     #[props(default)] initial_q: String,
     #[props(default)] initial_tag: String,
+    #[props(default)] initial_category: String,
 ) -> Element {
     let mut search = use_signal(|| initial_q.clone());
-    let mut category_filter = use_signal(String::new);
+    let mut category_filter = use_signal(|| initial_category.clone());
     let mut tag_filter = use_signal(|| initial_tag.clone());
     let mut page = use_signal(|| 1usize);
+    let navigator = use_navigator();
 
     // Keep the tag filter in sync with the `?tag=` route query: navigating
     // from one tag chip to another re-renders this component with a new
@@ -495,6 +505,16 @@ pub fn KBArticleListPage(
     use_effect(use_reactive!(|initial_tag| {
         if *tag_filter.peek() != initial_tag {
             tag_filter.set(initial_tag.clone());
+            page.set(1);
+        }
+    }));
+
+    // Keep the category filter in sync with the `?category=` route query for
+    // the same reason: navigating from one category card to another re-renders
+    // this component with a new `initial_category` prop without remounting.
+    use_effect(use_reactive!(|initial_category| {
+        if *category_filter.peek() != initial_category {
+            category_filter.set(initial_category.clone());
             page.set(1);
         }
     }));
@@ -607,10 +627,22 @@ pub fn KBArticleListPage(
     };
     let has_filters = !search_text.is_empty() || !category_text.is_empty() || tag_active;
 
+    // Heading reflects the active category filter: show the category name when
+    // one is selected, otherwise the generic "All Articles".
+    let heading = if category_text.is_empty() {
+        "All Articles".to_string()
+    } else {
+        categories
+            .iter()
+            .find(|c| c.id.to_string() == category_text)
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "All Articles".to_string())
+    };
+
     rsx! {
         AppLayout { title: "Articles",
             PageHeader {
-                title: "All Articles",
+                title: "{heading}",
                 actions: rsx! {
                     Link {
                         to: Route::KBArticleNew {},
@@ -650,8 +682,17 @@ pub fn KBArticleListPage(
                                 options: category_options,
                                 value: category_filter.read().clone(),
                                 onchange: move |e: FormEvent| {
-                                    category_filter.set(e.value());
+                                    let value = e.value();
+                                    category_filter.set(value.clone());
                                     page.set(1);
+                                    // Reflect the chosen category in the URL so the filtered
+                                    // view is shareable and survives the back button. Clearing
+                                    // to "All Categories" pushes an empty `?category=`.
+                                    navigator.push(Route::KBArticleList {
+                                        q: search.read().trim().to_string(),
+                                        tag: tag_filter.read().trim().to_string(),
+                                        category: value,
+                                    });
                                 },
                             }
                         }
@@ -662,7 +703,7 @@ pub fn KBArticleListPage(
                             span { class: "text-gray-500 dark:text-gray-400", "Filtered by tag:" }
                             Badge { variant: BadgeVariant::Blue, "#{tag_text}" }
                             Link {
-                                to: Route::KBArticleList { q: search_text.clone(), tag: String::new() },
+                                to: Route::KBArticleList { q: search_text.clone(), tag: String::new(), category: category_text.clone() },
                                 class: "text-blue-600 hover:text-blue-500",
                                 "Clear filter"
                             }
@@ -787,7 +828,7 @@ fn TagChips(tags: Vec<String>, #[props(default)] class: String) -> Element {
             for tag in tags.iter().cloned() {
                 Link {
                     key: "{tag}",
-                    to: Route::KBArticleList { q: String::new(), tag: tag.clone() },
+                    to: Route::KBArticleList { q: String::new(), tag: tag.clone(), category: String::new() },
                     class: "inline-flex items-center rounded-full bg-blue-50 dark:bg-blue-900/40 px-2 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/70",
                     "#{tag}"
                 }
@@ -1495,7 +1536,7 @@ fn KbBreadcrumb(path: Vec<KbCategory>, title: String) -> Element {
             for cat in path.iter() {
                 ChevronRightIcon { size: IconSize::Small }
                 Link {
-                    to: Route::KBArticleList { q: String::new(), tag: String::new() },
+                    to: Route::KBArticleList { q: String::new(), tag: String::new(), category: cat.id.to_string() },
                     class: "hover:text-gray-700 dark:hover:text-gray-200",
                     "{cat.name}"
                 }
