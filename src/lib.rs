@@ -167,6 +167,10 @@ pub enum Route {
     #[route("/timesheets")]
     Timesheets {},
 
+    // MAPPS-194: manager/admin queue to approve/reject submitted timesheets.
+    #[route("/timesheets/approvals")]
+    TimesheetApprovals {},
+
     // Projects
     #[route("/projects")]
     ProjectList {},
@@ -537,6 +541,11 @@ fn TimeEntryNew() -> Element {
 #[component]
 fn Timesheets() -> Element {
     rsx! { time::TimesheetsPage {} }
+}
+
+#[component]
+fn TimesheetApprovals() -> Element {
+    rsx! { time::TimesheetApprovalsPage {} }
 }
 
 #[component]
