@@ -1760,7 +1760,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                     name: "payment_notes",
                     label: "Notes",
                     rows: 2,
-                    maxlength: PAYMENT_NOTES_MAX.to_string(),
+                    maxlength: PAYMENT_NOTES_MAX as i64,
                     value: notes.read().clone(),
                     oninput: move |e: FormEvent| notes.set(e.value()),
                 }
