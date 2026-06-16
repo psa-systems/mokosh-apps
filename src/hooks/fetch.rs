@@ -132,7 +132,7 @@ pub mod api {
         if response.ok() {
             response.json::<T>().await.map_err(|e| e.to_string())
         } else {
-            Err(format!("Request failed with status: {}", response.status()))
+            Err(status_error(response).await)
         }
     }
 
@@ -152,6 +152,38 @@ pub mod api {
         Ok((status, body))
     }
 
+    /// Build a user-facing error string for a non-2xx response on the
+    /// string-returning helpers. Parses the standard
+    /// `{"error":{"message","errors":[...]}}` envelope so forms that still
+    /// use the `String`-error helpers surface the real validation message
+    /// (e.g. "Title must be between 1 and 500 characters") instead of a bare
+    /// "Request failed with status: 422" (MAPPS-210). The `_typed` helpers
+    /// carry the field-level envelope separately via `handle_response`; this
+    /// is the flat-string sibling for the many existing callers. Falls back
+    /// to the status line when the body is not a recognised envelope.
+    #[cfg(feature = "web")]
+    async fn status_error(response: gloo_net::http::Response) -> String {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
+            Ok(env) => {
+                let fields = env.error.errors.unwrap_or_default();
+                if status == 422 && !fields.is_empty() {
+                    fields
+                        .iter()
+                        .map(|f| f.message.clone())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                } else if !env.error.message.is_empty() {
+                    env.error.message
+                } else {
+                    format!("Request failed with status: {status}")
+                }
+            }
+            Err(_) => format!("Request failed with status: {status}"),
+        }
+    }
+
     /// Get request with auth token
     #[cfg(feature = "web")]
     pub async fn get_with_auth<T: DeserializeOwned>(path: &str, token: &str) -> Result<T, String> {
@@ -167,7 +199,7 @@ pub mod api {
         if response.ok() {
             response.json::<T>().await.map_err(|e| e.to_string())
         } else {
-            Err(format!("Request failed with status: {}", response.status()))
+            Err(status_error(response).await)
         }
     }
 
@@ -190,7 +222,7 @@ pub mod api {
         if response.ok() {
             response.json::<T>().await.map_err(|e| e.to_string())
         } else {
-            Err(format!("Request failed with status: {}", response.status()))
+            Err(status_error(response).await)
         }
     }
 
@@ -215,7 +247,7 @@ pub mod api {
         if response.ok() {
             response.json::<T>().await.map_err(|e| e.to_string())
         } else {
-            Err(format!("Request failed with status: {}", response.status()))
+            Err(status_error(response).await)
         }
     }
 
@@ -240,7 +272,7 @@ pub mod api {
         if response.ok() {
             response.json::<T>().await.map_err(|e| e.to_string())
         } else {
-            Err(format!("Request failed with status: {}", response.status()))
+            Err(status_error(response).await)
         }
     }
 
@@ -259,7 +291,7 @@ pub mod api {
         if response.ok() {
             Ok(())
         } else {
-            Err(format!("Request failed with status: {}", response.status()))
+            Err(status_error(response).await)
         }
     }
 
@@ -281,7 +313,7 @@ pub mod api {
         if response.ok() {
             Ok(())
         } else {
-            Err(format!("Request failed with status: {}", response.status()))
+            Err(status_error(response).await)
         }
     }
 
