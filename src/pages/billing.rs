@@ -1193,7 +1193,7 @@ pub fn InvoiceNewPage() -> Element {
                         label: "Notes",
                         placeholder: "Internal notes (not shown to the customer)",
                         rows: 3,
-                        maxlength: "2000",
+                        maxlength: 2000,
                         value: notes.read().clone(),
                         oninput: move |e: FormEvent| notes.set(e.value()),
                     }
