@@ -314,6 +314,9 @@ pub enum Route {
     SettingsProjectTypes {},
     #[route("/settings/sla")]
     SettingsSla {},
+    // MAPPS-345: tenant-wide standard due date (PMS-345 server setting).
+    #[route("/settings/scheduling")]
+    SettingsScheduling {},
     #[route("/settings/rate-cards")]
     SettingsRateCards {},
     #[route("/settings/tax-rates")]
@@ -753,6 +756,11 @@ fn SettingsPaymentTerms() -> Element {
 #[component]
 fn SettingsSla() -> Element {
     rsx! { sla::SlaManagementPage {} }
+}
+
+#[component]
+fn SettingsScheduling() -> Element {
+    rsx! { settings::SchedulingSettingsPage {} }
 }
 
 #[component]
