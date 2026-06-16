@@ -154,6 +154,28 @@ pub fn TimeEntryListPage() -> Element {
     // MAPPS-166: click-to-edit a time entry via the modal below.
     let mut selected_entry = use_signal(|| None::<RemoteTimeEntry>);
 
+    // MAPPS-202: resolve each entry's `work_type_id` to the work type's human
+    // name for display, so the list shows e.g. "On-site Support" rather than a
+    // bare UUID. Mirrors how the timesheet resolves ticket/project names
+    // client-side from a fetched lookup list.
+    let work_types_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOption>>(
+            "/work-types?per_page=100",
+        )
+        .await
+        .ok()
+        .map(|p| p.data)
+        .unwrap_or_default()
+    });
+    let work_type_name_by_id: std::collections::HashMap<uuid::Uuid, String> = work_types_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|w| (w.id, w.name))
+        .collect();
+
     let snapshot = entries_resource.read_unchecked().clone();
     // `None` while loading; `Some(None)` on fetch failure; `Some(Some(rows))`.
     let is_loading = snapshot.is_none();
@@ -218,12 +240,13 @@ pub fn TimeEntryListPage() -> Element {
                 total_items: total,
                 current_page: 1,
                 per_page: if total == 0 { 25 } else { total },
-                columns: 5,
+                columns: 6,
                 Table {
                     TableHead {
                         TableRow {
                             TableHeader { "Date" }
                             TableHeader { "Work Item" }
+                            TableHeader { "Work Type" }
                             TableHeader { "Description" }
                             TableHeader { "Hours" }
                             TableHeader { "Billable" }
@@ -247,6 +270,10 @@ pub fn TimeEntryListPage() -> Element {
                                         .unwrap_or_else(|| "-".to_string());
                                     let status = e.billing_status.clone();
                                     let wi_label = work_item_label(e);
+                                    let wt_label = e
+                                        .work_type_id
+                                        .and_then(|id| work_type_name_by_id.get(&id).cloned())
+                                        .unwrap_or_else(|| "-".to_string());
                                     let entry = e.clone();
                                     rsx! {
                                         TableRow {
@@ -281,6 +308,7 @@ pub fn TimeEntryListPage() -> Element {
                                                     span { class: "text-gray-400", "-" }
                                                 }
                                             }
+                                            TableCell { class: "text-gray-500", "{wt_label}" }
                                             TableCell { class: "max-w-xs truncate", "{note}" }
                                             TableCell { class: "font-medium", "{hrs}" }
                                             TableCell {
