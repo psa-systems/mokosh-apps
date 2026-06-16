@@ -34,6 +34,13 @@ struct RemoteTicket {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 struct RemoteSummary {
+    /// Server-side `TicketStatusSummary` / `TicketPrioritySummary` always
+    /// carry an `id`; the field is optional here only because legacy code
+    /// paths and the demo-data fallback may omit it. PMS-359 reads it as
+    /// the canonical "currently saved" selection for the inline editors
+    /// on the ticket detail page.
+    #[serde(default)]
+    id: Option<uuid::Uuid>,
     #[serde(default)]
     name: String,
 }
@@ -62,7 +69,12 @@ struct RemoteTicketDetail {
     #[serde(default)]
     priority: RemoteSummary,
     #[serde(default)]
-    assigned_to_name: Option<String>,
+    assigned_to_id: Option<uuid::Uuid>,
+    // PMS-359: assigned_to_name is no longer read on the detail page
+    // (the inline Assignee editor renders the chosen user by looking up
+    // the id in the cached `/auth/users` list); dropped from the
+    // deserialise shape entirely to keep the type honest. The list page
+    // still reads `RemoteTicket.assigned_to_name`.
     #[serde(default)]
     created_by_name: String,
     created_at: DateTime<Utc>,
@@ -72,13 +84,25 @@ struct RemoteTicketDetail {
     sla_status: SlaStatus,
 }
 
-/// One row from `GET /tickets/priorities` (PMS-358). Tenant-scoped lookup
-/// the New Ticket form fetches on mount so the Priority Select renders the
-/// tenant's configured priorities with their canonical UUIDs as the option
-/// values, not the hardcoded "critical|high|medium|low" strings the form
-/// shipped with originally. The server's `CreateTicketRequest` accepts
-/// `priority_id: Option<Uuid>`, so any non-UUID would be silently coerced
-/// away.
+/// One row from `GET /tickets/statuses` (PMS-359). Tenant-scoped lookup
+/// powering the inline Status editor on the ticket detail sidebar. The
+/// `is_closed` flag is read so the renderer can keep the badge colour
+/// stable when the user picks a Resolved / Closed row.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteTicketStatus {
+    id: uuid::Uuid,
+    name: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    is_closed: bool,
+}
+
+/// One row from `GET /tickets/priorities` (PMS-358 / PMS-359). Tenant-
+/// scoped lookup the New Ticket form (PMS-358, defaults to the row with
+/// `is_default = true`) and the detail-page inline editor (PMS-359)
+/// both consume. Server's `CreateTicketRequest` / `UpdateTicketRequest`
+/// both accept `priority_id: Option<Uuid>`, so any non-UUID would be
+/// silently coerced away.
 #[derive(Clone, Debug, Deserialize)]
 struct RemoteTicketPriority {
     id: uuid::Uuid,
@@ -275,16 +299,6 @@ fn humanize_priority(raw: &str) -> String {
                 None => String::new(),
             }
         }
-    }
-}
-
-/// Badge colour for a humanized priority label.
-fn priority_badge_variant(label: &str) -> BadgeVariant {
-    match label {
-        "Critical" | "High" => BadgeVariant::Red,
-        "Medium" => BadgeVariant::Yellow,
-        "Low" => BadgeVariant::Green,
-        _ => BadgeVariant::Gray,
     }
 }
 
@@ -984,6 +998,32 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             .map(|p| p.data)
             .unwrap_or_default()
     });
+    // PMS-359: the tenant's ticket statuses + priorities, fetched once
+    // and reused by the three inline editors on the sidebar. Same
+    // Paginated envelope the New Ticket form's priorities fetch uses
+    // (PMS-358).
+    let statuses_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketStatus>>("/tickets/statuses")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+    let priorities_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketPriority>>(
+            "/tickets/priorities",
+        )
+        .await
+        .ok()
+        .map(|p| p.data)
+        .unwrap_or_default()
+    });
+    // PMS-359: per-field error message surfaced inline below the editor.
+    // One signal is enough since at most one of the three editors fires
+    // at a time and we always clear before the next attempt.
+    let mut field_error = use_signal(String::new);
 
     // PMS-182 description edit state.
     let mut editing_desc = use_signal(|| false);
@@ -998,6 +1038,16 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
         .clone()
         .unwrap_or_default();
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
+    // PMS-359: lookups for the inline editors. Empty until the fetches
+    // land; the renderer falls back to a "Loading…" badge in that window.
+    let statuses = statuses_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    let priorities = priorities_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
     // "Edited" marker for the description: most recent history entry that
     // touched the description column.
     let desc_edited = history
@@ -1186,32 +1236,211 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     Card { title: "Details",
                         if let Some(t) = ticket.as_ref() {
                             dl { class: "space-y-4",
+                                // PMS-359: inline Status / Priority / Assigned To editors.
+                                // Each renders a native Select bound to the
+                                // currently-saved id; onchange fires a PUT
+                                // /tickets/{id} with the matching field and
+                                // refreshes the ticket + history resources on
+                                // success so the change-history pane records
+                                // the edit alongside any prior description edits.
                                 {
-                                    let status_label = humanize_ticket_status(&t.status.name);
+                                    // Statuses Select. Empty options list (still
+                                    // fetching) falls back to a single "Loading…"
+                                    // entry so the component does not collapse.
+                                    let current_status = t
+                                        .status
+                                        .id
+                                        .map(|u| u.to_string())
+                                        .unwrap_or_default();
+                                    let mut status_options: Vec<SelectOption> = statuses
+                                        .iter()
+                                        .map(|s| SelectOption::new(s.id.to_string(), s.name.clone()))
+                                        .collect();
+                                    if status_options.is_empty() {
+                                        status_options.push(SelectOption::new("", "Loading…"));
+                                    }
+                                    let save_id = props.id.clone();
+                                    let mut tr = ticket_resource;
+                                    let mut hr = history_resource;
+                                    let onchange = move |e: FormEvent| {
+                                        let Ok(new_id) = uuid::Uuid::parse_str(&e.value()) else {
+                                            return;
+                                        };
+                                        let save_id = save_id.clone();
+                                        spawn(async move {
+                                            field_error.set(String::new());
+                                            let body =
+                                                serde_json::json!({ "status_id": new_id });
+                                            match crate::hooks::fetch::api::put_authed::<
+                                                serde_json::Value,
+                                                _,
+                                            >(
+                                                &format!("/tickets/{save_id}"), &body
+                                            )
+                                            .await
+                                            {
+                                                Ok(_) => {
+                                                    tr.restart();
+                                                    hr.restart();
+                                                }
+                                                Err(err) => {
+                                                    field_error.set(format!(
+                                                        "Could not update status: {err}"
+                                                    ));
+                                                }
+                                            }
+                                        });
+                                    };
                                     rsx! {
                                         DetailItem {
                                             label: "Status",
-                                            value: rsx!(Badge { variant: ticket_status_badge(&status_label), "{status_label}" }),
+                                            value: rsx! {
+                                                Select {
+                                                    name: "status_id",
+                                                    label: "",
+                                                    options: status_options,
+                                                    value: current_status,
+                                                    onchange,
+                                                }
+                                            },
                                         }
                                     }
                                 }
                                 {
-                                    let priority_label = humanize_priority(&t.priority.name);
+                                    let current_priority = t
+                                        .priority
+                                        .id
+                                        .map(|u| u.to_string())
+                                        .unwrap_or_default();
+                                    let mut priority_options: Vec<SelectOption> = priorities
+                                        .iter()
+                                        .map(|p| SelectOption::new(p.id.to_string(), p.name.clone()))
+                                        .collect();
+                                    if priority_options.is_empty() {
+                                        priority_options.push(SelectOption::new("", "Loading…"));
+                                    }
+                                    let save_id = props.id.clone();
+                                    let mut tr = ticket_resource;
+                                    let mut hr = history_resource;
+                                    let onchange = move |e: FormEvent| {
+                                        let Ok(new_id) = uuid::Uuid::parse_str(&e.value()) else {
+                                            return;
+                                        };
+                                        let save_id = save_id.clone();
+                                        spawn(async move {
+                                            field_error.set(String::new());
+                                            let body =
+                                                serde_json::json!({ "priority_id": new_id });
+                                            match crate::hooks::fetch::api::put_authed::<
+                                                serde_json::Value,
+                                                _,
+                                            >(
+                                                &format!("/tickets/{save_id}"), &body
+                                            )
+                                            .await
+                                            {
+                                                Ok(_) => {
+                                                    tr.restart();
+                                                    hr.restart();
+                                                }
+                                                Err(err) => {
+                                                    field_error.set(format!(
+                                                        "Could not update priority: {err}"
+                                                    ));
+                                                }
+                                            }
+                                        });
+                                    };
                                     rsx! {
                                         DetailItem {
                                             label: "Priority",
-                                            value: rsx!(Badge { variant: priority_badge_variant(&priority_label), "{priority_label}" }),
+                                            value: rsx! {
+                                                Select {
+                                                    name: "priority_id",
+                                                    label: "",
+                                                    options: priority_options,
+                                                    value: current_priority,
+                                                    onchange,
+                                                }
+                                            },
                                         }
                                     }
                                 }
                                 {
-                                    let assigned = t
-                                        .assigned_to_name
-                                        .clone()
-                                        .filter(|s| !s.is_empty())
-                                        .unwrap_or_else(|| "Unassigned".to_string());
+                                    // Assignee uses the same users list the change-
+                                    // history viewer consumes. Empty value = unassigned,
+                                    // which serialises to JSON null so the server
+                                    // clears assigned_to_id.
+                                    let current_assignee = t
+                                        .assigned_to_id
+                                        .map(|u| u.to_string())
+                                        .unwrap_or_default();
+                                    let mut user_options: Vec<SelectOption> =
+                                        vec![SelectOption::new("", "Unassigned")];
+                                    for u in users.iter() {
+                                        let label = if u.full_name.trim().is_empty() {
+                                            u.id.to_string()
+                                        } else {
+                                            u.full_name.clone()
+                                        };
+                                        user_options.push(SelectOption::new(u.id.to_string(), label));
+                                    }
+                                    let save_id = props.id.clone();
+                                    let mut tr = ticket_resource;
+                                    let mut hr = history_resource;
+                                    let onchange = move |e: FormEvent| {
+                                        let raw = e.value();
+                                        let new_id: Option<uuid::Uuid> = if raw.is_empty() {
+                                            None
+                                        } else {
+                                            match uuid::Uuid::parse_str(&raw) {
+                                                Ok(u) => Some(u),
+                                                Err(_) => return,
+                                            }
+                                        };
+                                        let save_id = save_id.clone();
+                                        spawn(async move {
+                                            field_error.set(String::new());
+                                            let body =
+                                                serde_json::json!({ "assigned_to_id": new_id });
+                                            match crate::hooks::fetch::api::put_authed::<
+                                                serde_json::Value,
+                                                _,
+                                            >(
+                                                &format!("/tickets/{save_id}"), &body
+                                            )
+                                            .await
+                                            {
+                                                Ok(_) => {
+                                                    tr.restart();
+                                                    hr.restart();
+                                                }
+                                                Err(err) => {
+                                                    field_error.set(format!(
+                                                        "Could not update assignee: {err}"
+                                                    ));
+                                                }
+                                            }
+                                        });
+                                    };
                                     rsx! {
-                                        DetailItem { label: "Assigned To", value: rsx!(span { "{assigned}" }) }
+                                        DetailItem {
+                                            label: "Assigned To",
+                                            value: rsx! {
+                                                Select {
+                                                    name: "assigned_to_id",
+                                                    label: "",
+                                                    options: user_options,
+                                                    value: current_assignee,
+                                                    onchange,
+                                                }
+                                            },
+                                        }
+                                    }
+                                }
+                                if !field_error.read().is_empty() {
+                                    p { class: "text-xs text-red-600 dark:text-red-400",
+                                        "{field_error}"
                                     }
                                 }
                                 if !t.company_name.is_empty() {
