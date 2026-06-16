@@ -168,6 +168,24 @@ pub fn SettingsHomePage() -> Element {
                     description: "Hierarchical categories for classifying tickets.",
                 }
             }
+
+            SettingsGroup { heading: "Integrations",
+                SettingsCard {
+                    to: Route::SettingsRmmConnections {},
+                    title: "RMM Connections",
+                    description: "Connect remote monitoring providers and test reachability.",
+                }
+                SettingsCard {
+                    to: Route::SettingsRmmDeviceMappings {},
+                    title: "RMM Device Mappings",
+                    description: "Map monitored RMM devices to assets and companies.",
+                }
+                SettingsCard {
+                    to: Route::SettingsRmmAlertRules {},
+                    title: "RMM Alert Rules",
+                    description: "Turn RMM alerts into tickets automatically.",
+                }
+            }
         }
     }
 }
@@ -3489,6 +3507,1279 @@ fn TicketCategoryFormModal(props: TicketCategoryFormModalProps) -> Element {
             }
             crate::components::Checkbox {
                 name: "ticket_category_active",
+                label: "Active",
+                checked: *is_active.read(),
+                onchange: move |_| {
+                    let next = !*is_active.read();
+                    is_active.set(next);
+                },
+            }
+        }
+    }
+}
+
+// ============================================================================
+// RMM integration (MAPPS-199)
+//
+// Admin-facing UI for the RMM subsystem whose backend shipped under
+// PMS-102/103/104/105 but had no frontend. Three surfaces, all admin-gated
+// to match the server's `RequireAdmin` on these routes:
+//
+//   - Connections   GET/POST `/rmm/connections`, GET/PUT/DELETE
+//                    `/rmm/connections/{id}`, POST `/rmm/connections/{id}/test`
+//   - Device maps    GET/POST `/rmm/device-mappings`, DELETE
+//                    `/rmm/device-mappings/{id}`
+//   - Alert rules    GET/POST `/rmm/alert-rules`, DELETE `/rmm/alert-rules/{id}`
+//
+// Provider credentials (`api_key` / `api_secret`) are write-only: the server
+// `RmmConnectionResponse` never echoes them back, so they are only ever sent
+// (never displayed). On edit, leaving the credential fields blank keeps the
+// stored values (server `UpdateRmmConnectionRequest` only re-encrypts when a
+// field is supplied). Mirrors the credential-vault reveal pattern (PMS-342).
+// ============================================================================
+
+/// Supported `RmmProvider` variants, mirrored from the server allowlist in
+/// `mokosh-server src/modules/rmm/routes.rs::create_connection`. Tuple is
+/// `(wire value, human label)`.
+const RMM_PROVIDERS: &[(&str, &str)] = &[
+    ("tactical_rmm", "Tactical RMM"),
+    ("mesh_central", "MeshCentral"),
+    ("datto", "Datto"),
+    ("connectwise", "ConnectWise"),
+    ("ninja_rmm", "NinjaRMM"),
+];
+
+/// Human label for a stored provider wire value, falling back to the raw
+/// value if the server ever returns one this client does not know about.
+fn rmm_provider_label(value: &str) -> String {
+    RMM_PROVIDERS
+        .iter()
+        .find(|(v, _)| *v == value)
+        .map(|(_, l)| (*l).to_string())
+        .unwrap_or_else(|| value.to_string())
+}
+
+/// A coloured badge for a connection's last sync/test status.
+#[component]
+fn RmmStatusBadge(status: String) -> Element {
+    let variant = match status.as_str() {
+        "success" => BadgeVariant::Green,
+        "failed" | "error" => BadgeVariant::Red,
+        "syncing" | "pending" => BadgeVariant::Yellow,
+        _ => BadgeVariant::Gray,
+    };
+    let label = if status.trim().is_empty() {
+        "-".to_string()
+    } else {
+        status
+    };
+    rsx! {
+        Badge { variant, "{label}" }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct RmmConnectionRow {
+    id: Uuid,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    provider: String,
+    #[serde(default)]
+    api_url: String,
+    #[serde(default)]
+    is_active: bool,
+    #[serde(default)]
+    sync_interval_minutes: i64,
+    #[serde(default)]
+    sync_status: String,
+    #[serde(default)]
+    last_error: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Connections  (GET/POST `/rmm/connections`, GET/PUT/DELETE
+// `/rmm/connections/{id}`, POST `/rmm/connections/{id}/test`)
+// ---------------------------------------------------------------------------
+
+#[component]
+pub fn RmmConnectionsSettingsPage() -> Element {
+    if !use_is_admin() {
+        return rsx! { AdminOnlyNotice { title: "RMM Connections" } };
+    }
+
+    let mut page = use_signal(|| 1usize);
+    let mut editing = use_signal(|| None::<RmmConnectionFormState>);
+    let current_page = (*page.read()).max(1);
+
+    let mut resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let path = format!("/rmm/connections?page={current_page}&per_page={PER_PAGE}");
+        crate::hooks::fetch::api::get_authed::<Paginated<RmmConnectionRow>>(&path)
+            .await
+            .ok()
+    });
+
+    let snap = resource.read_unchecked();
+    let is_loading = snap.is_none();
+    let fetch_failed = matches!(*snap, Some(None));
+    let (rows, total): (Vec<RmmConnectionRow>, u64) = match &*snap {
+        Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
+        _ => (Vec::new(), 0),
+    };
+
+    rsx! {
+        AppLayout { title: "RMM Connections",
+            PageHeader {
+                title: "RMM Connections",
+                subtitle: "Connect remote monitoring providers and test reachability",
+                actions: rsx! {
+                    Link { to: Route::SettingsHome {},
+                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        onclick: move |_| editing.set(Some(RmmConnectionFormState::new())),
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "New Connection"
+                    }
+                },
+            }
+
+            if fetch_failed {
+                LoadError { what: "RMM connections" }
+            }
+
+            DataTable {
+                loading: is_loading,
+                total_items: total as usize,
+                current_page,
+                per_page: PER_PAGE,
+                columns: 5,
+                onpagechange: move |p| page.set(p),
+                Table {
+                    TableHead {
+                        TableRow {
+                            TableHeader { "Name" }
+                            TableHeader { "Provider" }
+                            TableHeader { "API URL" }
+                            TableHeader { "Sync status" }
+                            TableHeader { "Active" }
+                        }
+                    }
+                    if is_loading {
+                        TableLoading { columns: 5, rows: 4 }
+                    } else if rows.is_empty() && !fetch_failed {
+                        TableEmpty {
+                            columns: 5,
+                            message: "No RMM connections yet. Click New Connection to add one.".to_string(),
+                        }
+                    } else {
+                        TableBody {
+                            for row in rows.iter().cloned() {
+                                {
+                                    let key = row.id.to_string();
+                                    let edit_state = RmmConnectionFormState::from_existing(&row);
+                                    let name = row.name.clone();
+                                    let provider = rmm_provider_label(&row.provider);
+                                    let api_url = row.api_url.clone();
+                                    let status = row.sync_status.clone();
+                                    let active = row.is_active;
+                                    rsx! {
+                                        TableRow { key: "{key}", clickable: true,
+                                            onclick: move |_| editing.set(Some(edit_state.clone())),
+                                            TableCell {
+                                                span { class: "font-medium text-blue-600", "{name}" }
+                                            }
+                                            TableCell { "{provider}" }
+                                            TableCell {
+                                                span { class: "text-gray-500 dark:text-gray-400 break-all", "{api_url}" }
+                                            }
+                                            TableCell { RmmStatusBadge { status } }
+                                            TableCell { ActiveBadge { active } }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(state) = editing.read().clone() {
+                RmmConnectionFormModal {
+                    state,
+                    onclose: move |_| editing.set(None),
+                    onsaved: move |_| {
+                        editing.set(None);
+                        resource.restart();
+                    },
+                }
+            }
+        }
+    }
+}
+
+/// Form state for the connection modal. Note the absence of `api_key` /
+/// `api_secret`: the server never returns them, so the form starts those
+/// fields blank (they live as modal-local signals) and only sends them when
+/// the admin types a value.
+#[derive(Clone, Debug, PartialEq)]
+struct RmmConnectionFormState {
+    id: Option<String>,
+    name: String,
+    provider: String,
+    api_url: String,
+    is_active: bool,
+    sync_interval_minutes: String,
+}
+
+impl RmmConnectionFormState {
+    fn new() -> Self {
+        Self {
+            id: None,
+            name: String::new(),
+            provider: RMM_PROVIDERS[0].0.to_string(),
+            api_url: String::new(),
+            is_active: true,
+            sync_interval_minutes: "60".to_string(),
+        }
+    }
+
+    fn from_existing(r: &RmmConnectionRow) -> Self {
+        Self {
+            id: Some(r.id.to_string()),
+            name: r.name.clone(),
+            provider: r.provider.clone(),
+            api_url: r.api_url.clone(),
+            is_active: r.is_active,
+            sync_interval_minutes: r.sync_interval_minutes.to_string(),
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct RmmConnectionFormModalProps {
+    state: RmmConnectionFormState,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
+    let initial = props.state.clone();
+    let is_edit = initial.id.is_some();
+
+    let mut name = use_signal(|| initial.name.clone());
+    let mut provider = use_signal(|| initial.provider.clone());
+    let mut api_url = use_signal(|| initial.api_url.clone());
+    let mut api_key = use_signal(String::new);
+    let mut api_secret = use_signal(String::new);
+    let mut is_active = use_signal(|| initial.is_active);
+    let mut sync_interval = use_signal(|| initial.sync_interval_minutes.clone());
+    let mut saving = use_signal(|| false);
+    let mut deleting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+    let mut testing = use_signal(|| false);
+    // (reachable, message) of the most recent test, or None when untested.
+    let mut test_result = use_signal(|| None::<(bool, String)>);
+
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+
+    let provider_options: Vec<SelectOption> = RMM_PROVIDERS
+        .iter()
+        .map(|(v, l)| SelectOption::new(*v, *l))
+        .collect();
+
+    let save_id = initial.id.clone();
+    let handle_save = move |_| {
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        if name.read().trim().is_empty() {
+            error.set("Name is required.".to_string());
+            return;
+        }
+        if api_url.read().trim().is_empty() {
+            error.set("API URL is required.".to_string());
+            return;
+        }
+        let key = api_key.read().trim().to_string();
+        // Credentials are write-only and never returned, so a fresh
+        // connection must carry an API key; an edit may omit it to keep the
+        // stored one.
+        if save_id.is_none() && key.is_empty() {
+            error.set("API key is required.".to_string());
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        let interval = sync_interval.read().trim().parse::<i32>().unwrap_or(60);
+        let secret = api_secret.read().trim().to_string();
+        let id = save_id.clone();
+        let provider_v = provider.read().clone();
+        let name_v = name.read().trim().to_string();
+        let url_v = api_url.read().trim().to_string();
+        let active_v = *is_active.read();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let result = match id {
+                    None => {
+                        let body = serde_json::json!({
+                            "name": name_v,
+                            "provider": provider_v,
+                            "api_url": url_v,
+                            "api_key": key,
+                            "api_secret": opt_str(&secret),
+                            "is_active": active_v,
+                            "sync_interval_minutes": interval,
+                        });
+                        crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
+                            "/rmm/connections",
+                            &body,
+                        )
+                        .await
+                        .map(|_| ())
+                    }
+                    Some(id) => {
+                        // PUT leaves omitted fields untouched; only send the
+                        // credential fields when the admin actually typed one.
+                        let mut body = serde_json::json!({
+                            "name": name_v,
+                            "api_url": url_v,
+                            "is_active": active_v,
+                            "sync_interval_minutes": interval,
+                        });
+                        if !key.is_empty() {
+                            body["api_key"] = serde_json::Value::String(key);
+                        }
+                        if !secret.is_empty() {
+                            body["api_secret"] = serde_json::Value::String(secret);
+                        }
+                        crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
+                            &format!("/rmm/connections/{id}"),
+                            &body,
+                        )
+                        .await
+                        .map(|_| ())
+                    }
+                };
+                match result {
+                    Ok(()) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not save connection: {err}")),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    let delete_id = initial.id.clone();
+    let handle_delete = move |_| {
+        let Some(id) = delete_id.clone() else { return };
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        deleting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match delete_lookup(&id, "/rmm/connections", "connection").await {
+                    Ok(true) => onsaved.call(()),
+                    Ok(false) => {}
+                    Err(err) => error.set(format!("Could not delete connection: {err}")),
+                }
+            }
+            deleting.set(false);
+        });
+    };
+
+    let test_id = initial.id.clone();
+    let handle_test = move |_| {
+        let Some(id) = test_id.clone() else { return };
+        if *testing.read() {
+            return;
+        }
+        testing.set(true);
+        test_result.set(None);
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let path = format!("/rmm/connections/{id}/test");
+                match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
+                    &path,
+                    &serde_json::json!({}),
+                )
+                .await
+                {
+                    Ok(v) => {
+                        let reachable = v
+                            .get("reachable")
+                            .and_then(|b| b.as_bool())
+                            .unwrap_or(false);
+                        let msg = if reachable {
+                            let status = v.get("status").and_then(|s| s.as_u64()).unwrap_or(0);
+                            format!("Reachable (HTTP {status}).")
+                        } else {
+                            let err = v
+                                .get("error")
+                                .and_then(|e| e.as_str())
+                                .unwrap_or("not reachable");
+                            format!("Not reachable: {err}")
+                        };
+                        test_result.set(Some((reachable, msg)));
+                    }
+                    Err(err) => test_result.set(Some((false, format!("Test failed: {err}")))),
+                }
+            }
+            testing.set(false);
+        });
+    };
+
+    let key_placeholder = if is_edit {
+        "Leave blank to keep the current key"
+    } else {
+        "Provider API key"
+    };
+    let secret_placeholder = if is_edit {
+        "Leave blank to keep the current secret"
+    } else {
+        "Optional provider API secret"
+    };
+
+    rsx! {
+        SettingFormModal {
+            title: if is_edit { "Edit RMM Connection".to_string() } else { "New RMM Connection".to_string() },
+            is_edit,
+            saving: *saving.read(),
+            deleting: *deleting.read(),
+            error: error.read().clone(),
+            onclose: move |_| onclose.call(()),
+            onsave: handle_save,
+            ondelete: handle_delete,
+            create_label: "Create Connection".to_string(),
+            crate::components::Input {
+                name: "rmm_conn_name",
+                label: "Name",
+                placeholder: "e.g. Production Tactical RMM",
+                required: true,
+                value: name.read().clone(),
+                oninput: move |e: FormEvent| name.set(e.value()),
+            }
+            // Provider is immutable after creation (the server
+            // `UpdateRmmConnectionRequest` has no `provider` field), so the
+            // dropdown is disabled on edit and just shows the stored value.
+            Select {
+                name: "rmm_conn_provider",
+                label: "Provider",
+                options: provider_options,
+                required: true,
+                disabled: is_edit,
+                value: provider.read().clone(),
+                onchange: move |e: FormEvent| provider.set(e.value()),
+            }
+            crate::components::Input {
+                name: "rmm_conn_api_url",
+                label: "API URL",
+                r#type: "url",
+                placeholder: "https://rmm.example.com",
+                required: true,
+                value: api_url.read().clone(),
+                oninput: move |e: FormEvent| api_url.set(e.value()),
+            }
+            crate::components::Input {
+                name: "rmm_conn_api_key",
+                label: "API key",
+                r#type: "password",
+                placeholder: key_placeholder.to_string(),
+                required: !is_edit,
+                value: api_key.read().clone(),
+                oninput: move |e: FormEvent| api_key.set(e.value()),
+            }
+            crate::components::Input {
+                name: "rmm_conn_api_secret",
+                label: "API secret",
+                r#type: "password",
+                placeholder: secret_placeholder.to_string(),
+                value: api_secret.read().clone(),
+                oninput: move |e: FormEvent| api_secret.set(e.value()),
+            }
+            crate::components::Input {
+                name: "rmm_conn_sync_interval",
+                label: "Sync interval (minutes)",
+                r#type: "number",
+                min: "1".to_string(),
+                step: "1".to_string(),
+                value: sync_interval.read().clone(),
+                oninput: move |e: FormEvent| sync_interval.set(e.value()),
+            }
+            crate::components::Checkbox {
+                name: "rmm_conn_active",
+                label: "Active",
+                checked: *is_active.read(),
+                onchange: move |_| {
+                    let next = !*is_active.read();
+                    is_active.set(next);
+                },
+            }
+            // Test reachability against a saved connection. Only available on
+            // edit because the server keys the test off the stored, encrypted
+            // credentials.
+            if is_edit {
+                div { class: "pt-2 border-t border-gray-200 dark:border-gray-700",
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        loading: *testing.read(),
+                        onclick: handle_test,
+                        "Test connection"
+                    }
+                    if let Some((reachable, msg)) = test_result.read().clone() {
+                        p {
+                            class: if reachable {
+                                "mt-2 text-sm text-green-700 dark:text-green-300"
+                            } else {
+                                "mt-2 text-sm text-red-700 dark:text-red-300"
+                            },
+                            "{msg}"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Device mappings  (GET/POST `/rmm/device-mappings`, DELETE
+// `/rmm/device-mappings/{id}`). Create + delete only (no server update route).
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct RmmDeviceMappingRow {
+    id: Uuid,
+    #[serde(default)]
+    rmm_connection_id: Option<Uuid>,
+    #[serde(default)]
+    rmm_device_id: String,
+    #[serde(default)]
+    device_name: Option<String>,
+    #[serde(default)]
+    sync_status: String,
+}
+
+#[component]
+pub fn RmmDeviceMappingsSettingsPage() -> Element {
+    if !use_is_admin() {
+        return rsx! { AdminOnlyNotice { title: "RMM Device Mappings" } };
+    }
+
+    let mut page = use_signal(|| 1usize);
+    let mut creating = use_signal(|| false);
+    let mut deleting_id = use_signal(|| None::<Uuid>);
+    let mut row_error = use_signal(String::new);
+    let current_page = (*page.read()).max(1);
+
+    // Connections drive the create dropdown and the per-row "connection"
+    // column label.
+    let conns_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<RmmConnectionRow>>(
+            "/rmm/connections?page=1&per_page=100",
+        )
+        .await
+        .ok()
+        .map(|p| p.data)
+    });
+    let connections: Vec<RmmConnectionRow> = conns_resource
+        .read_unchecked()
+        .clone()
+        .flatten()
+        .unwrap_or_default();
+
+    let mut resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let path = format!("/rmm/device-mappings?page={current_page}&per_page={PER_PAGE}");
+        crate::hooks::fetch::api::get_authed::<Paginated<RmmDeviceMappingRow>>(&path)
+            .await
+            .ok()
+    });
+
+    let snap = resource.read_unchecked();
+    let is_loading = snap.is_none();
+    let fetch_failed = matches!(*snap, Some(None));
+    let (rows, total): (Vec<RmmDeviceMappingRow>, u64) = match &*snap {
+        Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
+        _ => (Vec::new(), 0),
+    };
+
+    let conn_label = |id: Option<Uuid>| -> String {
+        match id {
+            Some(id) => connections
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| {
+                    if c.name.trim().is_empty() {
+                        id.to_string()
+                    } else {
+                        c.name.clone()
+                    }
+                })
+                .unwrap_or_else(|| id.to_string()),
+            None => "-".to_string(),
+        }
+    };
+
+    let no_connections = connections.is_empty();
+
+    rsx! {
+        AppLayout { title: "RMM Device Mappings",
+            PageHeader {
+                title: "RMM Device Mappings",
+                subtitle: "Map monitored RMM devices to assets and companies",
+                actions: rsx! {
+                    Link { to: Route::SettingsHome {},
+                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        disabled: no_connections,
+                        onclick: move |_| creating.set(true),
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "New Mapping"
+                    }
+                },
+            }
+
+            if no_connections {
+                div {
+                    class: "mb-3 text-sm text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md px-3 py-2",
+                    "Add an RMM connection first, then map its devices here."
+                }
+            }
+            if fetch_failed {
+                LoadError { what: "RMM device mappings" }
+            }
+            if !row_error.read().is_empty() {
+                div {
+                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                    "{row_error}"
+                }
+            }
+
+            DataTable {
+                loading: is_loading,
+                total_items: total as usize,
+                current_page,
+                per_page: PER_PAGE,
+                columns: 5,
+                onpagechange: move |p| page.set(p),
+                Table {
+                    TableHead {
+                        TableRow {
+                            TableHeader { "Device" }
+                            TableHeader { "Device ID" }
+                            TableHeader { "Connection" }
+                            TableHeader { "Sync status" }
+                            TableHeader { class: "text-right", "" }
+                        }
+                    }
+                    if is_loading {
+                        TableLoading { columns: 5, rows: 4 }
+                    } else if rows.is_empty() && !fetch_failed {
+                        TableEmpty {
+                            columns: 5,
+                            message: "No device mappings yet. Click New Mapping to add one.".to_string(),
+                        }
+                    } else {
+                        TableBody {
+                            for row in rows.iter().cloned() {
+                                {
+                                    let key = row.id.to_string();
+                                    let rid = row.id;
+                                    let device = row.device_name.clone().unwrap_or_default();
+                                    let device_display = if device.trim().is_empty() {
+                                        "-".to_string()
+                                    } else {
+                                        device
+                                    };
+                                    let device_id = row.rmm_device_id.clone();
+                                    let connection = conn_label(row.rmm_connection_id);
+                                    let status = row.sync_status.clone();
+                                    let is_deleting = *deleting_id.read() == Some(rid);
+                                    rsx! {
+                                        TableRow { key: "{key}",
+                                            TableCell {
+                                                span { class: "font-medium", "{device_display}" }
+                                            }
+                                            TableCell {
+                                                span { class: "font-mono text-xs text-gray-500 dark:text-gray-400 break-all", "{device_id}" }
+                                            }
+                                            TableCell { "{connection}" }
+                                            TableCell { RmmStatusBadge { status } }
+                                            TableCell { class: "text-right",
+                                                Button {
+                                                    variant: ButtonVariant::Danger,
+                                                    size: crate::components::ButtonSize::Small,
+                                                    loading: is_deleting,
+                                                    onclick: move |_| {
+                                                        if deleting_id.read().is_some() {
+                                                            return;
+                                                        }
+                                                        deleting_id.set(Some(rid));
+                                                        row_error.set(String::new());
+                                                        spawn(async move {
+                                                            #[cfg(feature = "web")]
+                                                            {
+                                                                match delete_lookup(&rid.to_string(), "/rmm/device-mappings", "device mapping").await {
+                                                                    Ok(true) => resource.restart(),
+                                                                    Ok(false) => {}
+                                                                    Err(err) => row_error.set(format!("Could not delete mapping: {err}")),
+                                                                }
+                                                            }
+                                                            deleting_id.set(None);
+                                                        });
+                                                    },
+                                                    "Delete"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if *creating.read() {
+                RmmDeviceMappingFormModal {
+                    connections: connections.clone(),
+                    onclose: move |_| creating.set(false),
+                    onsaved: move |_| {
+                        creating.set(false);
+                        resource.restart();
+                    },
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct RmmDeviceMappingFormModalProps {
+    connections: Vec<RmmConnectionRow>,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn RmmDeviceMappingFormModal(props: RmmDeviceMappingFormModalProps) -> Element {
+    let first_conn = props
+        .connections
+        .first()
+        .map(|c| c.id.to_string())
+        .unwrap_or_default();
+
+    let mut connection_id = use_signal(|| first_conn.clone());
+    let mut device_id = use_signal(String::new);
+    let mut device_name = use_signal(String::new);
+    // Asset / company are optional links, captured via the shared pickers.
+    let mut asset_id = use_signal(String::new);
+    let mut asset_name = use_signal(String::new);
+    let mut company_id = use_signal(String::new);
+    let mut company_name = use_signal(String::new);
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+
+    let conn_options: Vec<SelectOption> = props
+        .connections
+        .iter()
+        .map(|c| {
+            let label = if c.name.trim().is_empty() {
+                c.id.to_string()
+            } else {
+                c.name.clone()
+            };
+            SelectOption::new(c.id.to_string(), label)
+        })
+        .collect();
+
+    let handle_save = move |_| {
+        if *saving.read() {
+            return;
+        }
+        if connection_id.read().trim().is_empty() {
+            error.set("Select a connection.".to_string());
+            return;
+        }
+        if device_id.read().trim().is_empty() {
+            error.set("Device ID is required.".to_string());
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        let conn = connection_id.read().trim().to_string();
+        let dev = device_id.read().trim().to_string();
+        let dev_name = device_name.read().trim().to_string();
+        let asset = asset_id.read().trim().to_string();
+        let company = company_id.read().trim().to_string();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let body = serde_json::json!({
+                    "rmm_connection_id": conn,
+                    "rmm_device_id": dev,
+                    "device_name": opt_str(&dev_name),
+                    "asset_id": opt_str(&asset),
+                    "company_id": opt_str(&company),
+                });
+                match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
+                    "/rmm/device-mappings",
+                    &body,
+                )
+                .await
+                {
+                    Ok(_) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not save mapping: {err}")),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    let company_selected_id = {
+        let v = company_id.read().clone();
+        if v.is_empty() {
+            None
+        } else {
+            Some(v)
+        }
+    };
+    let asset_selected_id = {
+        let v = asset_id.read().clone();
+        if v.is_empty() {
+            None
+        } else {
+            Some(v)
+        }
+    };
+
+    rsx! {
+        SettingFormModal {
+            title: "New Device Mapping".to_string(),
+            is_edit: false,
+            saving: *saving.read(),
+            deleting: false,
+            error: error.read().clone(),
+            onclose: move |_| onclose.call(()),
+            onsave: handle_save,
+            ondelete: move |_| {},
+            create_label: "Create Mapping".to_string(),
+            Select {
+                name: "rmm_map_connection",
+                label: "Connection",
+                options: conn_options,
+                required: true,
+                value: connection_id.read().clone(),
+                onchange: move |e: FormEvent| connection_id.set(e.value()),
+            }
+            crate::components::Input {
+                name: "rmm_map_device_id",
+                label: "RMM device ID",
+                placeholder: "Provider's device identifier",
+                required: true,
+                value: device_id.read().clone(),
+                oninput: move |e: FormEvent| device_id.set(e.value()),
+            }
+            crate::components::Input {
+                name: "rmm_map_device_name",
+                label: "Device name",
+                placeholder: "Optional friendly name",
+                value: device_name.read().clone(),
+                oninput: move |e: FormEvent| device_name.set(e.value()),
+            }
+            crate::components::CompanyPicker {
+                value: company_name.read().clone(),
+                selected_id: company_selected_id,
+                label: "Company (optional)".to_string(),
+                onselect: move |(id, name): (String, String)| {
+                    company_id.set(id);
+                    company_name.set(name);
+                },
+                onclear: move |_| {
+                    company_id.set(String::new());
+                    company_name.set(String::new());
+                },
+            }
+            crate::components::AssetPicker {
+                value: asset_name.read().clone(),
+                selected_id: asset_selected_id,
+                label: "Asset (optional)".to_string(),
+                onselect: move |(id, name): (String, String)| {
+                    asset_id.set(id);
+                    asset_name.set(name);
+                },
+                onclear: move |_| {
+                    asset_id.set(String::new());
+                    asset_name.set(String::new());
+                },
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Alert rules  (GET/POST `/rmm/alert-rules`, DELETE `/rmm/alert-rules/{id}`).
+// Create + delete only (no server update route).
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct RmmAlertRuleRow {
+    id: Uuid,
+    #[serde(default)]
+    rmm_connection_id: Option<Uuid>,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    alert_type: Option<String>,
+    #[serde(default)]
+    auto_create_ticket: bool,
+    #[serde(default)]
+    is_active: bool,
+}
+
+#[component]
+pub fn RmmAlertRulesSettingsPage() -> Element {
+    if !use_is_admin() {
+        return rsx! { AdminOnlyNotice { title: "RMM Alert Rules" } };
+    }
+
+    let mut page = use_signal(|| 1usize);
+    let mut creating = use_signal(|| false);
+    let mut deleting_id = use_signal(|| None::<Uuid>);
+    let mut row_error = use_signal(String::new);
+    let current_page = (*page.read()).max(1);
+
+    let conns_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<RmmConnectionRow>>(
+            "/rmm/connections?page=1&per_page=100",
+        )
+        .await
+        .ok()
+        .map(|p| p.data)
+    });
+    let connections: Vec<RmmConnectionRow> = conns_resource
+        .read_unchecked()
+        .clone()
+        .flatten()
+        .unwrap_or_default();
+
+    let mut resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let path = format!("/rmm/alert-rules?page={current_page}&per_page={PER_PAGE}");
+        crate::hooks::fetch::api::get_authed::<Paginated<RmmAlertRuleRow>>(&path)
+            .await
+            .ok()
+    });
+
+    let snap = resource.read_unchecked();
+    let is_loading = snap.is_none();
+    let fetch_failed = matches!(*snap, Some(None));
+    let (rows, total): (Vec<RmmAlertRuleRow>, u64) = match &*snap {
+        Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
+        _ => (Vec::new(), 0),
+    };
+
+    let conn_label = |id: Option<Uuid>| -> String {
+        match id {
+            Some(id) => connections
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| {
+                    if c.name.trim().is_empty() {
+                        id.to_string()
+                    } else {
+                        c.name.clone()
+                    }
+                })
+                .unwrap_or_else(|| id.to_string()),
+            None => "-".to_string(),
+        }
+    };
+
+    let no_connections = connections.is_empty();
+
+    rsx! {
+        AppLayout { title: "RMM Alert Rules",
+            PageHeader {
+                title: "RMM Alert Rules",
+                subtitle: "Turn RMM alerts into tickets automatically",
+                actions: rsx! {
+                    Link { to: Route::SettingsHome {},
+                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        disabled: no_connections,
+                        onclick: move |_| creating.set(true),
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "New Alert Rule"
+                    }
+                },
+            }
+
+            if no_connections {
+                div {
+                    class: "mb-3 text-sm text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md px-3 py-2",
+                    "Add an RMM connection first, then define alert rules for it."
+                }
+            }
+            if fetch_failed {
+                LoadError { what: "RMM alert rules" }
+            }
+            if !row_error.read().is_empty() {
+                div {
+                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                    "{row_error}"
+                }
+            }
+
+            DataTable {
+                loading: is_loading,
+                total_items: total as usize,
+                current_page,
+                per_page: PER_PAGE,
+                columns: 5,
+                onpagechange: move |p| page.set(p),
+                Table {
+                    TableHead {
+                        TableRow {
+                            TableHeader { "Name" }
+                            TableHeader { "Connection" }
+                            TableHeader { "Alert type" }
+                            TableHeader { "Auto-create ticket" }
+                            TableHeader { class: "text-right", "" }
+                        }
+                    }
+                    if is_loading {
+                        TableLoading { columns: 5, rows: 4 }
+                    } else if rows.is_empty() && !fetch_failed {
+                        TableEmpty {
+                            columns: 5,
+                            message: "No alert rules yet. Click New Alert Rule to add one.".to_string(),
+                        }
+                    } else {
+                        TableBody {
+                            for row in rows.iter().cloned() {
+                                {
+                                    let key = row.id.to_string();
+                                    let rid = row.id;
+                                    let name = row.name.clone();
+                                    let connection = conn_label(row.rmm_connection_id);
+                                    let alert_type = row.alert_type.clone().unwrap_or_default();
+                                    let alert_type_display = if alert_type.trim().is_empty() {
+                                        "Any".to_string()
+                                    } else {
+                                        alert_type
+                                    };
+                                    let auto = row.auto_create_ticket;
+                                    let is_deleting = *deleting_id.read() == Some(rid);
+                                    rsx! {
+                                        TableRow { key: "{key}",
+                                            TableCell {
+                                                span { class: "font-medium", "{name}" }
+                                            }
+                                            TableCell { "{connection}" }
+                                            TableCell { "{alert_type_display}" }
+                                            TableCell {
+                                                if auto {
+                                                    Badge { variant: BadgeVariant::Green, "Yes" }
+                                                } else {
+                                                    Badge { variant: BadgeVariant::Gray, "No" }
+                                                }
+                                            }
+                                            TableCell { class: "text-right",
+                                                Button {
+                                                    variant: ButtonVariant::Danger,
+                                                    size: crate::components::ButtonSize::Small,
+                                                    loading: is_deleting,
+                                                    onclick: move |_| {
+                                                        if deleting_id.read().is_some() {
+                                                            return;
+                                                        }
+                                                        deleting_id.set(Some(rid));
+                                                        row_error.set(String::new());
+                                                        spawn(async move {
+                                                            #[cfg(feature = "web")]
+                                                            {
+                                                                match delete_lookup(&rid.to_string(), "/rmm/alert-rules", "alert rule").await {
+                                                                    Ok(true) => resource.restart(),
+                                                                    Ok(false) => {}
+                                                                    Err(err) => row_error.set(format!("Could not delete rule: {err}")),
+                                                                }
+                                                            }
+                                                            deleting_id.set(None);
+                                                        });
+                                                    },
+                                                    "Delete"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if *creating.read() {
+                RmmAlertRuleFormModal {
+                    connections: connections.clone(),
+                    onclose: move |_| creating.set(false),
+                    onsaved: move |_| {
+                        creating.set(false);
+                        resource.restart();
+                    },
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct RmmAlertRuleFormModalProps {
+    connections: Vec<RmmConnectionRow>,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn RmmAlertRuleFormModal(props: RmmAlertRuleFormModalProps) -> Element {
+    let first_conn = props
+        .connections
+        .first()
+        .map(|c| c.id.to_string())
+        .unwrap_or_default();
+
+    let mut connection_id = use_signal(|| first_conn.clone());
+    let mut name = use_signal(String::new);
+    let mut alert_type = use_signal(String::new);
+    let mut auto_create_ticket = use_signal(|| true);
+    let mut is_active = use_signal(|| true);
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+
+    let conn_options: Vec<SelectOption> = props
+        .connections
+        .iter()
+        .map(|c| {
+            let label = if c.name.trim().is_empty() {
+                c.id.to_string()
+            } else {
+                c.name.clone()
+            };
+            SelectOption::new(c.id.to_string(), label)
+        })
+        .collect();
+
+    let handle_save = move |_| {
+        if *saving.read() {
+            return;
+        }
+        if connection_id.read().trim().is_empty() {
+            error.set("Select a connection.".to_string());
+            return;
+        }
+        if name.read().trim().is_empty() {
+            error.set("Name is required.".to_string());
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        let conn = connection_id.read().trim().to_string();
+        let name_v = name.read().trim().to_string();
+        let alert = alert_type.read().trim().to_string();
+        let auto = *auto_create_ticket.read();
+        let active = *is_active.read();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let body = serde_json::json!({
+                    "rmm_connection_id": conn,
+                    "name": name_v,
+                    "alert_type": opt_str(&alert),
+                    "auto_create_ticket": auto,
+                    "is_active": active,
+                });
+                match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
+                    "/rmm/alert-rules",
+                    &body,
+                )
+                .await
+                {
+                    Ok(_) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not save rule: {err}")),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        SettingFormModal {
+            title: "New Alert Rule".to_string(),
+            is_edit: false,
+            saving: *saving.read(),
+            deleting: false,
+            error: error.read().clone(),
+            onclose: move |_| onclose.call(()),
+            onsave: handle_save,
+            ondelete: move |_| {},
+            create_label: "Create Alert Rule".to_string(),
+            Select {
+                name: "rmm_rule_connection",
+                label: "Connection",
+                options: conn_options,
+                required: true,
+                value: connection_id.read().clone(),
+                onchange: move |e: FormEvent| connection_id.set(e.value()),
+            }
+            crate::components::Input {
+                name: "rmm_rule_name",
+                label: "Name",
+                placeholder: "e.g. Disk space critical",
+                required: true,
+                value: name.read().clone(),
+                oninput: move |e: FormEvent| name.set(e.value()),
+            }
+            crate::components::Input {
+                name: "rmm_rule_alert_type",
+                label: "Alert type",
+                placeholder: "Optional - leave blank to match any alert type",
+                value: alert_type.read().clone(),
+                oninput: move |e: FormEvent| alert_type.set(e.value()),
+            }
+            crate::components::Checkbox {
+                name: "rmm_rule_auto_create",
+                label: "Auto-create ticket on matching alert",
+                checked: *auto_create_ticket.read(),
+                onchange: move |_| {
+                    let next = !*auto_create_ticket.read();
+                    auto_create_ticket.set(next);
+                },
+            }
+            crate::components::Checkbox {
+                name: "rmm_rule_active",
                 label: "Active",
                 checked: *is_active.read(),
                 onchange: move |_| {
