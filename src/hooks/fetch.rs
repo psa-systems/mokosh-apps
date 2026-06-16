@@ -355,8 +355,15 @@ pub mod api {
         Network(String),
         /// Server returned a non-2xx status. `message` is the server's
         /// `error.message` field when it parsed, otherwise the raw body
-        /// truncated to a sensible length.
-        Status { code: u16, message: String },
+        /// truncated to a sensible length. `fields` carries the
+        /// `error.errors[]` validation envelope (field / message / code)
+        /// when present, so forms can surface a message next to the
+        /// offending input instead of only a status string (MAPPS-210).
+        Status {
+            code: u16,
+            message: String,
+            fields: Vec<crate::utils::error::FieldError>,
+        },
         /// Response was 2xx but the body could not be decoded into the
         /// target type.
         Decode(String),
@@ -368,11 +375,24 @@ pub mod api {
         pub fn user_message(&self) -> String {
             match self {
                 Self::Network(_) => "Network error. Check your connection and try again.".into(),
-                Self::Status { code, message } => match *code {
+                Self::Status {
+                    code,
+                    message,
+                    fields,
+                } => match *code {
                     401 => "Your session has expired. Please sign in again.".into(),
                     403 => "You do not have permission to do that.".into(),
                     404 => "The requested resource was not found.".into(),
                     409 if !message.is_empty() => message.clone(),
+                    // Surface the field-level validation messages when the
+                    // server returned them, so a 422 reads as the actual
+                    // rule ("Title must be ...") instead of the generic
+                    // envelope message (MAPPS-210).
+                    422 if !fields.is_empty() => fields
+                        .iter()
+                        .map(|f| f.message.clone())
+                        .collect::<Vec<_>>()
+                        .join("; "),
                     422 if !message.is_empty() => message.clone(),
                     429 => "Too many requests. Please try again shortly.".into(),
                     500..=599 => "The server hit an error. Please try again.".into(),
@@ -392,6 +412,26 @@ pub mod api {
                 _ => None,
             }
         }
+
+        /// Server-provided field-level validation errors, if any
+        /// (MAPPS-210). Empty for transport / decode errors and for
+        /// non-2xx responses that carried no `error.errors[]` envelope.
+        pub fn field_errors(&self) -> &[crate::utils::error::FieldError] {
+            match self {
+                Self::Status { fields, .. } => fields,
+                _ => &[],
+            }
+        }
+
+        /// Validation message the server attached to a specific form field,
+        /// if present. Lets a form route the message next to the offending
+        /// input (MAPPS-210).
+        pub fn field_message(&self, field: &str) -> Option<String> {
+            self.field_errors()
+                .iter()
+                .find(|fe| fe.field == field)
+                .map(|fe| fe.message.clone())
+        }
     }
 
     #[cfg(feature = "web")]
@@ -399,7 +439,7 @@ pub mod api {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
                 Self::Network(e) => write!(f, "network error: {e}"),
-                Self::Status { code, message } => {
+                Self::Status { code, message, .. } => {
                     if message.is_empty() {
                         write!(f, "http {code}")
                     } else {
@@ -423,16 +463,17 @@ pub mod api {
                 .map_err(|e| ApiError::Decode(e.to_string()));
         }
         let body = response.text().await.unwrap_or_default();
-        let message = serde_json::from_str::<crate::utils::error::ErrorResponse>(&body)
-            .map(|env| env.error.message)
-            .unwrap_or_else(|_| {
+        let (message, fields) =
+            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
+                Ok(env) => (env.error.message, env.error.errors.unwrap_or_default()),
                 // Fall back to the raw body, capped so a runaway HTML
                 // 500 page doesn't end up in a toast.
-                body.chars().take(200).collect()
-            });
+                Err(_) => (body.chars().take(200).collect(), Vec::new()),
+            };
         Err(ApiError::Status {
             code: status,
             message,
+            fields,
         })
     }
 
@@ -477,6 +518,7 @@ pub mod api {
         let t = current_access_token().ok_or_else(|| ApiError::Status {
             code: 401,
             message: String::new(),
+            fields: Vec::new(),
         })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::put(&url)
@@ -495,6 +537,7 @@ pub mod api {
         let t = current_access_token().ok_or_else(|| ApiError::Status {
             code: 401,
             message: String::new(),
+            fields: Vec::new(),
         })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::delete(&url)
@@ -508,12 +551,15 @@ pub mod api {
             Ok(())
         } else {
             let body = resp.text().await.unwrap_or_default();
-            let message = serde_json::from_str::<crate::utils::error::ErrorResponse>(&body)
-                .map(|env| env.error.message)
-                .unwrap_or_else(|_| body.chars().take(200).collect());
+            let (message, fields) =
+                match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
+                    Ok(env) => (env.error.message, env.error.errors.unwrap_or_default()),
+                    Err(_) => (body.chars().take(200).collect(), Vec::new()),
+                };
             Err(ApiError::Status {
                 code: status,
                 message,
+                fields,
             })
         }
     }

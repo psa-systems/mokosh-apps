@@ -26,6 +26,11 @@ pub struct InputProps {
     /// the browser rejects absurd magnitudes. No-op for non-number inputs.
     #[props(default)]
     max: Option<String>,
+    /// `maxlength` attribute for text inputs. A client-side UX nicety that
+    /// stops the field from exceeding a known server limit (e.g. ticket
+    /// Title at 500); the server stays the source of truth (MAPPS-210).
+    #[props(default)]
+    maxlength: Option<i64>,
     /// Placeholder text
     #[props(default)]
     placeholder: String,
@@ -85,6 +90,7 @@ pub fn Input(props: InputProps) -> Element {
                 step: props.step.as_deref(),
                 min: props.min.as_deref(),
                 max: props.max.as_deref(),
+                maxlength: props.maxlength,
                 class: "{class}",
                 placeholder: "{props.placeholder}",
                 value: "{props.value}",
