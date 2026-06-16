@@ -355,8 +355,16 @@ fn fields_label(fields: &[String]) -> String {
 }
 
 /// "due_date" to "Due date" for a single field name.
+///
+/// PMS-370: column names for foreign-key fields end in `_id`
+/// (`status_id`, `priority_id`, `assigned_to_id`). The audit log records
+/// the raw column name, so without trimming the suffix the change-history
+/// feed reads "Status id" / "Priority id" / "Assigned to id". Strip the
+/// trailing `_id` first so future FK fields render cleanly without a
+/// per-column allow-list.
 fn title_field(f: &str) -> String {
-    let mut s = f.replace('_', " ");
+    let trimmed = f.strip_suffix("_id").unwrap_or(f);
+    let mut s = trimmed.replace('_', " ");
     if let Some(first) = s.get_mut(0..1) {
         first.make_ascii_uppercase();
     }
