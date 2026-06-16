@@ -16,6 +16,7 @@
 //! `String` and rendered with a leading `$` via [`money`].
 
 use dioxus::prelude::*;
+use rust_decimal::Decimal;
 use serde::Deserialize;
 
 use crate::components::{
@@ -1477,6 +1478,18 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
     }
 }
 
+// Field caps for the Record Payment form's free-text inputs (MAPPS-215).
+// Mirror the mokosh-server column limits so over-long input is blocked inline
+// (via `maxlength`) instead of failing later as an opaque 422; the server
+// stays the source of truth.
+const PAYMENT_REFERENCE_MAX: usize = 100;
+const PAYMENT_NOTES_MAX: usize = 2000;
+
+/// Upper bound for the Amount field (MAPPS-215). Comfortably inside `Decimal`'s
+/// range while ruling out absurd magnitudes, so such input is caught with a
+/// clear "out of range" message rather than a misleading parse error.
+const PAYMENT_AMOUNT_MAX: i64 = 10_000_000_000;
+
 #[derive(Props, Clone, PartialEq)]
 struct RecordPaymentModalProps {
     // MAPPS-158: optional seeds so the invoice detail page can pre-fill the
@@ -1511,6 +1524,10 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
     let mut notes = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // Per-field inline validation errors (MAPPS-215): shown beneath the field
+    // they belong to instead of collapsing into the single form-level banner.
+    let mut amount_err = use_signal(String::new);
+    let mut invoice_err = use_signal(String::new);
 
     let method_options = vec![
         SelectOption::new("check", "Check"),
@@ -1529,6 +1546,8 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
             return;
         }
         error.set(String::new());
+        amount_err.set(String::new());
+        invoice_err.set(String::new());
 
         let Some(company_uuid) = uuid::Uuid::parse_str(company_id.read().trim()).ok() else {
             error.set("A valid company ID (UUID) is required.".to_string());
@@ -1539,19 +1558,80 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
             error.set("Payment date is required.".to_string());
             return;
         }
-        let amt = amount.read().trim().to_string();
-        if amt.is_empty() {
-            error.set("Amount is required.".to_string());
-            return;
-        }
-        // invoice_id is optional (an unapplied payment is allowed). Only
-        // send it when it parses.
-        let invoice_value = match uuid::Uuid::parse_str(invoice_id.read().trim()) {
-            Ok(id) => serde_json::Value::String(id.to_string()),
-            Err(_) => serde_json::Value::Null,
+
+        // Collect field-level errors so the user sees every problem at once,
+        // each attached to its own field (MAPPS-215).
+        let mut ok = true;
+
+        // Amount: required, strictly positive, at most 2 decimals, in range.
+        // `min`/`step` on the field block most bad input in the browser; this
+        // re-checks on submit so a pasted or scripted value can't slip a
+        // negative/zero or sub-cent amount past the form.
+        let amt = {
+            let s = amount.read().trim().to_string();
+            if s.is_empty() {
+                amount_err.set("Amount is required.".to_string());
+                ok = false;
+                String::new()
+            } else {
+                match s.parse::<Decimal>() {
+                    Ok(d) if d <= Decimal::ZERO => {
+                        amount_err.set("Amount must be greater than zero.".to_string());
+                        ok = false;
+                        String::new()
+                    }
+                    Ok(d) if d.scale() > 2 => {
+                        amount_err.set("Amount must have at most 2 decimal places.".to_string());
+                        ok = false;
+                        String::new()
+                    }
+                    Ok(d) if d > Decimal::from(PAYMENT_AMOUNT_MAX) => {
+                        amount_err.set("Amount is out of range.".to_string());
+                        ok = false;
+                        String::new()
+                    }
+                    Ok(_) => s,
+                    Err(_) => {
+                        amount_err.set("Amount must be a number.".to_string());
+                        ok = false;
+                        String::new()
+                    }
+                }
+            }
         };
 
+        // Invoice ID is optional (an unapplied payment is allowed). When
+        // present it must be a valid UUID; existence is confirmed below before
+        // the payment is recorded. A malformed value is no longer silently
+        // dropped (which produced an unintended unapplied payment).
+        let invoice_uuid = {
+            let raw = invoice_id.read().trim().to_string();
+            if raw.is_empty() {
+                None
+            } else {
+                match uuid::Uuid::parse_str(&raw) {
+                    Ok(id) => Some(id),
+                    Err(_) => {
+                        invoice_err.set(
+                            "Invoice ID must be a valid UUID, or leave it blank for an unapplied payment."
+                                .to_string(),
+                        );
+                        ok = false;
+                        None
+                    }
+                }
+            }
+        };
+
+        if !ok {
+            return;
+        }
+
         saving.set(true);
+        let invoice_value = match invoice_uuid {
+            Some(id) => serde_json::Value::String(id.to_string()),
+            None => serde_json::Value::Null,
+        };
         let body = serde_json::json!({
             "company_id": company_uuid,
             "invoice_id": invoice_value,
@@ -1564,6 +1644,22 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
+                // For an applied payment, confirm the invoice exists (and is
+                // visible to this tenant) before recording, so a well-formed
+                // but unknown ID gets a field message instead of an opaque
+                // server FK error (MAPPS-215).
+                if let Some(id) = invoice_uuid {
+                    if crate::hooks::fetch::api::get_authed::<InvoiceDetail>(&format!(
+                        "/invoices/{id}"
+                    ))
+                    .await
+                    .is_err()
+                    {
+                        invoice_err.set("No invoice found with that ID.".to_string());
+                        saving.set(false);
+                        return;
+                    }
+                }
                 match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
                     "/payments",
                     &body,
@@ -1621,6 +1717,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                     label: "Invoice ID (UUID, optional)",
                     help: "Leave blank for an unapplied payment.",
                     value: invoice_id.read().clone(),
+                    error: invoice_err(),
                     oninput: move |e: FormEvent| invoice_id.set(e.value()),
                 }
                 div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
@@ -1635,8 +1732,13 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                         name: "payment_amount",
                         label: "Amount",
                         r#type: "number",
+                        // `min`/`step` make the browser reject non-positive and
+                        // sub-cent amounts; submit-time validation re-checks.
+                        min: "0.01".to_string(),
+                        step: "0.01".to_string(),
                         required: true,
                         value: amount.read().clone(),
+                        error: amount_err(),
                         oninput: move |e: FormEvent| amount.set(e.value()),
                     }
                 }
@@ -1650,6 +1752,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                 crate::components::Input {
                     name: "payment_reference",
                     label: "Reference Number",
+                    maxlength: PAYMENT_REFERENCE_MAX as i64,
                     value: reference_number.read().clone(),
                     oninput: move |e: FormEvent| reference_number.set(e.value()),
                 }
@@ -1657,6 +1760,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                     name: "payment_notes",
                     label: "Notes",
                     rows: 2,
+                    maxlength: PAYMENT_NOTES_MAX as i64,
                     value: notes.read().clone(),
                     oninput: move |e: FormEvent| notes.set(e.value()),
                 }
