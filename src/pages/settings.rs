@@ -114,6 +114,11 @@ pub fn SettingsHomePage() -> Element {
                     description: "Service-level policies, business hours, and holiday calendars.",
                 }
                 SettingsCard {
+                    to: Route::SettingsScheduling {},
+                    title: "Scheduling",
+                    description: "Standard due date applied to new tasks and tickets when none is set.",
+                }
+                SettingsCard {
                     to: Route::SettingsRateCards {},
                     title: "Rate Cards",
                     description: "Hourly rates billed per work type.",
@@ -186,6 +191,191 @@ fn SettingsCard(to: Route, title: String, description: String) -> Element {
             class: "block rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 hover:border-blue-400 dark:hover:border-blue-500 hover:shadow-sm transition-colors",
             div { class: "font-medium text-gray-900 dark:text-white", "{title}" }
             div { class: "mt-1 text-sm text-gray-500 dark:text-gray-400", "{description}" }
+        }
+    }
+}
+
+// ============================================================================
+// Scheduling: standard due date (MAPPS-345 / PMS-345)
+// GET/PUT `/settings/scheduling/default_due_business_days`
+// ============================================================================
+
+/// Shape of the per-key tenant setting response. Only `value` is read; the
+/// server stores the business-day offset as a JSON integer.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct SettingValueRow {
+    #[serde(default)]
+    value: serde_json::Value,
+}
+
+const DEFAULT_DUE_SETTING_PATH: &str = "/settings/scheduling/default_due_business_days";
+const MAX_DUE_BUSINESS_DAYS: u32 = 365;
+
+/// `/settings/scheduling` - edit the tenant-wide standard due date that the
+/// server applies to new tasks (and tickets with no SLA-derived due date)
+/// when no explicit due date is given. `0` disables the default. Mirrors the
+/// `scheduling/default_due_business_days` tenant setting and the
+/// `validate_setting_value` range (0..=365) on the server (PMS-345).
+#[component]
+pub fn SchedulingSettingsPage() -> Element {
+    if !use_is_admin() {
+        return rsx! { AdminOnlyNotice { title: "Scheduling" } };
+    }
+
+    let resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        #[cfg(feature = "web")]
+        {
+            // A missing setting (404) is the unconfigured state, not an
+            // error: treat it as `0` (no default due date). Any other
+            // failure is surfaced so the form does not silently seed 0.
+            match crate::hooks::fetch::api::get_authed_typed::<SettingValueRow>(
+                DEFAULT_DUE_SETTING_PATH,
+            )
+            .await
+            {
+                Ok(row) => Some(
+                    row.value
+                        .as_u64()
+                        .unwrap_or(0)
+                        .min(u64::from(MAX_DUE_BUSINESS_DAYS)) as u32,
+                ),
+                Err(e) if e.status_code() == Some(404) => Some(0u32),
+                Err(_) => None,
+            }
+        }
+        #[cfg(not(feature = "web"))]
+        {
+            None::<u32>
+        }
+    });
+
+    let snap = resource.read_unchecked();
+    rsx! {
+        AppLayout { title: "Scheduling",
+            PageHeader {
+                title: "Scheduling",
+                subtitle: "Standard due date applied to new work when none is set",
+                actions: rsx! {
+                    Link { to: Route::SettingsHome {},
+                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
+                    }
+                },
+            }
+            match &*snap {
+                None => rsx! {
+                    Card {
+                        div { class: "py-12 text-center text-sm text-gray-500 dark:text-gray-400",
+                            "Loading scheduling settings..."
+                        }
+                    }
+                },
+                Some(None) => rsx! {
+                    Card {
+                        div { class: "py-12 text-center",
+                            p { class: "text-sm text-red-600 dark:text-red-300",
+                                "Could not load scheduling settings. Refresh the page to retry."
+                            }
+                        }
+                    }
+                },
+                Some(Some(days)) => rsx! {
+                    StandardDueDateForm { initial: *days }
+                },
+            }
+        }
+    }
+}
+
+#[component]
+fn StandardDueDateForm(initial: u32) -> Element {
+    let mut value = use_signal(|| initial.to_string());
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(String::new);
+    let mut saved = use_signal(|| false);
+
+    let handle_save = move |_| {
+        if *saving.read() {
+            return;
+        }
+        let raw = value.read().trim().to_string();
+        // Mirror the server-side validation (0..=365) so the user gets an
+        // inline message instead of a 422 round-trip.
+        let parsed = match raw.parse::<u32>() {
+            Ok(n) if n <= MAX_DUE_BUSINESS_DAYS => n,
+            _ => {
+                error.set(format!(
+                    "Enter a whole number of business days from 0 to {MAX_DUE_BUSINESS_DAYS} (0 disables the default)."
+                ));
+                saved.set(false);
+                return;
+            }
+        };
+        saving.set(true);
+        error.set(String::new());
+        saved.set(false);
+        let body = serde_json::json!({ "value": parsed });
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match crate::hooks::fetch::api::put_authed_typed::<SettingValueRow, _>(
+                    DEFAULT_DUE_SETTING_PATH,
+                    &body,
+                )
+                .await
+                {
+                    Ok(_) => saved.set(true),
+                    Err(e) => error.set(format!(
+                        "Could not save scheduling settings: {}",
+                        e.user_message()
+                    )),
+                }
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                let _ = &body;
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        Card {
+            div { class: "space-y-4 p-6",
+                if saved() {
+                    div { class: "text-sm text-green-700 dark:text-green-300", "Scheduling settings saved." }
+                }
+                if !error.read().is_empty() {
+                    div {
+                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                        "{error}"
+                    }
+                }
+                crate::components::Input {
+                    name: "default_due_business_days",
+                    label: "Default due date (business days)",
+                    r#type: "number",
+                    min: "0".to_string(),
+                    max: MAX_DUE_BUSINESS_DAYS.to_string(),
+                    step: "1".to_string(),
+                    value: value.read().clone(),
+                    oninput: move |e: FormEvent| {
+                        saved.set(false);
+                        value.set(e.value());
+                    },
+                }
+                p { class: "text-sm text-gray-500 dark:text-gray-400",
+                    "New tasks without a due date, and tickets that match no SLA, default to this many business days from the day they are created (weekends skipped). Set 0 to leave new work with no default due date."
+                }
+                div {
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        loading: *saving.read(),
+                        onclick: handle_save,
+                        "Save Changes"
+                    }
+                }
+            }
         }
     }
 }
