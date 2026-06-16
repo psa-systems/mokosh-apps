@@ -26,6 +26,10 @@ pub struct InputProps {
     /// the browser rejects absurd magnitudes. No-op for non-number inputs.
     #[props(default)]
     max: Option<String>,
+    /// `maxlength` attribute. Caps how many characters the field accepts so
+    /// over-long text is blocked at the input rather than failing server-side.
+    #[props(default)]
+    maxlength: Option<String>,
     /// Placeholder text
     #[props(default)]
     placeholder: String,
@@ -85,6 +89,7 @@ pub fn Input(props: InputProps) -> Element {
                 step: props.step.as_deref(),
                 min: props.min.as_deref(),
                 max: props.max.as_deref(),
+                maxlength: props.maxlength.as_deref(),
                 class: "{class}",
                 placeholder: "{props.placeholder}",
                 value: "{props.value}",
@@ -185,6 +190,10 @@ pub struct TextareaProps {
     error: String,
     #[props(default)]
     help: String,
+    /// `maxlength` attribute. Caps how many characters the textarea accepts so
+    /// over-long text is blocked at the input rather than failing server-side.
+    #[props(default)]
+    maxlength: Option<String>,
     #[props(default)]
     class: String,
     #[props(default)]
@@ -219,6 +228,7 @@ pub fn Textarea(props: TextareaProps) -> Element {
                 class: "{class}",
                 placeholder: "{props.placeholder}",
                 rows: "{props.rows}",
+                maxlength: props.maxlength.as_deref(),
                 required: props.required,
                 disabled: props.disabled,
                 oninput: move |e| props.oninput.call(e),
