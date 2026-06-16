@@ -183,6 +183,11 @@ pub struct TextareaProps {
     value: String,
     #[props(default = 3)]
     rows: u32,
+    /// `maxlength` attribute. A client-side UX nicety that stops the field
+    /// from exceeding a known server limit; the server stays the source of
+    /// truth (mirrors [`Input`], MAPPS-219).
+    #[props(default)]
+    maxlength: Option<i64>,
     #[props(default = false)]
     required: bool,
     #[props(default = false)]
@@ -225,6 +230,7 @@ pub fn Textarea(props: TextareaProps) -> Element {
                 class: "{class}",
                 placeholder: "{props.placeholder}",
                 rows: "{props.rows}",
+                maxlength: props.maxlength,
                 required: props.required,
                 disabled: props.disabled,
                 oninput: move |e| props.oninput.call(e),

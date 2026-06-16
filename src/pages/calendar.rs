@@ -211,6 +211,174 @@ fn utc_to_datetime_local_value(dt: DateTime<Utc>) -> String {
         .to_string()
 }
 
+/// Client `maxlength` caps for the appointment text fields (MAPPS-219). The
+/// server stays the source of truth; these are UX nicety bounds that stop a
+/// field from growing without limit before submit.
+const APPT_TITLE_MAX: i64 = 255;
+const APPT_LOCATION_MAX: i64 = 255;
+const APPT_DESCRIPTION_MAX: i64 = 2000;
+
+/// Validate a recurrence value as an RFC 5545 RRULE (MAPPS-219). The server
+/// expands the series from this rule, so a malformed rule would be persisted
+/// and then fail (or silently misbehave) during expansion with no feedback to
+/// the user. We parse it client-side and reject before submit; the server
+/// stays the source of truth.
+///
+/// This validates structure (a `;`-separated list of `KEY=VALUE` parts), that
+/// a valid `FREQ` is present, that every key is a known RRULE part, that
+/// `COUNT` and `UNTIL` are not both set, and that the common numeric / keyword
+/// values are well-formed. It does not evaluate the rule semantically.
+fn validate_rrule(rule: &str) -> Result<(), String> {
+    // Tolerate an optional `RRULE:` prefix (some pastes include it).
+    let body = rule
+        .trim()
+        .strip_prefix("RRULE:")
+        .or_else(|| rule.trim().strip_prefix("rrule:"))
+        .unwrap_or(rule.trim())
+        .trim();
+    if body.is_empty() {
+        return Err("Enter an RFC 5545 recurrence rule, e.g. FREQ=WEEKLY;BYDAY=MO.".to_string());
+    }
+
+    const FREQ_VALUES: [&str; 7] = [
+        "SECONDLY", "MINUTELY", "HOURLY", "DAILY", "WEEKLY", "MONTHLY", "YEARLY",
+    ];
+    const KNOWN_PARTS: [&str; 14] = [
+        "FREQ",
+        "UNTIL",
+        "COUNT",
+        "INTERVAL",
+        "BYSECOND",
+        "BYMINUTE",
+        "BYHOUR",
+        "BYDAY",
+        "BYMONTHDAY",
+        "BYYEARDAY",
+        "BYWEEKNO",
+        "BYMONTH",
+        "BYSETPOS",
+        "WKST",
+    ];
+    const WEEKDAYS: [&str; 7] = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"];
+
+    let mut has_freq = false;
+    let mut has_count = false;
+    let mut has_until = false;
+
+    for part in body.split(';') {
+        if part.is_empty() {
+            return Err("Recurrence rule has an empty part; remove the stray ';'.".to_string());
+        }
+        let Some((key_raw, value)) = part.split_once('=') else {
+            return Err(format!(
+                "Recurrence part '{part}' is not in KEY=VALUE form."
+            ));
+        };
+        let key = key_raw.to_ascii_uppercase();
+        if !KNOWN_PARTS.contains(&key.as_str()) {
+            return Err(format!("'{key_raw}' is not a valid RRULE part."));
+        }
+        if value.is_empty() {
+            return Err(format!("Recurrence part '{key}' has no value."));
+        }
+        let upper = value.to_ascii_uppercase();
+        match key.as_str() {
+            "FREQ" => {
+                if !FREQ_VALUES.contains(&upper.as_str()) {
+                    return Err(format!("FREQ '{value}' is not a valid frequency."));
+                }
+                has_freq = true;
+            }
+            "COUNT" => {
+                has_count = true;
+                if !matches!(value.parse::<u32>(), Ok(n) if n >= 1) {
+                    return Err("COUNT must be a positive whole number.".to_string());
+                }
+            }
+            "INTERVAL" => {
+                if !matches!(value.parse::<u32>(), Ok(n) if n >= 1) {
+                    return Err("INTERVAL must be a positive whole number.".to_string());
+                }
+            }
+            "UNTIL" => {
+                has_until = true;
+                if !is_valid_until(&upper) {
+                    return Err(
+                        "UNTIL must be an RFC 5545 date or date-time, e.g. 20261231T235959Z."
+                            .to_string(),
+                    );
+                }
+            }
+            "BYDAY" => {
+                for token in value.split(',') {
+                    if !is_valid_byday(token, &WEEKDAYS) {
+                        return Err(format!("BYDAY value '{token}' is invalid."));
+                    }
+                }
+            }
+            "WKST" => {
+                if !WEEKDAYS.contains(&upper.as_str()) {
+                    return Err(format!("WKST '{value}' must be a weekday like MO."));
+                }
+            }
+            // Remaining BY* parts are comma-separated, optionally signed integers.
+            _ => {
+                for token in value.split(',') {
+                    let digits = token.strip_prefix(['+', '-']).unwrap_or(token);
+                    if digits.is_empty() || digits.parse::<u32>().is_err() {
+                        return Err(format!("{key} value '{token}' must be a whole number."));
+                    }
+                }
+            }
+        }
+    }
+
+    if !has_freq {
+        return Err("Recurrence rule must include a FREQ, e.g. FREQ=WEEKLY.".to_string());
+    }
+    if has_count && has_until {
+        return Err("Recurrence rule cannot set both COUNT and UNTIL.".to_string());
+    }
+    Ok(())
+}
+
+/// A `BYDAY` token: an optional signed ordinal followed by a two-letter
+/// weekday code (e.g. `MO`, `2MO`, `-1SU`).
+fn is_valid_byday(token: &str, weekdays: &[&str; 7]) -> bool {
+    let t = token.to_ascii_uppercase();
+    if !t.is_ascii() || t.len() < 2 {
+        return false;
+    }
+    let (ord, day) = t.split_at(t.len() - 2);
+    if !weekdays.contains(&day) {
+        return false;
+    }
+    if ord.is_empty() {
+        return true;
+    }
+    let digits = ord.strip_prefix(['+', '-']).unwrap_or(ord);
+    !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
+}
+
+/// An `UNTIL` value: an RFC 5545 DATE (`YYYYMMDD`) or DATE-TIME
+/// (`YYYYMMDDTHHMMSS`, optionally suffixed `Z` for UTC).
+fn is_valid_until(value: &str) -> bool {
+    let (date, time) = match value.split_once('T') {
+        Some((d, t)) => (d, Some(t)),
+        None => (value, None),
+    };
+    if date.len() != 8 || !date.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    match time {
+        None => true,
+        Some(t) => {
+            let t = t.strip_suffix('Z').unwrap_or(t);
+            t.len() == 6 && t.chars().all(|c| c.is_ascii_digit())
+        }
+    }
+}
+
 /// Local clock label like `9:00 AM` for an appointment start/end.
 fn time_label(dt: DateTime<Utc>) -> String {
     dt.with_timezone(&Local).format("%-I:%M %p").to_string()
@@ -1045,6 +1213,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
     let mut end_value = use_signal(|| utc_to_datetime_local_value(init_end));
     let mut assignee = use_signal(|| init_assignee);
     let mut recurrence = use_signal(String::new);
+    let mut recurrence_error = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -1094,6 +1263,16 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
         let type_val = appointment_type.read().clone();
         let status_val = status.read().clone();
         let rrule = optional(&recurrence.read());
+
+        // Reject a malformed RRULE at the field before submit so an invalid
+        // rule is never persisted (MAPPS-219). Empty -> one-off, no rule.
+        if let Some(rule) = rrule.as_deref() {
+            if let Err(msg) = validate_rrule(rule) {
+                recurrence_error.set(msg);
+                return;
+            }
+        }
+        recurrence_error.set(String::new());
 
         saving.set(true);
         error.set(String::new());
@@ -1261,6 +1440,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                     label: "Title",
                     placeholder: "e.g. Onsite: Acme Corp",
                     required: true,
+                    maxlength: APPT_TITLE_MAX,
                     value: title.read().clone(),
                     oninput: move |e: FormEvent| title.set(e.value()),
                 }
@@ -1308,6 +1488,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                         name: "appt_location",
                         label: "Location",
                         placeholder: "e.g. Client site / Remote",
+                        maxlength: APPT_LOCATION_MAX,
                         value: location.read().clone(),
                         oninput: move |e: FormEvent| location.set(e.value()),
                     }
@@ -1319,14 +1500,19 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                         placeholder: "e.g. FREQ=WEEKLY;BYDAY=MO",
                         help: "RFC 5545 rule. Leave blank for a one-off. The series is anchored on the start time."
                             .to_string(),
+                        error: recurrence_error.read().clone(),
                         value: recurrence.read().clone(),
-                        oninput: move |e: FormEvent| recurrence.set(e.value()),
+                        oninput: move |e: FormEvent| {
+                            recurrence_error.set(String::new());
+                            recurrence.set(e.value());
+                        },
                     }
                 }
                 Textarea {
                     name: "appt_description",
                     label: "Description",
                     rows: 3,
+                    maxlength: APPT_DESCRIPTION_MAX,
                     value: description.read().clone(),
                     oninput: move |e: FormEvent| description.set(e.value()),
                 }
@@ -1744,4 +1930,55 @@ fn availability_geometry(w: &UserAvailabilityResponse) -> (f64, f64) {
     let left = (start - GRID_START_HOUR as f64) / GRID_TOTAL_HOURS * 100.0;
     let width = ((end - start) / GRID_TOTAL_HOURS) * 100.0;
     (left.max(0.0), width.max(0.0))
+}
+
+#[cfg(test)]
+mod rrule_tests {
+    use super::validate_rrule;
+
+    #[test]
+    fn accepts_valid_rules() {
+        assert!(validate_rrule("FREQ=WEEKLY;BYDAY=MO").is_ok());
+        assert!(validate_rrule("FREQ=DAILY").is_ok());
+        assert!(validate_rrule("FREQ=MONTHLY;BYDAY=-1FR;INTERVAL=2").is_ok());
+        assert!(validate_rrule("FREQ=WEEKLY;COUNT=10;WKST=SU").is_ok());
+        assert!(validate_rrule("FREQ=YEARLY;UNTIL=20271231").is_ok());
+        assert!(validate_rrule("FREQ=DAILY;UNTIL=20271231T235959Z").is_ok());
+        // Optional RRULE: prefix and lowercase keys/values tolerated.
+        assert!(validate_rrule("RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR").is_ok());
+        assert!(validate_rrule("freq=weekly;byday=mo").is_ok());
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        assert!(validate_rrule("GARBAGE NOT A RULE").is_err());
+        assert!(validate_rrule("").is_err());
+        assert!(validate_rrule("   ").is_err());
+    }
+
+    #[test]
+    fn requires_freq() {
+        assert!(validate_rrule("COUNT=5").is_err());
+        assert!(validate_rrule("INTERVAL=2;BYDAY=MO").is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_part_and_bad_values() {
+        assert!(validate_rrule("FREQ=WEEKLY;BOGUS=1").is_err());
+        assert!(validate_rrule("FREQ=FORTNIGHTLY").is_err());
+        assert!(validate_rrule("FREQ=WEEKLY;COUNT=0").is_err());
+        assert!(validate_rrule("FREQ=WEEKLY;INTERVAL=x").is_err());
+        assert!(validate_rrule("FREQ=WEEKLY;BYDAY=XX").is_err());
+        assert!(validate_rrule("FREQ=WEEKLY;UNTIL=notadate").is_err());
+        assert!(validate_rrule("FREQ=WEEKLY;BYMONTH=abc").is_err());
+        // Malformed structure.
+        assert!(validate_rrule("FREQ=WEEKLY;;BYDAY=MO").is_err());
+        assert!(validate_rrule("FREQ").is_err());
+        assert!(validate_rrule("FREQ=WEEKLY;BYDAY=").is_err());
+    }
+
+    #[test]
+    fn rejects_count_and_until_together() {
+        assert!(validate_rrule("FREQ=DAILY;COUNT=5;UNTIL=20271231").is_err());
+    }
 }
