@@ -129,6 +129,14 @@ fn SidebarContent() -> Element {
         .as_ref()
         .map(|u| u.role.is_admin())
         .unwrap_or(false);
+    // Manager+ (manager/admin/super_admin) see the timesheet approvals queue,
+    // matching the server's RequireManager gate on approve/reject (MAPPS-194).
+    let can_manage = auth
+        .read()
+        .user
+        .as_ref()
+        .map(|u| u.role.can_manage_users())
+        .unwrap_or(false);
 
     rsx! {
         div { class: "flex flex-col flex-1 min-h-0",
@@ -145,6 +153,9 @@ fn SidebarContent() -> Element {
                 NavItem { to: Route::TicketList {}, icon: rsx!(TicketIcon {}), label: "Tickets" }
                 NavItem { to: Route::TimeEntryList {}, icon: rsx!(ClockIcon {}), label: "Time Entries" }
                 NavItem { to: Route::Timesheets {}, icon: rsx!(DocumentIcon {}), label: "Timesheets" }
+                if can_manage {
+                    NavItem { to: Route::TimesheetApprovals {}, icon: rsx!(DocumentIcon {}), label: "Timesheet Approvals" }
+                }
             }
 
             NavSection { title: "Projects",
