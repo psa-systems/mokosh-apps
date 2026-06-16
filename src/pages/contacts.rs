@@ -128,7 +128,7 @@ struct PaginationMeta {
 /// Subset of mokosh-server's `ContactResponse` we render in the contacts
 /// list. As with companies, serde drops unknown fields so this can grow
 /// without breaking decoding. Field names match the server's
-/// `ContactResponse` shape (`phone`, `title`); earlier names
+/// `ContactResponse` shape (`phone`, `contact_type`); earlier names
 /// (`phone_primary`, `job_title`) silently parsed as `None` because
 /// `#[serde(default)]` swallowed the absent fields, which is why the
 /// company-detail Contacts card showed blank Phone and Role columns.
@@ -147,8 +147,14 @@ struct RemoteContact {
     email: Option<String>,
     #[serde(default)]
     phone: Option<String>,
+    // PMS-368: the list "Role" column used to render `title` (a free-text job
+    // title like "IT Manager"), which mismatched its header. `contact_type` is
+    // the field that actually classifies the contact's role (Primary /
+    // Technical / Billing / Other) and is what the column now binds. Server
+    // serializes it snake_case on `ContactResponse`/`Contact`. `title` is
+    // still shown on the contact detail page, which decodes its own struct.
     #[serde(default)]
-    title: Option<String>,
+    contact_type: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1274,7 +1280,9 @@ fn CompanyContactsCard(
                                         let name = format!("{} {}", contact.first_name, contact.last_name).trim().to_string();
                                         let email = contact.email.clone().unwrap_or_default();
                                         let phone = contact.phone.clone().unwrap_or_default();
-                                        let role = contact.title.clone().unwrap_or_default();
+                                        let role = humanize_contact_type(
+                                            contact.contact_type.as_deref().unwrap_or_default(),
+                                        );
                                         rsx! {
                                             TableRow { key: "{id}",
                                                 TableCell {
@@ -1982,7 +1990,9 @@ pub fn ContactListPage() -> Element {
                                     company_id: contact.company_id.map(|id| id.to_string()).unwrap_or_default(),
                                     email: contact.email.clone().unwrap_or_default(),
                                     phone: contact.phone.clone().unwrap_or_default(),
-                                    role: contact.title.clone().unwrap_or_default(),
+                                    role: humanize_contact_type(
+                                        contact.contact_type.as_deref().unwrap_or_default(),
+                                    ),
                                 }
                             }
                         }
@@ -2898,5 +2908,19 @@ mod validation_tests {
         assert!(validate_timezone_field("America/New_York").is_ok());
         assert!(validate_timezone_field("America/New York").is_err());
         assert!(validate_timezone_field("notazone").is_err());
+    }
+
+    // PMS-368: the list "Role" column binds humanized `contact_type`
+    // (the role classification) instead of the free-text `title`.
+    #[test]
+    fn contact_type_humanizes_canonical_set() {
+        use super::humanize_contact_type;
+        assert_eq!(humanize_contact_type("primary"), "Primary");
+        assert_eq!(humanize_contact_type("technical"), "Technical");
+        assert_eq!(humanize_contact_type("billing"), "Billing");
+        assert_eq!(humanize_contact_type("other"), "Other");
+        // Unknown / absent values pass through verbatim rather than vanishing.
+        assert_eq!(humanize_contact_type("escalation"), "escalation");
+        assert_eq!(humanize_contact_type(""), "");
     }
 }
