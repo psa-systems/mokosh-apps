@@ -26,11 +26,12 @@ pub struct InputProps {
     /// the browser rejects absurd magnitudes. No-op for non-number inputs.
     #[props(default)]
     max: Option<String>,
-    /// `maxlength` attribute. Caps the typed length client-side to match the
-    /// server's validator so an over-long value is stopped at the field
-    /// instead of failing with an opaque 422.
+    /// `maxlength` attribute for text inputs. A client-side UX nicety that
+    /// stops the field from exceeding a known server limit (e.g. ticket
+    /// Title at 500, contract Name at 200, company fields at 255); the server
+    /// stays the source of truth (MAPPS-210 / MAPPS-211 / MAPPS-213).
     #[props(default)]
-    maxlength: Option<String>,
+    maxlength: Option<i64>,
     /// Placeholder text
     #[props(default)]
     placeholder: String,
@@ -90,7 +91,7 @@ pub fn Input(props: InputProps) -> Element {
                 step: props.step.as_deref(),
                 min: props.min.as_deref(),
                 max: props.max.as_deref(),
-                maxlength: props.maxlength.as_deref(),
+                maxlength: props.maxlength,
                 class: "{class}",
                 placeholder: "{props.placeholder}",
                 value: "{props.value}",
@@ -183,11 +184,6 @@ pub struct TextareaProps {
     value: String,
     #[props(default = 3)]
     rows: u32,
-    /// `maxlength` attribute. Caps the typed length client-side to match the
-    /// server's validator so an over-long value is stopped at the field
-    /// instead of failing with an opaque 422.
-    #[props(default)]
-    maxlength: Option<String>,
     #[props(default = false)]
     required: bool,
     #[props(default = false)]
@@ -196,6 +192,10 @@ pub struct TextareaProps {
     error: String,
     #[props(default)]
     help: String,
+    /// `maxlength` attribute. Caps how many characters the textarea accepts so
+    /// over-long text is blocked at the input rather than failing server-side.
+    #[props(default)]
+    maxlength: Option<String>,
     #[props(default)]
     class: String,
     #[props(default)]

@@ -1135,7 +1135,7 @@ pub fn InvoiceNewPage() -> Element {
                     crate::components::Input {
                         name: "po_number",
                         label: "PO Number",
-                        maxlength: "100",
+                        maxlength: 100,
                         value: po_number.read().clone(),
                         oninput: move |e: FormEvent| po_number.set(e.value()),
                     }
@@ -1147,7 +1147,7 @@ pub fn InvoiceNewPage() -> Element {
                                 name: "line_description",
                                 label: "Description",
                                 required: true,
-                                maxlength: "1000",
+                                maxlength: 1000,
                                 placeholder: "What was delivered",
                                 value: line_description.read().clone(),
                                 oninput: move |e: FormEvent| line_description.set(e.value()),
