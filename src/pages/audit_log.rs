@@ -423,9 +423,12 @@ fn AuditLogContent() -> Element {
                         TableLoading { columns: 7, rows: 5 }
                     } else if page_rows.is_empty() {
                         if has_filters {
+                            // Filtered to nothing: no CTA (entries are recorded by
+                            // the system); guide the user back to the filters.
                             TableEmpty {
                                 columns: 7,
-                                message: "No audit entries match your filters.".to_string(),
+                                title: "No audit entries match your filters".to_string(),
+                                description: "Try clearing or adjusting the filters above.".to_string(),
                             }
                         } else {
                             // PMS-354: no CTA - audit entries are recorded by
