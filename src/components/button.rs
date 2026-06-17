@@ -93,11 +93,17 @@ pub fn Button(props: ButtonProps) -> Element {
         props.class
     );
 
+    let is_disabled = props.disabled || props.loading;
+
     rsx! {
         button {
             class: "{class}",
             r#type: "{props.r#type}",
-            disabled: props.disabled || props.loading,
+            disabled: is_disabled,
+            // Mirror the native disabled state into aria-disabled so assistive
+            // tech announces the control as unavailable, paired with the `title`
+            // reason for why (MAPPS-262).
+            "aria-disabled": is_disabled.then_some("true"),
             title: props.title.as_deref(),
             "data-testid": props.data_testid.as_deref(),
             onclick: move |e| props.onclick.call(e),
