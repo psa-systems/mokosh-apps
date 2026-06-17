@@ -1522,7 +1522,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                                 }
 
                                 ContractItemsCard { items_resource, editing_item }
-                                ContractHourBalanceCard { balance_resource }
+                                ContractHourBalanceCard { balance_resource, items_resource }
                             }
 
                             div { class: "space-y-6",
@@ -1948,12 +1948,70 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
 #[component]
 fn ContractHourBalanceCard(
     balance_resource: Resource<Option<Paginated<ContractHourBalanceResponse>>>,
+    items_resource: Resource<Option<Paginated<ContractItemResponse>>>,
 ) -> Element {
+    // MAPPS-255: rebind so a successful allotment edit can refresh both the
+    // balance display and the items table.
+    let mut balance_resource = balance_resource;
+    let mut items_resource = items_resource;
+    let can_edit = use_can_manage_billing();
+    // The `block_hours` item being edited for its allotment, or `None`.
+    let mut editing_allotment = use_signal(|| None::<ContractItemResponse>);
+
     let snap = balance_resource.read_unchecked();
+    let items_snap = items_resource.read_unchecked();
+
+    // The allotment lives on the `block_hours` line item's `included_hours`
+    // (f2-hours-balance-be data model), so editing the allotment means
+    // editing that item. Find it; absence hides the edit affordance.
+    let block_item: Option<ContractItemResponse> = match &*items_snap {
+        Some(Some(resp)) => resp
+            .data
+            .iter()
+            .find(|i| i.item_type == "block_hours")
+            .cloned(),
+        _ => None,
+    };
+
+    // Current period = the period that started most recently. Used for the
+    // headline so "X of Y hours remaining" reflects the live period rather
+    // than an arbitrary table row.
+    let headline: Option<(String, String)> = match &*snap {
+        Some(Some(resp)) => resp.data.iter().max_by_key(|b| b.period_start).map(|p| {
+            (
+                p.hours_remaining.normalize().to_string(),
+                p.hours_included.normalize().to_string(),
+            )
+        }),
+        _ => None,
+    };
+
+    let edit_action = if can_edit && block_item.is_some() {
+        rsx! {
+            Button {
+                variant: ButtonVariant::Secondary,
+                onclick: move |_| editing_allotment.set(block_item.clone()),
+                "Edit Allotment"
+            }
+        }
+    } else {
+        rsx! {}
+    };
+
     rsx! {
         Card {
             title: "Hour Balance",
             padding: false,
+            actions: edit_action,
+            if let Some((remaining, included)) = headline.as_ref() {
+                div { class: "px-4 py-4 border-b border-gray-200 dark:border-gray-700",
+                    p { class: "text-2xl font-semibold",
+                        "{remaining}"
+                        span { class: "text-base font-normal text-gray-500", " of {included} hours remaining" }
+                    }
+                    p { class: "mt-1 text-sm text-gray-500", "Current period allotment" }
+                }
+            }
             Table {
                 TableHead {
                     TableRow {
@@ -2003,6 +2061,143 @@ fn ContractHourBalanceCard(
                         }
                     },
                 }
+            }
+        }
+
+        if let Some(item) = editing_allotment.read().clone() {
+            AllotmentFormModal {
+                item,
+                onclose: move |_| editing_allotment.set(None),
+                onsaved: move |_| {
+                    editing_allotment.set(None);
+                    // Refresh both the balance headline/table and the items
+                    // table so the new allotment and remaining balance show.
+                    balance_resource.restart();
+                    items_resource.restart();
+                },
+            }
+        }
+    }
+}
+
+/// MAPPS-255: edit a `block_hours` line item's `included_hours` (the contract
+/// allotment) in place. PUTs the full item via `UpsertContractItemRequest`,
+/// preserving every other field, so the allotment changes without
+/// re-creating the line item.
+#[derive(Props, Clone, PartialEq)]
+struct AllotmentFormModalProps {
+    item: ContractItemResponse,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn AllotmentFormModal(props: AllotmentFormModalProps) -> Element {
+    let item = props.item.clone();
+    let initial = item
+        .included_hours
+        .map(|h| h.normalize().to_string())
+        .unwrap_or_default();
+    let mut allotted = use_signal(|| initial.clone());
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+
+    let item_for_save = item.clone();
+    let handle_save = move |_| {
+        if *saving.read() {
+            return;
+        }
+        // Allotted hours are optional; blank clears the allotment.
+        let included = {
+            let raw = allotted.read().trim().to_string();
+            if raw.is_empty() {
+                None
+            } else {
+                match raw.parse::<Decimal>() {
+                    Ok(d) if !d.is_sign_negative() => Some(d),
+                    Ok(_) => {
+                        error.set("Allotted hours cannot be negative.".to_string());
+                        return;
+                    }
+                    Err(_) => {
+                        error.set("Allotted hours must be a number.".to_string());
+                        return;
+                    }
+                }
+            }
+        };
+
+        saving.set(true);
+        error.set(String::new());
+        let item = item_for_save.clone();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                use crate::modules::contracts::UpsertContractItemRequest;
+                // Full-replace PUT: carry over every field except the
+                // allotment so nothing the form does not expose is wiped.
+                let body = UpsertContractItemRequest {
+                    name: item.name.clone(),
+                    description: item.description.clone(),
+                    item_type: if item.item_type.is_empty() {
+                        "block_hours".to_string()
+                    } else {
+                        item.item_type.clone()
+                    },
+                    quantity: item.quantity,
+                    unit_price: item.unit_price,
+                    billing_frequency: if item.billing_frequency.is_empty() {
+                        "monthly".to_string()
+                    } else {
+                        item.billing_frequency.clone()
+                    },
+                    work_type_id: item.work_type_id,
+                    included_hours: included,
+                    overage_rate: item.overage_rate,
+                    rollover_enabled: item.rollover_enabled,
+                    max_rollover_hours: item.max_rollover_hours,
+                    sort_order: item.sort_order,
+                };
+                match crate::hooks::fetch::api::put_authed_typed::<ContractItemResponse, _>(
+                    &format!("/contract-items/{}", item.id),
+                    &body,
+                )
+                .await
+                {
+                    Ok(_) => onsaved.call(()),
+                    Err(err) => {
+                        error.set(format!("Could not save allotment: {}", err.user_message()))
+                    }
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        SettingFormModal {
+            title: "Edit Allotted Hours".to_string(),
+            is_edit: true,
+            deletable: false,
+            saving: *saving.read(),
+            deleting: false,
+            error: error.read().clone(),
+            create_label: "Save".to_string(),
+            onclose: move |_| onclose.call(()),
+            onsave: handle_save,
+            ondelete: move |_| {},
+            crate::components::Input {
+                name: "contract_allotted_hours",
+                label: "Allotted Hours",
+                r#type: "number",
+                step: "0.01".to_string(),
+                min: "0".to_string(),
+                placeholder: "0",
+                value: allotted.read().clone(),
+                oninput: move |e: FormEvent| allotted.set(e.value()),
             }
         }
     }
