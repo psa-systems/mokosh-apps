@@ -364,11 +364,33 @@ fn short_id(id: uuid::Uuid) -> String {
     id.to_string().chars().take(8).collect()
 }
 
+/// PMS-362: optional ticket prefill carried on the Log Time URL
+/// (`/time/new?ticket_id=<uuid>`). The ticket-detail "Log Time" affordance
+/// links here so the work-item picker opens with that ticket preselected,
+/// instead of dropping the user into an empty form they have to re-search.
+/// Returns the `work_item` select value (`ticket:<uuid>`) or empty.
+fn read_ticket_prefill_from_url() -> String {
+    #[cfg(feature = "web")]
+    {
+        if let Some(search) = web_sys::window().and_then(|w| w.location().search().ok()) {
+            if let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) {
+                let id = params.get("ticket_id").unwrap_or_default();
+                if uuid::Uuid::parse_str(&id).is_ok() {
+                    return format!("ticket:{id}");
+                }
+            }
+        }
+    }
+    String::new()
+}
+
 /// New time entry page
 #[component]
 pub fn TimeEntryNewPage() -> Element {
     let auth = crate::hooks::auth::use_auth();
-    let mut work_item = use_signal(String::new);
+    // PMS-362: seed the work-item picker from `?ticket_id=` when linked from a
+    // ticket; falls back to empty for direct navigation (no regression).
+    let mut work_item = use_signal(read_ticket_prefill_from_url);
     let mut task = use_signal(String::new);
     let mut work_type = use_signal(String::new);
     let mut hours = use_signal(String::new);
