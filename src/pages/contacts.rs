@@ -4,9 +4,9 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, Modal,
-    PageHeader, PlusIcon, SearchInput, Select, SelectOption, SortDirection, Table, TableBody,
-    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, CollapsibleCard, DataTable,
+    IconSize, Modal, PageHeader, PlusIcon, SearchInput, Select, SelectOption, SortDirection, Table,
+    TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::modules::contacts::Address;
 use crate::utils::money::format_money_str;
@@ -949,8 +949,12 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
             // bare `Vec`. Decoding into `Vec<RemoteContact>` always fails
             // here and `.ok()` swallowed it as `None`, rendering the
             // "Could not load contacts" empty state.
+            // MAPPS-247: cap the preview fetch (was uncapped) so a company
+            // with many contacts no longer pulls every row inline. The card
+            // shows the first 5 in a collapsible and `meta.total` reports the
+            // full count.
             crate::hooks::fetch::api::get_authed::<PaginatedContacts>(&format!(
-                "/contacts/companies/{id}/contacts"
+                "/contacts/companies/{id}/contacts?per_page=5"
             ))
             .await
             .ok()
@@ -960,8 +964,10 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         let id = company_id_for_sites.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-247: cap the preview fetch (was uncapped) for the same
+            // reason as contacts above; `meta.total` carries the full count.
             crate::hooks::fetch::api::get_authed::<PaginatedSites>(&format!(
-                "/contacts/companies/{id}/sites"
+                "/contacts/companies/{id}/sites?per_page=5"
             ))
             .await
             .ok()
@@ -1350,6 +1356,10 @@ struct SiteSummary {
 #[derive(Clone, Debug, Deserialize)]
 struct PaginatedSites {
     data: Vec<SiteSummary>,
+    // MAPPS-247: capped preview fetch carries the full count in `meta.total`
+    // so the collapsible Sites card can show how many sites exist.
+    #[serde(default)]
+    meta: PaginationMeta,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1383,19 +1393,31 @@ fn CompanyContactsCard(
     mut contacts_resource: Resource<Option<PaginatedContacts>>,
 ) -> Element {
     let snap = contacts_resource.read_unchecked();
+    // MAPPS-247: full count from the capped preview envelope feeds the
+    // collapsible header badge.
+    let count = match &*snap {
+        Some(Some(page)) => Some(page.meta.total),
+        _ => None,
+    };
     // MAPPS-207: "Add Contact" now opens a picker that can attach an
     // *existing* contact to this company (search/select), with create-new
     // still offered inside the same modal.
     let mut show_add = use_signal(|| false);
     rsx! {
-        Card {
+        CollapsibleCard {
             title: "Contacts",
+            count,
             actions: rsx! {
                 button {
                     r#type: "button",
                     class: "text-sm text-blue-600 hover:text-blue-500",
                     onclick: move |_| show_add.set(true),
                     "Add Contact"
+                }
+                Link {
+                    to: Route::ContactList {},
+                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    "View All"
                 }
             },
             padding: false,
@@ -1603,11 +1625,18 @@ fn CompanySitesCard(
     mut company_resource: Resource<Option<CompanyDetail>>,
 ) -> Element {
     let snap = sites_resource.read_unchecked();
+    // MAPPS-247: full count from the capped preview envelope feeds the
+    // collapsible header badge.
+    let count = match &*snap {
+        Some(Some(page)) => Some(page.meta.total),
+        _ => None,
+    };
     let mut editing = use_signal(|| None::<SiteFormState>);
 
     rsx! {
-        Card {
+        CollapsibleCard {
             title: "Sites",
+            count,
             actions: rsx! {
                 button {
                     r#type: "button",
@@ -2292,9 +2321,14 @@ fn CompanyContractsCard(
     contracts_resource: Resource<Option<Paginated<ContractSummary>>>,
 ) -> Element {
     let snap = contracts_resource.read_unchecked();
+    let count = match &*snap {
+        Some(Some(page)) => Some(page.meta.total),
+        _ => None,
+    };
     rsx! {
-        Card {
+        CollapsibleCard {
             title: "Contracts",
+            count,
             actions: rsx! {
                 Link {
                     to: Route::ContractList {},
@@ -2355,9 +2389,14 @@ fn CompanyContractsCard(
 #[component]
 fn CompanyProjectsCard(projects_resource: Resource<Option<Paginated<ProjectSummary>>>) -> Element {
     let snap = projects_resource.read_unchecked();
+    let count = match &*snap {
+        Some(Some(page)) => Some(page.meta.total),
+        _ => None,
+    };
     rsx! {
-        Card {
+        CollapsibleCard {
             title: "Projects",
+            count,
             actions: rsx! {
                 Link {
                     to: Route::ProjectList {},
@@ -2418,9 +2457,14 @@ fn CompanyProjectsCard(projects_resource: Resource<Option<Paginated<ProjectSumma
 #[component]
 fn CompanyInvoicesCard(invoices_resource: Resource<Option<Paginated<InvoiceSummary>>>) -> Element {
     let snap = invoices_resource.read_unchecked();
+    let count = match &*snap {
+        Some(Some(page)) => Some(page.meta.total),
+        _ => None,
+    };
     rsx! {
-        Card {
+        CollapsibleCard {
             title: "Invoices",
+            count,
             actions: rsx! {
                 Link {
                     to: Route::InvoiceList {},
@@ -2484,6 +2528,10 @@ fn CompanyAssetsCard(
     asset_types_resource: Resource<Option<Paginated<AssetTypeOption>>>,
 ) -> Element {
     let snap = assets_resource.read_unchecked();
+    let count = match &*snap {
+        Some(Some(page)) => Some(page.meta.total),
+        _ => None,
+    };
     let types_snap = asset_types_resource.read_unchecked();
     // Build an id -> type-name lookup from the (best-effort) type list.
     let type_name = |id: &Option<uuid::Uuid>| -> String {
@@ -2501,8 +2549,9 @@ fn CompanyAssetsCard(
         }
     };
     rsx! {
-        Card {
+        CollapsibleCard {
             title: "Assets",
+            count,
             actions: rsx! {
                 Link {
                     to: Route::AssetList {},
