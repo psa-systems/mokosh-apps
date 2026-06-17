@@ -3,6 +3,7 @@
 use dioxus::prelude::*;
 
 use super::button::{Button, ButtonVariant};
+use super::icon_button::IconButton;
 use super::icons::XMarkIcon;
 
 /// Modal size options
@@ -93,7 +94,8 @@ pub fn Modal(props: ModalProps) -> Element {
                         h3 { class: "text-lg font-medium text-content",
                             "{props.title}"
                         }
-                        button {
+                        IconButton {
+                            label: "Close dialog",
                             class: "rounded-md text-subtle hover:text-content focus:outline-none focus:ring-2 focus:ring-accent",
                             onclick: move |_| props.onclose.call(()),
                             XMarkIcon {}
@@ -312,7 +314,8 @@ pub fn Alert(props: AlertProps) -> Element {
                 }
                 if props.dismissible {
                     div { class: "ml-auto pl-3",
-                        button {
+                        IconButton {
+                            label: "Dismiss notification",
                             class: "-mx-1.5 -my-1.5 rounded-md p-1.5 inline-flex {text_class} hover:bg-surface-2 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-green-50 focus:ring-green-600",
                             onclick: move |_| props.ondismiss.call(()),
                             XMarkIcon {}
