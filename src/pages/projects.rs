@@ -1057,6 +1057,13 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
     let snapshot = project_resource.read_unchecked().clone();
     let is_loading = snapshot.is_none();
     let project = snapshot.flatten();
+    // MAPPS-245: a cancelled project does not accept new items. Gate the
+    // add-task control once the project has loaded, using the same literal
+    // the status badge/filter/edit selects use ("cancelled").
+    let is_cancelled = project
+        .as_ref()
+        .map(|p| p.status == "cancelled")
+        .unwrap_or(false);
     let tasks = tasks_resource.read_unchecked().clone().unwrap_or_default();
     let statuses = statuses_resource
         .read_unchecked()
@@ -1200,7 +1207,19 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                     }
                     Button {
                         variant: ButtonVariant::Primary,
+                        // MAPPS-245: disable on a cancelled project so the Add
+                        // Task modal cannot be opened; the native tooltip and the
+                        // banner below explain why (MAPPS-217 pattern).
+                        disabled: is_cancelled,
+                        title: if is_cancelled {
+                            Some("This project is cancelled and does not accept new tasks.".to_string())
+                        } else {
+                            None
+                        },
                         onclick: move |_| {
+                            if is_cancelled {
+                                return;
+                            }
                             t_error.set(String::new());
                             show_task_modal.set(true);
                         },
@@ -1276,6 +1295,13 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                             div { class: "lg:col-span-2 space-y-6",
                                 Card {
                                     title: "Overview",
+                                    // MAPPS-245: explain why the Add Task control is
+                                    // disabled so the state reads as intentional.
+                                    if is_cancelled {
+                                        div { class: "mb-4 px-3 py-2 rounded-md text-sm bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300",
+                                            "This project is cancelled. Adding tasks is disabled."
+                                        }
+                                    }
                                     if let Some(d) = description {
                                         // PMS-309: render Markdown (sanitized). PMS-348:
                                         // task-list checkboxes are clickable - toggling
