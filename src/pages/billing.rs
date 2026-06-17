@@ -21,7 +21,7 @@ use serde::Deserialize;
 use std::str::FromStr;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize,
+    AppLayout, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, DataTable, IconSize,
     InformationIcon, Modal, ModalSize, PageHeader, PlusIcon, Select, SelectOption, Table,
     TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
@@ -520,6 +520,11 @@ struct InvoiceDetail {
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct InvoiceLine {
     id: uuid::Uuid,
+    /// Line type as stored (e.g. `service`, `time_entry`). Carried through the
+    /// edit modal so re-saving keeps a time/product line's original type
+    /// instead of flattening every line to `service` (MAPPS-234).
+    #[serde(default)]
+    line_type: String,
     #[serde(default)]
     description: String,
     #[serde(default)]
@@ -919,7 +924,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                         payment_term_id: inv.payment_term_id.clone().unwrap_or_default(),
                         po_number: inv.po_number.clone().unwrap_or_default(),
                         notes: inv.notes.clone().unwrap_or_default(),
-                        subtotal: inv.subtotal.clone(),
+                        lines: inv.lines.clone().unwrap_or_default(),
                         tax_amount: inv.tax_amount.clone(),
                         discount_amount: inv.discount_amount.clone(),
                         onclose: move |_| show_edit.set(false),
@@ -1921,6 +1926,18 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
     }
 }
 
+/// A line-item row being edited in the invoice edit modal (MAPPS-234). Amounts
+/// stay as strings (mirroring the server's decimal-as-string wire format) and
+/// are validated/parsed on save. `line_type` is preserved from the existing
+/// line; new rows default to `service`.
+#[derive(Clone, Debug, PartialEq, Default)]
+struct EditableLine {
+    line_type: String,
+    description: String,
+    quantity: String,
+    unit_price: String,
+}
+
 #[derive(Props, Clone, PartialEq)]
 struct InvoiceEditModalProps {
     id: String,
@@ -1930,8 +1947,9 @@ struct InvoiceEditModalProps {
     payment_term_id: String,
     po_number: String,
     notes: String,
-    /// Stored line subtotal, used to compute tax from a selected rate (MAPPS-192).
-    subtotal: String,
+    /// Current line items, seeded into the editable line table (MAPPS-234).
+    /// The tax-rate calculation derives its subtotal from these (MAPPS-192).
+    lines: Vec<InvoiceLine>,
     /// Current tax amount, seeded as the editable Tax field (MAPPS-192).
     tax_amount: String,
     /// Current discount amount, seeded as the editable Discount field (MAPPS-192).
@@ -1951,10 +1969,11 @@ struct PaymentTermOpt {
 }
 
 /// MAPPS-158: edit a draft/pending invoice's header fields. Wired to
-/// `PUT /invoices/{id}`; line items are left untouched (the request omits
-/// `lines`, so the server keeps the existing set). The backend rejects the
-/// PUT once the invoice is frozen, so this modal is only opened for editable
-/// invoices.
+/// `PUT /invoices/{id}`. MAPPS-234: the modal also renders an editable line-item
+/// table and sends `lines`, so line items can be added, removed, and corrected
+/// after creation (the server replaces the set transactionally and recomputes
+/// the subtotal). The backend rejects the PUT once the invoice is frozen, so
+/// this modal is only opened for editable invoices.
 #[component]
 fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
     let mut invoice_date = use_signal(|| props.invoice_date.clone());
@@ -1962,6 +1981,22 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
     let mut payment_term_id = use_signal(|| props.payment_term_id.clone());
     let mut po_number = use_signal(|| props.po_number.clone());
     let mut notes = use_signal(|| props.notes.clone());
+    let mut lines = use_signal(|| {
+        props
+            .lines
+            .iter()
+            .map(|l| EditableLine {
+                line_type: if l.line_type.is_empty() {
+                    "service".to_string()
+                } else {
+                    l.line_type.clone()
+                },
+                description: l.description.clone(),
+                quantity: l.quantity.clone(),
+                unit_price: l.unit_price.clone(),
+            })
+            .collect::<Vec<_>>()
+    });
     let mut tax_rate_id = use_signal(String::new);
     // Seed the override with the invoice's current tax so it shows on open;
     // picking a rate clears it back to the rate-computed value (MAPPS-192).
@@ -1982,13 +2017,26 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             .clone()
             .unwrap_or_default(),
     );
-    let subtotal_for_tax = props.subtotal.clone();
+    // Subtotal follows the edited lines so picking a tax rate recomputes against
+    // the current line set (MAPPS-234), not the subtotal the invoice opened with.
+    let line_subtotal = use_memo(move || {
+        lines
+            .read()
+            .iter()
+            .map(|l| {
+                let qty = Decimal::from_str(l.quantity.trim()).unwrap_or_default();
+                let price = Decimal::from_str(l.unit_price.trim()).unwrap_or_default();
+                qty * price
+            })
+            .sum::<Decimal>()
+            .to_string()
+    });
     let computed_tax = use_memo(move || {
         let rates = tax_rates_resource
             .read_unchecked()
             .clone()
             .unwrap_or_default();
-        computed_tax_amount(&rates, &tax_rate_id.read(), &subtotal_for_tax)
+        computed_tax_amount(&rates, &tax_rate_id.read(), &line_subtotal.read())
     });
 
     // Payment-term options from the settings-managed lookup (PMS-333). Only
@@ -2037,6 +2085,60 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             error.set("Invoice date and due date are required.".to_string());
             return;
         }
+        // Validate the line items and build the request set (MAPPS-234). An
+        // invoice must keep at least one line; each line needs a description and
+        // a non-negative numeric quantity and unit price (mirrors the create
+        // form's checks so a bad value never reaches the 422 path).
+        let rows = lines.read().clone();
+        if rows.is_empty() {
+            error.set("An invoice must have at least one line item.".to_string());
+            return;
+        }
+        let mut lines_json = Vec::with_capacity(rows.len());
+        for (idx, line) in rows.iter().enumerate() {
+            let description = line.description.trim();
+            if description.is_empty() {
+                error.set(format!("Line {} needs a description.", idx + 1));
+                return;
+            }
+            let quantity = line.quantity.trim();
+            let unit_price = line.unit_price.trim();
+            match quantity.parse::<f64>() {
+                Ok(q) if q >= 0.0 => {}
+                Ok(_) => {
+                    error.set(format!("Line {} quantity cannot be negative.", idx + 1));
+                    return;
+                }
+                Err(_) => {
+                    error.set(format!("Line {} needs a valid quantity.", idx + 1));
+                    return;
+                }
+            }
+            match unit_price.parse::<f64>() {
+                Ok(p) if p >= 0.0 => {}
+                Ok(_) => {
+                    error.set(format!("Line {} unit price cannot be negative.", idx + 1));
+                    return;
+                }
+                Err(_) => {
+                    error.set(format!("Line {} needs a valid unit price.", idx + 1));
+                    return;
+                }
+            }
+            let line_type = if line.line_type.trim().is_empty() {
+                "service"
+            } else {
+                line.line_type.trim()
+            };
+            lines_json.push(serde_json::json!({
+                "line_type": line_type,
+                "description": description,
+                // Decimal strings; the server parses into `rust_decimal::Decimal`.
+                "quantity": quantity,
+                "unit_price": unit_price,
+                "sort_order": idx as i32,
+            }));
+        }
         saving.set(true);
         let path = format!("/invoices/{invoice_id}");
         // Effective tax: a manual override if present, else the rate-computed
@@ -2054,6 +2156,9 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             "notes": optional_string(&notes.read()),
             "tax_amount": optional_string(&tax_str),
             "discount_amount": optional_string(&discount_amount.read()),
+            // Replace the line set (server deletes + reinserts transactionally
+            // and recomputes the subtotal). MAPPS-234.
+            "lines": lines_json,
         });
         spawn(async move {
             #[cfg(feature = "web")]
@@ -2131,6 +2236,83 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                     label: "PO Number",
                     value: po_number.read().clone(),
                     oninput: move |e: FormEvent| po_number.set(e.value()),
+                }
+                // Line items: add / remove / edit (MAPPS-234). The set is sent
+                // on save and replaces the invoice's lines server-side.
+                div {
+                    div { class: "flex items-center justify-between mb-3",
+                        h3 { class: "text-sm font-medium text-gray-700 dark:text-gray-300", "Line Items" }
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            size: ButtonSize::Small,
+                            onclick: move |_| {
+                                lines
+                                    .write()
+                                    .push(EditableLine {
+                                        line_type: "service".to_string(),
+                                        ..EditableLine::default()
+                                    });
+                            },
+                            "Add line"
+                        }
+                    }
+                    if lines.read().is_empty() {
+                        p { class: "text-sm text-gray-500",
+                            "No line items. Add at least one before saving."
+                        }
+                    }
+                    div { class: "space-y-3",
+                        for (idx , line) in lines.read().clone().into_iter().enumerate() {
+                            div {
+                                key: "{idx}",
+                                class: "grid grid-cols-1 gap-3 sm:grid-cols-[1fr_90px_120px_auto] sm:items-end",
+                                crate::components::Input {
+                                    name: "line_description_{idx}",
+                                    label: "Description",
+                                    required: true,
+                                    maxlength: 1000,
+                                    placeholder: "What was delivered",
+                                    value: line.description.clone(),
+                                    oninput: move |e: FormEvent| {
+                                        lines.write()[idx].description = e.value();
+                                    },
+                                }
+                                crate::components::Input {
+                                    name: "line_quantity_{idx}",
+                                    label: "Qty",
+                                    r#type: "number",
+                                    required: true,
+                                    step: "0.01".to_string(),
+                                    min: "0".to_string(),
+                                    placeholder: "Qty",
+                                    value: line.quantity.clone(),
+                                    oninput: move |e: FormEvent| {
+                                        lines.write()[idx].quantity = e.value();
+                                    },
+                                }
+                                crate::components::Input {
+                                    name: "line_unit_price_{idx}",
+                                    label: "Unit Price",
+                                    r#type: "number",
+                                    required: true,
+                                    step: "0.01".to_string(),
+                                    min: "0".to_string(),
+                                    placeholder: "0.00",
+                                    value: line.unit_price.clone(),
+                                    oninput: move |e: FormEvent| {
+                                        lines.write()[idx].unit_price = e.value();
+                                    },
+                                }
+                                Button {
+                                    variant: ButtonVariant::Ghost,
+                                    onclick: move |_| {
+                                        lines.write().remove(idx);
+                                    },
+                                    "Remove"
+                                }
+                            }
+                        }
+                    }
                 }
                 div { class: "grid grid-cols-1 gap-4 sm:grid-cols-3",
                     Select {
