@@ -1526,7 +1526,9 @@ fn validate_hours(value: &str) -> Result<Option<rust_decimal::Decimal>, &'static
     match parse_hours(value) {
         Some(d) if d >= rust_decimal::Decimal::ZERO => Ok(Some(d)),
         Some(_) => Err("SLA target hours cannot be negative."),
-        None => Err("Enter SLA target hours as a number, a decimal, or H:MM (e.g. 2, 2.5, or 1:30)."),
+        None => {
+            Err("Enter SLA target hours as a number, a decimal, or H:MM (e.g. 2, 2.5, or 1:30).")
+        }
     }
 }
 
