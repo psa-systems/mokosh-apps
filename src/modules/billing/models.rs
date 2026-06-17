@@ -295,6 +295,21 @@ pub struct CreatePaymentRequest {
     pub notes: Option<String>,
 }
 
+/// Full-replacement update for a recorded payment (MAPPS-235). Every field is
+/// rewritten, mirroring `CreatePaymentRequest`; the linked invoice balances are
+/// reconciled in the service when the amount or applied invoice changes.
+#[derive(Debug, Clone, Deserialize, Validate)]
+pub struct UpdatePaymentRequest {
+    pub invoice_id: Option<Uuid>,
+    pub company_id: Uuid,
+    pub payment_date: NaiveDate,
+    pub amount: Decimal,
+    pub payment_method: PaymentMethod,
+    pub reference_number: Option<String>,
+    pub gateway_transaction_id: Option<String>,
+    pub notes: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, Default, validator::Validate)]
 pub struct PaymentFilter {
     pub invoice_id: Option<Uuid>,

@@ -1419,6 +1419,7 @@ struct RemotePayment {
     invoice_id: Option<uuid::Uuid>,
     #[serde(default)]
     invoice_number: Option<String>,
+    company_id: uuid::Uuid,
     #[serde(default)]
     company_name: Option<String>,
     #[serde(default)]
@@ -1429,6 +1430,8 @@ struct RemotePayment {
     payment_method: String,
     #[serde(default)]
     reference_number: Option<String>,
+    #[serde(default)]
+    notes: Option<String>,
 }
 
 /// Payment list page. GET `/payments`, server-paginated, plus a
@@ -1450,6 +1453,8 @@ pub fn PaymentListPage() -> Element {
 
     let mut page = use_signal(|| 1usize);
     let mut recording = use_signal(|| false);
+    // Some(payment) while the edit modal is open, seeded from that row (MAPPS-235).
+    let mut editing = use_signal(|| None::<RemotePayment>);
     // Bumped after a create/delete to force the resource to re-fetch.
     let mut reload = use_signal(|| 0u64);
 
@@ -1535,17 +1540,23 @@ pub fn PaymentListPage() -> Element {
                     } else {
                         TableBody {
                             for payment in rows.iter().cloned() {
-                                PaymentRow {
-                                    key: "{payment.id}",
-                                    id: payment.id.to_string(),
-                                    company: payment.company_name.clone().unwrap_or_default(),
-                                    invoice_id: payment.invoice_id.map(|i| i.to_string()).unwrap_or_default(),
-                                    invoice_number: payment.invoice_number.clone().unwrap_or_default(),
-                                    date: payment.payment_date.unwrap_or_default(),
-                                    method: humanize_payment_method(&payment.payment_method),
-                                    reference: payment.reference_number.unwrap_or_default(),
-                                    amount: format_money_str(&payment.amount),
-                                    on_deleted: move |_| { reload += 1; },
+                                {
+                                    let edit_payment = payment.clone();
+                                    rsx! {
+                                        PaymentRow {
+                                            key: "{payment.id}",
+                                            id: payment.id.to_string(),
+                                            company: payment.company_name.clone().unwrap_or_default(),
+                                            invoice_id: payment.invoice_id.map(|i| i.to_string()).unwrap_or_default(),
+                                            invoice_number: payment.invoice_number.clone().unwrap_or_default(),
+                                            date: payment.payment_date.clone().unwrap_or_default(),
+                                            method: humanize_payment_method(&payment.payment_method),
+                                            reference: payment.reference_number.clone().unwrap_or_default(),
+                                            amount: format_money_str(&payment.amount),
+                                            on_edit: move |_| editing.set(Some(edit_payment.clone())),
+                                            on_deleted: move |_| { reload += 1; },
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1558,6 +1569,24 @@ pub fn PaymentListPage() -> Element {
                     onclose: move |_| recording.set(false),
                     onsaved: move |_| {
                         recording.set(false);
+                        payments_resource.restart();
+                    },
+                }
+            }
+
+            if let Some(p) = editing.read().clone() {
+                RecordPaymentModal {
+                    payment_id: p.id.to_string(),
+                    company_id: p.company_id.to_string(),
+                    invoice_id: p.invoice_id.map(|i| i.to_string()).unwrap_or_default(),
+                    payment_date: p.payment_date.clone().unwrap_or_default(),
+                    amount: p.amount.clone(),
+                    payment_method: p.payment_method.clone(),
+                    reference_number: p.reference_number.clone().unwrap_or_default(),
+                    notes: p.notes.clone().unwrap_or_default(),
+                    onclose: move |_| editing.set(None),
+                    onsaved: move |_| {
+                        editing.set(None);
                         payments_resource.restart();
                     },
                 }
@@ -1576,6 +1605,7 @@ struct PaymentRowProps {
     method: String,
     reference: String,
     amount: String,
+    on_edit: EventHandler<()>,
     on_deleted: EventHandler<()>,
 }
 
@@ -1583,6 +1613,7 @@ struct PaymentRowProps {
 fn PaymentRow(props: PaymentRowProps) -> Element {
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    let on_edit = props.on_edit;
     let on_deleted = props.on_deleted;
     let delete_id = props.id.clone();
     // MAPPS-189: the Delete button opens the styled ConfirmDialog; the
@@ -1652,15 +1683,23 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
             }
             TableCell { class: "text-right font-medium text-green-600", "{props.amount}" }
             TableCell { class: "text-right",
-                Button {
-                    variant: ButtonVariant::Danger,
-                    loading: *deleting.read(),
-                    onclick: move |_| {
-                        if !*deleting.read() {
-                            confirming_delete.set(true);
-                        }
-                    },
-                    "Delete"
+                div { class: "inline-flex gap-2",
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        disabled: *deleting.read(),
+                        onclick: move |_| on_edit.call(()),
+                        "Edit"
+                    }
+                    Button {
+                        variant: ButtonVariant::Danger,
+                        loading: *deleting.read(),
+                        onclick: move |_| {
+                            if !*deleting.read() {
+                                confirming_delete.set(true);
+                            }
+                        },
+                        "Delete"
+                    }
                 }
                 if !error.read().is_empty() {
                     p { class: "mt-1 text-xs text-red-600", "{error.read()}" }
@@ -1700,12 +1739,27 @@ const PAYMENT_AMOUNT_MAX: i64 = 10_000_000_000;
 
 #[derive(Props, Clone, PartialEq)]
 struct RecordPaymentModalProps {
+    // MAPPS-235: when set, the modal edits this existing payment (PUT
+    // /payments/{id}) instead of creating one (POST /payments). The other
+    // fields below seed the form for that edit.
+    #[props(default)]
+    payment_id: String,
     // MAPPS-158: optional seeds so the invoice detail page can pre-fill the
     // company and invoice. Default to empty for the standalone Payments view.
     #[props(default)]
     company_id: String,
     #[props(default)]
     invoice_id: String,
+    #[props(default)]
+    payment_date: String,
+    #[props(default)]
+    amount: String,
+    #[props(default)]
+    payment_method: String,
+    #[props(default)]
+    reference_number: String,
+    #[props(default)]
+    notes: String,
     onclose: EventHandler<()>,
     onsaved: EventHandler<()>,
 }
@@ -1734,11 +1788,20 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
             .clone()
             .unwrap_or_default(),
     );
-    let mut payment_date = use_signal(String::new);
-    let mut amount = use_signal(String::new);
-    let mut payment_method = use_signal(|| "check".to_string());
-    let mut reference_number = use_signal(String::new);
-    let mut notes = use_signal(String::new);
+    let mut payment_date = use_signal(|| props.payment_date.clone());
+    let mut amount = use_signal(|| props.amount.clone());
+    // Seed the method from the edited payment, falling back to the create
+    // default when this is a fresh record (MAPPS-235).
+    let seed_method = props.payment_method.clone();
+    let mut payment_method = use_signal(|| {
+        if seed_method.is_empty() {
+            "check".to_string()
+        } else {
+            seed_method.clone()
+        }
+    });
+    let mut reference_number = use_signal(|| props.reference_number.clone());
+    let mut notes = use_signal(|| props.notes.clone());
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
     // Per-field inline validation errors (MAPPS-215): shown beneath the field
@@ -1757,6 +1820,9 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
+    // Empty => create (POST); set => edit that payment (PUT). MAPPS-235.
+    let payment_id = props.payment_id.clone();
+    let is_edit = !payment_id.is_empty();
 
     // PMS-367 AC1: company chosen via the shared autocomplete CompanyPicker.
     let company_picker_selected_id: Option<String> =
@@ -1866,6 +1932,9 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
             "reference_number": optional_string(&reference_number.read()),
             "notes": optional_string(&notes.read()),
         });
+        // Fresh owned copy so this multi-call handler does not move the
+        // captured id into the spawned future.
+        let payment_id = payment_id.clone();
         spawn(async move {
             #[cfg(feature = "web")]
             {
@@ -1885,14 +1954,25 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                         return;
                     }
                 }
-                match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
-                    "/payments",
-                    &body,
-                )
-                .await
-                {
+                let result = if is_edit {
+                    crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
+                        &format!("/payments/{payment_id}"),
+                        &body,
+                    )
+                    .await
+                } else {
+                    crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
+                        "/payments",
+                        &body,
+                    )
+                    .await
+                };
+                match result {
                     Ok(_) => onsaved.call(()),
-                    Err(err) => error.set(format!("Could not record payment: {err}")),
+                    Err(err) => {
+                        let verb = if is_edit { "save" } else { "record" };
+                        error.set(format!("Could not {verb} payment: {err}"));
+                    }
                 }
             }
             saving.set(false);
@@ -1910,14 +1990,14 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
             variant: ButtonVariant::Primary,
             loading: *saving.read(),
             onclick: handle_save,
-            "Record Payment"
+            if is_edit { "Save Changes" } else { "Record Payment" }
         }
     };
 
     rsx! {
         Modal {
             open: true,
-            title: "Record Payment",
+            title: if is_edit { "Edit Payment" } else { "Record Payment" },
             size: ModalSize::Large,
             onclose: move |_| onclose.call(()),
             footer,
