@@ -102,6 +102,32 @@ pub struct KbArticleFeedback {
     pub my_vote: Option<String>,
 }
 
+/// `CreateKbCategoryRequest`. Mirrors the server's create body. `slug` is
+/// required server-side; the category form derives one from the name when the
+/// author leaves it blank.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct CreateKbCategoryRequest {
+    pub name: String,
+    pub slug: String,
+    pub description: Option<String>,
+    pub parent_id: Option<Uuid>,
+    pub visibility: String,
+    pub sort_order: i32,
+}
+
+/// `UpdateKbCategoryRequest`. Every field is optional; the edit form sends the
+/// full set so omitted-vs-cleared is unambiguous (mirrors
+/// [`UpdateKbArticleRequest`]).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct UpdateKbCategoryRequest {
+    pub name: Option<String>,
+    pub slug: Option<String>,
+    pub description: Option<String>,
+    pub parent_id: Option<Uuid>,
+    pub visibility: Option<String>,
+    pub sort_order: Option<i32>,
+}
+
 /// `CreateKbArticleRequest`. `slug` is required server-side; the new-article
 /// form derives one from the title when the author leaves it blank.
 #[derive(Clone, Debug, PartialEq, Serialize)]
