@@ -93,6 +93,8 @@ features = [
     "Window",
     "Document",
     "Element",
+    "HtmlElement",
+    "CssStyleDeclaration",
     "DomTokenList",
     "Storage",
     "Navigator",

@@ -36,6 +36,97 @@
   --animate-slide-out: slide-out 0.3s ease-in;
 }
 
+/* ------------------------------------------------------------------ *
+ * Semantic theme tokens (MAPPS-259).
+ *
+ * Components read these through the utilities generated below
+ * (bg-app, bg-surface, bg-surface-2, bg-raised, text-content,
+ * text-muted, text-subtle, border-line, bg-accent, text-on-accent,
+ * ring-accent, bg-accent-{50..950}, ...). `@theme inline` makes each
+ * utility resolve to the runtime CSS variable, so changing a variable
+ * recolors the whole app live.
+ *
+ * Base mode swaps the surface/text/line values: :root = Light,
+ * .dark = Dark (the existing `.dark`-on-<html> mechanism in
+ * src/hooks/theme.rs is unchanged). The accent ramp is injected at
+ * runtime per chosen accent + base by the theme hook; the values here
+ * are the default (Teal) so the UI is correct before JS runs. Phase-2
+ * named palettes add `.theme-*` blocks overriding the same variables,
+ * with no component changes.
+ * ------------------------------------------------------------------ */
+@theme inline {
+  --color-app: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-raised: var(--raised);
+  --color-content: var(--content);
+  --color-muted: var(--muted);
+  --color-subtle: var(--subtle);
+  --color-inverse: var(--inverse);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-on-accent: var(--on-accent);
+  --color-accent: var(--accent);
+  --color-accent-50: var(--accent-50);
+  --color-accent-100: var(--accent-100);
+  --color-accent-200: var(--accent-200);
+  --color-accent-300: var(--accent-300);
+  --color-accent-400: var(--accent-400);
+  --color-accent-500: var(--accent-500);
+  --color-accent-600: var(--accent-600);
+  --color-accent-700: var(--accent-700);
+  --color-accent-800: var(--accent-800);
+  --color-accent-900: var(--accent-900);
+  --color-accent-950: var(--accent-950);
+}
+
+:root {
+  /* Base: Light */
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --surface-2: #f1f5f9;
+  --raised: #ffffff;
+  --content: #0f172a;
+  --muted: #475569;
+  --subtle: #64748b;
+  --inverse: #f8fafc;
+  --line: #e2e8f0;
+  --line-strong: #cbd5e1;
+
+  /* Default accent: Teal, Light base. Overridden at runtime per accent. */
+  --accent-50: #f0fdfa;
+  --accent-100: #ccfbf1;
+  --accent-200: #99f6e4;
+  --accent-300: #5eead4;
+  --accent-400: #2dd4bf;
+  --accent-500: #14b8a6;
+  --accent-600: #0d9488;
+  --accent-700: #0f766e;
+  --accent-800: #115e59;
+  --accent-900: #134e4a;
+  --accent-950: #042f2e;
+  --accent: #0f766e; /* fill chosen to pass WCAG AA with --on-accent text */
+  --on-accent: #ffffff;
+}
+
+.dark {
+  /* Base: Dark */
+  --bg: #0f172a;
+  --surface: #1e293b;
+  --surface-2: #0f172a;
+  --raised: #1e293b;
+  --content: #e2e8f0;
+  --muted: #94a3b8;
+  --subtle: #64748b;
+  --inverse: #0f172a;
+  --line: #334155;
+  --line-strong: #475569;
+
+  /* Default accent: Teal, Dark base. Lighter fill + dark on-accent. */
+  --accent: #2dd4bf;
+  --on-accent: #042f2e;
+}
+
 /* Keyframes */
 @keyframes fade-in {
   from { opacity: 0; }
@@ -59,7 +150,7 @@
   }
 
   body {
-    @apply bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-gray-100;
+    @apply bg-app text-content;
   }
 
   /* Themed scrollbars (global default). The browser default is an

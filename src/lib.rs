@@ -326,6 +326,9 @@ pub enum Route {
     // MAPPS-345: tenant-wide standard due date (PMS-345 server setting).
     #[route("/settings/scheduling")]
     SettingsScheduling {},
+    // MAPPS-259: per-user theme + accent picker.
+    #[route("/settings/appearance")]
+    SettingsAppearance {},
     #[route("/settings/rate-cards")]
     SettingsRateCards {},
     #[route("/settings/tax-rates")]
@@ -791,6 +794,11 @@ fn SettingsSla() -> Element {
 #[component]
 fn SettingsScheduling() -> Element {
     rsx! { settings::SchedulingSettingsPage {} }
+}
+
+#[component]
+fn SettingsAppearance() -> Element {
+    rsx! { settings::AppearanceSettingsPage {} }
 }
 
 #[component]

@@ -3,6 +3,7 @@
 use dioxus::prelude::*;
 
 use super::icons::*;
+use super::theme_picker::ThemePickerButton;
 use crate::Route;
 
 /// Main application layout with sidebar
@@ -440,6 +441,9 @@ pub fn TopBar(props: TopBarProps) -> Element {
 
             // Right side actions
             div { class: "flex items-center px-4 sm:px-6 lg:px-8 space-x-4",
+                // Theme + accent picker (MAPPS-259), opens a centered modal.
+                ThemePickerButton {}
+
                 // Notifications bell + inbox dropdown, wired to the
                 // server `notifications` module (MAPPS-132).
                 NotificationBell {}

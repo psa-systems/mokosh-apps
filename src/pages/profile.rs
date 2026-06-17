@@ -29,9 +29,9 @@ use crate::components::{
     AppLayout, Button, ButtonVariant, Card, Input, Modal, ModalSize, PageHeader, Select,
     SelectOption,
 };
-use crate::hooks::theme::{self, Theme};
 use crate::utils::datetime::{format_user_datetime, preset_label, token_warnings, PRESET_FORMATS};
 use crate::utils::prefs;
+use crate::Route;
 
 /// Subset of mokosh-server's `UserResponse` the profile screen reads.
 /// Mirrors the shape returned by `GET /api/v1/auth/me`; fields not
@@ -767,7 +767,6 @@ fn TokenGroupRow(group: &'static TokenGroup, draft: Signal<String>) -> Element {
 /// selection.
 #[component]
 fn PreferencesCard() -> Element {
-    let mut theme_value = use_signal(theme::current);
     let mut time_format = use_signal(|| prefs::get_str(PREF_TIME_FORMAT, "12h"));
     let mut first_day = use_signal(|| prefs::get_str(PREF_FIRST_DAY, "sunday"));
     let mut duration_format = use_signal(|| {
@@ -790,30 +789,21 @@ fn PreferencesCard() -> Element {
                 }
 
                 div { class: "grid gap-6 sm:grid-cols-3",
-                    // Theme
+                    // Theme + accent moved to Settings > Appearance
+                    // (MAPPS-259): one account-synced picker, also reachable
+                    // from the swatch in the top bar.
                     fieldset { class: "space-y-2",
                         legend { class: "text-sm font-medium text-gray-700 dark:text-gray-300",
                             "Theme"
                         }
-                        for opt in [Theme::System, Theme::Light, Theme::Dark] {
-                            label {
-                                class: "flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300",
-                                input {
-                                    r#type: "radio",
-                                    name: "theme",
-                                    value: "{opt.as_str()}",
-                                    checked: theme_value() == opt,
-                                    onchange: move |_| {
-                                        theme_value.set(opt);
-                                        theme::set(opt);
-                                    },
-                                }
-                                match opt {
-                                    Theme::System => "Match system",
-                                    Theme::Light => "Light",
-                                    Theme::Dark => "Dark",
-                                }
+                        p { class: "text-sm text-gray-500 dark:text-gray-400",
+                            "Theme and accent color are set in "
+                            Link {
+                                to: Route::SettingsAppearance {},
+                                class: "font-medium text-blue-600 hover:text-blue-500 dark:text-blue-400",
+                                "Settings > Appearance"
                             }
+                            ", or from the swatch in the top bar."
                         }
                     }
 

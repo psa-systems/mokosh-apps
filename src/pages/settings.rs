@@ -33,7 +33,7 @@ use uuid::Uuid;
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
     PlusIcon, Select, SelectOption, SettingFormModal, Table, TableBody, TableCell, TableEmpty,
-    TableHead, TableHeader, TableLoading, TableRow,
+    TableHead, TableHeader, TableLoading, TableRow, ThemePicker,
 };
 use crate::utils::money::format_money_str;
 use crate::utils::Paginated;
@@ -76,6 +76,26 @@ fn AdminOnlyNotice(title: String) -> Element {
 // ============================================================================
 
 /// `/settings` - grouped index of every configuration surface.
+/// Per-user appearance settings (MAPPS-259): base mode + accent color.
+/// Not admin-gated; every user personalizes their own theme. Embeds the
+/// same `ThemePicker` the top-bar swatch modal uses.
+#[component]
+pub fn AppearanceSettingsPage() -> Element {
+    rsx! {
+        AppLayout { title: "Appearance",
+            PageHeader {
+                title: "Appearance",
+                subtitle: "Theme and accent color, saved to your account",
+            }
+            Card {
+                div { class: "p-6",
+                    ThemePicker {}
+                }
+            }
+        }
+    }
+}
+
 #[component]
 pub fn SettingsHomePage() -> Element {
     rsx! {
@@ -83,6 +103,14 @@ pub fn SettingsHomePage() -> Element {
             PageHeader {
                 title: "Settings",
                 subtitle: "Manage the standard types and configuration that shape how your workspace behaves",
+            }
+
+            SettingsGroup { heading: "Personalization",
+                SettingsCard {
+                    to: Route::SettingsAppearance {},
+                    title: "Appearance",
+                    description: "Theme (light, dark, or system) and accent color for your account.",
+                }
             }
 
             SettingsGroup { heading: "Service & Asset Types",
