@@ -608,6 +608,11 @@ fn ContractForm(props: ContractFormProps) -> Element {
 
     let mut name = use_signal(|| initial.name.clone());
     let mut company_id = use_signal(|| initial.company_id.clone());
+    // PMS-352 AC3: the create flow uses CompanyPicker (with inline create) so a
+    // tenant with zero companies isn't dead-ended; the picker reports the
+    // chosen company's display name back here. Edit keeps the disabled Select
+    // (company is immutable post-create), so this stays empty there.
+    let mut company_name = use_signal(String::new);
     let mut contract_type = use_signal(|| {
         if initial.contract_type.is_empty() {
             "managed_services".to_string()
@@ -951,6 +956,16 @@ fn ContractForm(props: ContractFormProps) -> Element {
         });
     };
 
+    // PMS-352 AC3: feed the create-flow CompanyPicker its "already selected"
+    // state. Some(id) renders the selected-chip view; a non-UUID (empty)
+    // renders the search dropdown.
+    let company_picker_selected_id: Option<String> =
+        if uuid::Uuid::parse_str(company_id.read().as_str()).is_ok() {
+            Some(company_id.read().clone())
+        } else {
+            None
+        };
+
     rsx! {
         Card {
             form {
@@ -975,15 +990,42 @@ fn ContractForm(props: ContractFormProps) -> Element {
                         error: name_err(),
                         oninput: move |e: FormEvent| name.set(e.value()),
                     }
-                    Select {
-                        name: "company",
-                        label: "Company",
-                        options: company_options,
-                        value: company_id.read().clone(),
-                        required: true,
-                        disabled: is_edit,
-                        error: company_err(),
-                        onchange: move |e: FormEvent| company_id.set(e.value()),
+                    // PMS-352 AC3: on create, use CompanyPicker so a tenant with
+                    // no companies can create one inline instead of dead-ending.
+                    // On edit the company is immutable, so keep the disabled
+                    // Select that shows the existing company by name.
+                    if is_edit {
+                        Select {
+                            name: "company",
+                            label: "Company",
+                            options: company_options,
+                            value: company_id.read().clone(),
+                            required: true,
+                            disabled: true,
+                            error: company_err(),
+                            onchange: move |e: FormEvent| company_id.set(e.value()),
+                        }
+                    } else {
+                        div { class: "space-y-1",
+                            crate::components::CompanyPicker {
+                                value: company_name.read().clone(),
+                                selected_id: company_picker_selected_id,
+                                required: true,
+                                allow_inline_create: true,
+                                onselect: move |(id, name): (String, String)| {
+                                    company_id.set(id);
+                                    company_name.set(name);
+                                    company_err.set(String::new());
+                                },
+                                onclear: move |_| {
+                                    company_id.set(String::new());
+                                    company_name.set(String::new());
+                                },
+                            }
+                            if !company_err().is_empty() {
+                                p { class: "text-sm text-red-600 dark:text-red-400", "{company_err}" }
+                            }
+                        }
                     }
                 }
 

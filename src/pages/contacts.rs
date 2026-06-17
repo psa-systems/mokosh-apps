@@ -3186,6 +3186,12 @@ fn ContactForm(props: ContactFormProps) -> Element {
                     value: company_name.read().clone(),
                     selected_id: picker_selected_id,
                     required: true,
+                    // PMS-352 AC3: a contact requires a company, so the same
+                    // empty-state dead-end the New Ticket form had applies here.
+                    // Opt into the inline "+ Create new company" affordance so a
+                    // first-time tenant with zero companies can create a contact
+                    // without leaving the form.
+                    allow_inline_create: true,
                     onselect: move |(id, name): (String, String)| {
                         company_id.set(id);
                         company_name.set(name);
