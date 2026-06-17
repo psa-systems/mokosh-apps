@@ -1081,18 +1081,24 @@ fn BusinessHoursFormModal(props: BusinessHoursFormModalProps) -> Element {
                 return;
             }
         };
+        // Validate the timezone as an IANA name (empty defaults to UTC) so a
+        // typo surfaces here instead of as an opaque 422 (MAPPS-240).
+        let timezone_value = {
+            let tz = timezone.read().trim().to_string();
+            if tz.is_empty() {
+                "UTC".to_string()
+            } else if tz.parse::<chrono_tz::Tz>().is_err() {
+                error.set("Time zone must be an IANA name (e.g. America/New_York).".to_string());
+                return;
+            } else {
+                tz
+            }
+        };
         saving.set(true);
         error.set(String::new());
         let req = crate::modules::sla::UpsertBusinessHoursRequest {
             name: name.read().trim().to_string(),
-            timezone: {
-                let tz = timezone.read().trim().to_string();
-                if tz.is_empty() {
-                    "UTC".to_string()
-                } else {
-                    tz
-                }
-            },
+            timezone: timezone_value,
             schedule,
             is_default: *is_default.read(),
         };
