@@ -54,6 +54,9 @@ pub fn Modal(props: ModalProps) -> Element {
     }
 
     let size_class = props.size.class();
+    // EventHandler is Copy; hoist so the backdrop, the close button, and the
+    // Esc keydown handler can each call it.
+    let onclose = props.onclose;
 
     rsx! {
         div { class: "fixed inset-0 z-50 overflow-y-auto",
@@ -62,13 +65,27 @@ pub fn Modal(props: ModalProps) -> Element {
             // through a 75% gray dim instead of being fully covered.
             div {
                 class: "fixed inset-0 bg-gray-500/75 transition-opacity",
-                onclick: move |_| props.onclose.call(()),
+                onclick: move |_| onclose.call(()),
             }
 
             // Modal container
             div { class: "flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-0",
                 div {
                     class: "relative transform overflow-hidden rounded-lg bg-white dark:bg-gray-800 text-left shadow-xl transition-all sm:my-8 w-full {size_class}",
+                    // PMS-369: Esc cancels. Focus the dialog on mount so the
+                    // keydown lands here even before the user clicks anything;
+                    // keydown from any focused control inside also bubbles up.
+                    tabindex: "-1",
+                    onmounted: move |e| {
+                        spawn(async move {
+                            let _ = e.set_focus(true).await;
+                        });
+                    },
+                    onkeydown: move |e: KeyboardEvent| {
+                        if e.key() == Key::Escape {
+                            onclose.call(());
+                        }
+                    },
                     onclick: |e| e.stop_propagation(),
 
                     // Header
@@ -121,10 +138,25 @@ pub struct ConfirmDialogProps {
     /// Loading state
     #[props(default = false)]
     loading: bool,
+    /// PMS-369: type-to-confirm gate for catastrophic / cascading deletes.
+    /// When non-empty, the destructive button stays disabled until the user
+    /// types this exact phrase (e.g. the company name). Empty (default) = a
+    /// plain one-click confirm, which is enough for non-cascading deletes.
+    #[props(default)]
+    confirm_phrase: String,
     /// Confirm handler
     onconfirm: EventHandler<()>,
     /// Cancel/close handler
     oncancel: EventHandler<()>,
+}
+
+/// PMS-369: does the typed text satisfy the type-to-confirm gate? An empty
+/// `required` means no gate (always satisfied). Otherwise the typed text must
+/// match after trimming, case-insensitively, so " acme corp " passes for
+/// "Acme Corp".
+pub fn confirm_phrase_satisfied(typed: &str, required: &str) -> bool {
+    let required = required.trim();
+    required.is_empty() || typed.trim().eq_ignore_ascii_case(required)
 }
 
 /// Confirmation dialog component
@@ -135,6 +167,16 @@ pub fn ConfirmDialog(props: ConfirmDialogProps) -> Element {
     } else {
         ButtonVariant::Primary
     };
+
+    // PMS-369: type-to-confirm. `typed` tracks the gate input; the destructive
+    // button is disabled until it matches `confirm_phrase`. A non-matching
+    // (or empty) phrase keeps the button disabled, so a different entity's
+    // name never carries over an enabled state.
+    let mut typed = use_signal(String::new);
+    let gated = !props.confirm_phrase.trim().is_empty();
+    let satisfied = confirm_phrase_satisfied(&typed.read(), &props.confirm_phrase);
+    let confirm_disabled = props.loading || !satisfied;
+    let phrase = props.confirm_phrase.clone();
 
     rsx! {
         Modal {
@@ -153,11 +195,28 @@ pub fn ConfirmDialog(props: ConfirmDialogProps) -> Element {
                     variant: confirm_variant,
                     onclick: move |_| props.onconfirm.call(()),
                     loading: props.loading,
+                    disabled: confirm_disabled,
                     "{props.confirm_text}"
                 }
             },
             p { class: "text-sm text-gray-500 dark:text-gray-400",
                 "{props.message}"
+            }
+            if gated {
+                div { class: "mt-3 space-y-1",
+                    label { class: "block text-xs font-medium text-gray-600 dark:text-gray-400",
+                        "Type "
+                        span { class: "font-semibold text-gray-900 dark:text-gray-100", "{phrase}" }
+                        " to confirm"
+                    }
+                    input {
+                        r#type: "text",
+                        class: "w-full rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-500",
+                        value: "{typed}",
+                        autocomplete: "off",
+                        oninput: move |e| typed.set(e.value()),
+                    }
+                }
             }
         }
     }
@@ -321,5 +380,29 @@ pub fn ToastContainer(props: ToastContainerProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::confirm_phrase_satisfied;
+
+    // PMS-369: type-to-confirm gate. The destructive button is enabled only
+    // when `confirm_phrase_satisfied` returns true.
+    #[test]
+    fn ungated_when_required_blank() {
+        assert!(confirm_phrase_satisfied("", ""));
+        assert!(confirm_phrase_satisfied("anything", "   "));
+    }
+
+    #[test]
+    fn gated_needs_exact_trimmed_caseinsensitive_match() {
+        // Wrong / partial input keeps the gate closed.
+        assert!(!confirm_phrase_satisfied("", "Acme Corp"));
+        assert!(!confirm_phrase_satisfied("Acme", "Acme Corp"));
+        assert!(!confirm_phrase_satisfied("Acme Corpp", "Acme Corp"));
+        // Exact match (with surrounding whitespace / different case) passes.
+        assert!(confirm_phrase_satisfied("Acme Corp", "Acme Corp"));
+        assert!(confirm_phrase_satisfied("  acme corp  ", "Acme Corp"));
     }
 }
