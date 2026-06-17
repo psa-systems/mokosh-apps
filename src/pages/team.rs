@@ -256,7 +256,11 @@ pub fn TeamPage() -> Element {
                         if is_loading {
                             TableLoading { columns: 4, rows: 3 }
                         } else if rows.is_empty() {
-                            TableEmpty { columns: 4, message: "No pending invitations.".to_string() }
+                            TableEmpty {
+                                columns: 4,
+                                title: "No pending invitations".to_string(),
+                                description: "Use the Invite form above to grant a teammate access.".to_string(),
+                            }
                         } else {
                             TableBody {
                                 for inv in rows.iter().cloned() {

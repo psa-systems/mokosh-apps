@@ -239,19 +239,39 @@ pub fn TableLoading(props: TableLoadingProps) -> Element {
 pub struct TableEmptyProps {
     #[props(default = 5)]
     columns: usize,
+    /// Back-compat single-line message. Used only when `title` is empty (e.g.
+    /// sub-resource tables, error rows, filtered-out states with no CTA).
     #[props(default = "No data available".to_string())]
     message: String,
+    /// PMS-354: when set, the row renders the shared `EmptyState` (title +
+    /// next-action body + optional CTA) inside the table's `colspan` cell so
+    /// every list's empty state follows the same helpful pattern.
+    #[props(default)]
+    title: String,
+    #[props(default)]
+    description: String,
+    /// Optional primary CTA element (e.g. a "New <thing>" button/link).
+    actions: Option<Element>,
 }
 
 #[component]
 pub fn TableEmpty(props: TableEmptyProps) -> Element {
+    let rich = !props.title.is_empty();
     rsx! {
         TableBody {
             tr {
                 td {
                     colspan: "{props.columns}",
-                    class: "px-6 py-12 text-center text-gray-500 dark:text-gray-400",
-                    "{props.message}"
+                    class: if rich { "px-6" } else { "px-6 py-12 text-center text-gray-500 dark:text-gray-400" },
+                    if rich {
+                        super::layout::EmptyState {
+                            title: props.title.clone(),
+                            description: props.description.clone(),
+                            actions: props.actions,
+                        }
+                    } else {
+                        "{props.message}"
+                    }
                 }
             }
         }

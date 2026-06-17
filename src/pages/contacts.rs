@@ -310,13 +310,27 @@ pub fn CompanyListPage() -> Element {
                     if is_loading {
                         TableLoading { columns: 4, rows: 5 }
                     } else if page_rows.is_empty() {
-                        TableEmpty {
-                            columns: 4,
-                            message: if has_filters {
-                                "No companies match your filters.".to_string()
-                            } else {
-                                "No companies yet. Click New Company to create one.".to_string()
-                            },
+                        if has_filters {
+                            TableEmpty {
+                                columns: 4,
+                                message: "No companies match your filters.".to_string(),
+                            }
+                        } else {
+                            TableEmpty {
+                                columns: 4,
+                                title: "No companies yet".to_string(),
+                                description: "Add your first company to start managing clients.".to_string(),
+                                actions: rsx! {
+                                    Link {
+                                        to: Route::CompanyNew {},
+                                        Button {
+                                            variant: ButtonVariant::Primary,
+                                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                            "New Company"
+                                        }
+                                    }
+                                },
+                            }
                         }
                     } else {
                         TableBody {
@@ -2704,13 +2718,27 @@ pub fn ContactListPage() -> Element {
                     if is_loading {
                         TableLoading { columns: 5, rows: 5 }
                     } else if page_rows.is_empty() {
-                        TableEmpty {
-                            columns: 5,
-                            message: if has_filters {
-                                "No contacts match your filters.".to_string()
-                            } else {
-                                "No contacts yet. Click New Contact to add one.".to_string()
-                            },
+                        if has_filters {
+                            TableEmpty {
+                                columns: 5,
+                                message: "No contacts match your filters.".to_string(),
+                            }
+                        } else {
+                            TableEmpty {
+                                columns: 5,
+                                title: "No contacts yet".to_string(),
+                                description: "Add your first contact to a company.".to_string(),
+                                actions: rsx! {
+                                    Link {
+                                        to: Route::ContactNew {},
+                                        Button {
+                                            variant: ButtonVariant::Primary,
+                                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                            "New Contact"
+                                        }
+                                    }
+                                },
+                            }
                         }
                     } else {
                         TableBody {
