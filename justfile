@@ -20,8 +20,9 @@ install-hooks:
     print $"Wrote ($hook) -> just pre-commit"
 
 # Run the same checks as .forgejo/workflows/check.yml inside the rust-builder-glibc image so the toolchain matches CI.
+# Depends on css-build because src/main.rs uses asset!("/assets/styles.css"), which requires the Tailwind output to exist at compile time. assets/styles.css is gitignored, so a clean clone must build it before clippy/check run.
 [group: 'hooks']
-pre-commit:
+pre-commit: css-build
     #!/usr/bin/env nu
     let img = "{{ dev_image }}"
     # Share the cargo target cache with `just dev`/compose. compose.yml
