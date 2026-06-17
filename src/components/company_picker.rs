@@ -113,21 +113,21 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
         let onclear = props.onclear;
         return rsx! {
             div { class: "space-y-1",
-                label { class: "block text-sm font-medium text-gray-700 dark:text-gray-300",
+                label { class: "block text-sm font-medium text-content",
                     "{props.label}"
                     if props.required {
                         span { class: "text-red-500 ml-0.5", "*" }
                     }
                 }
                 div {
-                    class: "flex items-center justify-between border border-gray-300 dark:border-gray-700 rounded-md px-3 py-2 bg-gray-50 dark:bg-gray-900",
+                    class: "flex items-center justify-between border border-line rounded-md px-3 py-2 bg-app",
                     div { class: "min-w-0",
-                        p { class: "text-sm font-medium text-gray-900 dark:text-gray-100 truncate", "{name}" }
-                        p { class: "text-xs text-gray-500 truncate", "{id}" }
+                        p { class: "text-sm font-medium text-content truncate", "{name}" }
+                        p { class: "text-xs text-muted truncate", "{id}" }
                     }
                     button {
                         r#type: "button",
-                        class: "text-xs text-blue-600 hover:text-blue-500 px-2 py-1",
+                        class: "text-xs text-accent hover:opacity-90 px-2 py-1",
                         onclick: move |_| {
                             onclear.call(());
                             query.set(String::new());
@@ -163,10 +163,10 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                     onclick: move |_| show_dropdown.set(false),
                 }
                 div {
-                    class: "absolute z-20 left-0 right-0 mt-1 max-h-72 overflow-y-auto rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg",
+                    class: "absolute z-20 left-0 right-0 mt-1 max-h-72 overflow-y-auto rounded-md border border-line bg-raised shadow-lg",
                     match &*snap {
                         None => rsx! {
-                            div { class: "px-3 py-2 text-sm text-gray-500", "Searching..." }
+                            div { class: "px-3 py-2 text-sm text-muted", "Searching..." }
                         },
                         Some(None) => rsx! {
                             div { class: "px-3 py-2 text-sm text-red-600", "Could not load companies." }
@@ -174,7 +174,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                         Some(Some(rows)) if rows.is_empty() => {
                             let query_for_seed = query_text.clone();
                             rsx! {
-                                div { class: "px-3 py-2 text-sm text-gray-500",
+                                div { class: "px-3 py-2 text-sm text-muted",
                                     if query_text.is_empty() {
                                         "No companies yet."
                                     } else {
@@ -188,7 +188,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                                 if allow_inline_create {
                                     button {
                                         r#type: "button",
-                                        class: "w-full text-left px-3 py-2 text-sm border-t border-gray-100 dark:border-gray-800 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30",
+                                        class: "w-full text-left px-3 py-2 text-sm border-t border-line text-accent hover:bg-accent-50 dark:hover:bg-accent-900/30",
                                         onclick: move |_| {
                                             new_name.set(query_for_seed.clone());
                                             create_error.set(String::new());
@@ -224,7 +224,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                                                     key: "{key}",
                                                     button {
                                                         r#type: "button",
-                                                        class: "w-full text-left px-3 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-800",
+                                                        class: "w-full text-left px-3 py-2 text-sm hover:bg-surface-2",
                                                         onclick: move |_| {
                                                             onselect.call((id_for_click.clone(), name_for_click.clone()));
                                                             show_dropdown.set(false);
@@ -249,10 +249,10 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                                 // a clear preview of what name will be
                                 // submitted.
                                 if allow_inline_create {
-                                    div { class: "border-t border-gray-100 dark:border-gray-800",
+                                    div { class: "border-t border-line",
                                         button {
                                             r#type: "button",
-                                            class: "w-full text-left px-3 py-2 text-sm text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30",
+                                            class: "w-full text-left px-3 py-2 text-sm text-accent hover:bg-accent-50 dark:hover:bg-accent-900/30",
                                             onclick: move |_| {
                                                 new_name.set(query_for_seed.clone());
                                                 create_error.set(String::new());
@@ -370,7 +370,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                                     value: new_name.read().clone(),
                                     oninput: move |e: FormEvent| new_name.set(e.value()),
                                 }
-                                p { class: "text-xs text-gray-500 dark:text-gray-400",
+                                p { class: "text-xs text-muted",
                                     "Creates a Client company with default settings. Edit type, status, billing details, and contact info from the company detail page."
                                 }
                             }

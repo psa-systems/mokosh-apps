@@ -17,6 +17,7 @@ mod overflow_actions;
 mod setting_form_modal;
 mod skeleton;
 mod table;
+mod theme_picker;
 mod update_banner;
 
 pub use asset_picker::*;
@@ -34,4 +35,5 @@ pub use overflow_actions::*;
 pub use setting_form_modal::*;
 pub use skeleton::*;
 pub use table::*;
+pub use theme_picker::*;
 pub use update_banner::*;

@@ -211,20 +211,20 @@ pub fn TimeEntryListPage() -> Element {
 
             div { class: "grid grid-cols-1 gap-5 sm:grid-cols-4 mb-6",
                 Card { class: "text-center",
-                    p { class: "text-sm text-gray-500 dark:text-gray-400", "Today" }
-                    p { class: "text-2xl font-bold text-gray-900 dark:text-white", "{today_h}" }
+                    p { class: "text-sm text-muted", "Today" }
+                    p { class: "text-2xl font-bold text-content", "{today_h}" }
                 }
                 Card { class: "text-center",
-                    p { class: "text-sm text-gray-500 dark:text-gray-400", "This Week" }
-                    p { class: "text-2xl font-bold text-gray-900 dark:text-white", "{week_h}" }
+                    p { class: "text-sm text-muted", "This Week" }
+                    p { class: "text-2xl font-bold text-content", "{week_h}" }
                 }
                 Card { class: "text-center",
-                    p { class: "text-sm text-gray-500 dark:text-gray-400", "Billable" }
+                    p { class: "text-sm text-muted", "Billable" }
                     p { class: "text-2xl font-bold text-green-600", "{billable_h}" }
                 }
                 Card { class: "text-center",
-                    p { class: "text-sm text-gray-500 dark:text-gray-400", "Non-Billable" }
-                    p { class: "text-2xl font-bold text-gray-500", "{nonbillable_h}" }
+                    p { class: "text-sm text-muted", "Non-Billable" }
+                    p { class: "text-2xl font-bold text-muted", "{nonbillable_h}" }
                 }
             }
 
@@ -254,10 +254,10 @@ pub fn TimeEntryListPage() -> Element {
                     }
                     TableBody {
                         if is_loading {
-                            TableRow { TableCell { class: "text-gray-400", "Loading…" } }
+                            TableRow { TableCell { class: "text-subtle", "Loading…" } }
                         } else if entries.is_empty() {
                             TableRow {
-                                TableCell { class: "text-gray-400 italic", "No time logged yet." }
+                                TableCell { class: "text-subtle italic", "No time logged yet." }
                             }
                         } else {
                             for e in entries.iter() {
@@ -279,7 +279,7 @@ pub fn TimeEntryListPage() -> Element {
                                         TableRow {
                                             clickable: true,
                                             onclick: move |_| selected_entry.set(Some(entry.clone())),
-                                            TableCell { class: "text-gray-500", "{e.date}" }
+                                            TableCell { class: "text-muted", "{e.date}" }
                                             TableCell {
                                                 if let Some(tid) = e.ticket_id {
                                                     // Stop the link click from also opening the
@@ -288,7 +288,7 @@ pub fn TimeEntryListPage() -> Element {
                                                         onclick: move |evt: MouseEvent| evt.stop_propagation(),
                                                         Link {
                                                             to: Route::TicketDetail { id: tid.to_string() },
-                                                            class: "font-medium text-blue-600 hover:text-blue-500",
+                                                            class: "font-medium text-accent hover:opacity-90",
                                                             "{wi_label}"
                                                         }
                                                     }
@@ -300,15 +300,15 @@ pub fn TimeEntryListPage() -> Element {
                                                         onclick: move |evt: MouseEvent| evt.stop_propagation(),
                                                         Link {
                                                             to: Route::ProjectDetail { id: pid.to_string() },
-                                                            class: "font-medium text-blue-600 hover:text-blue-500",
+                                                            class: "font-medium text-accent hover:opacity-90",
                                                             "{wi_label}"
                                                         }
                                                     }
                                                 } else {
-                                                    span { class: "text-gray-400", "-" }
+                                                    span { class: "text-subtle", "-" }
                                                 }
                                             }
-                                            TableCell { class: "text-gray-500", "{wt_label}" }
+                                            TableCell { class: "text-muted", "{wt_label}" }
                                             TableCell { class: "max-w-xs truncate", "{note}" }
                                             TableCell { class: "font-medium", "{hrs}" }
                                             TableCell {
@@ -318,7 +318,7 @@ pub fn TimeEntryListPage() -> Element {
                                                     Badge { variant: BadgeVariant::Gray, "Non-Billable" }
                                                 }
                                                 if !status.is_empty() && status != "not_billed" {
-                                                    span { class: "ml-2 text-xs text-gray-400", "{status}" }
+                                                    span { class: "ml-2 text-xs text-subtle", "{status}" }
                                                 }
                                             }
                                         }
@@ -963,7 +963,7 @@ pub fn TimesheetsPage() -> Element {
                                     "Submit Timesheet"
                                 }
                                 if show_no_entries_hint {
-                                    span { class: "text-xs text-gray-500 dark:text-gray-400",
+                                    span { class: "text-xs text-muted",
                                         "No time logged this week yet."
                                     }
                                 }
@@ -989,7 +989,7 @@ pub fn TimesheetsPage() -> Element {
                 div { class: "flex items-center justify-between",
                     button {
                         r#type: "button",
-                        class: "p-2 text-gray-400 hover:text-gray-600",
+                        class: "p-2 text-subtle hover:text-content",
                         title: "Previous week",
                         onclick: move |_| {
                             action_msg.set(String::new());
@@ -999,7 +999,7 @@ pub fn TimesheetsPage() -> Element {
                         ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
                     }
                     div { class: "flex flex-col items-center gap-1",
-                        span { class: "text-lg font-medium text-gray-900 dark:text-white",
+                        span { class: "text-lg font-medium text-content",
                             "{week_label}"
                         }
                         // PMS-310: one-click return to the current week (only
@@ -1008,7 +1008,7 @@ pub fn TimesheetsPage() -> Element {
                         if !is_current_week {
                             button {
                                 r#type: "button",
-                                class: "text-xs font-medium text-blue-600 hover:text-blue-500 dark:text-blue-400",
+                                class: "text-xs font-medium text-accent hover:opacity-90",
                                 onclick: move |_| {
                                     action_msg.set(String::new());
                                     action_err.set(String::new());
@@ -1020,7 +1020,7 @@ pub fn TimesheetsPage() -> Element {
                     }
                     button {
                         r#type: "button",
-                        class: "p-2 text-gray-400 hover:text-gray-600",
+                        class: "p-2 text-subtle hover:text-content",
                         title: "Next week",
                         onclick: move |_| {
                             action_msg.set(String::new());
@@ -1035,39 +1035,39 @@ pub fn TimesheetsPage() -> Element {
             // Weekly grid
             Card { padding: false,
                 div { class: "overflow-x-auto",
-                    table { class: "min-w-full divide-y divide-gray-200 dark:divide-gray-700",
-                        thead { class: "bg-gray-50 dark:bg-gray-800",
+                    table { class: "min-w-full divide-y divide-line",
+                        thead { class: "bg-surface-2",
                             tr {
-                                th { class: "px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider",
+                                th { class: "px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider",
                                     "Work Item"
                                 }
-                                th { class: "px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-20",
+                                th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
                                     "Mon"
                                 }
-                                th { class: "px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-20",
+                                th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
                                     "Tue"
                                 }
-                                th { class: "px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-20",
+                                th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
                                     "Wed"
                                 }
-                                th { class: "px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-20",
+                                th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
                                     "Thu"
                                 }
-                                th { class: "px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-20",
+                                th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
                                     "Fri"
                                 }
-                                th { class: "px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-20",
+                                th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
                                     "Sat"
                                 }
-                                th { class: "px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-20",
+                                th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
                                     "Sun"
                                 }
-                                th { class: "px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider w-20",
+                                th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
                                     "Total"
                                 }
                             }
                         }
-                        tbody { class: "bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700",
+                        tbody { class: "bg-surface divide-y divide-line",
                             if is_loading {
                                 // PMS-353: shimmer rows (matching the shared
                                 // skeleton style) instead of a bare text line.
@@ -1076,7 +1076,7 @@ pub fn TimesheetsPage() -> Element {
                                 for _ in 0..4 {
                                     tr {
                                         td { class: "px-6 py-4", colspan: "9",
-                                            div { class: "h-4 bg-gray-200 dark:bg-gray-700 rounded animate-pulse" }
+                                            div { class: "h-4 bg-surface-2 rounded animate-pulse" }
                                         }
                                     }
                                 }
@@ -1096,7 +1096,7 @@ pub fn TimesheetsPage() -> Element {
                                     td {
                                         class: "px-6 py-8 text-center",
                                         colspan: "9",
-                                        p { class: "text-sm text-gray-500 dark:text-gray-400",
+                                        p { class: "text-sm text-muted",
                                             "No time logged this week yet. Select a time to log for this week."
                                         }
                                         div { class: "mt-3",
@@ -1122,43 +1122,43 @@ pub fn TimesheetsPage() -> Element {
                                                     if let Some(r) = route {
                                                         Link {
                                                             to: r.clone(),
-                                                            class: "font-medium text-blue-600 hover:text-blue-500",
+                                                            class: "font-medium text-accent hover:opacity-90",
                                                             "{label}"
                                                         }
                                                     } else {
-                                                        span { class: "text-gray-900 dark:text-white", "{label}" }
+                                                        span { class: "text-content", "{label}" }
                                                     }
                                                 }
                                                 for m in buckets.iter() {
                                                     td { class: "px-4 py-3 text-center text-sm",
                                                         if *m == 0 {
-                                                            span { class: "text-gray-300 dark:text-gray-600", "-" }
+                                                            span { class: "text-subtle", "-" }
                                                         } else {
-                                                            span { class: "text-gray-900 dark:text-white", "{fmt_hours(*m)}" }
+                                                            span { class: "text-content", "{fmt_hours(*m)}" }
                                                         }
                                                     }
                                                 }
-                                                td { class: "px-4 py-3 text-center text-sm font-medium text-gray-900 dark:text-white",
+                                                td { class: "px-4 py-3 text-center text-sm font-medium text-content",
                                                     "{fmt_hours(row_total)}"
                                                 }
                                             }
                                         }
                                     }
                                 }
-                                tr { class: "bg-gray-50 dark:bg-gray-800 font-medium",
-                                    td { class: "px-6 py-3 text-sm text-gray-900 dark:text-white",
+                                tr { class: "bg-surface-2 font-medium",
+                                    td { class: "px-6 py-3 text-sm text-content",
                                         "Daily Total"
                                     }
                                     for m in daily_totals.iter() {
-                                        td { class: "px-4 py-3 text-center text-sm text-gray-900 dark:text-white",
+                                        td { class: "px-4 py-3 text-center text-sm text-content",
                                             if *m == 0 {
-                                                span { class: "text-gray-500", "0" }
+                                                span { class: "text-muted", "0" }
                                             } else {
                                                 "{fmt_hours(*m)}"
                                             }
                                         }
                                     }
-                                    td { class: "px-4 py-3 text-center text-sm font-bold text-blue-600",
+                                    td { class: "px-4 py-3 text-center text-sm font-bold text-accent",
                                         "{fmt_hours(grand_total)}"
                                     }
                                 }
@@ -1231,7 +1231,7 @@ pub fn TimesheetsPage() -> Element {
                             }
                         },
                         div { class: "space-y-4",
-                            p { class: "text-sm text-gray-600 dark:text-gray-300",
+                            p { class: "text-sm text-content",
                                 "Once submitted, this timesheet goes to your manager for approval. You can withdraw it back to draft until it is approved."
                             }
                             Checkbox {
@@ -1376,7 +1376,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                     subtitle: "Review and approve submitted timesheets",
                 }
                 Card {
-                    p { class: "text-sm text-gray-500 dark:text-gray-400",
+                    p { class: "text-sm text-muted",
                         "You need a manager or admin role to review timesheets."
                     }
                 }
@@ -1451,7 +1451,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                 div { class: "flex items-center justify-between",
                     button {
                         r#type: "button",
-                        class: "p-2 text-gray-400 hover:text-gray-600",
+                        class: "p-2 text-subtle hover:text-content",
                         title: "Previous week",
                         onclick: move |_| {
                             action_msg.set(String::new());
@@ -1461,13 +1461,13 @@ pub fn TimesheetApprovalsPage() -> Element {
                         ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
                     }
                     div { class: "flex flex-col items-center gap-1",
-                        span { class: "text-lg font-medium text-gray-900 dark:text-white",
+                        span { class: "text-lg font-medium text-content",
                             "{week_label}"
                         }
                         if !is_current_week {
                             button {
                                 r#type: "button",
-                                class: "text-xs font-medium text-blue-600 hover:text-blue-500 dark:text-blue-400",
+                                class: "text-xs font-medium text-accent hover:opacity-90",
                                 onclick: move |_| {
                                     action_msg.set(String::new());
                                     action_err.set(String::new());
@@ -1479,7 +1479,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                     }
                     button {
                         r#type: "button",
-                        class: "p-2 text-gray-400 hover:text-gray-600",
+                        class: "p-2 text-subtle hover:text-content",
                         title: "Next week",
                         onclick: move |_| {
                             action_msg.set(String::new());
@@ -1509,7 +1509,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                     TableBody {
                         if is_loading {
                             TableRow {
-                                TableCell { class: "text-gray-400", "Loading…" }
+                                TableCell { class: "text-subtle", "Loading…" }
                             }
                         } else if load_failed {
                             TableRow {
@@ -1519,7 +1519,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                             }
                         } else if pending.is_empty() {
                             TableRow {
-                                TableCell { class: "text-gray-400 italic",
+                                TableCell { class: "text-subtle italic",
                                     "No timesheets awaiting approval for this week."
                                 }
                             }
@@ -1535,7 +1535,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                                     let row_busy = approving_id == Some(uid) || is_rejecting();
                                     rsx! {
                                         TableRow { key: "{uid}",
-                                            TableCell { class: "font-medium text-gray-900 dark:text-white", "{name}" }
+                                            TableCell { class: "font-medium text-content", "{name}" }
                                             TableCell { "{total}" }
                                             TableCell { class: "text-green-600", "{billable}" }
                                             TableCell { "{entries}" }
@@ -1674,7 +1674,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                             }
                         },
                         div { class: "space-y-4",
-                            p { class: "text-sm text-gray-600 dark:text-gray-300",
+                            p { class: "text-sm text-content",
                                 "Reject {reject_name}'s timesheet for this week. A reason is required and is shown to the employee so they can correct and resubmit."
                             }
                             crate::components::Textarea {
@@ -1883,7 +1883,7 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
                         p { class: "text-sm text-red-600 dark:text-red-400", "{error.read()}" }
                     }
                 }
-                p { class: "text-xs text-gray-500 dark:text-gray-400",
+                p { class: "text-xs text-muted",
                     "Work item: {wi_label}. To move this entry to a different work item, delete it and log again."
                 }
                 Select {

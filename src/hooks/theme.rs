@@ -14,9 +14,11 @@
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
+use crate::modules::theme::accents;
 use crate::utils::prefs;
 
 const THEME_KEY: &str = "mokosh_theme";
+const ACCENT_KEY: &str = "mokosh_accent";
 const HTML_DARK_CLASS: &str = "dark";
 
 /// Persisted theme preference. The string form is what's in
@@ -59,6 +61,26 @@ pub fn set(theme: Theme) {
     apply_now();
 }
 
+/// Read the current accent preference. Falls back to the default accent
+/// when unset, on a non-web build, or when the stored id is unknown.
+pub fn current_accent() -> &'static accents::Accent {
+    accents::resolve(&prefs::get_str(ACCENT_KEY, accents::DEFAULT_ACCENT_ID))
+}
+
+/// Persist the accent by id and immediately re-apply so the whole app
+/// recolors without a reload. Unknown ids resolve to the default on read.
+pub fn set_accent(id: &str) {
+    prefs::set_str(ACCENT_KEY, id);
+    apply_now();
+}
+
+/// Whether the resolved base mode is currently dark (explicit Dark, or
+/// System following an OS dark preference). The picker uses this to show
+/// base-appropriate accent swatches and the contrast guardrail.
+pub fn current_is_dark() -> bool {
+    resolved_is_dark(current())
+}
+
 /// Resolve which palette to actually show right now: explicit `Light`
 /// / `Dark` pass through; `System` reads `prefers-color-scheme: dark`.
 fn resolved_is_dark(theme: Theme) -> bool {
@@ -95,12 +117,48 @@ pub fn apply_now() {
     let Some(root) = doc.document_element() else {
         return;
     };
+    let is_dark = resolved_is_dark(current());
     let class_list = root.class_list();
-    if resolved_is_dark(current()) {
+    if is_dark {
         let _ = class_list.add_1(HTML_DARK_CLASS);
     } else {
         let _ = class_list.remove_1(HTML_DARK_CLASS);
     }
+    apply_accent(&root, is_dark);
+}
+
+/// Inject the current accent's ramp + per-base fill/on-accent as inline
+/// CSS variables on `<html>`. Inline values override the stylesheet
+/// defaults in `input.css`, so every `*-accent*` utility recolors live.
+/// The base surface/text/line variables are left to the stylesheet
+/// (driven by the `dark` class), so only the accent is dynamic here.
+#[cfg(feature = "web")]
+fn apply_accent(root: &web_sys::Element, is_dark: bool) {
+    use wasm_bindgen::JsCast;
+    let Some(html) = root.dyn_ref::<web_sys::HtmlElement>() else {
+        return;
+    };
+    let accent = current_accent();
+    let variant = if is_dark { accent.dark } else { accent.light };
+    let style = html.style();
+    const RAMP_VARS: [&str; 11] = [
+        "--accent-50",
+        "--accent-100",
+        "--accent-200",
+        "--accent-300",
+        "--accent-400",
+        "--accent-500",
+        "--accent-600",
+        "--accent-700",
+        "--accent-800",
+        "--accent-900",
+        "--accent-950",
+    ];
+    for (name, value) in RAMP_VARS.iter().zip(accent.ramp.iter()) {
+        let _ = style.set_property(name, value);
+    }
+    let _ = style.set_property("--accent", variant.fill);
+    let _ = style.set_property("--on-accent", variant.on_accent);
 }
 
 #[cfg(not(feature = "web"))]

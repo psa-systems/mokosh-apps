@@ -380,7 +380,7 @@ fn CompanyRow(props: CompanyRowProps) -> Element {
             TableCell {
                 Link {
                     to: Route::CompanyDetail { id: props.id.clone() },
-                    class: "font-medium text-blue-600 hover:text-blue-500",
+                    class: "font-medium text-accent hover:opacity-90",
                     "{props.name}"
                 }
             }
@@ -390,9 +390,9 @@ fn CompanyRow(props: CompanyRowProps) -> Element {
             TableCell { "{props.primary_contact}" }
             TableCell {
                 if props.open_tickets > 0 {
-                    span { class: "font-medium text-blue-600", "{props.open_tickets}" }
+                    span { class: "font-medium text-accent", "{props.open_tickets}" }
                 } else {
-                    span { class: "text-gray-400", "0" }
+                    span { class: "text-subtle", "0" }
                 }
             }
         }
@@ -447,7 +447,7 @@ pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
                             p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load company." }
                             Link {
                                 to: Route::CompanyList {},
-                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                class: "text-sm text-accent hover:opacity-90",
                                 "Back to companies"
                             }
                         }
@@ -717,7 +717,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                     }
                 }
 
-                h3 { class: "text-sm font-medium text-gray-900 dark:text-gray-100 pt-2",
+                h3 { class: "text-sm font-medium text-content pt-2",
                     "Address"
                 }
                 div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
@@ -1142,7 +1142,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                             p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load company." }
                             Link {
                                 to: Route::CompanyList {},
-                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                class: "text-sm text-accent hover:opacity-90",
                                 "Back to companies"
                             }
                         }
@@ -1204,13 +1204,13 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                 Card { title: "Details",
                                     dl { class: "space-y-4",
                                         div { class: "flex justify-between",
-                                            dt { class: "text-sm text-gray-500", "Type" }
+                                            dt { class: "text-sm text-muted", "Type" }
                                             dd { Badge { variant: BadgeVariant::Green, "{type_label}" } }
                                         }
                                         if let Some(industry) = industry {
                                             if !industry.is_empty() {
                                                 div { class: "flex justify-between",
-                                                    dt { class: "text-sm text-gray-500", "Industry" }
+                                                    dt { class: "text-sm text-muted", "Industry" }
                                                     dd { class: "text-sm", "{industry}" }
                                                 }
                                             }
@@ -1218,7 +1218,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                         if let Some(phone) = phone {
                                             if !phone.is_empty() {
                                                 div { class: "flex justify-between",
-                                                    dt { class: "text-sm text-gray-500", "Phone" }
+                                                    dt { class: "text-sm text-muted", "Phone" }
                                                     dd { class: "text-sm", "{phone}" }
                                                 }
                                             }
@@ -1226,7 +1226,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                         if let Some(website) = website {
                                             if !website.is_empty() {
                                                 div { class: "flex justify-between",
-                                                    dt { class: "text-sm text-gray-500", "Website" }
+                                                    dt { class: "text-sm text-muted", "Website" }
                                                     dd {
                                                         // Only render a live link when the value carries a
                                                         // safe URL scheme; `javascript:`/`data:`/`vbscript:`
@@ -1236,7 +1236,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                                                 href: "{href}",
                                                                 target: "_blank",
                                                                 rel: "noopener noreferrer",
-                                                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                                                class: "text-sm text-accent hover:opacity-90",
                                                                 "{website}"
                                                             }
                                                         } else {
@@ -1249,14 +1249,14 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                         if let Some(am) = am_name {
                                             if !am.is_empty() {
                                                 div { class: "flex justify-between",
-                                                    dt { class: "text-sm text-gray-500", "Account Manager" }
+                                                    dt { class: "text-sm text-muted", "Account Manager" }
                                                     dd { class: "text-sm", "{am}" }
                                                 }
                                             }
                                         }
                                         if !address_parts.is_empty() {
                                             div {
-                                                dt { class: "text-sm text-gray-500 mb-1", "Address" }
+                                                dt { class: "text-sm text-muted mb-1", "Address" }
                                                 dd { class: "text-sm space-y-0.5",
                                                     for line in address_parts.iter() {
                                                         p { "{line}" }
@@ -1269,32 +1269,32 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                 Card { title: "Statistics",
                                     div { class: "space-y-3",
                                         div { class: "flex justify-between",
-                                            span { class: "text-sm text-gray-500", "Open Tickets" }
-                                            span { class: "font-medium text-gray-900 dark:text-white", "{open_tickets}" }
+                                            span { class: "text-sm text-muted", "Open Tickets" }
+                                            span { class: "font-medium text-content", "{open_tickets}" }
                                         }
                                         div { class: "flex justify-between",
-                                            span { class: "text-sm text-gray-500", "Contacts" }
+                                            span { class: "text-sm text-muted", "Contacts" }
                                             span { class: "font-medium", "{contact_count}" }
                                         }
                                         div { class: "flex justify-between",
-                                            span { class: "text-sm text-gray-500", "Sites" }
+                                            span { class: "text-sm text-muted", "Sites" }
                                             span { class: "font-medium", "{site_count}" }
                                         }
                                         // MAPPS-195: counts for the newly surfaced relationships.
                                         div { class: "flex justify-between",
-                                            span { class: "text-sm text-gray-500", "Contracts" }
+                                            span { class: "text-sm text-muted", "Contracts" }
                                             span { class: "font-medium", "{contract_count}" }
                                         }
                                         div { class: "flex justify-between",
-                                            span { class: "text-sm text-gray-500", "Projects" }
+                                            span { class: "text-sm text-muted", "Projects" }
                                             span { class: "font-medium", "{project_count}" }
                                         }
                                         div { class: "flex justify-between",
-                                            span { class: "text-sm text-gray-500", "Invoices" }
+                                            span { class: "text-sm text-muted", "Invoices" }
                                             span { class: "font-medium", "{invoice_count}" }
                                         }
                                         div { class: "flex justify-between",
-                                            span { class: "text-sm text-gray-500", "Assets" }
+                                            span { class: "text-sm text-muted", "Assets" }
                                             span { class: "font-medium", "{asset_count}" }
                                         }
                                     }
@@ -1393,7 +1393,7 @@ fn CompanyContactsCard(
             actions: rsx! {
                 button {
                     r#type: "button",
-                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    class: "text-sm text-accent hover:opacity-90",
                     onclick: move |_| show_add.set(true),
                     "Add Contact"
                 }
@@ -1432,7 +1432,7 @@ fn CompanyContactsCard(
                                                 TableCell {
                                                     Link {
                                                         to: Route::ContactDetail { id: id.clone() },
-                                                        class: "font-medium text-blue-600 hover:text-blue-500",
+                                                        class: "font-medium text-accent hover:opacity-90",
                                                         "{name}"
                                                     }
                                                 }
@@ -1577,13 +1577,13 @@ fn AddContactModal(
                         selected_name.set(String::new());
                     },
                 }
-                p { class: "text-xs text-gray-500 dark:text-gray-400",
+                p { class: "text-xs text-muted",
                     "Search for a contact to attach to this company. Attaching moves the contact to this company."
                 }
-                div { class: "border-t border-gray-100 dark:border-gray-800 pt-3",
+                div { class: "border-t border-line pt-3",
                     a {
                         href: "{new_href}",
-                        class: "text-sm text-blue-600 hover:text-blue-500",
+                        class: "text-sm text-accent hover:opacity-90",
                         "+ Create a new contact instead"
                     }
                 }
@@ -1611,7 +1611,7 @@ fn CompanySitesCard(
             actions: rsx! {
                 button {
                     r#type: "button",
-                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    class: "text-sm text-accent hover:opacity-90",
                     onclick: {
                         let company_id = company_id.clone();
                         move |_| {
@@ -1662,7 +1662,7 @@ fn CompanySitesCard(
                                                 TableCell {
                                                     button {
                                                         r#type: "button",
-                                                        class: "text-left font-medium text-blue-600 hover:text-blue-500",
+                                                        class: "text-left font-medium text-accent hover:opacity-90",
                                                         onclick: move |_| {
                                                             editing.set(Some(SiteFormState::from_existing(
                                                                 &company_id_for_edit,
@@ -1672,7 +1672,7 @@ fn CompanySitesCard(
                                                         "{site.name}"
                                                     }
                                                 }
-                                                TableCell { class: "text-gray-500", "{addr}" }
+                                                TableCell { class: "text-muted", "{addr}" }
                                                 TableCell {
                                                     if is_primary {
                                                         Badge { variant: BadgeVariant::Blue, "Primary" }
@@ -2062,12 +2062,12 @@ fn CompanyTicketsCard(
             actions: rsx! {
                 a {
                     href: "{new_ticket_href}",
-                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    class: "text-sm text-accent hover:opacity-90",
                     "New Ticket"
                 }
                 Link {
                     to: Route::TicketList {},
-                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    class: "text-sm text-accent hover:opacity-90",
                     "View All"
                 }
             },
@@ -2107,10 +2107,10 @@ fn CompanyTicketsCard(
                                                     div {
                                                         Link {
                                                             to: Route::TicketDetail { id: id.clone() },
-                                                            class: "font-medium text-blue-600 hover:text-blue-500",
+                                                            class: "font-medium text-accent hover:opacity-90",
                                                             "{number}"
                                                         }
-                                                        p { class: "text-sm text-gray-500", "{title}" }
+                                                        p { class: "text-sm text-muted", "{title}" }
                                                     }
                                                 }
                                                 TableCell {
@@ -2298,7 +2298,7 @@ fn CompanyContractsCard(
             actions: rsx! {
                 Link {
                     to: Route::ContractList {},
-                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    class: "text-sm text-accent hover:opacity-90",
                     "View All"
                 }
             },
@@ -2333,7 +2333,7 @@ fn CompanyContractsCard(
                                                 TableCell {
                                                     Link {
                                                         to: Route::ContractDetail { id: id.clone() },
-                                                        class: "font-medium text-blue-600 hover:text-blue-500",
+                                                        class: "font-medium text-accent hover:opacity-90",
                                                         "{name}"
                                                     }
                                                 }
@@ -2361,7 +2361,7 @@ fn CompanyProjectsCard(projects_resource: Resource<Option<Paginated<ProjectSumma
             actions: rsx! {
                 Link {
                     to: Route::ProjectList {},
-                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    class: "text-sm text-accent hover:opacity-90",
                     "View All"
                 }
             },
@@ -2396,7 +2396,7 @@ fn CompanyProjectsCard(projects_resource: Resource<Option<Paginated<ProjectSumma
                                                 TableCell {
                                                     Link {
                                                         to: Route::ProjectDetail { id: id.clone() },
-                                                        class: "font-medium text-blue-600 hover:text-blue-500",
+                                                        class: "font-medium text-accent hover:opacity-90",
                                                         "{name}"
                                                     }
                                                 }
@@ -2424,7 +2424,7 @@ fn CompanyInvoicesCard(invoices_resource: Resource<Option<Paginated<InvoiceSumma
             actions: rsx! {
                 Link {
                     to: Route::InvoiceList {},
-                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    class: "text-sm text-accent hover:opacity-90",
                     "View All"
                 }
             },
@@ -2459,7 +2459,7 @@ fn CompanyInvoicesCard(invoices_resource: Resource<Option<Paginated<InvoiceSumma
                                                 TableCell {
                                                     Link {
                                                         to: Route::InvoiceDetail { id: id.clone() },
-                                                        class: "font-medium text-blue-600 hover:text-blue-500",
+                                                        class: "font-medium text-accent hover:opacity-90",
                                                         "{number}"
                                                     }
                                                 }
@@ -2506,7 +2506,7 @@ fn CompanyAssetsCard(
             actions: rsx! {
                 Link {
                     to: Route::AssetList {},
-                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    class: "text-sm text-accent hover:opacity-90",
                     "View All"
                 }
             },
@@ -2541,11 +2541,11 @@ fn CompanyAssetsCard(
                                                 TableCell {
                                                     Link {
                                                         to: Route::AssetDetail { id: id.clone() },
-                                                        class: "font-medium text-blue-600 hover:text-blue-500",
+                                                        class: "font-medium text-accent hover:opacity-90",
                                                         "{name}"
                                                     }
                                                 }
-                                                TableCell { class: "text-gray-500", "{tname}" }
+                                                TableCell { class: "text-muted", "{tname}" }
                                                 TableCell { Badge { variant, "{label}" } }
                                             }
                                         }
@@ -2790,14 +2790,14 @@ fn ContactRow(props: ContactRowProps) -> Element {
             TableCell {
                 Link {
                     to: Route::ContactDetail { id: props.id.clone() },
-                    class: "font-medium text-blue-600 hover:text-blue-500",
+                    class: "font-medium text-accent hover:opacity-90",
                     "{props.name}"
                 }
             }
             TableCell {
                 Link {
                     to: Route::CompanyDetail { id: props.company_id.clone() },
-                    class: "text-gray-600 hover:text-blue-600",
+                    class: "text-muted hover:text-accent",
                     "{props.company}"
                 }
             }
@@ -2934,7 +2934,7 @@ pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
                             p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load contact." }
                             Link {
                                 to: Route::ContactList {},
-                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                class: "text-sm text-accent hover:opacity-90",
                                 "Back to contacts"
                             }
                         }
@@ -3367,7 +3367,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                             p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load contact." }
                             Link {
                                 to: Route::ContactList {},
-                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                class: "text-sm text-accent hover:opacity-90",
                                 "Back to contacts"
                             }
                         }
@@ -3395,11 +3395,11 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                         if let Some(email) = email {
                                             if !email.is_empty() {
                                                 div {
-                                                    dt { class: "text-sm text-gray-500", "Email" }
+                                                    dt { class: "text-sm text-muted", "Email" }
                                                     dd { class: "mt-1",
                                                         a {
                                                             href: "mailto:{email}",
-                                                            class: "text-blue-600 hover:text-blue-500",
+                                                            class: "text-accent hover:opacity-90",
                                                             "{email}"
                                                         }
                                                     }
@@ -3409,7 +3409,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                         if let Some(phone) = phone {
                                             if !phone.is_empty() {
                                                 div {
-                                                    dt { class: "text-sm text-gray-500", "Phone" }
+                                                    dt { class: "text-sm text-muted", "Phone" }
                                                     dd { class: "mt-1", "{phone}" }
                                                 }
                                             }
@@ -3417,7 +3417,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                         if let Some(mobile) = mobile {
                                             if !mobile.is_empty() {
                                                 div {
-                                                    dt { class: "text-sm text-gray-500", "Mobile" }
+                                                    dt { class: "text-sm text-muted", "Mobile" }
                                                     dd { class: "mt-1", "{mobile}" }
                                                 }
                                             }
@@ -3425,7 +3425,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                         if let Some(title) = title {
                                             if !title.is_empty() {
                                                 div {
-                                                    dt { class: "text-sm text-gray-500", "Title" }
+                                                    dt { class: "text-sm text-muted", "Title" }
                                                     dd { class: "mt-1", "{title}" }
                                                 }
                                             }
@@ -3433,14 +3433,14 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                         if let Some(dept) = department {
                                             if !dept.is_empty() {
                                                 div {
-                                                    dt { class: "text-sm text-gray-500", "Department" }
+                                                    dt { class: "text-sm text-muted", "Department" }
                                                     dd { class: "mt-1", "{dept}" }
                                                 }
                                             }
                                         }
                                         if !contact_type.is_empty() {
                                             div {
-                                                dt { class: "text-sm text-gray-500", "Type" }
+                                                dt { class: "text-sm text-muted", "Type" }
                                                 dd { class: "mt-1",
                                                     Badge { variant: BadgeVariant::Blue, "{humanize_contact_type(&contact_type)}" }
                                                 }
@@ -3448,11 +3448,11 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                         }
                                         if !company_name.is_empty() {
                                             div {
-                                                dt { class: "text-sm text-gray-500", "Company" }
+                                                dt { class: "text-sm text-muted", "Company" }
                                                 dd { class: "mt-1",
                                                     Link {
                                                         to: Route::CompanyDetail { id: company_id.clone() },
-                                                        class: "text-blue-600 hover:text-blue-500",
+                                                        class: "text-accent hover:opacity-90",
                                                         "{company_name}"
                                                     }
                                                 }
@@ -3520,7 +3520,7 @@ fn ContactTicketsCard(tickets_resource: Resource<Option<PaginatedTicketSummaries
             actions: rsx! {
                 Link {
                     to: Route::TicketList {},
-                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    class: "text-sm text-accent hover:opacity-90",
                     "View All"
                 }
             },
@@ -3562,10 +3562,10 @@ fn ContactTicketsCard(tickets_resource: Resource<Option<PaginatedTicketSummaries
                                                     div {
                                                         Link {
                                                             to: Route::TicketDetail { id: id.clone() },
-                                                            class: "font-medium text-blue-600 hover:text-blue-500",
+                                                            class: "font-medium text-accent hover:opacity-90",
                                                             "{number}"
                                                         }
-                                                        p { class: "text-sm text-gray-500", "{title}" }
+                                                        p { class: "text-sm text-muted", "{title}" }
                                                     }
                                                 }
                                                 TableCell {
@@ -3603,10 +3603,10 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
             if is_portal_user {
                 div { class: "space-y-3",
                     div { class: "flex items-center justify-between",
-                        span { class: "text-sm text-gray-500", "Status" }
+                        span { class: "text-sm text-muted", "Status" }
                         Badge { variant: BadgeVariant::Green, "Granted" }
                     }
-                    p { class: "text-xs text-gray-500",
+                    p { class: "text-xs text-muted",
                         "This contact can sign in to the customer portal once a password has been issued from Settings > Portal Users."
                     }
                     Button {
@@ -3629,10 +3629,10 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
             } else {
                 div { class: "space-y-3",
                     div { class: "flex items-center justify-between",
-                        span { class: "text-sm text-gray-500", "Status" }
+                        span { class: "text-sm text-muted", "Status" }
                         Badge { variant: BadgeVariant::Gray, "Not granted" }
                     }
-                    p { class: "text-xs text-gray-500",
+                    p { class: "text-xs text-muted",
                         "Granting access flips the portal flag. A password still has to be issued separately from Settings > Portal Users before the contact can sign in."
                     }
                     Button {

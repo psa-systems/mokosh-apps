@@ -712,10 +712,10 @@ fn TicketRow(props: TicketRowProps) -> Element {
                 div {
                     Link {
                         to: Route::TicketDetail { id: props.id.clone() },
-                        class: "font-medium text-blue-600 hover:text-blue-500",
+                        class: "font-medium text-accent hover:opacity-90",
                         "{props.number}"
                     }
-                    p { class: "text-gray-500 text-sm truncate max-w-xs", "{props.title}" }
+                    p { class: "text-muted text-sm truncate max-w-xs", "{props.title}" }
                 }
             }
             TableCell { "{props.company}" }
@@ -727,12 +727,12 @@ fn TicketRow(props: TicketRowProps) -> Element {
             }
             TableCell {
                 if props.assigned_to == "Unassigned" {
-                    span { class: "text-gray-400 italic", "Unassigned" }
+                    span { class: "text-subtle italic", "Unassigned" }
                 } else {
                     span { "{props.assigned_to}" }
                 }
             }
-            TableCell { class: "text-gray-500",
+            TableCell { class: "text-muted",
                 "{props.updated}"
             }
         }
@@ -1246,7 +1246,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         }
                         Link {
                             to: Route::TicketList {},
-                            class: "text-sm text-blue-600 hover:text-blue-500",
+                            class: "text-sm text-accent hover:opacity-90",
                             "Back to tickets"
                         }
                     }
@@ -1428,13 +1428,13 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                             }
                                         }
                                     } else {
-                                        p { class: "text-sm text-gray-400 italic", "No description provided." }
+                                        p { class: "text-sm text-subtle italic", "No description provided." }
                                     }
                                     if let Some(m) = marker {
-                                        p { class: "text-xs text-gray-400 italic mt-3", "{m}" }
+                                        p { class: "text-xs text-subtle italic mt-3", "{m}" }
                                     }
                                 } else {
-                                    p { class: "text-sm text-gray-400", "Loading…" }
+                                    p { class: "text-sm text-subtle", "Loading…" }
                                 }
                             }
                         }
@@ -1444,7 +1444,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     // feed yet, so status / assignment events do not appear).
                     Card { title: "Activity",
                         if note_count == 0 {
-                            p { class: "text-sm text-gray-400 italic",
+                            p { class: "text-sm text-subtle italic",
                                 "No activity yet. Notes added to this ticket will appear here."
                             }
                         } else {
@@ -1759,7 +1759,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                             if let Some(cid) = t.company_id {
                                                 Link {
                                                     to: Route::CompanyDetail { id: cid.to_string() },
-                                                    class: "text-blue-600 hover:text-blue-500",
+                                                    class: "text-accent hover:opacity-90",
                                                     "{t.company_name}"
                                                 }
                                             } else {
@@ -1792,7 +1792,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                 }
                             }
                         } else {
-                            p { class: "text-sm text-gray-400", "Loading…" }
+                            p { class: "text-sm text-subtle", "Loading…" }
                         }
                     }
 
@@ -1800,13 +1800,13 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     Card { title: "Time Logged",
                         div { class: "space-y-3",
                             div { class: "flex justify-between items-center",
-                                span { class: "text-sm text-gray-500", "Total Time" }
+                                span { class: "text-sm text-muted", "Total Time" }
                                 span { class: "text-lg font-semibold", "{total_hours_label}" }
                             }
                             if time_entries.is_empty() {
-                                p { class: "text-sm text-gray-400 italic", "No time logged yet." }
+                                p { class: "text-sm text-subtle italic", "No time logged yet." }
                             } else {
-                                div { class: "space-y-2 text-sm text-gray-500",
+                                div { class: "space-y-2 text-sm text-muted",
                                     for e in time_entries.iter() {
                                         div {
                                             div { class: "flex justify-between gap-2",
@@ -1816,7 +1816,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                                 }
                                             }
                                             if let Some(note) = e.notes.as_ref().filter(|s| !s.is_empty()) {
-                                                p { class: "text-xs text-gray-400 truncate", "{note}" }
+                                                p { class: "text-xs text-subtle truncate", "{note}" }
                                             }
                                         }
                                     }
@@ -1828,7 +1828,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     // Change history (PMS-182) - field-level edits to the ticket.
                     Card { title: "Change History",
                         if history.is_empty() {
-                            p { class: "text-sm text-gray-400 italic", "No edits yet." }
+                            p { class: "text-sm text-subtle italic", "No edits yet." }
                         } else {
                             div { class: "space-y-3 text-sm",
                                 for e in history.iter().take(20) {
@@ -1840,7 +1840,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                         rsx! {
                                             div { class: "flex justify-between gap-2",
                                                 div { class: "min-w-0",
-                                                    p { class: "text-gray-700 dark:text-gray-300",
+                                                    p { class: "text-content",
                                                         if fields.is_empty() {
                                                             "{label}"
                                                         } else {
@@ -1848,7 +1848,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                                         }
                                                     }
                                                     if who != "-" {
-                                                        p { class: "text-xs text-gray-400", "by {who}" }
+                                                        p { class: "text-xs text-subtle", "by {who}" }
                                                     }
                                                     // PMS-204: actual before/after content.
                                                     for c in e.changes.iter() {
@@ -1860,9 +1860,9 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                                                 rsx! {}
                                                             } else {
                                                                 rsx! {
-                                                                    p { class: "text-xs text-gray-500 dark:text-gray-400 mt-1",
+                                                                    p { class: "text-xs text-muted mt-1",
                                                                         span { class: "font-medium", "{fname}: " }
-                                                                        span { class: "line-through text-gray-400", "{old}" }
+                                                                        span { class: "line-through text-subtle", "{old}" }
                                                                         " → "
                                                                         span { "{new}" }
                                                                     }
@@ -1871,7 +1871,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                                         }
                                                     }
                                                 }
-                                                span { class: "text-gray-400 whitespace-nowrap", "{when}" }
+                                                span { class: "text-subtle whitespace-nowrap", "{when}" }
                                             }
                                         }
                                     }
@@ -2079,13 +2079,13 @@ fn DetailItem(props: DetailItemProps) -> Element {
     // value cell (chip + buttons) aligned to the label's top, not its
     // baseline.
     let dd_class = if props.nowrap {
-        "text-sm text-gray-900 dark:text-white text-right whitespace-nowrap flex-1 min-w-0"
+        "text-sm text-content text-right whitespace-nowrap flex-1 min-w-0"
     } else {
-        "text-sm text-gray-900 dark:text-white text-right flex-1 min-w-0"
+        "text-sm text-content text-right flex-1 min-w-0"
     };
     rsx! {
         div { class: "flex justify-between items-start gap-3",
-            dt { class: "text-sm text-gray-500 dark:text-gray-400 flex-shrink-0 pt-0.5", "{props.label}" }
+            dt { class: "text-sm text-muted flex-shrink-0 pt-0.5", "{props.label}" }
             dd { class: "{dd_class}", {props.value} }
         }
     }
@@ -2107,29 +2107,29 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
             div { class: "relative pb-8",
                 if !props.is_last {
                     span {
-                        class: "absolute left-4 top-4 -ml-px h-full w-0.5 bg-gray-200 dark:bg-gray-700",
+                        class: "absolute left-4 top-4 -ml-px h-full w-0.5 bg-surface-2",
                         aria_hidden: "true",
                     }
                 }
                 div { class: "relative flex space-x-3",
                     div {
-                        span { class: "h-8 w-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center ring-8 ring-white dark:ring-gray-800",
-                            UserCircleIcon { size: IconSize::Small, class: "text-blue-600 dark:text-blue-400".to_string() }
+                        span { class: "h-8 w-8 rounded-full bg-accent-100 dark:bg-accent-900 flex items-center justify-center ring-8 ring-surface",
+                            UserCircleIcon { size: IconSize::Small, class: "text-accent".to_string() }
                         }
                     }
                     div { class: "flex min-w-0 flex-1 justify-between space-x-4 pt-1.5",
                         div {
-                            p { class: "text-sm text-gray-500 dark:text-gray-400",
-                                span { class: "font-medium text-gray-900 dark:text-white", "{props.user}" }
+                            p { class: "text-sm text-muted",
+                                span { class: "font-medium text-content", "{props.user}" }
                                 " {props.action}"
                             }
                             if let Some(content) = &props.content {
-                                div { class: "mt-2 text-sm text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-800 rounded-md p-3",
+                                div { class: "mt-2 text-sm text-content bg-surface-2 rounded-md p-3",
                                     "{content}"
                                 }
                             }
                         }
-                        div { class: "whitespace-nowrap text-right text-sm text-gray-500 dark:text-gray-400",
+                        div { class: "whitespace-nowrap text-right text-sm text-muted",
                             "{props.time}"
                         }
                     }

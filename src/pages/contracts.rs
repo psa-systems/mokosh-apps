@@ -364,7 +364,7 @@ fn ContractRow(props: ContractRowProps) -> Element {
             TableCell {
                 Link {
                     to: Route::ContractDetail { id: props.id.clone() },
-                    class: "font-medium text-blue-600 hover:text-blue-500",
+                    class: "font-medium text-accent hover:opacity-90",
                     "{props.name}"
                 }
             }
@@ -432,7 +432,7 @@ pub fn ContractEditPage(props: ContractEditPageProps) -> Element {
                             p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load contract." }
                             Link {
                                 to: Route::ContractList {},
-                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                class: "text-sm text-accent hover:opacity-90",
                                 "Back to contracts"
                             }
                         }
@@ -1140,9 +1140,9 @@ fn ContractForm(props: ContractFormProps) -> Element {
                 // managed from the contract detail page so we don't show
                 // the editor here (the server has no bulk-replace route).
                 if !is_edit {
-                    div { class: "border-t border-gray-200 dark:border-gray-700 pt-6",
+                    div { class: "border-t border-line pt-6",
                         div { class: "flex items-center justify-between mb-3",
-                            h3 { class: "text-sm font-medium text-gray-900 dark:text-gray-100", "Line Items" }
+                            h3 { class: "text-sm font-medium text-content", "Line Items" }
                             Button {
                                 variant: ButtonVariant::Secondary,
                                 r#type: "button",
@@ -1159,13 +1159,13 @@ fn ContractForm(props: ContractFormProps) -> Element {
                             }
                         }
                         if items.read().is_empty() {
-                            p { class: "text-sm text-gray-500", "No line items. Click Add Item to include one." }
+                            p { class: "text-sm text-muted", "No line items. Click Add Item to include one." }
                         } else {
                             div { class: "space-y-4",
                                 for (idx, item) in items.read().clone().into_iter().enumerate() {
                                     div {
                                         key: "{idx}",
-                                        class: "grid grid-cols-1 gap-3 sm:grid-cols-6 items-end border border-gray-200 dark:border-gray-700 rounded-md p-3",
+                                        class: "grid grid-cols-1 gap-3 sm:grid-cols-6 items-end border border-line rounded-md p-3",
                                         div { class: "sm:col-span-2",
                                             crate::components::Input {
                                                 name: "item_name_{idx}",
@@ -1461,7 +1461,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                             p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load contract." }
                             Link {
                                 to: Route::ContractList {},
-                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                class: "text-sm text-accent hover:opacity-90",
                                 "Back to contracts"
                             }
                         }
@@ -1487,35 +1487,35 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                                 Card { title: "Contract Details",
                                     dl { class: "grid grid-cols-2 gap-4",
                                         div {
-                                            dt { class: "text-sm text-gray-500", "Contract Type" }
+                                            dt { class: "text-sm text-muted", "Contract Type" }
                                             dd { class: "mt-1 font-medium", "{type_label}" }
                                         }
                                         div {
-                                            dt { class: "text-sm text-gray-500", "Billing Cycle" }
+                                            dt { class: "text-sm text-muted", "Billing Cycle" }
                                             dd { class: "mt-1", "{billing_cycle}" }
                                         }
                                         div {
-                                            dt { class: "text-sm text-gray-500", "Start Date" }
+                                            dt { class: "text-sm text-muted", "Start Date" }
                                             dd { class: "mt-1", "{start}" }
                                         }
                                         div {
-                                            dt { class: "text-sm text-gray-500", "End Date" }
+                                            dt { class: "text-sm text-muted", "End Date" }
                                             dd { class: "mt-1", "{end}" }
                                         }
                                         div {
-                                            dt { class: "text-sm text-gray-500", "Auto-Renewal" }
+                                            dt { class: "text-sm text-muted", "Auto-Renewal" }
                                             dd { class: "mt-1", "{auto_renew}" }
                                         }
                                         if !number.is_empty() {
                                             div {
-                                                dt { class: "text-sm text-gray-500", "Contract Number" }
+                                                dt { class: "text-sm text-muted", "Contract Number" }
                                                 dd { class: "mt-1", "{number}" }
                                             }
                                         }
                                     }
                                     if !notes.is_empty() {
                                         div { class: "mt-4",
-                                            dt { class: "text-sm text-gray-500 mb-1", "Notes" }
+                                            dt { class: "text-sm text-muted mb-1", "Notes" }
                                             dd { class: "text-sm whitespace-pre-line", "{notes}" }
                                         }
                                     }
@@ -1529,19 +1529,19 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                                 Card { title: "Summary",
                                     dl { class: "space-y-4",
                                         div { class: "flex justify-between",
-                                            dt { class: "text-sm text-gray-500", "Status" }
+                                            dt { class: "text-sm text-muted", "Status" }
                                             dd { Badge { variant: status_variant(&contract.status), "{status_label}" } }
                                         }
                                         div { class: "flex justify-between",
-                                            dt { class: "text-sm text-gray-500", "Value" }
+                                            dt { class: "text-sm text-muted", "Value" }
                                             dd { class: "font-medium text-lg", "{billing_amount}" }
                                         }
                                         div { class: "flex justify-between",
-                                            dt { class: "text-sm text-gray-500", "Company" }
+                                            dt { class: "text-sm text-muted", "Company" }
                                             dd {
                                                 Link {
                                                     to: Route::CompanyDetail { id: contract.company_id.to_string() },
-                                                    class: "text-sm text-blue-600 hover:text-blue-500",
+                                                    class: "text-sm text-accent hover:opacity-90",
                                                     "View company"
                                                 }
                                             }
@@ -2168,11 +2168,11 @@ fn RateCardRow(props: RateCardRowProps) -> Element {
             TableCell {
                 Link {
                     to: Route::RateCardDetail { id: props.id.clone() },
-                    class: "font-medium text-blue-600 hover:text-blue-500",
+                    class: "font-medium text-accent hover:opacity-90",
                     "{props.name}"
                 }
             }
-            TableCell { class: "text-gray-500", "{props.description}" }
+            TableCell { class: "text-muted", "{props.description}" }
             TableCell {
                 if is_default {
                     Badge { variant: BadgeVariant::Green, "Default" }
@@ -2310,7 +2310,7 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
                             p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load rate card." }
                             Link {
                                 to: Route::RateCardList {},
-                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                class: "text-sm text-accent hover:opacity-90",
                                 "Back to rate cards"
                             }
                         }
@@ -2325,12 +2325,12 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
                                 dl { class: "space-y-4",
                                     if !description.is_empty() {
                                         div {
-                                            dt { class: "text-sm text-gray-500", "Description" }
+                                            dt { class: "text-sm text-muted", "Description" }
                                             dd { class: "mt-1 text-sm", "{description}" }
                                         }
                                     }
                                     div { class: "flex justify-between",
-                                        dt { class: "text-sm text-gray-500", "Default" }
+                                        dt { class: "text-sm text-muted", "Default" }
                                         dd {
                                             if is_default {
                                                 Badge { variant: BadgeVariant::Green, "Yes" }
@@ -2434,7 +2434,7 @@ fn RateCardItemsCard(
                             "Add Rate"
                         }
                         if !can_add {
-                            p { class: "text-xs text-gray-500 dark:text-gray-400", "{disabled_reason}" }
+                            p { class: "text-xs text-muted", "{disabled_reason}" }
                         }
                     }
                 })

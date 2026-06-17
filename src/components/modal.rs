@@ -64,14 +64,14 @@ pub fn Modal(props: ModalProps) -> Element {
             // slash alpha syntax instead so the page stays visible
             // through a 75% gray dim instead of being fully covered.
             div {
-                class: "fixed inset-0 bg-gray-500/75 transition-opacity",
+                class: "fixed inset-0 bg-gray-500/75 transition-opacity", // theme-guard-allow: overlay scrim
                 onclick: move |_| onclose.call(()),
             }
 
             // Modal container
             div { class: "flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-0",
                 div {
-                    class: "relative transform overflow-hidden rounded-lg bg-white dark:bg-gray-800 text-left shadow-xl transition-all sm:my-8 w-full {size_class}",
+                    class: "relative transform overflow-hidden rounded-lg bg-raised text-left shadow-xl transition-all sm:my-8 w-full {size_class}",
                     // PMS-369: Esc cancels. Focus the dialog on mount so the
                     // keydown lands here even before the user clicks anything;
                     // keydown from any focused control inside also bubbles up.
@@ -89,12 +89,12 @@ pub fn Modal(props: ModalProps) -> Element {
                     onclick: |e| e.stop_propagation(),
 
                     // Header
-                    div { class: "flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700",
-                        h3 { class: "text-lg font-medium text-gray-900 dark:text-white",
+                    div { class: "flex items-center justify-between px-4 py-3 border-b border-line",
+                        h3 { class: "text-lg font-medium text-content",
                             "{props.title}"
                         }
                         button {
-                            class: "rounded-md text-gray-400 hover:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500",
+                            class: "rounded-md text-subtle hover:text-content focus:outline-none focus:ring-2 focus:ring-accent",
                             onclick: move |_| props.onclose.call(()),
                             XMarkIcon {}
                         }
@@ -107,7 +107,7 @@ pub fn Modal(props: ModalProps) -> Element {
 
                     // Footer (optional)
                     if let Some(ref footer) = props.footer {
-                        div { class: "px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-end space-x-3",
+                        div { class: "px-4 py-3 border-t border-line flex justify-end space-x-3",
                             {footer}
                         }
                     }
@@ -199,19 +199,19 @@ pub fn ConfirmDialog(props: ConfirmDialogProps) -> Element {
                     "{props.confirm_text}"
                 }
             },
-            p { class: "text-sm text-gray-500 dark:text-gray-400",
+            p { class: "text-sm text-muted",
                 "{props.message}"
             }
             if gated {
                 div { class: "mt-3 space-y-1",
-                    label { class: "block text-xs font-medium text-gray-600 dark:text-gray-400",
+                    label { class: "block text-xs font-medium text-muted",
                         "Type "
-                        span { class: "font-semibold text-gray-900 dark:text-gray-100", "{phrase}" }
+                        span { class: "font-semibold text-content", "{phrase}" }
                         " to confirm"
                     }
                     input {
                         r#type: "text",
-                        class: "w-full rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-500",
+                        class: "w-full rounded-md border border-line bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-500",
                         value: "{typed}",
                         autocomplete: "off",
                         oninput: move |e| typed.set(e.value()),
@@ -313,7 +313,7 @@ pub fn Alert(props: AlertProps) -> Element {
                 if props.dismissible {
                     div { class: "ml-auto pl-3",
                         button {
-                            class: "-mx-1.5 -my-1.5 rounded-md p-1.5 inline-flex {text_class} hover:bg-gray-100 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-green-50 focus:ring-green-600",
+                            class: "-mx-1.5 -my-1.5 rounded-md p-1.5 inline-flex {text_class} hover:bg-surface-2 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-green-50 focus:ring-green-600",
                             onclick: move |_| props.ondismiss.call(()),
                             XMarkIcon {}
                         }

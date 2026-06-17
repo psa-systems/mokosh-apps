@@ -3,8 +3,8 @@
 use dioxus::prelude::*;
 use mokosh_apps::hooks::{
     use_apply_theme, use_auth_provider, use_bfcache_invalidator, use_current_user_loader,
-    use_memberships_loader, use_sidebar_provider, use_sidebar_scroll_provider, use_token_refresh,
-    use_update_check, use_version_cache_provider,
+    use_memberships_loader, use_sidebar_provider, use_sidebar_scroll_provider, use_theme_sync,
+    use_token_refresh, use_update_check, use_version_cache_provider,
 };
 use mokosh_apps::Route;
 
@@ -54,6 +54,10 @@ fn App() -> Element {
     // Apply the persisted theme preference on boot and follow system
     // dark-mode changes for `Theme::System` users.
     use_apply_theme();
+    // MAPPS-259/PMS-410: once authenticated, reconcile the account's theme
+    // prefs into localStorage (server wins) and re-apply, so the choice
+    // follows the user across devices.
+    use_theme_sync();
     // Background poll of `_mokosh_config.js` `build_sha`. Reloads the
     // tab at the next visibility-hidden boundary when a new SPA build
     // is detected, so users pick up deploys automatically (no

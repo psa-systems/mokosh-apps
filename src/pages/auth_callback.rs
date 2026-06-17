@@ -141,8 +141,8 @@ pub fn AuthCallbackPage() -> Element {
             div { class: "text-center space-y-4",
                 if let Some(err) = error_msg.read().as_ref() {
                     h1 { class: "text-xl font-semibold text-red-600", "Sign-in failed" }
-                    p { class: "text-gray-600", "{err}" }
-                    a { href: "/login", class: "text-blue-600 underline", "Try again" }
+                    p { class: "text-content", "{err}" }
+                    a { href: "/login", class: "text-accent underline", "Try again" }
                 } else {
                     h1 { class: "text-xl", "Signing you in..." }
                 }

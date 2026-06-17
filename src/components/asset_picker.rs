@@ -111,7 +111,7 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
             return rsx! {
                 div { class: "space-y-1 w-full",
                     if show_label {
-                        label { class: "block text-sm font-medium text-gray-700 dark:text-gray-300",
+                        label { class: "block text-sm font-medium text-content",
                             "{props.label}"
                             if props.required {
                                 span { class: "text-red-500 ml-0.5", "*" }
@@ -123,15 +123,15 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                         // (the DetailItem `dd` cell when used inline)
                         // instead of escaping rightward, and the long
                         // name / uuid truncate cleanly inside.
-                        class: "flex items-center justify-between border border-gray-300 dark:border-gray-700 rounded-md px-3 py-2 bg-gray-50 dark:bg-gray-900 w-full min-w-0",
+                        class: "flex items-center justify-between border border-line rounded-md px-3 py-2 bg-app w-full min-w-0",
                         div { class: "min-w-0 flex-1 text-left",
-                            p { class: "text-sm font-medium text-gray-900 dark:text-gray-100 truncate", "{name}" }
-                            p { class: "text-xs text-gray-500 truncate", "{id}" }
+                            p { class: "text-sm font-medium text-content truncate", "{name}" }
+                            p { class: "text-xs text-muted truncate", "{id}" }
                         }
                         div { class: "flex items-center gap-1 shrink-0 ml-2",
                             button {
                                 r#type: "button",
-                                class: "text-xs text-blue-600 hover:text-blue-500 px-2 py-1",
+                                class: "text-xs text-accent hover:opacity-90 px-2 py-1",
                                 onclick: move |_| {
                                     query.set(String::new());
                                     editing.set(true);
@@ -146,7 +146,7 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                             // asset_id = null on a ticket inline editor).
                             button {
                                 r#type: "button",
-                                class: "text-xs text-gray-500 hover:text-red-600 px-2 py-1",
+                                class: "text-xs text-muted hover:text-red-600 px-2 py-1",
                                 onclick: move |_| {
                                     onclear.call(());
                                     query.set(String::new());
@@ -188,16 +188,16 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                     },
                 }
                 div {
-                    class: "absolute z-20 left-0 right-0 mt-1 max-h-72 overflow-y-auto rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg",
+                    class: "absolute z-20 left-0 right-0 mt-1 max-h-72 overflow-y-auto rounded-md border border-line bg-raised shadow-lg",
                     match &*snap {
                         None => rsx! {
-                            div { class: "px-3 py-2 text-sm text-gray-500", "Searching..." }
+                            div { class: "px-3 py-2 text-sm text-muted", "Searching..." }
                         },
                         Some(None) => rsx! {
                             div { class: "px-3 py-2 text-sm text-red-600", "Could not load assets." }
                         },
                         Some(Some(rows)) if rows.is_empty() => rsx! {
-                            div { class: "px-3 py-2 text-sm text-gray-500",
+                            div { class: "px-3 py-2 text-sm text-muted",
                                 if query_text.is_empty() {
                                     "No assets yet."
                                 } else {
@@ -225,7 +225,7 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                                                     key: "{key}",
                                                     button {
                                                         r#type: "button",
-                                                        class: "w-full text-left px-3 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-800",
+                                                        class: "w-full text-left px-3 py-2 text-sm hover:bg-surface-2",
                                                         onclick: move |_| {
                                                             onselect.call((id_for_click.clone(), name_for_click.clone()));
                                                             show_dropdown.set(false);
@@ -234,7 +234,7 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                                                         },
                                                         span { class: "font-medium", "{name}" }
                                                         if let Some(t) = tag {
-                                                            span { class: "ml-2 text-xs text-gray-500 font-mono", "{t}" }
+                                                            span { class: "ml-2 text-xs text-muted font-mono", "{t}" }
                                                         }
                                                     }
                                                 }

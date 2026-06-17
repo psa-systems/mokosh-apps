@@ -33,7 +33,7 @@ use uuid::Uuid;
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
     PlusIcon, Select, SelectOption, SettingFormModal, Table, TableBody, TableCell, TableEmpty,
-    TableHead, TableHeader, TableLoading, TableRow,
+    TableHead, TableHeader, TableLoading, TableRow, ThemePicker,
 };
 use crate::utils::money::format_money_str;
 use crate::utils::Paginated;
@@ -63,7 +63,7 @@ fn AdminOnlyNotice(title: String) -> Element {
         AppLayout { title: title.clone(),
             PageHeader { title, subtitle: "Settings" }
             Card {
-                div { class: "text-sm text-gray-600 dark:text-gray-300",
+                div { class: "text-sm text-content",
                     "You need an administrator role to manage these settings."
                 }
             }
@@ -76,6 +76,26 @@ fn AdminOnlyNotice(title: String) -> Element {
 // ============================================================================
 
 /// `/settings` - grouped index of every configuration surface.
+/// Per-user appearance settings (MAPPS-259): base mode + accent color.
+/// Not admin-gated; every user personalizes their own theme. Embeds the
+/// same `ThemePicker` the top-bar swatch modal uses.
+#[component]
+pub fn AppearanceSettingsPage() -> Element {
+    rsx! {
+        AppLayout { title: "Appearance",
+            PageHeader {
+                title: "Appearance",
+                subtitle: "Theme and accent color, saved to your account",
+            }
+            Card {
+                div { class: "p-6",
+                    ThemePicker {}
+                }
+            }
+        }
+    }
+}
+
 #[component]
 pub fn SettingsHomePage() -> Element {
     rsx! {
@@ -83,6 +103,14 @@ pub fn SettingsHomePage() -> Element {
             PageHeader {
                 title: "Settings",
                 subtitle: "Manage the standard types and configuration that shape how your workspace behaves",
+            }
+
+            SettingsGroup { heading: "Personalization",
+                SettingsCard {
+                    to: Route::SettingsAppearance {},
+                    title: "Appearance",
+                    description: "Theme (light, dark, or system) and accent color for your account.",
+                }
             }
 
             SettingsGroup { heading: "Service & Asset Types",
@@ -194,7 +222,7 @@ pub fn SettingsHomePage() -> Element {
 fn SettingsGroup(heading: String, children: Element) -> Element {
     rsx! {
         div { class: "mb-8",
-            h2 { class: "text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-3",
+            h2 { class: "text-sm font-semibold uppercase tracking-wide text-muted mb-3",
                 "{heading}"
             }
             div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3", {children} }
@@ -207,9 +235,9 @@ fn SettingsCard(to: Route, title: String, description: String) -> Element {
     rsx! {
         Link {
             to,
-            class: "block rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 hover:border-blue-400 dark:hover:border-blue-500 hover:shadow-sm transition-colors",
-            div { class: "font-medium text-gray-900 dark:text-white", "{title}" }
-            div { class: "mt-1 text-sm text-gray-500 dark:text-gray-400", "{description}" }
+            class: "block rounded-lg border border-line bg-surface p-4 hover:border-accent hover:shadow-sm transition-colors",
+            div { class: "font-medium text-content", "{title}" }
+            div { class: "mt-1 text-sm text-muted", "{description}" }
         }
     }
 }
@@ -380,7 +408,7 @@ fn StandardDueDateForm(initial: u32) -> Element {
                         value.set(e.value());
                     },
                 }
-                p { class: "text-sm text-gray-500 dark:text-gray-400",
+                p { class: "text-sm text-muted",
                     "New tasks without a due date, and tickets that match no SLA, default to this many business days from the day they are created (weekends skipped). Set 0 to leave new work with no default due date."
                 }
                 div {
@@ -509,7 +537,7 @@ pub fn WorkTypesSettingsPage() -> Element {
                                         TableRow { key: "{key}", clickable: true,
                                             onclick: move |_| editing.set(Some(edit_state.clone())),
                                             TableCell {
-                                                span { class: "font-medium text-blue-600", "{name}" }
+                                                span { class: "font-medium text-accent", "{name}" }
                                             }
                                             TableCell {
                                                 if billable {
@@ -828,7 +856,7 @@ pub fn TaskStatusesSettingsPage() -> Element {
                                         TableRow { key: "{key}", clickable: true,
                                             onclick: move |_| editing.set(Some(edit_state.clone())),
                                             TableCell {
-                                                span { class: "font-medium text-blue-600", "{name}" }
+                                                span { class: "font-medium text-accent", "{name}" }
                                             }
                                             TableCell { ColorSwatch { color } }
                                             TableCell {
@@ -1122,13 +1150,13 @@ pub fn AssetTypesSettingsPage() -> Element {
                                         TableRow { key: "{key}", clickable: true,
                                             onclick: move |_| editing.set(Some(edit_state.clone())),
                                             TableCell {
-                                                span { class: "font-medium text-blue-600", "{name}" }
+                                                span { class: "font-medium text-accent", "{name}" }
                                             }
                                             TableCell {
                                                 if icon.is_empty() {
-                                                    span { class: "text-gray-400", "-" }
+                                                    span { class: "text-subtle", "-" }
                                                 } else {
-                                                    span { class: "text-sm text-gray-600 dark:text-gray-300", "{icon}" }
+                                                    span { class: "text-sm text-content", "{icon}" }
                                                 }
                                             }
                                             TableCell { ActiveBadge { active } }
@@ -1407,7 +1435,7 @@ pub fn ProjectTypesSettingsPage() -> Element {
                                             onclick: move |_| editing.set(Some(edit_state.clone())),
                                             TableCell {
                                                 div { class: "flex items-center gap-2",
-                                                    span { class: "font-medium text-blue-600", "{name}" }
+                                                    span { class: "font-medium text-accent", "{name}" }
                                                     if system {
                                                         Badge { variant: BadgeVariant::Gray, "System" }
                                                     }
@@ -1566,7 +1594,7 @@ fn ProjectTypeFormModal(props: ProjectTypeFormModalProps) -> Element {
             create_label: "Create Project Type".to_string(),
             if is_system {
                 div {
-                    class: "text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900/40 border border-gray-200 dark:border-gray-700 rounded-md px-3 py-2",
+                    class: "text-xs text-muted bg-app border border-line rounded-md px-3 py-2",
                     "System project type: its name is fixed and it cannot be deleted. You can still change default, active, and sort order."
                 }
             }
@@ -1713,7 +1741,7 @@ pub fn PaymentTermsSettingsPage() -> Element {
                                         TableRow { key: "{key}", clickable: true,
                                             onclick: move |_| editing.set(Some(edit_state.clone())),
                                             TableCell {
-                                                span { class: "font-medium text-blue-600", "{name}" }
+                                                span { class: "font-medium text-accent", "{name}" }
                                             }
                                             TableCell {
                                                 if default {
@@ -2004,7 +2032,7 @@ pub fn TicketStatusesSettingsPage() -> Element {
                                         TableRow { key: "{key}", clickable: true,
                                             onclick: move |_| editing.set(Some(edit_state.clone())),
                                             TableCell {
-                                                span { class: "font-medium text-blue-600", "{name}" }
+                                                span { class: "font-medium text-accent", "{name}" }
                                             }
                                             TableCell { ColorSwatch { color } }
                                             TableCell {
@@ -2318,7 +2346,7 @@ pub fn TicketPrioritiesSettingsPage() -> Element {
                                         TableRow { key: "{key}", clickable: true,
                                             onclick: move |_| editing.set(Some(edit_state.clone())),
                                             TableCell {
-                                                span { class: "font-medium text-blue-600", "{name}" }
+                                                span { class: "font-medium text-accent", "{name}" }
                                             }
                                             TableCell { ColorSwatch { color } }
                                             TableCell { class: "text-right", "{sla}" }
@@ -2645,10 +2673,10 @@ pub fn TicketTypesSettingsPage() -> Element {
                                         TableRow { key: "{key}", clickable: true,
                                             onclick: move |_| editing.set(Some(edit_state.clone())),
                                             TableCell {
-                                                span { class: "font-medium text-blue-600", "{name}" }
+                                                span { class: "font-medium text-accent", "{name}" }
                                             }
                                             TableCell {
-                                                span { class: "text-sm text-gray-500 dark:text-gray-400", "{desc}" }
+                                                span { class: "text-sm text-muted", "{desc}" }
                                             }
                                             TableCell { ActiveBadge { active } }
                                         }
@@ -2945,11 +2973,11 @@ pub fn TicketQueuesSettingsPage() -> Element {
                                         TableRow { key: "{key}", clickable: true,
                                             onclick: move |_| editing.set(Some(edit_state.clone())),
                                             TableCell {
-                                                span { class: "font-medium text-blue-600", "{name}" }
+                                                span { class: "font-medium text-accent", "{name}" }
                                             }
                                             TableCell {
                                                 if color.is_empty() {
-                                                    span { class: "text-gray-400", "-" }
+                                                    span { class: "text-subtle", "-" }
                                                 } else {
                                                     ColorSwatch { color }
                                                 }
@@ -3292,13 +3320,13 @@ pub fn TicketCategoriesSettingsPage() -> Element {
                                         TableRow { key: "{key}", clickable: true,
                                             onclick: move |_| editing.set(Some(edit_state.clone())),
                                             TableCell {
-                                                span { class: "font-medium text-blue-600", "{name}" }
+                                                span { class: "font-medium text-accent", "{name}" }
                                             }
                                             TableCell {
                                                 if parent.is_empty() {
-                                                    span { class: "text-gray-400", "-" }
+                                                    span { class: "text-subtle", "-" }
                                                 } else {
-                                                    span { class: "text-sm text-gray-600 dark:text-gray-300", "{parent}" }
+                                                    span { class: "text-sm text-content", "{parent}" }
                                                 }
                                             }
                                             TableCell { ActiveBadge { active } }
@@ -3686,11 +3714,11 @@ pub fn RmmConnectionsSettingsPage() -> Element {
                                         TableRow { key: "{key}", clickable: true,
                                             onclick: move |_| editing.set(Some(edit_state.clone())),
                                             TableCell {
-                                                span { class: "font-medium text-blue-600", "{name}" }
+                                                span { class: "font-medium text-accent", "{name}" }
                                             }
                                             TableCell { "{provider}" }
                                             TableCell {
-                                                span { class: "text-gray-500 dark:text-gray-400 break-all", "{api_url}" }
+                                                span { class: "text-muted break-all", "{api_url}" }
                                             }
                                             TableCell { RmmStatusBadge { status } }
                                             TableCell { ActiveBadge { active } }
@@ -4025,7 +4053,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
             // edit because the server keys the test off the stored, encrypted
             // credentials.
             if is_edit {
-                div { class: "pt-2 border-t border-gray-200 dark:border-gray-700",
+                div { class: "pt-2 border-t border-line",
                     Button {
                         variant: ButtonVariant::Secondary,
                         loading: *testing.read(),
@@ -4151,7 +4179,7 @@ pub fn RmmDeviceMappingsSettingsPage() -> Element {
 
             if no_connections {
                 div {
-                    class: "mb-3 text-sm text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md px-3 py-2",
+                    class: "mb-3 text-sm text-content bg-surface-2 border border-line rounded-md px-3 py-2",
                     "Add an RMM connection first, then map its devices here."
                 }
             }
@@ -4211,7 +4239,7 @@ pub fn RmmDeviceMappingsSettingsPage() -> Element {
                                                 span { class: "font-medium", "{device_display}" }
                                             }
                                             TableCell {
-                                                span { class: "font-mono text-xs text-gray-500 dark:text-gray-400 break-all", "{device_id}" }
+                                                span { class: "font-mono text-xs text-muted break-all", "{device_id}" }
                                             }
                                             TableCell { "{connection}" }
                                             TableCell { RmmStatusBadge { status } }
@@ -4533,7 +4561,7 @@ pub fn RmmAlertRulesSettingsPage() -> Element {
 
             if no_connections {
                 div {
-                    class: "mb-3 text-sm text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md px-3 py-2",
+                    class: "mb-3 text-sm text-content bg-surface-2 border border-line rounded-md px-3 py-2",
                     "Add an RMM connection first, then define alert rules for it."
                 }
             }
@@ -4809,10 +4837,10 @@ fn ColorSwatch(color: String) -> Element {
     rsx! {
         div { class: "flex items-center gap-2",
             span {
-                class: "inline-block h-4 w-4 rounded-full border border-gray-300 dark:border-gray-600",
+                class: "inline-block h-4 w-4 rounded-full border border-line",
                 style: "background-color: {color}",
             }
-            span { class: "text-xs text-gray-500", "{color}" }
+            span { class: "text-xs text-muted", "{color}" }
         }
     }
 }

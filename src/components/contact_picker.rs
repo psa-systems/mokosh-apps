@@ -119,21 +119,21 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
             let onclear = props.onclear;
             return rsx! {
                 div { class: "space-y-1",
-                    label { class: "block text-sm font-medium text-gray-700 dark:text-gray-300",
+                    label { class: "block text-sm font-medium text-content",
                         "{props.label}"
                         if props.required {
                             span { class: "text-red-500 ml-0.5", "*" }
                         }
                     }
                     div {
-                        class: "flex items-center justify-between border border-gray-300 dark:border-gray-700 rounded-md px-3 py-2 bg-gray-50 dark:bg-gray-900",
+                        class: "flex items-center justify-between border border-line rounded-md px-3 py-2 bg-app",
                         div { class: "min-w-0",
-                            p { class: "text-sm font-medium text-gray-900 dark:text-gray-100 truncate", "{name}" }
-                            p { class: "text-xs text-gray-500 truncate", "{id}" }
+                            p { class: "text-sm font-medium text-content truncate", "{name}" }
+                            p { class: "text-xs text-muted truncate", "{id}" }
                         }
                         button {
                             r#type: "button",
-                            class: "text-xs text-blue-600 hover:text-blue-500 px-2 py-1",
+                            class: "text-xs text-accent hover:opacity-90 px-2 py-1",
                             onclick: move |_| {
                                 onclear.call(());
                                 query.set(String::new());
@@ -175,16 +175,16 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                     },
                 }
                 div {
-                    class: "absolute z-20 left-0 right-0 mt-1 max-h-72 overflow-y-auto rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg",
+                    class: "absolute z-20 left-0 right-0 mt-1 max-h-72 overflow-y-auto rounded-md border border-line bg-raised shadow-lg",
                     match &*snap {
                         None => rsx! {
-                            div { class: "px-3 py-2 text-sm text-gray-500", "Searching..." }
+                            div { class: "px-3 py-2 text-sm text-muted", "Searching..." }
                         },
                         Some(None) => rsx! {
                             div { class: "px-3 py-2 text-sm text-red-600", "Could not load contacts." }
                         },
                         Some(Some(rows)) if rows.is_empty() => rsx! {
-                            div { class: "px-3 py-2 text-sm text-gray-500",
+                            div { class: "px-3 py-2 text-sm text-muted",
                                 if query_text.is_empty() {
                                     "No contacts yet."
                                 } else {
@@ -216,7 +216,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                                                     key: "{key}",
                                                     button {
                                                         r#type: "button",
-                                                        class: "w-full text-left px-3 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-800",
+                                                        class: "w-full text-left px-3 py-2 text-sm hover:bg-surface-2",
                                                         onclick: move |_| {
                                                             onselect.call((id_for_click.clone(), name_for_click.clone()));
                                                             show_dropdown.set(false);
@@ -225,10 +225,10 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                                                         },
                                                         span { class: "font-medium", "{name}" }
                                                         if let Some(c) = company {
-                                                            span { class: "ml-2 text-xs text-gray-500", "{c}" }
+                                                            span { class: "ml-2 text-xs text-muted", "{c}" }
                                                         }
                                                         if let Some(e) = email {
-                                                            span { class: "ml-2 text-xs text-gray-400", "{e}" }
+                                                            span { class: "ml-2 text-xs text-subtle", "{e}" }
                                                         }
                                                     }
                                                 }

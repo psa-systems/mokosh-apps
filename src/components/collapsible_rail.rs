@@ -46,7 +46,7 @@ pub fn CollapsibleRail(
         div { class: "hidden lg:block relative",
             if collapsed() {
                 button {
-                    class: "h-full px-1 text-gray-400 hover:text-gray-600",
+                    class: "h-full px-1 text-subtle hover:text-content",
                     title: "Expand panel",
                     onclick: move |_| collapsed.set(false),
                     "{chevron_expand}"
@@ -55,7 +55,7 @@ pub fn CollapsibleRail(
                 div { class: "w-64 shrink-0",
                     div { class: "flex justify-end",
                         button {
-                            class: "px-1 text-gray-400 hover:text-gray-600",
+                            class: "px-1 text-subtle hover:text-content",
                             title: "Collapse panel",
                             onclick: move |_| collapsed.set(true),
                             "{chevron_collapse}"
@@ -68,7 +68,7 @@ pub fn CollapsibleRail(
         // Narrow screens: edge handle + overlay.
         div { class: "lg:hidden",
             button {
-                class: "px-2 py-1 text-gray-500",
+                class: "px-2 py-1 text-muted",
                 title: "Open panel",
                 onclick: move |_| {
                     if is_overlay_open {
@@ -85,10 +85,10 @@ pub fn CollapsibleRail(
                     onclick: move |_| open_overlay.set(None),
                 }
                 div {
-                    class: "fixed z-50 top-0 bottom-0 w-72 bg-white dark:bg-gray-900 shadow-xl p-4 overflow-y-auto {overlay_pos}",
+                    class: "fixed z-50 top-0 bottom-0 w-72 bg-surface shadow-xl p-4 overflow-y-auto {overlay_pos}",
                     div { class: "flex justify-end",
                         button {
-                            class: "text-gray-400",
+                            class: "text-subtle",
                             onclick: move |_| open_overlay.set(None),
                             "\u{2715}"
                         }

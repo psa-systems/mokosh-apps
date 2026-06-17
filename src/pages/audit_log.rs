@@ -208,10 +208,10 @@ pub fn AuditLogPage() -> Element {
                 PageHeader { title: "Audit Log", subtitle: "System activity" }
                 Card {
                     div { class: "py-12 text-center",
-                        p { class: "text-sm font-medium text-gray-900 dark:text-white mb-1",
+                        p { class: "text-sm font-medium text-content mb-1",
                             "Admins only"
                         }
-                        p { class: "text-sm text-gray-500 dark:text-gray-400",
+                        p { class: "text-sm text-muted",
                             "You do not have permission to view the audit log."
                         }
                     }
@@ -508,19 +508,19 @@ fn AuditRow(props: AuditRowProps) -> Element {
 
     rsx! {
         TableRow {
-            TableCell { class: "text-gray-500 font-mono text-xs", "{timestamp}" }
+            TableCell { class: "text-muted font-mono text-xs", "{timestamp}" }
             TableCell {
                 Badge { variant, "{action}" }
             }
             TableCell { "{entity_type}" }
             TableCell { "{entity_label}" }
             TableCell { "{user_label}" }
-            TableCell { class: "text-gray-500", "{ip}" }
+            TableCell { class: "text-muted", "{ip}" }
             TableCell {
                 if has_detail {
                     button {
                         r#type: "button",
-                        class: "text-sm text-blue-600 hover:text-blue-500",
+                        class: "text-sm text-accent hover:opacity-90",
                         onclick: move |_| {
                             let next = !*expanded.read();
                             expanded.set(next);
@@ -528,7 +528,7 @@ fn AuditRow(props: AuditRowProps) -> Element {
                         if is_open { "Hide" } else { "View" }
                     }
                 } else {
-                    span { class: "text-gray-400", "-" }
+                    span { class: "text-subtle", "-" }
                 }
             }
         }
@@ -536,7 +536,7 @@ fn AuditRow(props: AuditRowProps) -> Element {
             tr {
                 td {
                     colspan: "7",
-                    class: "px-6 py-4 bg-gray-50 dark:bg-gray-800/50",
+                    class: "px-6 py-4 bg-surface-2",
                     dl { class: "grid grid-cols-1 gap-3 sm:grid-cols-2 text-xs",
                         // Detail view shows the resolved name as the
                         // primary value; the raw UUID drops to a muted
@@ -545,54 +545,54 @@ fn AuditRow(props: AuditRowProps) -> Element {
                         // (system-issued or null fields) the sub-line is
                         // suppressed entirely.
                         div {
-                            dt { class: "font-medium text-gray-500 dark:text-gray-400 mb-1", "Record" }
-                            dd { class: "text-gray-900 dark:text-gray-100 break-all", "{entity_label}" }
+                            dt { class: "font-medium text-muted mb-1","Record" }
+                            dd { class: "text-content break-all","{entity_label}" }
                             if entry.entity_id.is_some() {
-                                dd { class: "font-mono text-gray-400 dark:text-gray-500 text-[10px] mt-0.5 break-all", "{entity_id_full}" }
+                                dd { class: "font-mono text-subtle text-[10px] mt-0.5 break-all","{entity_id_full}" }
                             }
                         }
                         div {
-                            dt { class: "font-medium text-gray-500 dark:text-gray-400 mb-1", "User" }
-                            dd { class: "text-gray-900 dark:text-gray-100 break-all", "{user_label}" }
+                            dt { class: "font-medium text-muted mb-1","User" }
+                            dd { class: "text-content break-all","{user_label}" }
                             if entry.user_id.is_some() {
-                                dd { class: "font-mono text-gray-400 dark:text-gray-500 text-[10px] mt-0.5 break-all", "{user_id_full}" }
+                                dd { class: "font-mono text-subtle text-[10px] mt-0.5 break-all","{user_id_full}" }
                             }
                         }
                         if !user_agent.is_empty() {
                             div { class: "sm:col-span-2",
-                                dt { class: "font-medium text-gray-500 dark:text-gray-400 mb-1", "User agent" }
-                                dd { class: "text-gray-900 dark:text-gray-100 break-all", "{user_agent}" }
+                                dt { class: "font-medium text-muted mb-1","User agent" }
+                                dd { class: "text-content break-all","{user_agent}" }
                             }
                         }
                         if diff_rows.is_empty() {
                             // Non-object payloads: keep the raw JSON view.
                             div {
-                                dt { class: "font-medium text-gray-500 dark:text-gray-400 mb-1", "Old values" }
+                                dt { class: "font-medium text-muted mb-1","Old values" }
                                 dd {
-                                    pre { class: "overflow-x-auto rounded-md bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 p-3 font-mono text-gray-900 dark:text-gray-100",
+                                    pre { class: "overflow-x-auto rounded-md bg-surface border border-line p-3 font-mono text-content",
                                         "{old_json}"
                                     }
                                 }
                             }
                             div {
-                                dt { class: "font-medium text-gray-500 dark:text-gray-400 mb-1", "New values" }
+                                dt { class: "font-medium text-muted mb-1","New values" }
                                 dd {
-                                    pre { class: "overflow-x-auto rounded-md bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 p-3 font-mono text-gray-900 dark:text-gray-100",
+                                    pre { class: "overflow-x-auto rounded-md bg-surface border border-line p-3 font-mono text-content",
                                         "{new_json}"
                                     }
                                 }
                             }
                         } else {
                             div { class: "sm:col-span-2",
-                                dt { class: "font-medium text-gray-500 dark:text-gray-400 mb-1", "Changes" }
+                                dt { class: "font-medium text-muted mb-1","Changes" }
                                 dd {
                                     div { class: "space-y-1",
                                         for (label , oldv , newv) in diff_rows.iter().cloned() {
                                             div { class: "flex flex-wrap items-baseline gap-x-2 gap-y-0.5",
-                                                span { class: "font-medium text-gray-700 dark:text-gray-300", "{label}" }
-                                                span { class: "text-gray-500 dark:text-gray-400 line-through break-all", "{oldv}" }
-                                                span { class: "text-gray-400", "\u{2192}" }
-                                                span { class: "text-gray-900 dark:text-gray-100 break-all", "{newv}" }
+                                                span { class: "font-medium text-content", "{label}" }
+                                                span { class: "text-muted line-through break-all", "{oldv}" }
+                                                span { class: "text-subtle", "\u{2192}" }
+                                                span { class: "text-content break-all", "{newv}" }
                                             }
                                         }
                                     }

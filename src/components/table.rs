@@ -15,10 +15,7 @@ pub struct TableProps {
 /// Table wrapper with styling
 #[component]
 pub fn Table(props: TableProps) -> Element {
-    let class = format!(
-        "min-w-full divide-y divide-gray-200 dark:divide-gray-700 {}",
-        props.class
-    );
+    let class = format!("min-w-full divide-y divide-line {}", props.class);
 
     rsx! {
         div { class: "overflow-x-auto",
@@ -38,7 +35,7 @@ pub struct TableHeadProps {
 #[component]
 pub fn TableHead(props: TableHeadProps) -> Element {
     rsx! {
-        thead { class: "bg-gray-50 dark:bg-gray-800",
+        thead { class: "bg-surface-2",
             {props.children}
         }
     }
@@ -53,7 +50,7 @@ pub struct TableBodyProps {
 #[component]
 pub fn TableBody(props: TableBodyProps) -> Element {
     rsx! {
-        tbody { class: "bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700",
+        tbody { class: "bg-surface divide-y divide-line",
             {props.children}
         }
     }
@@ -75,7 +72,7 @@ pub struct TableRowProps {
 #[component]
 pub fn TableRow(props: TableRowProps) -> Element {
     let class = if props.clickable {
-        "hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer"
+        "hover:bg-surface-2 cursor-pointer"
     } else {
         ""
     };
@@ -113,9 +110,9 @@ pub enum SortDirection {
 
 #[component]
 pub fn TableHeader(props: TableHeaderProps) -> Element {
-    let base_class = "px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider";
+    let base_class = "px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider";
     let sortable_class = if props.sortable {
-        "cursor-pointer hover:text-gray-700 dark:hover:text-gray-200"
+        "cursor-pointer hover:text-content"
     } else {
         ""
     };
@@ -128,7 +125,7 @@ pub fn TableHeader(props: TableHeaderProps) -> Element {
             div { class: "flex items-center space-x-1",
                 {props.children}
                 if props.sortable {
-                    span { class: "text-gray-400",
+                    span { class: "text-subtle",
                         match props.sort_direction {
                             Some(SortDirection::Ascending) => rsx! {
                                 svg {
@@ -196,10 +193,7 @@ pub fn TableCell(props: TableCellProps) -> Element {
     // overflow horizontally and push other columns off-screen. Callers that
     // need single-line cells opt back in via `class` (e.g. `whitespace-nowrap`
     // or `truncate`), which is appended last and wins.
-    let class = format!(
-        "px-6 py-4 break-words text-sm text-gray-900 dark:text-gray-100 {}",
-        props.class
-    );
+    let class = format!("px-6 py-4 break-words text-sm text-content {}", props.class);
 
     rsx! {
         td { class: "{class}",
@@ -225,7 +219,7 @@ pub fn TableLoading(props: TableLoadingProps) -> Element {
                 TableRow {
                     for _ in 0..props.columns {
                         TableCell {
-                            div { class: "h-4 bg-gray-200 dark:bg-gray-700 rounded animate-pulse" }
+                            div { class: "h-4 bg-surface-2 rounded animate-pulse" }
                         }
                     }
                 }
@@ -262,7 +256,7 @@ pub fn TableEmpty(props: TableEmptyProps) -> Element {
             tr {
                 td {
                     colspan: "{props.columns}",
-                    class: if rich { "px-6" } else { "px-6 py-12 text-center text-gray-500 dark:text-gray-400" },
+                    class: if rich { "px-6" } else { "px-6 py-12 text-center text-muted" },
                     if rich {
                         super::layout::EmptyState {
                             title: props.title.clone(),
@@ -317,17 +311,17 @@ pub fn Pagination(props: PaginationProps) -> Element {
     };
 
     rsx! {
-        div { class: "flex items-center justify-between border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-4 py-3 sm:px-6",
+        div { class: "flex items-center justify-between border-t border-line bg-surface px-4 py-3 sm:px-6",
             // Mobile view
             div { class: "flex flex-1 justify-between sm:hidden",
                 button {
-                    class: "relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed",
+                    class: "relative inline-flex items-center rounded-md border border-line bg-surface px-4 py-2 text-sm font-medium text-content hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed",
                     disabled: props.current_page <= 1,
                     onclick: move |_| props.onpagechange.call(props.current_page - 1),
                     "Previous"
                 }
                 button {
-                    class: "relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed",
+                    class: "relative ml-3 inline-flex items-center rounded-md border border-line bg-surface px-4 py-2 text-sm font-medium text-content hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed",
                     disabled: props.current_page >= total_pages,
                     onclick: move |_| props.onpagechange.call(props.current_page + 1),
                     "Next"
@@ -337,7 +331,7 @@ pub fn Pagination(props: PaginationProps) -> Element {
             // Desktop view
             div { class: "hidden sm:flex sm:flex-1 sm:items-center sm:justify-between",
                 div {
-                    p { class: "text-sm text-gray-700 dark:text-gray-300",
+                    p { class: "text-sm text-content",
                         "Showing "
                         span { class: "font-medium", "{start_item}" }
                         " to "
@@ -355,9 +349,9 @@ pub fn Pagination(props: PaginationProps) -> Element {
                         // identical to active > button").
                         button {
                             class: if props.current_page <= 1 {
-                                "relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-300 ring-1 ring-inset ring-gray-200 cursor-not-allowed bg-gray-50 dark:text-gray-600 dark:ring-gray-700 dark:bg-gray-900"
+                                "relative inline-flex items-center rounded-l-md px-2 py-2 text-subtle ring-1 ring-inset ring-line cursor-not-allowed bg-app"
                             } else {
-                                "relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:ring-gray-600 dark:hover:bg-gray-800"
+                                "relative inline-flex items-center rounded-l-md px-2 py-2 text-subtle ring-1 ring-inset ring-line hover:bg-surface-2 focus:z-20 focus:outline-offset-0"
                             },
                             disabled: props.current_page <= 1,
                             onclick: move |_| props.onpagechange.call(props.current_page - 1),
@@ -368,12 +362,12 @@ pub fn Pagination(props: PaginationProps) -> Element {
                         for page in page_numbers.iter() {
                             if *page == props.current_page {
                                 span {
-                                    class: "relative z-10 inline-flex items-center bg-blue-600 px-4 py-2 text-sm font-semibold text-white focus:z-20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600",
+                                    class: "relative z-10 inline-flex items-center bg-accent px-4 py-2 text-sm font-semibold text-on-accent focus:z-20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                                     "{page}"
                                 }
                             } else {
                                 button {
-                                    class: "relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:text-gray-100 dark:ring-gray-600 dark:hover:bg-gray-800",
+                                    class: "relative inline-flex items-center px-4 py-2 text-sm font-semibold text-content ring-1 ring-inset ring-line hover:bg-surface-2 focus:z-20 focus:outline-offset-0",
                                     onclick: {
                                         let page = *page;
                                         move |_| props.onpagechange.call(page)
@@ -386,9 +380,9 @@ pub fn Pagination(props: PaginationProps) -> Element {
                         // Next button (mirror of prev for P3-22).
                         button {
                             class: if props.current_page >= total_pages {
-                                "relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-300 ring-1 ring-inset ring-gray-200 cursor-not-allowed bg-gray-50 dark:text-gray-600 dark:ring-gray-700 dark:bg-gray-900"
+                                "relative inline-flex items-center rounded-r-md px-2 py-2 text-subtle ring-1 ring-inset ring-line cursor-not-allowed bg-app"
                             } else {
-                                "relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 dark:ring-gray-600 dark:hover:bg-gray-800"
+                                "relative inline-flex items-center rounded-r-md px-2 py-2 text-subtle ring-1 ring-inset ring-line hover:bg-surface-2 focus:z-20 focus:outline-offset-0"
                             },
                             disabled: props.current_page >= total_pages,
                             onclick: move |_| props.onpagechange.call(props.current_page + 1),
@@ -454,7 +448,7 @@ pub enum BadgeVariant {
 impl BadgeVariant {
     fn class(&self) -> &'static str {
         match self {
-            BadgeVariant::Gray => "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300",
+            BadgeVariant::Gray => "bg-surface-2 text-content",
             BadgeVariant::Blue => "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300",
             BadgeVariant::Green => {
                 "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300"

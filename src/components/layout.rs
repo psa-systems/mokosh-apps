@@ -3,6 +3,7 @@
 use dioxus::prelude::*;
 
 use super::icons::*;
+use super::theme_picker::ThemePickerButton;
 use crate::Route;
 
 /// Main application layout with sidebar
@@ -25,7 +26,7 @@ pub fn AppLayout(props: AppLayoutProps) -> Element {
         // surface with a thin scrollbar (input.css `.scrollbar-thin`)
         // so users see the affordance when nav overflows on short
         // viewports.
-        div { class: "h-screen flex flex-col bg-gray-100 dark:bg-gray-900 overflow-hidden",
+        div { class: "h-screen flex flex-col bg-app overflow-hidden",
             // Admin-only update-available banner. Sits above the top
             // bar (page-wide) and renders nothing for non-admins or
             // when no update is published, so non-admin layouts are
@@ -45,7 +46,7 @@ pub fn AppLayout(props: AppLayoutProps) -> Element {
                 // Mobile sidebar backdrop
                 if *sidebar_open.read() {
                     div {
-                        class: "fixed inset-0 z-40 bg-gray-600/75 lg:hidden",
+                        class: "fixed inset-0 z-40 bg-gray-600/75 lg:hidden", // theme-guard-allow: mobile nav overlay scrim
                         onclick: move |_| sidebar_open.set(false),
                     }
                 }
@@ -93,10 +94,10 @@ pub fn Sidebar(props: SidebarProps) -> Element {
         // mobile drawer overlaps the top bar so it gets its own close
         // button at the top.
         aside {
-            class: "fixed inset-y-0 left-0 z-50 w-64 bg-gray-900 border-r border-gray-700 transform transition-transform duration-300 ease-in-out flex flex-col lg:hidden {mobile_class}",
+            class: "fixed inset-y-0 left-0 z-50 w-64 bg-surface-2 border-r border-line transform transition-transform duration-300 ease-in-out flex flex-col lg:hidden {mobile_class}",
             div { class: "flex items-center justify-end h-12 px-2",
                 button {
-                    class: "p-2 text-gray-400 hover:text-white",
+                    class: "p-2 text-subtle hover:text-content",
                     aria_label: "Close navigation",
                     onclick: move |_| props.onclose.call(()),
                     XMarkIcon { size: IconSize::Large }
@@ -114,7 +115,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
         // so when the viewport is short enough that the nav list must
         // scroll, the user sees the affordance instead of silently
         // clipping behind the main panel's own scrollbar (PMC-22).
-        aside { class: "hidden lg:flex lg:w-64 lg:flex-col bg-gray-900 border-r border-gray-700 overflow-y-auto overscroll-contain scrollbar-thin",
+        aside { class: "hidden lg:flex lg:w-64 lg:flex-col bg-surface-2 border-r border-line overflow-y-auto overscroll-contain scrollbar-thin",
             SidebarContent { persist_scroll: true }
         }
     }
@@ -272,7 +273,7 @@ fn VersionFooter() -> Element {
     use crate::utils::version::{BUILD_DATE, GIT_HASH, VERSION};
     rsx! {
         p {
-            class: "px-3 py-2 text-xs text-gray-500 dark:text-gray-500 text-center break-words",
+            class: "px-3 py-2 text-xs text-muted text-center break-words",
             title: "{VERSION} commit {GIT_HASH} built {BUILD_DATE}",
             span { "{VERSION}" }
             span { class: "mx-1", "-" }
@@ -310,16 +311,16 @@ fn NavSection(props: NavSectionProps) -> Element {
     rsx! {
         div { class: "pt-4",
             button {
-                class: "w-full flex items-center justify-between px-3 py-1 text-xs font-semibold text-gray-400 uppercase tracking-wider hover:text-gray-200 focus:outline-none",
+                class: "w-full flex items-center justify-between px-3 py-1 text-xs font-semibold text-subtle uppercase tracking-wider hover:text-content focus:outline-none",
                 aria_expanded: if collapsed { "false" } else { "true" },
                 onclick: toggle,
                 span { "{props.title}" }
                 // Chevron: pointing down when expanded, right when
                 // collapsed. Keeps the affordance unambiguous.
                 if collapsed {
-                    ChevronRightIcon { size: IconSize::Small, class: "text-gray-500".to_string() }
+                    ChevronRightIcon { size: IconSize::Small, class: "text-muted".to_string() }
                 } else {
-                    ChevronDownIcon { size: IconSize::Small, class: "text-gray-500".to_string() }
+                    ChevronDownIcon { size: IconSize::Small, class: "text-muted".to_string() }
                 }
             }
             if !collapsed {
@@ -370,16 +371,16 @@ fn NavItem(props: NavItemProps) -> Element {
     let is_active = section_route(&current_route) == props.to;
 
     let class = if is_active {
-        "group flex items-center px-3 py-2 text-sm font-medium rounded-md bg-gray-800 text-white border-l-2 border-blue-500"
+        "group flex items-center px-3 py-2 text-sm font-medium rounded-md bg-surface text-content border-l-2 border-accent"
     } else {
-        "group flex items-center px-3 py-2 text-sm font-medium rounded-md text-gray-300 hover:bg-gray-700 hover:text-white"
+        "group flex items-center px-3 py-2 text-sm font-medium rounded-md text-muted hover:bg-surface hover:text-content"
     };
 
     rsx! {
         Link {
             to: props.to,
             class: "{class}",
-            span { class: "mr-3 text-gray-400 group-hover:text-gray-300",
+            span { class: "mr-3 text-subtle group-hover:text-content",
                 {props.icon}
             }
             "{props.label}"
@@ -405,13 +406,13 @@ pub fn TopBar(props: TopBarProps) -> Element {
     let auth = crate::hooks::use_auth();
     let active_org = auth.read().active_org_name().map(str::to_string);
     rsx! {
-        header { class: "h-16 flex items-center bg-gray-800 border-b border-gray-700 shrink-0 z-20",
+        header { class: "h-16 flex items-center bg-surface-2 border-b border-line shrink-0 z-20",
             // Brand block - same width as the sidebar below it.
             // Includes the mobile hamburger so the brand area also opens
             // the drawer on small screens.
-            div { class: "flex items-center h-full lg:w-64 px-4 lg:px-6 border-r border-gray-700",
+            div { class: "flex items-center h-full lg:w-64 px-4 lg:px-6 border-r border-line",
                 button {
-                    class: "lg:hidden p-2 mr-2 rounded-md text-gray-400 hover:text-white hover:bg-gray-700",
+                    class: "lg:hidden p-2 mr-2 rounded-md text-subtle hover:text-content hover:bg-surface-2",
                     aria_label: "Open navigation",
                     onclick: move |_| props.on_menu_click.call(()),
                     MenuIcon { size: IconSize::Large }
@@ -419,27 +420,30 @@ pub fn TopBar(props: TopBarProps) -> Element {
                 Link {
                     to: Route::Dashboard {},
                     class: "flex flex-col leading-tight min-w-0",
-                    span { class: "text-base font-bold text-white truncate",
+                    span { class: "text-base font-bold text-content truncate",
                         "Mokosh Platform"
                     }
                     // Active-org indicator. Hidden until auth resolves an
                     // active tenant - we don't show a "no org" state in
                     // the brand slot to avoid a confusing flash on load.
                     if let Some(name) = active_org.as_deref() {
-                        span { class: "text-xs text-gray-400 truncate", "{name}" }
+                        span { class: "text-xs text-subtle truncate", "{name}" }
                     }
                 }
             }
 
             // Page title
             div { class: "flex-1 px-4 sm:px-6 lg:px-8 min-w-0",
-                h1 { class: "text-xl font-semibold text-white truncate",
+                h1 { class: "text-xl font-semibold text-content truncate",
                     "{props.title}"
                 }
             }
 
             // Right side actions
             div { class: "flex items-center px-4 sm:px-6 lg:px-8 space-x-4",
+                // Theme + accent picker (MAPPS-259), opens a centered modal.
+                ThemePickerButton {}
+
                 // Notifications bell + inbox dropdown, wired to the
                 // server `notifications` module (MAPPS-132).
                 NotificationBell {}
@@ -523,18 +527,18 @@ fn UserMenu() -> Element {
                     let next = !*open.read();
                     open.set(next);
                 },
-                UserCircleIcon { size: IconSize::Large, class: "text-gray-400".to_string() }
+                UserCircleIcon { size: IconSize::Large, class: "text-subtle".to_string() }
             }
             if *open.read() {
                 div {
-                    class: "absolute right-0 mt-2 w-52 rounded-md shadow-lg bg-white dark:bg-gray-800 ring-1 ring-black ring-opacity-5 z-20 p-1",
+                    class: "absolute right-0 mt-2 w-52 rounded-md shadow-lg bg-raised ring-1 ring-black ring-opacity-5 z-20 p-1",
                     role: "menu",
                     // Profile is a mokosh-side route, served by this
                     // SPA. Use the router `Link` so the SPA does an
                     // internal transition instead of a full reload.
                     Link {
                         to: Route::Profile {},
-                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
+                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
                         onclick: move |_| open.set(false),
                         "Profile"
                     }
@@ -543,12 +547,12 @@ fn UserMenu() -> Element {
                     // navigates instead of resolving against this
                     // SPA's Route enum.
                     a {
-                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
+                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
                         href: "{hub_account_settings}",
                         "Account Settings"
                     }
                     a {
-                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
+                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
                         href: "{hub_dashboard}",
                         "Apps"
                     }
@@ -557,13 +561,13 @@ fn UserMenu() -> Element {
                     // internally with `Link` (PMS-237).
                     Link {
                         to: Route::SystemStatus {},
-                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
+                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
                         onclick: move |_| open.set(false),
                         "System Status"
                     }
-                    div { class: "border-t border-gray-200 dark:border-gray-700 my-1" }
+                    div { class: "border-t border-line my-1" }
                     button {
-                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-700",
+                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-surface-2",
                         onclick: logout,
                         "Logout"
                     }
@@ -643,7 +647,7 @@ fn NotificationBell() -> Element {
             button {
                 r#type: "button",
                 aria_label: "Notifications",
-                class: "p-2 rounded-full text-gray-400 hover:text-white hover:bg-gray-700 relative",
+                class: "p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2 relative",
                 onclick: move |_| {
                     let next = !*open.read();
                     open.set(next);
@@ -665,13 +669,13 @@ fn NotificationBell() -> Element {
                     onclick: move |_| open.set(false),
                 }
                 div {
-                    class: "absolute right-0 mt-2 w-80 max-h-96 overflow-y-auto rounded-md shadow-lg bg-white dark:bg-gray-800 ring-1 ring-black ring-opacity-5 z-20",
+                    class: "absolute right-0 mt-2 w-80 max-h-96 overflow-y-auto rounded-md shadow-lg bg-raised ring-1 ring-black ring-opacity-5 z-20",
                     role: "menu",
-                    div { class: "px-4 py-2 border-b border-gray-200 dark:border-gray-700 text-sm font-semibold text-gray-700 dark:text-gray-200",
+                    div { class: "px-4 py-2 border-b border-line text-sm font-semibold text-content",
                         "Notifications"
                     }
                     if items.is_empty() {
-                        div { class: "px-4 py-6 text-sm text-gray-500 dark:text-gray-400 text-center",
+                        div { class: "px-4 py-6 text-sm text-muted text-center",
                             "No notifications yet"
                         }
                     } else {
@@ -694,7 +698,7 @@ fn NotificationRow(item: NotificationItem, on_read: EventHandler<()>) -> Element
     let subject = item.subject.clone().unwrap_or_default();
     let when = format_local_datetime(item.created_at);
     let unread_bg = if is_unread {
-        "bg-blue-50 dark:bg-gray-700/40"
+        "bg-accent-50 dark:bg-accent-900/40"
     } else {
         ""
     };
@@ -702,7 +706,7 @@ fn NotificationRow(item: NotificationItem, on_read: EventHandler<()>) -> Element
     rsx! {
         button {
             r#type: "button",
-            class: "block w-full text-left px-4 py-3 border-b border-gray-100 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700 {unread_bg}",
+            class: "block w-full text-left px-4 py-3 border-b border-line hover:bg-surface-2 {unread_bg}",
             onclick: move |_| {
                 if is_unread {
                     spawn(async move {
@@ -715,10 +719,10 @@ fn NotificationRow(item: NotificationItem, on_read: EventHandler<()>) -> Element
                 }
             },
             if !subject.is_empty() {
-                div { class: "text-sm font-medium text-gray-900 dark:text-gray-100", "{subject}" }
+                div { class: "text-sm font-medium text-content", "{subject}" }
             }
-            div { class: "text-sm text-gray-600 dark:text-gray-300", "{item.body}" }
-            div { class: "mt-1 text-xs text-gray-400", "{when}" }
+            div { class: "text-sm text-muted", "{item.body}" }
+            div { class: "mt-1 text-xs text-subtle", "{when}" }
         }
     }
 }
@@ -734,16 +738,16 @@ pub struct PortalLayoutProps {
 #[component]
 pub fn PortalLayout(props: PortalLayoutProps) -> Element {
     rsx! {
-        div { class: "min-h-screen bg-gray-50 dark:bg-gray-900",
+        div { class: "min-h-screen bg-app",
             // Portal header
-            header { class: "bg-white dark:bg-gray-800 shadow",
+            header { class: "bg-surface shadow",
                 div { class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
                     div { class: "flex items-center justify-between h-16",
                         // Logo
                         Link {
                             to: Route::PortalHome {},
                             class: "flex items-center",
-                            span { class: "text-xl font-bold text-blue-600 dark:text-blue-400",
+                            span { class: "text-xl font-bold text-accent",
                                 "Client Portal"
                             }
                         }
@@ -752,17 +756,17 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
                         nav { class: "hidden md:flex space-x-8",
                             Link {
                                 to: Route::PortalTicketList {},
-                                class: "text-gray-700 dark:text-gray-300 hover:text-blue-600",
+                                class: "text-content hover:text-accent",
                                 "Tickets"
                             }
                             Link {
                                 to: Route::PortalInvoiceList {},
-                                class: "text-gray-700 dark:text-gray-300 hover:text-blue-600",
+                                class: "text-content hover:text-accent",
                                 "Invoices"
                             }
                             Link {
                                 to: Route::PortalKB {},
-                                class: "text-gray-700 dark:text-gray-300 hover:text-blue-600",
+                                class: "text-content hover:text-accent",
                                 "Knowledge Base"
                             }
                         }
@@ -779,7 +783,7 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
             main { class: "py-10",
                 div { class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
                     if !props.title.is_empty() {
-                        h1 { class: "text-2xl font-bold text-gray-900 dark:text-white mb-6",
+                        h1 { class: "text-2xl font-bold text-content mb-6",
                             "{props.title}"
                         }
                     }
@@ -788,9 +792,9 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
             }
 
             // Portal footer
-            footer { class: "bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700",
+            footer { class: "bg-surface border-t border-line",
                 div { class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6",
-                    p { class: "text-sm text-gray-500 dark:text-gray-400 text-center",
+                    p { class: "text-sm text-muted text-center",
                         "Powered by Mokosh Platform"
                     }
                     VersionFooter {}
@@ -847,20 +851,20 @@ fn PortalUserMenu() -> Element {
                     let next = !*open.read();
                     open.set(next);
                 },
-                UserCircleIcon { size: IconSize::Large, class: "text-gray-400".to_string() }
+                UserCircleIcon { size: IconSize::Large, class: "text-subtle".to_string() }
             }
             if *open.read() {
                 div {
-                    class: "absolute right-0 mt-2 w-52 rounded-md shadow-lg bg-white dark:bg-gray-800 ring-1 ring-black ring-opacity-5 z-20 p-1",
+                    class: "absolute right-0 mt-2 w-52 rounded-md shadow-lg bg-raised ring-1 ring-black ring-opacity-5 z-20 p-1",
                     role: "menu",
                     a {
-                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700",
+                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
                         href: "{hub_account_settings}",
                         "Account Settings"
                     }
-                    div { class: "border-t border-gray-200 dark:border-gray-700 my-1" }
+                    div { class: "border-t border-line my-1" }
                     button {
-                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-700",
+                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-surface-2",
                         onclick: logout,
                         "Logout"
                     }
@@ -879,18 +883,18 @@ pub struct AuthLayoutProps {
 #[component]
 pub fn AuthLayout(props: AuthLayoutProps) -> Element {
     rsx! {
-        div { class: "min-h-screen flex flex-col justify-center py-12 sm:px-6 lg:px-8 bg-gray-50 dark:bg-gray-900",
+        div { class: "min-h-screen flex flex-col justify-center py-12 sm:px-6 lg:px-8 bg-app",
             div { class: "sm:mx-auto sm:w-full sm:max-w-md",
                 // Logo
                 div { class: "text-center",
-                    span { class: "text-3xl font-bold text-blue-600 dark:text-blue-400",
+                    span { class: "text-3xl font-bold text-accent",
                         "Mokosh Platform"
                     }
                 }
             }
 
             div { class: "mt-8 sm:mx-auto sm:w-full sm:max-w-md",
-                div { class: "bg-white dark:bg-gray-800 py-8 px-4 shadow sm:rounded-lg sm:px-10",
+                div { class: "bg-surface py-8 px-4 shadow sm:rounded-lg sm:px-10",
                     {props.children}
                 }
             }
@@ -929,11 +933,11 @@ pub fn PageHeader(props: PageHeaderProps) -> Element {
                     // page title at sm and up. Bump line-height to
                     // `leading-9` (36px) at the same breakpoint as the
                     // larger font so descenders sit inside the line box.
-                    h2 { class: "text-2xl font-bold leading-7 text-gray-900 dark:text-white sm:truncate sm:text-3xl sm:leading-9 sm:tracking-tight",
+                    h2 { class: "text-2xl font-bold leading-7 text-content sm:truncate sm:text-3xl sm:leading-9 sm:tracking-tight",
                         "{props.title}"
                     }
                     if !props.subtitle.is_empty() {
-                        p { class: "mt-1 text-sm text-gray-500 dark:text-gray-400",
+                        p { class: "mt-1 text-sm text-muted",
                             "{props.subtitle}"
                         }
                     }
@@ -968,16 +972,16 @@ pub fn Breadcrumbs(props: BreadcrumbsProps) -> Element {
                 for (i, item) in props.items.iter().enumerate() {
                     li { class: "flex items-center",
                         if i > 0 {
-                            ChevronRightIcon { size: IconSize::Small, class: "text-gray-400 mx-2".to_string() }
+                            ChevronRightIcon { size: IconSize::Small, class: "text-subtle mx-2".to_string() }
                         }
                         if let Some(route) = &item.route {
                             Link {
                                 to: route.clone(),
-                                class: "text-sm font-medium text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200",
+                                class: "text-sm font-medium text-muted hover:text-content",
                                 "{item.label}"
                             }
                         } else {
-                            span { class: "text-sm font-medium text-gray-900 dark:text-white",
+                            span { class: "text-sm font-medium text-content",
                                 "{item.label}"
                             }
                         }
@@ -1003,15 +1007,15 @@ pub fn EmptyState(props: EmptyStateProps) -> Element {
     rsx! {
         div { class: "text-center py-12",
             if let Some(ref icon) = props.icon {
-                div { class: "mx-auto h-12 w-12 text-gray-400",
+                div { class: "mx-auto h-12 w-12 text-subtle",
                     {icon}
                 }
             }
-            h3 { class: "mt-2 text-sm font-semibold text-gray-900 dark:text-white",
+            h3 { class: "mt-2 text-sm font-semibold text-content",
                 "{props.title}"
             }
             if !props.description.is_empty() {
-                p { class: "mt-1 text-sm text-gray-500 dark:text-gray-400",
+                p { class: "mt-1 text-sm text-muted",
                     "{props.description}"
                 }
             }
