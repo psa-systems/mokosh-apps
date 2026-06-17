@@ -408,13 +408,25 @@ pub fn InvoiceListPage() -> Element {
                     }
                     if is_loading {
                         TableLoading { columns: 7, rows: 5 }
+                    } else if rows.is_empty() && has_filters {
+                        TableEmpty {
+                            columns: 7,
+                            message: "No invoices match your filters.".to_string(),
+                        }
                     } else if rows.is_empty() {
                         TableEmpty {
                             columns: 7,
-                            message: if has_filters {
-                                "No invoices match your filters.".to_string()
-                            } else {
-                                "No invoices yet. Click New Invoice to create one.".to_string()
+                            title: "No invoices yet".to_string(),
+                            description: "Create your first invoice to start billing customers.".to_string(),
+                            actions: rsx! {
+                                Link {
+                                    to: Route::InvoiceNew {},
+                                    Button {
+                                        variant: ButtonVariant::Primary,
+                                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                        "New Invoice"
+                                    }
+                                }
                             },
                         }
                     } else {
@@ -1506,7 +1518,16 @@ pub fn PaymentListPage() -> Element {
                     } else if rows.is_empty() {
                         TableEmpty {
                             columns: 7,
-                            message: "No payments recorded yet. Click Record Payment to add one.".to_string(),
+                            title: "No payments yet".to_string(),
+                            description: "Record a payment to track what your customers have paid.".to_string(),
+                            actions: rsx! {
+                                Button {
+                                    variant: ButtonVariant::Primary,
+                                    onclick: move |_| recording.set(true),
+                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                    "Record Payment"
+                                }
+                            },
                         }
                     } else {
                         TableBody {
@@ -2514,7 +2535,16 @@ pub fn TaxRateListPage() -> Element {
                     } else if rows.is_empty() {
                         TableEmpty {
                             columns: 4,
-                            message: "No tax rates yet. Click New Tax Rate to add one.".to_string(),
+                            title: "No tax rates yet".to_string(),
+                            description: "Add a tax rate to apply it to your invoices.".to_string(),
+                            actions: rsx! {
+                                Button {
+                                    variant: ButtonVariant::Primary,
+                                    onclick: move |_| editing.set(Some(TaxRateFormState::new())),
+                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                    "New Tax Rate"
+                                }
+                            },
                         }
                     } else {
                         TableBody {
@@ -2901,7 +2931,16 @@ pub fn PaymentGatewayConfigPage() -> Element {
                     } else if rows.is_empty() {
                         TableEmpty {
                             columns: 3,
-                            message: "No payment gateways configured. Click Configure Gateway to add one.".to_string(),
+                            title: "No payment gateways yet".to_string(),
+                            description: "Configure a gateway to accept online payments.".to_string(),
+                            actions: rsx! {
+                                Button {
+                                    variant: ButtonVariant::Primary,
+                                    onclick: move |_| editing.set(Some(GatewayFormState::new())),
+                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                    "Configure Gateway"
+                                }
+                            },
                         }
                     } else {
                         TableBody {

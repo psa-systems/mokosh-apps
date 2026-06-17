@@ -293,13 +293,28 @@ pub fn ContractListPage() -> Element {
                     if is_loading {
                         TableLoading { columns: 6, rows: 5 }
                     } else if page_rows.is_empty() {
-                        TableEmpty {
-                            columns: 6,
-                            message: if has_filters {
-                                "No contracts match your filters.".to_string()
-                            } else {
-                                "No contracts yet. Click New Contract to create one.".to_string()
-                            },
+                        if has_filters {
+                            TableEmpty {
+                                columns: 6,
+                                message: "No contracts match your filters.".to_string(),
+                            }
+                        } else {
+                            TableEmpty {
+                                columns: 6,
+                                title: "No contracts yet".to_string(),
+                                description: "Create your first contract to track agreements and billing."
+                                    .to_string(),
+                                actions: rsx! {
+                                    Link {
+                                        to: Route::ContractNew {},
+                                        Button {
+                                            variant: ButtonVariant::Primary,
+                                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                            "New Contract"
+                                        }
+                                    }
+                                },
+                            }
                         }
                     } else {
                         TableBody {
@@ -2083,7 +2098,17 @@ pub fn RateCardListPage(
                     } else if rows.is_empty() && !fetch_failed {
                         TableEmpty {
                             columns: 3,
-                            message: "No rate cards yet.".to_string(),
+                            title: "No rate cards yet".to_string(),
+                            description: "Create your first rate card to set hourly rates by work type."
+                                .to_string(),
+                            actions: can_edit.then(|| rsx! {
+                                Button {
+                                    variant: ButtonVariant::Primary,
+                                    onclick: move |_| editing.set(Some(RateCardFormState::new())),
+                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                    "New Rate Card"
+                                }
+                            }),
                         }
                     } else {
                         TableBody {

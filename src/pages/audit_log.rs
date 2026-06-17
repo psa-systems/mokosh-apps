@@ -422,13 +422,19 @@ fn AuditLogContent() -> Element {
                     if is_loading {
                         TableLoading { columns: 7, rows: 5 }
                     } else if page_rows.is_empty() {
-                        TableEmpty {
-                            columns: 7,
-                            message: if has_filters {
-                                "No audit entries match your filters.".to_string()
-                            } else {
-                                "No audit entries yet.".to_string()
-                            },
+                        if has_filters {
+                            TableEmpty {
+                                columns: 7,
+                                message: "No audit entries match your filters.".to_string(),
+                            }
+                        } else {
+                            // PMS-354: no CTA - audit entries are recorded by
+                            // the system, not created by the user.
+                            TableEmpty {
+                                columns: 7,
+                                title: "No activity yet".to_string(),
+                                description: "Changes across the app will appear here as they happen.".to_string(),
+                            }
                         }
                     } else {
                         TableBody {

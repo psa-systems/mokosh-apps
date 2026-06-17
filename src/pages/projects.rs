@@ -569,13 +569,25 @@ pub fn ProjectListPage() -> Element {
                     }
                 }
             } else if filtered.is_empty() {
-                Card {
-                    p { class: "text-sm text-gray-400 italic",
-                        if projects.is_empty() {
-                            "No projects yet. Create one to get started."
-                        } else {
-                            "No projects match the current filters."
-                        }
+                if projects.is_empty() {
+                    crate::components::EmptyState {
+                        title: "No projects yet".to_string(),
+                        description: "Create your first project to plan and track work.".to_string(),
+                        actions: rsx! {
+                            Link {
+                                to: Route::ProjectNew {},
+                                Button {
+                                    variant: ButtonVariant::Primary,
+                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                    "New Project"
+                                }
+                            }
+                        },
+                    }
+                } else {
+                    crate::components::EmptyState {
+                        title: "No projects match the current filters".to_string(),
+                        description: "Try clearing the search or status filter.".to_string(),
                     }
                 }
             } else {

@@ -203,7 +203,8 @@ fn SlaPoliciesTab() -> Element {
                 } else if rows.is_empty() {
                     TableEmpty {
                         columns: 4,
-                        message: "No SLA policies yet. Click New Policy to create one.".to_string(),
+                        title: "No SLA policies yet".to_string(),
+                        description: "Use New Policy above to define response and resolution targets.".to_string(),
                     }
                 } else {
                     TableBody {
@@ -939,7 +940,8 @@ fn BusinessHoursTab() -> Element {
                 } else if rows.is_empty() {
                     TableEmpty {
                         columns: 4,
-                        message: "No business-hours sets yet. Click New Business Hours to create one.".to_string(),
+                        title: "No business-hours sets yet".to_string(),
+                        description: "Use New Business Hours above to define when SLA clocks run.".to_string(),
                     }
                 } else {
                     TableBody {
@@ -1277,7 +1279,8 @@ fn HolidayCalendarsTab() -> Element {
                 } else if rows.is_empty() {
                     TableEmpty {
                         columns: 3,
-                        message: "No holiday calendars yet. Click New Holiday Calendar to create one.".to_string(),
+                        title: "No holiday calendars yet".to_string(),
+                        description: "Use New Holiday Calendar above to exclude holidays from SLA clocks.".to_string(),
                     }
                 } else {
                     TableBody {

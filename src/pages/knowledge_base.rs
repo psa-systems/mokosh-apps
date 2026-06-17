@@ -857,13 +857,27 @@ pub fn KBArticleListPage(
                             if is_loading {
                                 TableLoading { columns: 4, rows: 5 }
                             } else if page_rows.is_empty() {
-                                TableEmpty {
-                                    columns: 4,
-                                    message: if has_filters {
-                                        "No articles match your filters.".to_string()
-                                    } else {
-                                        "No articles yet. Click New Article to create one.".to_string()
-                                    },
+                                if has_filters {
+                                    TableEmpty {
+                                        columns: 4,
+                                        message: "No articles match your filters.".to_string(),
+                                    }
+                                } else {
+                                    TableEmpty {
+                                        columns: 4,
+                                        title: "No articles yet".to_string(),
+                                        description: "Write your first knowledge base article.".to_string(),
+                                        actions: rsx! {
+                                            Link {
+                                                to: Route::KBArticleNew {},
+                                                Button {
+                                                    variant: ButtonVariant::Primary,
+                                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                                    "New Article"
+                                                }
+                                            }
+                                        },
+                                    }
                                 }
                             } else {
                                 TableBody {

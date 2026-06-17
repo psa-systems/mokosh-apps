@@ -200,7 +200,11 @@ pub fn TenantManagementPage() -> Element {
                     if is_loading {
                         TableLoading { columns: 6, rows: 4 }
                     } else if source == TenantSource::Backend && remote_tenants.is_empty() {
-                        TableEmpty { columns: 6, message: "No tenants yet.".to_string() }
+                        TableEmpty {
+                            columns: 6,
+                            title: "No tenants yet".to_string(),
+                            description: "Tenants will appear here once they sign up or are provisioned.".to_string(),
+                        }
                     } else {
                         TableBody {
                             if source == TenantSource::Backend {

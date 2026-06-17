@@ -573,13 +573,33 @@ pub fn TicketListPage() -> Element {
                     if is_loading {
                         TableLoading { columns: 6, rows: 5 }
                     } else if source == TicketSource::Backend && filtered_tickets.is_empty() {
-                        TableEmpty {
-                            columns: 6,
-                            message: if remote_tickets.is_empty() {
-                                "No tickets yet.".to_string()
-                            } else {
-                                "No tickets match your filters.".to_string()
-                            },
+                        if remote_tickets.is_empty() {
+                            // PMS-354: helpful empty state with a primary CTA,
+                            // matching the Contracts reference pattern.
+                            TableEmpty {
+                                columns: 6,
+                                title: "No tickets yet".to_string(),
+                                description: "Create your first ticket to start tracking support work."
+                                    .to_string(),
+                                actions: rsx! {
+                                    Link {
+                                        to: Route::TicketNew {},
+                                        Button {
+                                            variant: ButtonVariant::Primary,
+                                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                            "New Ticket"
+                                        }
+                                    }
+                                },
+                            }
+                        } else {
+                            // Filtered to nothing: no CTA (creating won't help);
+                            // guide the user back to the filters.
+                            TableEmpty {
+                                columns: 6,
+                                title: "No tickets match your filters".to_string(),
+                                description: "Try clearing or adjusting the filters above.".to_string(),
+                            }
                         }
                     } else {
                         TableBody {
