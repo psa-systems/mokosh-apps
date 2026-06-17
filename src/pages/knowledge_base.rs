@@ -20,10 +20,11 @@ use chrono::{DateTime, Utc};
 use dioxus::prelude::*;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ChevronRightIcon, CollapsibleRail,
-    ConfirmDialog, DataTable, IconSize, Modal, ModalSize, OverflowActions, PageHeader, PencilIcon,
-    PlusIcon, RailSide, SearchInput, Select, SelectOption, Table, TableBody, TableCell, TableEmpty,
-    TableHead, TableHeader, TableLoading, TableRow, TrashIcon,
+    kb_article_status_badge, AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card,
+    ChevronRightIcon, CollapsibleRail, ConfirmDialog, DataTable, IconSize, Modal, ModalSize,
+    OverflowActions, PageHeader, PencilIcon, PlusIcon, RailSide, SearchInput, Select, SelectOption,
+    Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+    TrashIcon,
 };
 use crate::modules::kb::{
     CreateKbArticleRequest, CreateKbCategoryRequest, KbArticle, KbArticleFeedback,
@@ -228,16 +229,6 @@ fn visibility_label(raw: &str) -> (String, BadgeVariant) {
         "client_specific" => ("Client-specific".to_string(), BadgeVariant::Purple),
         "" => ("Internal".to_string(), BadgeVariant::Blue),
         other => (other.to_string(), BadgeVariant::Gray),
-    }
-}
-
-/// Badge color for an article status (`draft` / `published` / `archived`).
-fn status_variant(raw: &str) -> BadgeVariant {
-    match raw {
-        "published" => BadgeVariant::Green,
-        "draft" => BadgeVariant::Yellow,
-        "archived" => BadgeVariant::Gray,
-        _ => BadgeVariant::Gray,
     }
 }
 
@@ -922,16 +913,12 @@ fn ArticleRow(props: ArticleRowProps) -> Element {
     let navigator = use_navigator();
     let id = props.id.clone();
     let (vis_label, vis_variant) = visibility_label(&props.visibility);
-    let status_var = status_variant(&props.status);
-    let status_label = if props.status.is_empty() {
-        "Draft".to_string()
+    let raw_status = if props.status.is_empty() {
+        "draft"
     } else {
-        let mut chars = props.status.chars();
-        match chars.next() {
-            Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-            None => props.status.clone(),
-        }
+        &props.status
     };
+    let (status_var, status_label) = kb_article_status_badge(raw_status);
     rsx! {
         TableRow {
             clickable: true,
@@ -1107,11 +1094,12 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                 },
                 Some(Some(article)) => {
                     let (vis_label, vis_variant) = visibility_label(&article.visibility);
-                    let status_label = if article.status.is_empty() {
-                        "Draft".to_string()
+                    let status_raw = if article.status.is_empty() {
+                        "draft"
                     } else {
-                        article.status.clone()
+                        &article.status
                     };
+                    let (status_variant, status_label) = kb_article_status_badge(status_raw);
                     let updated = date_only(&article.updated_at);
                     let content = article.content.clone();
                     let path = resolve_category_path(article.category_id, &categories);
@@ -1146,7 +1134,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                             counts: rating,
                                             my_vote,
                                         }
-                                        Badge { variant: status_variant(&status_label), "{status_label}" }
+                                        Badge { variant: status_variant, "{status_label}" }
                                         Badge { variant: vis_variant, "{vis_label}" }
                                         Link { to: Route::KBArticleEdit { id: props.id.clone() },
                                             Button { variant: ButtonVariant::Secondary, "Edit" }

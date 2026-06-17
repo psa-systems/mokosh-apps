@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
+    asset_status_badge, contract_status_badge, invoice_status_badge, project_status_badge,
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, CollapsibleCard, DataTable,
     IconSize, Modal, PageHeader, PlusIcon, SearchInput, Select, SelectOption, SortDirection, Table,
     TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
@@ -2275,75 +2276,6 @@ struct AssetTypeOption {
     id: uuid::Uuid,
     #[serde(default)]
     name: String,
-}
-
-/// (badge variant, label) for a contract status, mirroring contracts.rs.
-fn contract_status_badge(raw: &str) -> (BadgeVariant, String) {
-    let variant = match raw {
-        "active" => BadgeVariant::Green,
-        "expired" => BadgeVariant::Red,
-        "cancelled" | "canceled" => BadgeVariant::Gray,
-        "pending" => BadgeVariant::Yellow,
-        "draft" => BadgeVariant::Blue,
-        _ => BadgeVariant::Gray,
-    };
-    let label = match raw {
-        "active" => "Active",
-        "expired" => "Expired",
-        "cancelled" | "canceled" => "Cancelled",
-        "pending" => "Pending",
-        "draft" => "Draft",
-        other => other,
-    };
-    (variant, label.to_string())
-}
-
-/// (badge variant, label) for a project status, mirroring projects.rs.
-fn project_status_badge(raw: &str) -> (BadgeVariant, String) {
-    let (variant, label) = match raw {
-        "active" => (BadgeVariant::Green, "Active"),
-        "on_hold" => (BadgeVariant::Yellow, "On Hold"),
-        "completed" => (BadgeVariant::Blue, "Completed"),
-        "cancelled" => (BadgeVariant::Gray, "Cancelled"),
-        "planning" => (BadgeVariant::Gray, "Planning"),
-        _ => (BadgeVariant::Gray, "Unknown"),
-    };
-    (variant, label.to_string())
-}
-
-/// (badge variant, label) for an invoice status, mirroring billing.rs.
-fn invoice_status_badge(raw: &str) -> (BadgeVariant, String) {
-    let variant = match raw {
-        "paid" => BadgeVariant::Green,
-        "sent" | "pending" => BadgeVariant::Blue,
-        "partially_paid" => BadgeVariant::Yellow,
-        "void" | "written_off" => BadgeVariant::Red,
-        _ => BadgeVariant::Gray,
-    };
-    let label = match raw {
-        "draft" => "Draft",
-        "pending" => "Pending",
-        "sent" => "Sent",
-        "paid" => "Paid",
-        "partially_paid" => "Partially Paid",
-        "void" => "Void",
-        "written_off" => "Written Off",
-        other => other,
-    };
-    (variant, label.to_string())
-}
-
-/// (badge variant, label) for an asset status, mirroring assets.rs.
-fn asset_status_badge(raw: &str) -> (BadgeVariant, String) {
-    let (variant, label) = match raw {
-        "active" => (BadgeVariant::Green, "Active"),
-        "in_repair" => (BadgeVariant::Yellow, "In Repair"),
-        "in_stock" => (BadgeVariant::Blue, "In Stock"),
-        "retired" => (BadgeVariant::Red, "Retired"),
-        "inactive" => (BadgeVariant::Gray, "Inactive"),
-        _ => (BadgeVariant::Gray, "Unknown"),
-    };
-    (variant, label.to_string())
 }
 
 #[component]
