@@ -147,6 +147,11 @@ pub struct UpdateAppointmentRequest {
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
+    /// RFC 5545 RRULE for the series, or `None` for a one-off. Unlike the
+    /// other fields this is always serialized (sent as `null` when empty)
+    /// so emptying the input clears an existing recurrence rather than
+    /// leaving the prior rule in place (MAPPS-236).
+    pub recurrence_rule: Option<String>,
 }
 
 // ============================================================================
