@@ -16,7 +16,9 @@
 //! `String` and rendered with a leading `$` via [`money`].
 
 use dioxus::prelude::*;
+use rust_decimal::Decimal;
 use serde::Deserialize;
+use std::str::FromStr;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize,
@@ -107,6 +109,47 @@ async fn load_companies() -> Vec<CompanyOption> {
         .await
         .map(|p| p.data)
         .unwrap_or_default()
+}
+
+/// Load the tenant's tax rates for the invoice pickers (MAPPS-192). Reuses the
+/// `RemoteTaxRate` model from the Tax Rates settings view. Best-effort: an
+/// empty list on error so a form still renders.
+async fn load_tax_rates() -> Vec<RemoteTaxRate> {
+    crate::hooks::fetch::api::get_authed::<Paginated<RemoteTaxRate>>("/tax-rates?per_page=100")
+        .await
+        .map(|p| p.data)
+        .unwrap_or_default()
+}
+
+/// Build `[("", "No tax"), (id, "name (rate%)"), ...]` select options from a
+/// loaded tax-rate list, keeping only active rates (MAPPS-192).
+fn tax_rate_select_options(rates: &[RemoteTaxRate]) -> Vec<SelectOption> {
+    let mut opts = vec![SelectOption::new("", "No tax")];
+    opts.extend(
+        rates.iter().filter(|r| r.is_active).map(|r| {
+            SelectOption::new(r.id.to_string(), format!("{} ({}%)", r.name, r.rate.trim()))
+        }),
+    );
+    opts
+}
+
+/// Compute a tax amount from a line subtotal and a selected tax rate
+/// (MAPPS-192). `rate_id` is matched against `rates`; an empty id, an unknown
+/// id, or an unparseable subtotal/rate yields an empty string (no tax). Rates
+/// are stored as a percentage (PMS-339), so tax = subtotal * rate / 100,
+/// rounded to two decimals.
+fn computed_tax_amount(rates: &[RemoteTaxRate], rate_id: &str, subtotal: &str) -> String {
+    if rate_id.is_empty() {
+        return String::new();
+    }
+    let Some(rate) = rates.iter().find(|r| r.id.to_string() == rate_id) else {
+        return String::new();
+    };
+    let rate_pct = Decimal::from_str(rate.rate.trim()).unwrap_or_default();
+    let sub = Decimal::from_str(subtotal.trim()).unwrap_or_default();
+    ((sub * rate_pct) / Decimal::from(100))
+        .round_dp(2)
+        .to_string()
 }
 
 /// Build `[("", placeholder), (id, name), ...]` select options from a
@@ -569,8 +612,49 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     let id_for_void = props.id.clone();
     let act_err = action_error.read().clone();
 
+    // MAPPS-189: the Void button opens the styled ConfirmDialog; the void
+    // PUT fires from `on_confirm_void` once the user confirms.
+    let mut confirming_void = use_signal(|| false);
+    let on_confirm_void = move |_: ()| {
+        if *busy.read() {
+            return;
+        }
+        busy.set(true);
+        action_error.set(String::new());
+        let path = format!("/invoices/{id_for_void}");
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let body = serde_json::json!({ "status": "void" });
+                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body)
+                    .await
+                {
+                    Ok(_) => invoice_resource.restart(),
+                    Err(err) => action_error.set(format!("Could not void invoice: {err}")),
+                }
+            }
+            busy.set(false);
+            confirming_void.set(false);
+        });
+    };
+
     rsx! {
         AppLayout { title: "{header_title}",
+            crate::components::ConfirmDialog {
+                open: confirming_void(),
+                title: "Void invoice".to_string(),
+                message: "Void this invoice? This cannot be undone.".to_string(),
+                confirm_text: "Void".to_string(),
+                cancel_text: "Cancel".to_string(),
+                destructive: true,
+                loading: *busy.read(),
+                onconfirm: on_confirm_void,
+                oncancel: move |_| {
+                    if !*busy.read() {
+                        confirming_void.set(false);
+                    }
+                },
+            }
             PageHeader {
                 title: "{header_title}",
                 actions: rsx! {
@@ -629,39 +713,9 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                             variant: ButtonVariant::Danger,
                             loading: *busy.read(),
                             onclick: move |_| {
-                                if *busy.read() {
-                                    return;
+                                if !*busy.read() {
+                                    confirming_void.set(true);
                                 }
-                                busy.set(true);
-                                action_error.set(String::new());
-                                let path = format!("/invoices/{id_for_void}");
-                                spawn(async move {
-                                    #[cfg(feature = "web")]
-                                    {
-                                        let confirmed = web_sys::window()
-                                            .and_then(|w| {
-                                                w.confirm_with_message(
-                                                    "Void this invoice? This cannot be undone.",
-                                                )
-                                                .ok()
-                                            })
-                                            .unwrap_or(false);
-                                        if confirmed {
-                                            let body = serde_json::json!({ "status": "void" });
-                                            match crate::hooks::fetch::api::put_authed::<
-                                                serde_json::Value,
-                                                _,
-                                            >(&path, &body)
-                                                .await
-                                            {
-                                                Ok(_) => invoice_resource.restart(),
-                                                Err(err) => action_error
-                                                    .set(format!("Could not void invoice: {err}")),
-                                            }
-                                        }
-                                    }
-                                    busy.set(false);
-                                });
                             },
                             "Void"
                         }
@@ -891,6 +945,9 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                         payment_term_id: inv.payment_term_id.clone().unwrap_or_default(),
                         po_number: inv.po_number.clone().unwrap_or_default(),
                         notes: inv.notes.clone().unwrap_or_default(),
+                        subtotal: inv.subtotal.clone(),
+                        tax_amount: inv.tax_amount.clone(),
+                        discount_amount: inv.discount_amount.clone(),
                         onclose: move |_| show_edit.set(false),
                         onsaved: move |_| {
                             show_edit.set(false);
@@ -940,9 +997,42 @@ pub fn InvoiceNewPage() -> Element {
     let mut line_description = use_signal(String::new);
     let mut line_quantity = use_signal(|| "1".to_string());
     let mut line_unit_price = use_signal(String::new);
+    let mut tax_rate_id = use_signal(String::new);
+    // `None` => follow the rate-computed tax; `Some` => a manual override.
+    let mut tax_override = use_signal(|| None::<String>);
+    let mut discount_amount = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut is_generating = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // Per-field messages so a bad value is flagged at the field rather than
+    // surfaced only as the generic 422 banner (MAPPS-214).
+    let mut due_date_error = use_signal(String::new);
+    let mut quantity_error = use_signal(String::new);
+    let mut unit_price_error = use_signal(String::new);
+
+    let tax_rates_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        load_tax_rates().await
+    });
+    let tax_rate_options = tax_rate_select_options(
+        &tax_rates_resource
+            .read_unchecked()
+            .clone()
+            .unwrap_or_default(),
+    );
+    // Tax computed from the selected rate and the single line's subtotal
+    // (qty * unit price); recomputes as either input changes. A manual edit to
+    // the Tax field overrides it until another rate is picked.
+    let computed_tax = use_memo(move || {
+        let qty = Decimal::from_str(line_quantity.read().trim()).unwrap_or_default();
+        let price = Decimal::from_str(line_unit_price.read().trim()).unwrap_or_default();
+        let subtotal = (qty * price).to_string();
+        let rates = tax_rates_resource
+            .read_unchecked()
+            .clone()
+            .unwrap_or_default();
+        computed_tax_amount(&rates, &tax_rate_id.read(), &subtotal)
+    });
 
     let navigator = use_navigator();
 
@@ -953,6 +1043,9 @@ pub fn InvoiceNewPage() -> Element {
             return;
         }
         error.set(String::new());
+        due_date_error.set(String::new());
+        quantity_error.set(String::new());
+        unit_price_error.set(String::new());
 
         let Some(company_uuid) = uuid::Uuid::parse_str(company_id.read().trim()).ok() else {
             error.set("A valid company ID (UUID) is required.".to_string());
@@ -962,6 +1055,12 @@ pub fn InvoiceNewPage() -> Element {
         let due = due_date.read().trim().to_string();
         if inv_date.is_empty() || due.is_empty() {
             error.set("Invoice date and due date are required.".to_string());
+            return;
+        }
+        // Dates come from the native date picker as ISO `YYYY-MM-DD`, so a
+        // lexicographic compare is a correct date order check.
+        if due < inv_date {
+            due_date_error.set("Due date must be on or after the invoice date.".to_string());
             return;
         }
         let description = line_description.read().trim().to_string();
@@ -975,14 +1074,48 @@ pub fn InvoiceNewPage() -> Element {
             error.set("Line item quantity and unit price are required.".to_string());
             return;
         }
+        // Reject negatives (and non-numeric input) at the field. The native
+        // `min="0"` already blocks this, but validate here too so the message
+        // is explicit and the bad value never reaches the 422 path.
+        match quantity.parse::<f64>() {
+            Ok(q) if q >= 0.0 => {}
+            Ok(_) => {
+                quantity_error.set("Quantity cannot be negative.".to_string());
+                return;
+            }
+            Err(_) => {
+                quantity_error.set("Enter a valid quantity.".to_string());
+                return;
+            }
+        }
+        match unit_price.parse::<f64>() {
+            Ok(p) if p >= 0.0 => {}
+            Ok(_) => {
+                unit_price_error.set("Unit price cannot be negative.".to_string());
+                return;
+            }
+            Err(_) => {
+                unit_price_error.set("Enter a valid unit price.".to_string());
+                return;
+            }
+        }
 
         is_submitting.set(true);
+        // Effective tax: a manual override if present, else the rate-computed
+        // value. Both tax and discount are optional; an empty string sends
+        // null so the server keeps its 0 default (existing flow unchanged).
+        let tax_str = tax_override
+            .read()
+            .clone()
+            .unwrap_or_else(|| computed_tax.read().clone());
         let body = serde_json::json!({
             "company_id": company_uuid,
             "invoice_date": inv_date,
             "due_date": due,
             "po_number": optional_string(&po_number.read()),
             "notes": optional_string(&notes.read()),
+            "tax_amount": optional_string(&tax_str),
+            "discount_amount": optional_string(&discount_amount.read()),
             "lines": [{
                 "line_type": "service",
                 "description": description,
@@ -1069,6 +1202,11 @@ pub fn InvoiceNewPage() -> Element {
         });
     };
 
+    let tax_value = tax_override
+        .read()
+        .clone()
+        .unwrap_or_else(|| computed_tax.read().clone());
+
     rsx! {
         AppLayout { title: "New Invoice",
             PageHeader {
@@ -1111,13 +1249,18 @@ pub fn InvoiceNewPage() -> Element {
                             label: "Due Date",
                             required: true,
                             value: due_date.read().clone(),
-                            oninput: move |e: FormEvent| due_date.set(e.value()),
+                            error: due_date_error.read().clone(),
+                            oninput: move |e: FormEvent| {
+                                due_date_error.set(String::new());
+                                due_date.set(e.value());
+                            },
                         }
                     }
 
                     crate::components::Input {
                         name: "po_number",
                         label: "PO Number",
+                        maxlength: 100,
                         value: po_number.read().clone(),
                         oninput: move |e: FormEvent| po_number.set(e.value()),
                     }
@@ -1129,6 +1272,7 @@ pub fn InvoiceNewPage() -> Element {
                                 name: "line_description",
                                 label: "Description",
                                 required: true,
+                                maxlength: 1000,
                                 placeholder: "What was delivered",
                                 value: line_description.read().clone(),
                                 oninput: move |e: FormEvent| line_description.set(e.value()),
@@ -1138,22 +1282,72 @@ pub fn InvoiceNewPage() -> Element {
                                 label: "Quantity",
                                 r#type: "number",
                                 required: true,
+                                step: "0.01",
+                                min: "0",
                                 placeholder: "Qty",
                                 value: line_quantity.read().clone(),
-                                oninput: move |e: FormEvent| line_quantity.set(e.value()),
+                                error: quantity_error.read().clone(),
+                                oninput: move |e: FormEvent| {
+                                    quantity_error.set(String::new());
+                                    line_quantity.set(e.value());
+                                },
                             }
                             crate::components::Input {
                                 name: "line_unit_price",
                                 label: "Unit Price",
                                 r#type: "number",
                                 required: true,
+                                step: "0.01",
+                                min: "0",
                                 placeholder: "0.00",
                                 value: line_unit_price.read().clone(),
-                                oninput: move |e: FormEvent| line_unit_price.set(e.value()),
+                                error: unit_price_error.read().clone(),
+                                oninput: move |e: FormEvent| {
+                                    unit_price_error.set(String::new());
+                                    line_unit_price.set(e.value());
+                                },
                             }
                         }
                         p { class: "mt-2 text-xs text-gray-500",
                             "Manual invoices start with a single service line. Add more lines by editing the invoice after it is created."
+                        }
+                    }
+
+                    div {
+                        h3 { class: "text-sm font-medium text-gray-700 dark:text-gray-300 mb-3", "Tax & Discount" }
+                        div { class: "grid grid-cols-1 gap-3 sm:grid-cols-3",
+                            Select {
+                                name: "tax_rate_id",
+                                label: "Tax Rate",
+                                options: tax_rate_options,
+                                value: tax_rate_id.read().clone(),
+                                onchange: move |e: FormEvent| {
+                                    tax_rate_id.set(e.value());
+                                    // Re-follow the computed value for the new rate.
+                                    tax_override.set(None);
+                                },
+                            }
+                            crate::components::Input {
+                                name: "tax_amount",
+                                label: "Tax",
+                                r#type: "number",
+                                step: "0.01".to_string(),
+                                min: "0".to_string(),
+                                placeholder: "0.00",
+                                help: "Auto-computed from the tax rate; edit to override.",
+                                value: tax_value.clone(),
+                                oninput: move |e: FormEvent| tax_override.set(Some(e.value())),
+                            }
+                            crate::components::Input {
+                                name: "discount_amount",
+                                label: "Discount",
+                                r#type: "number",
+                                step: "0.01".to_string(),
+                                min: "0".to_string(),
+                                placeholder: "0.00",
+                                value: discount_amount.read().clone(),
+                                oninput: move |e: FormEvent| discount_amount.set(e.value()),
+                            }
                         }
                     }
 
@@ -1162,6 +1356,7 @@ pub fn InvoiceNewPage() -> Element {
                         label: "Notes",
                         placeholder: "Internal notes (not shown to the customer)",
                         rows: 3,
+                        maxlength: 2000,
                         value: notes.read().clone(),
                         oninput: move |e: FormEvent| notes.set(e.value()),
                     }
@@ -1360,6 +1555,29 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
     let mut error = use_signal(String::new);
     let on_deleted = props.on_deleted;
     let delete_id = props.id.clone();
+    // MAPPS-189: the Delete button opens the styled ConfirmDialog; the
+    // DELETE fires from `on_confirm_delete` once the user confirms.
+    let mut confirming_delete = use_signal(|| false);
+    let on_confirm_delete = move |_: ()| {
+        if *deleting.read() {
+            return;
+        }
+        let id = delete_id.clone();
+        deleting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let path = format!("/payments/{id}");
+                match crate::hooks::fetch::api::delete_authed(&path).await {
+                    Ok(()) => on_deleted.call(()),
+                    Err(err) => error.set(format!("Could not delete payment: {err}")),
+                }
+            }
+            deleting.set(false);
+            confirming_delete.set(false);
+        });
+    };
     // Prefer the human invoice number; fall back to a generic label if the
     // payment is applied but the number could not be resolved.
     let invoice_label = if props.invoice_number.is_empty() {
@@ -1408,32 +1626,9 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
                     variant: ButtonVariant::Danger,
                     loading: *deleting.read(),
                     onclick: move |_| {
-                        let id = delete_id.clone();
-                        deleting.set(true);
-                        error.set(String::new());
-                        spawn(async move {
-                            #[cfg(feature = "web")]
-                            {
-                                let confirmed = web_sys::window()
-                                    .and_then(|w| {
-                                        w.confirm_with_message(
-                                            "Delete this payment? The linked invoice balance will be restored.",
-                                        )
-                                        .ok()
-                                    })
-                                    .unwrap_or(false);
-                                if confirmed {
-                                    let path = format!("/payments/{id}");
-                                    match crate::hooks::fetch::api::delete_authed(&path).await {
-                                        Ok(()) => on_deleted.call(()),
-                                        Err(err) => {
-                                            error.set(format!("Could not delete payment: {err}"))
-                                        }
-                                    }
-                                }
-                            }
-                            deleting.set(false);
-                        });
+                        if !*deleting.read() {
+                            confirming_delete.set(true);
+                        }
                     },
                     "Delete"
                 }
@@ -1441,9 +1636,37 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
                     p { class: "mt-1 text-xs text-red-600", "{error.read()}" }
                 }
             }
+            crate::components::ConfirmDialog {
+                open: confirming_delete(),
+                title: "Delete payment".to_string(),
+                message: "Delete this payment? The linked invoice balance will be restored."
+                    .to_string(),
+                confirm_text: "Delete".to_string(),
+                cancel_text: "Cancel".to_string(),
+                destructive: true,
+                loading: *deleting.read(),
+                onconfirm: on_confirm_delete,
+                oncancel: move |_| {
+                    if !*deleting.read() {
+                        confirming_delete.set(false);
+                    }
+                },
+            }
         }
     }
 }
+
+// Field caps for the Record Payment form's free-text inputs (MAPPS-215).
+// Mirror the mokosh-server column limits so over-long input is blocked inline
+// (via `maxlength`) instead of failing later as an opaque 422; the server
+// stays the source of truth.
+const PAYMENT_REFERENCE_MAX: usize = 100;
+const PAYMENT_NOTES_MAX: usize = 2000;
+
+/// Upper bound for the Amount field (MAPPS-215). Comfortably inside `Decimal`'s
+/// range while ruling out absurd magnitudes, so such input is caught with a
+/// clear "out of range" message rather than a misleading parse error.
+const PAYMENT_AMOUNT_MAX: i64 = 10_000_000_000;
 
 #[derive(Props, Clone, PartialEq)]
 struct RecordPaymentModalProps {
@@ -1498,6 +1721,10 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
     let mut notes = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // Per-field inline validation errors (MAPPS-215): shown beneath the field
+    // they belong to instead of collapsing into the single form-level banner.
+    let mut amount_err = use_signal(String::new);
+    let mut invoice_err = use_signal(String::new);
 
     let method_options = vec![
         SelectOption::new("check", "Check"),
@@ -1516,6 +1743,8 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
             return;
         }
         error.set(String::new());
+        amount_err.set(String::new());
+        invoice_err.set(String::new());
 
         let Some(company_uuid) = uuid::Uuid::parse_str(company_id.read().trim()).ok() else {
             error.set("A valid company ID (UUID) is required.".to_string());
@@ -1526,33 +1755,80 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
             error.set("Payment date is required.".to_string());
             return;
         }
-        let amt = amount.read().trim().to_string();
-        if amt.is_empty() {
-            error.set("Amount is required.".to_string());
-            return;
-        }
-        // invoice_id is optional (an unapplied payment is allowed). The picker
-        // can only yield the explicit blank or a valid invoice UUID, so an
-        // empty value is a deliberate unapplied payment while a non-empty but
-        // unparseable value is a hard error rather than a silent coercion to
-        // Null (MAPPS-191).
-        let invoice_raw = invoice_id.read().trim().to_string();
-        let invoice_value = if invoice_raw.is_empty() {
-            serde_json::Value::Null
-        } else {
-            match uuid::Uuid::parse_str(&invoice_raw) {
-                Ok(id) => serde_json::Value::String(id.to_string()),
-                Err(_) => {
-                    error.set(
-                        "Select an invoice from the list, or choose (Unapplied payment)."
-                            .to_string(),
-                    );
-                    return;
+
+        // Collect field-level errors so the user sees every problem at once,
+        // each attached to its own field (MAPPS-215).
+        let mut ok = true;
+
+        // Amount: required, strictly positive, at most 2 decimals, in range.
+        // `min`/`step` on the field block most bad input in the browser; this
+        // re-checks on submit so a pasted or scripted value can't slip a
+        // negative/zero or sub-cent amount past the form.
+        let amt = {
+            let s = amount.read().trim().to_string();
+            if s.is_empty() {
+                amount_err.set("Amount is required.".to_string());
+                ok = false;
+                String::new()
+            } else {
+                match s.parse::<Decimal>() {
+                    Ok(d) if d <= Decimal::ZERO => {
+                        amount_err.set("Amount must be greater than zero.".to_string());
+                        ok = false;
+                        String::new()
+                    }
+                    Ok(d) if d.scale() > 2 => {
+                        amount_err.set("Amount must have at most 2 decimal places.".to_string());
+                        ok = false;
+                        String::new()
+                    }
+                    Ok(d) if d > Decimal::from(PAYMENT_AMOUNT_MAX) => {
+                        amount_err.set("Amount is out of range.".to_string());
+                        ok = false;
+                        String::new()
+                    }
+                    Ok(_) => s,
+                    Err(_) => {
+                        amount_err.set("Amount must be a number.".to_string());
+                        ok = false;
+                        String::new()
+                    }
                 }
             }
         };
 
+        // Invoice ID is optional (an unapplied payment is allowed). When
+        // present it must be a valid UUID; existence is confirmed below before
+        // the payment is recorded. A malformed value is no longer silently
+        // dropped (which produced an unintended unapplied payment).
+        let invoice_uuid = {
+            let raw = invoice_id.read().trim().to_string();
+            if raw.is_empty() {
+                None
+            } else {
+                match uuid::Uuid::parse_str(&raw) {
+                    Ok(id) => Some(id),
+                    Err(_) => {
+                        invoice_err.set(
+                            "Invoice ID must be a valid UUID, or leave it blank for an unapplied payment."
+                                .to_string(),
+                        );
+                        ok = false;
+                        None
+                    }
+                }
+            }
+        };
+
+        if !ok {
+            return;
+        }
+
         saving.set(true);
+        let invoice_value = match invoice_uuid {
+            Some(id) => serde_json::Value::String(id.to_string()),
+            None => serde_json::Value::Null,
+        };
         let body = serde_json::json!({
             "company_id": company_uuid,
             "invoice_id": invoice_value,
@@ -1565,6 +1841,22 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
+                // For an applied payment, confirm the invoice exists (and is
+                // visible to this tenant) before recording, so a well-formed
+                // but unknown ID gets a field message instead of an opaque
+                // server FK error (MAPPS-215).
+                if let Some(id) = invoice_uuid {
+                    if crate::hooks::fetch::api::get_authed::<InvoiceDetail>(&format!(
+                        "/invoices/{id}"
+                    ))
+                    .await
+                    .is_err()
+                    {
+                        invoice_err.set("No invoice found with that ID.".to_string());
+                        saving.set(false);
+                        return;
+                    }
+                }
                 match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
                     "/payments",
                     &body,
@@ -1628,6 +1920,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                     help: "Select a company first. Choose (Unapplied payment) to leave this payment unapplied.",
                     options: invoice_options,
                     value: invoice_id.read().clone(),
+                    error: invoice_err(),
                     onchange: move |e: FormEvent| invoice_id.set(e.value()),
                 }
                 div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
@@ -1642,8 +1935,13 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                         name: "payment_amount",
                         label: "Amount",
                         r#type: "number",
+                        // `min`/`step` make the browser reject non-positive and
+                        // sub-cent amounts; submit-time validation re-checks.
+                        min: "0.01".to_string(),
+                        step: "0.01".to_string(),
                         required: true,
                         value: amount.read().clone(),
+                        error: amount_err(),
                         oninput: move |e: FormEvent| amount.set(e.value()),
                     }
                 }
@@ -1657,6 +1955,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                 crate::components::Input {
                     name: "payment_reference",
                     label: "Reference Number",
+                    maxlength: PAYMENT_REFERENCE_MAX as i64,
                     value: reference_number.read().clone(),
                     oninput: move |e: FormEvent| reference_number.set(e.value()),
                 }
@@ -1664,6 +1963,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                     name: "payment_notes",
                     label: "Notes",
                     rows: 2,
+                    maxlength: PAYMENT_NOTES_MAX as i64,
                     value: notes.read().clone(),
                     oninput: move |e: FormEvent| notes.set(e.value()),
                 }
@@ -1681,6 +1981,12 @@ struct InvoiceEditModalProps {
     payment_term_id: String,
     po_number: String,
     notes: String,
+    /// Stored line subtotal, used to compute tax from a selected rate (MAPPS-192).
+    subtotal: String,
+    /// Current tax amount, seeded as the editable Tax field (MAPPS-192).
+    tax_amount: String,
+    /// Current discount amount, seeded as the editable Discount field (MAPPS-192).
+    discount_amount: String,
     onclose: EventHandler<()>,
     onsaved: EventHandler<()>,
 }
@@ -1707,8 +2013,34 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
     let mut payment_term_id = use_signal(|| props.payment_term_id.clone());
     let mut po_number = use_signal(|| props.po_number.clone());
     let mut notes = use_signal(|| props.notes.clone());
+    let mut tax_rate_id = use_signal(String::new);
+    // Seed the override with the invoice's current tax so it shows on open;
+    // picking a rate clears it back to the rate-computed value (MAPPS-192).
+    let mut tax_override = use_signal(|| Some(props.tax_amount.clone()));
+    let mut discount_amount = use_signal(|| props.discount_amount.clone());
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+
+    // Tax-rate picker (MAPPS-192): compute tax from the stored line subtotal and
+    // the selected rate; the Tax field stays editable as a manual override.
+    let tax_rates_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        load_tax_rates().await
+    });
+    let tax_rate_options = tax_rate_select_options(
+        &tax_rates_resource
+            .read_unchecked()
+            .clone()
+            .unwrap_or_default(),
+    );
+    let subtotal_for_tax = props.subtotal.clone();
+    let computed_tax = use_memo(move || {
+        let rates = tax_rates_resource
+            .read_unchecked()
+            .clone()
+            .unwrap_or_default();
+        computed_tax_amount(&rates, &tax_rate_id.read(), &subtotal_for_tax)
+    });
 
     // Payment-term options from the settings-managed lookup (PMS-333). Only
     // active terms are offered; the entry keeps its current term even if that
@@ -1758,12 +2090,21 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
         }
         saving.set(true);
         let path = format!("/invoices/{invoice_id}");
+        // Effective tax: a manual override if present, else the rate-computed
+        // value. Empty sends null, so the server COALESCE keeps the current
+        // amount (existing zero-tax invoices stay unchanged unless edited).
+        let tax_str = tax_override
+            .read()
+            .clone()
+            .unwrap_or_else(|| computed_tax.read().clone());
         let body = serde_json::json!({
             "invoice_date": inv_date,
             "due_date": due,
             "payment_term_id": optional_string(&payment_term_id.read()),
             "po_number": optional_string(&po_number.read()),
             "notes": optional_string(&notes.read()),
+            "tax_amount": optional_string(&tax_str),
+            "discount_amount": optional_string(&discount_amount.read()),
         });
         spawn(async move {
             #[cfg(feature = "web")]
@@ -1793,6 +2134,11 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             "Save"
         }
     };
+
+    let tax_value = tax_override
+        .read()
+        .clone()
+        .unwrap_or_else(|| computed_tax.read().clone());
 
     rsx! {
         Modal {
@@ -1836,6 +2182,39 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                     label: "PO Number",
                     value: po_number.read().clone(),
                     oninput: move |e: FormEvent| po_number.set(e.value()),
+                }
+                div { class: "grid grid-cols-1 gap-4 sm:grid-cols-3",
+                    Select {
+                        name: "tax_rate_id",
+                        label: "Tax Rate",
+                        options: tax_rate_options,
+                        value: tax_rate_id.read().clone(),
+                        onchange: move |e: FormEvent| {
+                            tax_rate_id.set(e.value());
+                            tax_override.set(None);
+                        },
+                    }
+                    crate::components::Input {
+                        name: "tax_amount",
+                        label: "Tax",
+                        r#type: "number",
+                        step: "0.01".to_string(),
+                        min: "0".to_string(),
+                        placeholder: "0.00",
+                        help: "Auto-computed from the tax rate; edit to override.",
+                        value: tax_value.clone(),
+                        oninput: move |e: FormEvent| tax_override.set(Some(e.value())),
+                    }
+                    crate::components::Input {
+                        name: "discount_amount",
+                        label: "Discount",
+                        r#type: "number",
+                        step: "0.01".to_string(),
+                        min: "0".to_string(),
+                        placeholder: "0.00",
+                        value: discount_amount.read().clone(),
+                        oninput: move |e: FormEvent| discount_amount.set(e.value()),
+                    }
                 }
                 crate::components::Textarea {
                     name: "invoice_notes",
@@ -2116,9 +2495,19 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
     };
 
     let delete_id = initial.id.clone();
+    let can_delete = delete_id.is_some();
+    // MAPPS-189: Delete opens the styled ConfirmDialog; the DELETE runs
+    // from `on_confirm_delete` once the user confirms.
+    let mut confirming_delete = use_signal(|| false);
     let handle_delete = move |_| {
+        if !can_delete || *saving.read() || *deleting.read() {
+            return;
+        }
+        confirming_delete.set(true);
+    };
+    let on_confirm_delete = move |_: ()| {
         let Some(id) = delete_id.clone() else { return };
-        if *saving.read() || *deleting.read() {
+        if *deleting.read() {
             return;
         }
         deleting.set(true);
@@ -2126,21 +2515,14 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let confirmed = web_sys::window()
-                    .and_then(|w| {
-                        w.confirm_with_message("Delete this tax rate? This cannot be undone.")
-                            .ok()
-                    })
-                    .unwrap_or(false);
-                if confirmed {
-                    let path = format!("/tax-rates/{id}");
-                    match crate::hooks::fetch::api::delete_authed(&path).await {
-                        Ok(()) => onsaved.call(()),
-                        Err(err) => error.set(format!("Could not delete tax rate: {err}")),
-                    }
+                let path = format!("/tax-rates/{id}");
+                match crate::hooks::fetch::api::delete_authed(&path).await {
+                    Ok(()) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not delete tax rate: {err}")),
                 }
             }
             deleting.set(false);
+            confirming_delete.set(false);
         });
     };
 
@@ -2218,6 +2600,21 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
                     },
                 }
             }
+        }
+        crate::components::ConfirmDialog {
+            open: confirming_delete(),
+            title: "Delete tax rate".to_string(),
+            message: "Delete this tax rate? This cannot be undone.".to_string(),
+            confirm_text: "Delete".to_string(),
+            cancel_text: "Cancel".to_string(),
+            destructive: true,
+            loading: *deleting.read(),
+            onconfirm: on_confirm_delete,
+            oncancel: move |_| {
+                if !*deleting.read() {
+                    confirming_delete.set(false);
+                }
+            },
         }
     }
 }
@@ -2492,8 +2889,17 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
     };
 
     let delete_provider = initial.provider.clone();
+    // MAPPS-189: Remove opens the styled ConfirmDialog; the DELETE runs
+    // from `on_confirm_delete` once the user confirms.
+    let mut confirming_delete = use_signal(|| false);
     let handle_delete = move |_| {
         if !provider_locked || *saving.read() || *deleting.read() {
+            return;
+        }
+        confirming_delete.set(true);
+    };
+    let on_confirm_delete = move |_: ()| {
+        if *deleting.read() {
             return;
         }
         deleting.set(true);
@@ -2502,21 +2908,14 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let confirmed = web_sys::window()
-                    .and_then(|w| {
-                        w.confirm_with_message("Remove this gateway configuration?")
-                            .ok()
-                    })
-                    .unwrap_or(false);
-                if confirmed {
-                    let path = format!("/payment-gateways/{provider}");
-                    match crate::hooks::fetch::api::delete_authed(&path).await {
-                        Ok(()) => onsaved.call(()),
-                        Err(err) => error.set(format!("Could not remove gateway: {err}")),
-                    }
+                let path = format!("/payment-gateways/{provider}");
+                match crate::hooks::fetch::api::delete_authed(&path).await {
+                    Ok(()) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not remove gateway: {err}")),
                 }
             }
             deleting.set(false);
+            confirming_delete.set(false);
         });
     };
 
@@ -2594,6 +2993,21 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                     oninput: move |e: FormEvent| config_json.set(e.value()),
                 }
             }
+        }
+        crate::components::ConfirmDialog {
+            open: confirming_delete(),
+            title: "Remove gateway".to_string(),
+            message: "Remove this gateway configuration?".to_string(),
+            confirm_text: "Remove".to_string(),
+            cancel_text: "Cancel".to_string(),
+            destructive: true,
+            loading: *deleting.read(),
+            onconfirm: on_confirm_delete,
+            oncancel: move |_| {
+                if !*deleting.read() {
+                    confirming_delete.set(false);
+                }
+            },
         }
     }
 }

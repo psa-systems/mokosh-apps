@@ -1,12 +1,15 @@
 //! PMS-253: per-user date/time format rendering.
 //!
 //! Every UTC instant the SPA shows to the user passes through
-//! [`format_user_datetime`], which converts the instant into the
-//! viewer's local timezone (via the browser's [`Intl`] machinery, NOT
-//! a static format) and then renders it through the format string
-//! stored on `users.date_format_string`. When that field is `None` we
-//! fall back to the browser locale, matching the legacy
-//! `format_local_datetime` behaviour so existing users see no change.
+//! [`format_user_datetime`], which converts the instant into the user's
+//! configured profile timezone (the IANA `users.timezone` field,
+//! validated in PMS-325, resolved via [`user_timezone`]) and then
+//! renders it through the format string stored on
+//! `users.date_format_string`. When that field is `None` we fall back to
+//! a locale rendering, but still pinned to the profile timezone so the
+//! profile setting takes effect on every screen. Timezone resolution
+//! falls back to UTC only when there is no signed-in user or the stored
+//! zone is not a valid IANA name (MAPPS-208).
 //!
 //! The format grammar matches the dominant moment.js / day.js
 //! grammar so the help text we link to is standard and users moving
@@ -43,7 +46,8 @@
 //! Anything not in the table passes through verbatim, so literal
 //! punctuation (`-`, `/`, `:`, `,`, spaces) just works.
 
-use chrono::{DateTime, Datelike, Local, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, TimeZone, Timelike, Utc};
+use chrono_tz::Tz;
 
 /// User-pickable presets. The first element is the human label shown
 /// in the dropdown; the second is the format string we persist. Order
@@ -66,13 +70,22 @@ const TOKENS: &[&str] = &[
     "mm", "m", "ss", "s", "a.m.", "A", "a",
 ];
 
-/// Format a UTC instant against a user's format preference. Returns
-/// the browser-locale fallback when `format` is `None` or empty.
+/// Format a UTC instant against a user's format preference, rendered in
+/// the user's configured profile timezone (resolved from the
+/// AuthContext via [`user_timezone`]). Returns a locale fallback,
+/// still pinned to that timezone, when `format` is `None` or empty.
 pub fn format_user_datetime(dt: DateTime<Utc>, format: Option<&str>) -> String {
-    let local: DateTime<Local> = Local.from_utc_datetime(&dt.naive_utc());
+    format_user_datetime_in(dt, format, user_timezone())
+}
+
+/// Pure core of [`format_user_datetime`]: render `dt` in an explicit
+/// `tz`. Split out so it can be unit-tested without a live Dioxus
+/// context (the public wrapper reads the timezone off the AuthContext).
+fn format_user_datetime_in(dt: DateTime<Utc>, format: Option<&str>, tz: Tz) -> String {
+    let local = dt.with_timezone(&tz);
     match format {
         Some(fmt) if !fmt.trim().is_empty() => render_format(local, fmt),
-        _ => browser_locale_fallback(dt),
+        _ => locale_fallback(dt, tz),
     }
 }
 
@@ -88,14 +101,14 @@ pub fn preset_label(now: DateTime<Utc>, fmt: &str) -> String {
 
 /// Walk the format string left to right; replace the longest matching
 /// token at each position, copy any other byte verbatim.
-fn render_format(local: DateTime<Local>, format: &str) -> String {
+fn render_format<T: TimeZone>(local: DateTime<T>, format: &str) -> String {
     let bytes = format.as_bytes();
     let mut out = String::with_capacity(format.len() + 8);
     let mut i = 0;
     while i < bytes.len() {
         match longest_token_at(format, i) {
             Some(tok) => {
-                out.push_str(&render_token(tok, local));
+                out.push_str(&render_token(tok, &local));
                 i += tok.len();
             }
             None => {
@@ -112,7 +125,7 @@ fn longest_token_at(format: &str, i: usize) -> Option<&'static str> {
     TOKENS.iter().find(|tok| rest.starts_with(*tok)).copied()
 }
 
-fn render_token(tok: &str, local: DateTime<Local>) -> String {
+fn render_token<T: TimeZone>(tok: &str, local: &DateTime<T>) -> String {
     let year = local.year();
     let month = local.month();
     let day = local.day();
@@ -220,28 +233,37 @@ fn ordinal_suffix(n: u32) -> &'static str {
     }
 }
 
-/// Mirror of `crate::components::layout::format_local_datetime`: when
-/// no per-user format is set we let the browser pick a locale
-/// rendering. Outside the WASM target we return an explicit UTC
-/// string (used by the unit tests + the desktop build).
-fn browser_locale_fallback(dt: DateTime<Utc>) -> String {
+/// When no per-user format string is set we let the browser pick a
+/// locale rendering, but pin it to the user's profile timezone (`tz`)
+/// via the `Intl` `timeZone` option so the profile setting still takes
+/// effect (MAPPS-208). Outside the WASM target (unit tests + desktop
+/// build) we render a plain string in `tz` with its zone abbreviation.
+fn locale_fallback(dt: DateTime<Utc>, tz: Tz) -> String {
     #[cfg(target_arch = "wasm32")]
     {
         let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(
             dt.timestamp_millis() as f64
         ));
-        let formatted: String = date
-            .to_locale_string("en-US", &wasm_bindgen::JsValue::UNDEFINED)
-            .into();
+        let opts = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(
+            &opts,
+            &wasm_bindgen::JsValue::from_str("timeZone"),
+            &wasm_bindgen::JsValue::from_str(tz.name()),
+        );
+        let formatted: String = date.to_locale_string("en-US", opts.as_ref()).into();
         if formatted.is_empty() {
-            dt.format("%Y-%m-%d %H:%M UTC").to_string()
+            dt.with_timezone(&tz)
+                .format("%Y-%m-%d %H:%M %Z")
+                .to_string()
         } else {
             formatted
         }
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        dt.format("%Y-%m-%d %H:%M UTC").to_string()
+        dt.with_timezone(&tz)
+            .format("%Y-%m-%d %H:%M %Z")
+            .to_string()
     }
 }
 
@@ -309,9 +331,30 @@ pub fn user_format_pref() -> Option<String> {
     pref
 }
 
+/// MAPPS-208: resolve the active user's IANA timezone off the
+/// AuthContext and parse it to a [`Tz`]. Mirrors [`user_format_pref`]
+/// so callers do not have to thread the value through their signature.
+/// Falls back to UTC when there is no context, no signed-in user, or
+/// the stored string is not a valid IANA zone name.
+pub fn user_timezone() -> Tz {
+    use dioxus::core::Runtime;
+    use dioxus::prelude::{try_use_context, ReadableExt, Signal};
+    // Context access requires a live Dioxus runtime/scope. Guard so the
+    // pure host-side render paths (unit tests, preset label previews
+    // invoked outside a component) fall back to UTC instead of panicking.
+    if Runtime::try_current().is_none() {
+        return Tz::UTC;
+    }
+    try_use_context::<Signal<crate::hooks::auth::AuthContext>>()
+        .and_then(|auth| auth.read().user.as_ref().map(|u| u.timezone.clone()))
+        .and_then(|name| name.parse::<Tz>().ok())
+        .unwrap_or(Tz::UTC)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Local;
 
     fn sample() -> DateTime<Local> {
         // Thursday, 11 June 2026, 08:40:49 local.
@@ -486,14 +529,42 @@ mod tests {
     fn empty_or_none_falls_back() {
         // We can't exercise the wasm Intl path from a host-side test,
         // but None should not panic; on non-wasm targets the fallback
-        // is a plain UTC strftime.
+        // renders the instant in the supplied zone via strftime. Use the
+        // pure `_in` core so the test does not require a live Dioxus
+        // context for timezone resolution.
         let dt = Utc
             .with_ymd_and_hms(2026, 6, 11, 8, 40, 49)
             .single()
             .unwrap();
-        let s = format_user_datetime(dt, None);
+        let s = format_user_datetime_in(dt, None, Tz::UTC);
         assert!(s.contains("2026"));
-        let s = format_user_datetime(dt, Some(""));
+        let s = format_user_datetime_in(dt, Some(""), Tz::UTC);
         assert!(s.contains("2026"));
+    }
+
+    #[test]
+    fn renders_in_supplied_profile_timezone() {
+        // MAPPS-208: the same UTC instant renders at different wall-clock
+        // times depending on the profile timezone, proving the profile
+        // setting (not UTC/Zulu) drives display.
+        let dt = Utc
+            .with_ymd_and_hms(2026, 6, 11, 18, 30, 0)
+            .single()
+            .unwrap();
+        // UTC: 18:30 same day.
+        assert_eq!(
+            format_user_datetime_in(dt, Some("YYYY-MM-DD HH:mm"), Tz::UTC),
+            "2026-06-11 18:30"
+        );
+        // America/New_York is UTC-4 in June (EDT): 14:30 same day.
+        assert_eq!(
+            format_user_datetime_in(dt, Some("YYYY-MM-DD HH:mm"), chrono_tz::America::New_York),
+            "2026-06-11 14:30"
+        );
+        // Asia/Kolkata is UTC+5:30: 00:00 the next day.
+        assert_eq!(
+            format_user_datetime_in(dt, Some("YYYY-MM-DD HH:mm"), chrono_tz::Asia::Kolkata),
+            "2026-06-12 00:00"
+        );
     }
 }

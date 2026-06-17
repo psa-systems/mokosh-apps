@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{AppLayout, Card, ChartIcon, IconSize, PageHeader};
+use crate::utils::money::format_money_str;
 use crate::Route;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -361,24 +362,18 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
                     }
                 }
             } else {
-                div { class: "grid grid-cols-1 lg:grid-cols-2 gap-6",
-                    Card { title: "Summary",
-                        if view.summary.is_empty() {
-                            p { class: "text-sm text-gray-400 italic", "No data for this period." }
-                        } else {
-                            div { class: "grid grid-cols-2 gap-4",
-                                for (label , value) in view.summary.iter() {
-                                    div { class: "text-center p-4 bg-gray-50 dark:bg-gray-800 rounded-lg",
-                                        p { class: "text-sm text-gray-500", "{label}" }
-                                        p { class: "text-3xl font-bold text-gray-900 dark:text-white", "{value}" }
-                                    }
+                Card { title: "Summary",
+                    if view.summary.is_empty() {
+                        p { class: "text-sm text-gray-400 italic", "No data for this period." }
+                    } else {
+                        div { class: "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4",
+                            for (label , value) in view.summary.iter() {
+                                div { class: "text-center p-4 bg-gray-50 dark:bg-gray-800 rounded-lg",
+                                    p { class: "text-sm text-gray-500", "{label}" }
+                                    p { class: "text-3xl font-bold text-gray-900 dark:text-white", "{value}" }
                                 }
                             }
                         }
-                    }
-
-                    Card { title: "Trend",
-                        ChartComingSoon { caption: "Time-series charts are coming soon" }
                     }
                 }
 
@@ -464,15 +459,15 @@ async fn build_view(report_type: &str) -> ReportView {
             ReportView {
                 supported: true,
                 summary: vec![
-                    ("Invoiced".into(), format!("${}", billing.invoiced)),
-                    ("Paid".into(), format!("${}", billing.paid)),
-                    ("Outstanding".into(), format!("${}", billing.outstanding)),
+                    ("Invoiced".into(), format_money_str(&billing.invoiced)),
+                    ("Paid".into(), format_money_str(&billing.paid)),
+                    ("Outstanding".into(), format_money_str(&billing.outstanding)),
                 ],
                 breakdown_title: "A/R aging".into(),
                 breakdown: billing
                     .aging
                     .iter()
-                    .map(|a| (a.bucket.clone(), format!("${}", a.total)))
+                    .map(|a| (a.bucket.clone(), format_money_str(&a.total)))
                     .collect(),
             }
         }
@@ -486,8 +481,8 @@ async fn build_view(report_type: &str) -> ReportView {
                 summary: vec![
                     ("Budget hours".into(), format!("{:.1}", pf(&p.budget_hours))),
                     ("Actual hours".into(), format!("{:.1}", pf(&p.actual_hours))),
-                    ("Budget $".into(), format!("${:.0}", pf(&p.budget_amount))),
-                    ("Actual $".into(), format!("${:.0}", pf(&p.actual_amount))),
+                    ("Budget $".into(), format_money_str(&p.budget_amount)),
+                    ("Actual $".into(), format_money_str(&p.actual_amount)),
                     ("Tasks done".into(), tasks),
                     ("Overdue".into(), p.overdue.to_string()),
                 ],
@@ -790,22 +785,6 @@ fn CustomReportBuilder() -> Element {
                     }
                 }
             }
-        }
-    }
-}
-
-#[derive(Props, Clone, PartialEq)]
-struct ChartComingSoonProps {
-    caption: &'static str,
-}
-
-#[component]
-fn ChartComingSoon(props: ChartComingSoonProps) -> Element {
-    rsx! {
-        div { class: "h-64 flex flex-col items-center justify-center gap-2 rounded-md border border-dashed border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40",
-            ChartIcon { size: IconSize::Large, class: "text-gray-400".to_string() }
-            p { class: "text-sm font-medium text-gray-600 dark:text-gray-300", "Charts coming soon" }
-            p { class: "text-xs text-gray-500 dark:text-gray-400", "{props.caption}" }
         }
     }
 }
