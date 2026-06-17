@@ -367,6 +367,10 @@ pub enum Route {
     #[route("/system-status")]
     SystemStatus {},
 
+    // Internal reference: canonical Button variants/sizes/states (PMS-357 AC4).
+    #[route("/dev/buttons")]
+    ButtonShowcase {},
+
     // Admin surfaces under /admin/*, gated at runtime by the user's role
     // inside each page (matching the server's RequireAdmin), available in
     // every build since the server endpoints exist regardless of tenancy.
@@ -849,6 +853,11 @@ fn SettingsRmmAlertRules() -> Element {
 #[component]
 fn SystemStatus() -> Element {
     rsx! { system_status::SystemStatusPage {} }
+}
+
+#[component]
+fn ButtonShowcase() -> Element {
+    rsx! { button_showcase::ButtonShowcasePage {} }
 }
 
 #[component]
