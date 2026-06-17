@@ -77,6 +77,7 @@ pub fn ThemePicker() -> Element {
                                         theme::set(opt);
                                         base.set(opt);
                                         is_dark.set(theme::current_is_dark());
+                                        crate::hooks::theme_sync::save_to_account();
                                     },
                                     "{label}"
                                 }
@@ -136,6 +137,7 @@ pub fn ThemePicker() -> Element {
                                         if !locked {
                                             theme::set_accent(a.id);
                                             accent_id.set(a.id.to_string());
+                                            crate::hooks::theme_sync::save_to_account();
                                         }
                                     },
                                 }
