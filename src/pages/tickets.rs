@@ -560,6 +560,7 @@ pub fn TicketListPage() -> Element {
                 per_page: 25,
                 columns: 6,
                 Table {
+                    striped: true,
                     TableHead {
                         TableRow {
                             TableHeader { sortable: true, "Ticket" }

@@ -10,12 +10,27 @@ pub struct TableProps {
     children: Element,
     #[props(default)]
     class: String,
+    /// MAPPS-263: opt-in zebra striping for dense list tables. Tints odd body
+    /// rows with the subtle `surface-2` token so long lists are easier to
+    /// scan. Row hover (see `TableRow`) still applies on top.
+    #[props(default = false)]
+    striped: bool,
 }
 
 /// Table wrapper with styling
 #[component]
 pub fn Table(props: TableProps) -> Element {
-    let class = format!("min-w-full divide-y divide-line {}", props.class);
+    // Apply striping via a child selector on the table element so it cascades
+    // to every body row regardless of how the caller composes `TableBody`.
+    let striped = if props.striped {
+        "[&_tbody_tr:nth-child(odd)]:bg-surface-2"
+    } else {
+        ""
+    };
+    let class = format!(
+        "min-w-full divide-y divide-line {} {}",
+        striped, props.class
+    );
 
     rsx! {
         div { class: "overflow-x-auto",
@@ -71,10 +86,14 @@ pub struct TableRowProps {
 
 #[component]
 pub fn TableRow(props: TableRowProps) -> Element {
+    // MAPPS-263: every row gets a subtle hover (not just clickable ones) so
+    // dense, non-clickable tables are easier to scan. Clickable rows add the
+    // pointer cursor on top. `transition-colors` softens the change; on touch
+    // devices (no hover) this is simply inert.
     let class = if props.clickable {
-        "hover:bg-surface-2 cursor-pointer"
+        "hover:bg-surface-2 cursor-pointer transition-colors"
     } else {
-        ""
+        "hover:bg-surface-2 transition-colors"
     };
 
     rsx! {
@@ -155,9 +174,15 @@ pub fn TableHeader(props: TableHeaderProps) -> Element {
                                     }
                                 }
                             },
+                            // MAPPS-263: faint but always-visible up/down
+                            // chevron so sortability is discoverable without
+                            // hover (the old `opacity-0 group-hover` trick was
+                            // invisible on touch and never fired anyway since
+                            // the `th` carries no `group` class). The active
+                            // asc/desc arrows above render at full strength.
                             None => rsx! {
                                 svg {
-                                    class: "w-4 h-4 opacity-0 group-hover:opacity-100",
+                                    class: "w-4 h-4 opacity-40",
                                     fill: "none",
                                     stroke: "currentColor",
                                     view_box: "0 0 24 24",

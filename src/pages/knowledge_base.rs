@@ -846,6 +846,7 @@ pub fn KBArticleListPage(
                         columns: 4,
                         onpagechange: move |p| page.set(p),
                         Table {
+                            striped: true,
                             TableHead {
                                 TableRow {
                                     TableHeader { "Title" }
