@@ -1,6 +1,7 @@
 //! Modal dialog components
 
 use dioxus::prelude::*;
+use wasm_bindgen::JsCast;
 
 use super::button::{Button, ButtonVariant};
 use super::icon_button::IconButton;
@@ -54,10 +55,46 @@ pub fn Modal(props: ModalProps) -> Element {
         return rsx! {};
     }
 
-    let size_class = props.size.class();
-    // EventHandler is Copy; hoist so the backdrop, the close button, and the
-    // Esc keydown handler can each call it.
-    let onclose = props.onclose;
+    // Render the open dialog as a child component so it mounts only while the
+    // modal is open. That lets `ModalDialog` use `use_drop` to restore focus on
+    // every close path (Esc, backdrop, X, Cancel, or a parent-driven close),
+    // since the child unmounts whenever `open` flips to false.
+    rsx! {
+        ModalDialog {
+            title: props.title.clone(),
+            size: props.size,
+            onclose: props.onclose,
+            footer: props.footer.clone(),
+            {props.children}
+        }
+    }
+}
+
+/// Open-modal panel. Only mounted while the modal is open.
+#[component]
+fn ModalDialog(
+    children: Element,
+    title: String,
+    size: ModalSize,
+    onclose: EventHandler<()>,
+    footer: Option<Element>,
+) -> Element {
+    let size_class = size.class();
+
+    // Restore focus to the control that opened the modal. Capture the active
+    // element on the first render, before the dialog steals focus on mount, and
+    // restore it when this component unmounts (any close path).
+    let trigger = use_hook(|| {
+        web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.active_element())
+            .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok())
+    });
+    use_drop(move || {
+        if let Some(el) = trigger {
+            let _ = el.focus();
+        }
+    });
 
     rsx! {
         div { class: "fixed inset-0 z-50 overflow-y-auto",
@@ -72,7 +109,11 @@ pub fn Modal(props: ModalProps) -> Element {
             // Modal container
             div { class: "flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-0",
                 div {
-                    class: "relative transform overflow-hidden rounded-lg bg-raised text-left shadow-xl transition-all sm:my-8 w-full {size_class}",
+                    // Cap the panel at 90vh and lay it out as a flex column so the
+                    // header and footer stay pinned (flex-shrink-0) while only the
+                    // body scrolls. Keeps large modals usable on small screens with
+                    // no double-axis scroll.
+                    class: "relative transform flex flex-col max-h-[90vh] overflow-hidden rounded-lg bg-raised text-left shadow-xl transition-all sm:my-8 w-full {size_class}",
                     // PMS-369: Esc cancels. Focus the dialog on mount so the
                     // keydown lands here even before the user clicks anything;
                     // keydown from any focused control inside also bubbles up.
@@ -89,27 +130,27 @@ pub fn Modal(props: ModalProps) -> Element {
                     },
                     onclick: |e| e.stop_propagation(),
 
-                    // Header
-                    div { class: "flex items-center justify-between px-4 py-3 border-b border-line",
+                    // Header (pinned)
+                    div { class: "flex-shrink-0 flex items-center justify-between px-4 py-3 border-b border-line",
                         h3 { class: "text-lg font-medium text-content",
-                            "{props.title}"
+                            "{title}"
                         }
                         IconButton {
                             label: "Close dialog",
                             class: "rounded-md text-subtle hover:text-content focus:outline-none focus:ring-2 focus:ring-accent",
-                            onclick: move |_| props.onclose.call(()),
+                            onclick: move |_| onclose.call(()),
                             XMarkIcon {}
                         }
                     }
 
-                    // Body
-                    div { class: "px-4 py-4",
-                        {props.children}
+                    // Body (scrolls within the capped height)
+                    div { class: "flex-1 min-h-0 overflow-y-auto px-4 py-4",
+                        {children}
                     }
 
-                    // Footer (optional)
-                    if let Some(ref footer) = props.footer {
-                        div { class: "px-4 py-3 border-t border-line flex justify-end space-x-3",
+                    // Footer (optional, pinned)
+                    if let Some(footer) = footer {
+                        div { class: "flex-shrink-0 px-4 py-3 border-t border-line flex justify-end space-x-3",
                             {footer}
                         }
                     }
