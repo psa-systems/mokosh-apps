@@ -289,6 +289,7 @@ pub fn CompanyListPage() -> Element {
                 columns: 4,
                 onpagechange: move |p| page.set(p),
                 Table {
+                    striped: true,
                     TableHead {
                         TableRow {
                             TableHeader {
@@ -2777,6 +2778,7 @@ pub fn ContactListPage() -> Element {
                 columns: 5,
                 onpagechange: move |p| page.set(p),
                 Table {
+                    striped: true,
                     TableHead {
                         TableRow {
                             TableHeader {
