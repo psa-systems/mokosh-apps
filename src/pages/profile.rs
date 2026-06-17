@@ -227,11 +227,7 @@ pub fn ProfilePage() -> Element {
 
             match &*snap {
                 None => rsx! {
-                    Card {
-                        div { class: "py-12 text-center text-sm text-gray-500 dark:text-gray-400",
-                            "Loading profile..."
-                        }
-                    }
+                    crate::components::DetailSkeleton {} // PMS-353
                 },
                 Some(None) => rsx! {
                     Card {

@@ -378,9 +378,8 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
 
             match &*snap {
                 None => rsx! {
-                    Card {
-                        div { class: "py-12 text-center text-sm text-gray-500", "Loading ticket..." }
-                    }
+                    // PMS-353
+                    crate::components::DetailSkeleton {}
                 },
                 Some(None) => rsx! {
                     Card {
@@ -584,9 +583,8 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
 
             match &*snap {
                 None => rsx! {
-                    Card {
-                        div { class: "py-12 text-center text-sm text-gray-500", "Loading invoice..." }
-                    }
+                    // PMS-353
+                    crate::components::DetailSkeleton {}
                 },
                 Some(None) => rsx! {
                     Card {

@@ -1047,11 +1047,15 @@ pub fn TimesheetsPage() -> Element {
                         }
                         tbody { class: "bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700",
                             if is_loading {
-                                tr {
-                                    td {
-                                        class: "px-6 py-8 text-center text-sm text-gray-500",
-                                        colspan: "9",
-                                        "Loading timesheet..."
+                                // PMS-353: shimmer rows (matching the shared
+                                // skeleton style) instead of a bare text line.
+                                // This timesheet is a bespoke weekly grid, not
+                                // the shared Table, so it can't use TableLoading.
+                                for _ in 0..4 {
+                                    tr {
+                                        td { class: "px-6 py-4", colspan: "9",
+                                            div { class: "h-4 bg-gray-200 dark:bg-gray-700 rounded animate-pulse" }
+                                        }
                                     }
                                 }
                             } else if load_failed {

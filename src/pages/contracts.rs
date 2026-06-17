@@ -408,7 +408,8 @@ pub fn ContractEditPage(props: ContractEditPageProps) -> Element {
             PageHeader { title: "Edit Contract" }
             match &*snap {
                 None => rsx! {
-                    Card { div { class: "py-12 text-center text-sm text-gray-500", "Loading contract..." } }
+                    // PMS-353
+                    crate::components::DetailSkeleton {}
                 },
                 Some(None) => rsx! {
                     Card {
@@ -1436,7 +1437,8 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
 
             match &*contract_snapshot {
                 None => rsx! {
-                    Card { div { class: "py-12 text-center text-sm text-gray-500", "Loading contract..." } }
+                    // PMS-353
+                    crate::components::DetailSkeleton {}
                 },
                 Some(None) => rsx! {
                     Card {
@@ -2274,7 +2276,8 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
 
             match &*card_snapshot {
                 None => rsx! {
-                    Card { div { class: "py-12 text-center text-sm text-gray-500", "Loading rate card..." } }
+                    // PMS-353
+                    crate::components::DetailSkeleton {}
                 },
                 Some(None) => rsx! {
                     Card {

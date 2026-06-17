@@ -559,7 +559,9 @@ pub fn ProjectListPage() -> Element {
             }
 
             if is_loading {
-                Card { p { class: "text-sm text-gray-400", "Loading projects…" } }
+                // PMS-353: card-grid skeleton matching the populated layout,
+                // instead of a bare "Loading projects…" line.
+                crate::components::CardGridSkeleton {}
             } else if load_failed {
                 Card {
                     p { class: "text-sm text-yellow-600 dark:text-yellow-400",
@@ -1231,7 +1233,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
             }
 
             if is_loading {
-                Card { p { class: "text-sm text-gray-400", "Loading project…" } }
+                crate::components::DetailSkeleton {} // PMS-353
             } else if project.is_none() {
                 Card {
                     p { class: "text-sm text-yellow-600 dark:text-yellow-400",
