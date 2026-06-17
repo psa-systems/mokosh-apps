@@ -185,6 +185,32 @@ struct RemoteInvoice {
     balance_due: String,
 }
 
+/// Load a single company's invoices for the Record Payment picker (MAPPS-191).
+/// Hits `GET /invoices?company_id=<id>` (the `InvoiceFilter.company_id`
+/// filter). Best-effort: an empty list on error so the picker still renders
+/// the "(Unapplied payment)" choice.
+async fn load_company_invoices(company_id: uuid::Uuid) -> Vec<RemoteInvoice> {
+    let path = format!("/invoices?company_id={company_id}&per_page=200");
+    crate::hooks::fetch::api::get_authed::<Paginated<RemoteInvoice>>(&path)
+        .await
+        .map(|p| p.data)
+        .unwrap_or_default()
+}
+
+/// Build the Record Payment invoice options (MAPPS-191): a leading explicit
+/// "(Unapplied payment)" blank choice followed by each invoice keyed by UUID
+/// and labelled with its human number, amount, and status. Selecting from this
+/// list can only ever yield a valid UUID or the explicit blank, so the old
+/// silent bad-UUID -> unapplied coercion path is gone.
+fn invoice_select_options(invoices: &[RemoteInvoice]) -> Vec<SelectOption> {
+    let mut opts = vec![SelectOption::new("", "(Unapplied payment)")];
+    opts.extend(invoices.iter().map(|inv| {
+        let label = format!("{} - {} ({})", inv.invoice_number, inv.total, inv.status);
+        SelectOption::new(inv.id.to_string(), label)
+    }));
+    opts
+}
+
 /// Shared "no finance permission" state rendered by every billing list page
 /// when the current user lacks the `can_manage_billing` role set
 /// (super_admin / admin / finance). A friendly locked state rather than a
@@ -1669,6 +1695,25 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
         "Select a company",
     );
     let mut invoice_id = use_signal(|| props.invoice_id.clone());
+    // MAPPS-191: invoice picker options for the selected company. Reading
+    // `company_id` inside the resource subscribes it, so the list re-fetches
+    // whenever the chosen company changes.
+    let invoices_resource = use_resource(move || {
+        let company = company_id.read().trim().to_string();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            match uuid::Uuid::parse_str(&company) {
+                Ok(cid) => load_company_invoices(cid).await,
+                Err(_) => Vec::new(),
+            }
+        }
+    });
+    let invoice_options = invoice_select_options(
+        &invoices_resource
+            .read_unchecked()
+            .clone()
+            .unwrap_or_default(),
+    );
     let mut payment_date = use_signal(String::new);
     let mut amount = use_signal(String::new);
     let mut payment_method = use_signal(|| "check".to_string());
@@ -1862,15 +1907,21 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                     required: true,
                     placeholder: "Select a company",
                     value: company_id.read().clone(),
-                    onchange: move |e: FormEvent| company_id.set(e.value()),
+                    onchange: move |e: FormEvent| {
+                        // Switching companies invalidates any previously picked
+                        // invoice; clear it so a stale UUID can't be submitted.
+                        company_id.set(e.value());
+                        invoice_id.set(String::new());
+                    },
                 }
-                crate::components::Input {
+                Select {
                     name: "payment_invoice_id",
-                    label: "Invoice ID (UUID, optional)",
-                    help: "Leave blank for an unapplied payment.",
+                    label: "Invoice",
+                    help: "Select a company first. Choose (Unapplied payment) to leave this payment unapplied.",
+                    options: invoice_options,
                     value: invoice_id.read().clone(),
                     error: invoice_err(),
-                    oninput: move |e: FormEvent| invoice_id.set(e.value()),
+                    onchange: move |e: FormEvent| invoice_id.set(e.value()),
                 }
                 div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
                     crate::components::DateField {
