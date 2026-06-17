@@ -8,7 +8,7 @@ use serde::Deserialize;
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, Input, Modal,
     PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody,
-    TableCell, TableHead, TableHeader, TableRow,
+    TableCell, TableHead, TableHeader, TableRow, Textarea, TrashIcon,
 };
 use crate::utils::Paginated;
 use crate::Route;
@@ -474,6 +474,25 @@ const ASSET_NAME_MAX: usize = 255;
 const ASSET_SERIAL_MAX: usize = 255;
 const ASSET_MANUFACTURER_MAX: usize = 255;
 const ASSET_MODEL_MAX: usize = 255;
+
+// MAPPS-231: cap the credential Name field to the server's vault limit
+// (`CreateCredentialRequest.name` is `length(min = 1, max = 100)` in
+// mokosh-server) so an over-long name is rejected inline instead of failing
+// as a 422.
+const CRED_NAME_MAX: usize = 100;
+
+/// Validate the credential Name field (MAPPS-231): present, trimmed, within
+/// the server's 100-char cap. Returns the trimmed value or an inline message.
+fn validate_cred_name(raw: &str) -> Result<String, String> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return Err("Please enter a name.".to_string());
+    }
+    if t.chars().count() > CRED_NAME_MAX {
+        return Err(format!("Name must be {CRED_NAME_MAX} characters or fewer."));
+    }
+    Ok(t.to_string())
+}
 
 /// Validate the required Name field (MAPPS-216): present, trimmed, within the
 /// length cap. Returns the trimmed value or an inline message for the field.
@@ -955,6 +974,27 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     // actual DELETE fires from `on_confirm_delete` when confirmed.
     let mut confirming_delete = use_signal(|| false);
 
+    // MAPPS-231: add/remove asset credentials. The vault endpoints support
+    // create (`POST /assets/{id}/credentials`) and delete
+    // (`DELETE /credentials/{id}`); there is no update endpoint, so a
+    // credential is add/remove only (to change one, remove it and add a new
+    // one). `cred_adding` drives the add modal; `confirming_cred_delete` holds
+    // the id of the credential pending a delete confirmation.
+    let mut cred_adding = use_signal(|| false);
+    let mut nc_name = use_signal(String::new);
+    let mut nc_type = use_signal(String::new);
+    let mut nc_username = use_signal(String::new);
+    let mut nc_password = use_signal(String::new);
+    let mut nc_url = use_signal(String::new);
+    let mut nc_notes = use_signal(String::new);
+    let mut nc_submitting = use_signal(|| false);
+    let mut nc_name_err = use_signal(String::new);
+    let mut nc_error = use_signal(String::new);
+    let id_for_cred_add = props.id.clone();
+
+    let mut confirming_cred_delete = use_signal(|| Option::<uuid::Uuid>::None);
+    let mut cred_deleting = use_signal(|| false);
+
     let on_confirm_delete = move |_: ()| {
         if *deleting.read() {
             return;
@@ -1269,7 +1309,26 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 }
 
                                 // Credentials (reveal on demand)
-                                Card { title: "Credentials",
+                                Card {
+                                    title: "Credentials",
+                                    actions: rsx! {
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            onclick: move |_| {
+                                                nc_name.set(String::new());
+                                                nc_type.set(String::new());
+                                                nc_username.set(String::new());
+                                                nc_password.set(String::new());
+                                                nc_url.set(String::new());
+                                                nc_notes.set(String::new());
+                                                nc_name_err.set(String::new());
+                                                nc_error.set(String::new());
+                                                cred_adding.set(true);
+                                            },
+                                            PlusIcon { size: IconSize::Small, class: "mr-1.5".to_string() }
+                                            "Add"
+                                        }
+                                    },
                                     if credentials.is_empty() {
                                         p { class: "text-sm text-gray-400 italic", "No credentials." }
                                     } else {
@@ -1291,18 +1350,25 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                                         p { class: "text-xs text-gray-500 break-all", "{url}" }
                                                                     }
                                                                 }
-                                                                Button {
-                                                                    variant: ButtonVariant::Secondary,
-                                                                    onclick: move |_| {
-                                                                        let path = path.clone();
-                                                                        spawn(async move {
-                                                                            #[cfg(feature = "web")]
-                                                                            if let Ok(c) = crate::hooks::fetch::api::get_authed::<RevealedCred>(&path).await {
-                                                                                store.write().insert(crid, c);
-                                                                            }
-                                                                        });
-                                                                    },
-                                                                    "Reveal"
+                                                                div { class: "flex items-center gap-2 shrink-0",
+                                                                    Button {
+                                                                        variant: ButtonVariant::Secondary,
+                                                                        onclick: move |_| {
+                                                                            let path = path.clone();
+                                                                            spawn(async move {
+                                                                                #[cfg(feature = "web")]
+                                                                                if let Ok(c) = crate::hooks::fetch::api::get_authed::<RevealedCred>(&path).await {
+                                                                                    store.write().insert(crid, c);
+                                                                                }
+                                                                            });
+                                                                        },
+                                                                        "Reveal"
+                                                                    }
+                                                                    Button {
+                                                                        variant: ButtonVariant::Danger,
+                                                                        onclick: move |_| confirming_cred_delete.set(Some(crid)),
+                                                                        TrashIcon { size: IconSize::Small }
+                                                                    }
                                                                 }
                                                             }
                                                             if let Some(c) = revealed {
@@ -1603,13 +1669,228 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     }
                 }
             }
+
+            // MAPPS-231: confirm before removing a credential, mirroring the
+            // asset Delete confirmation. The DELETE fires from `on_confirm`.
+            {
+                let mut cred_res = cred_resource;
+                let mut audit_res = audit_resource;
+                rsx! {
+                    crate::components::ConfirmDialog {
+                        open: confirming_cred_delete().is_some(),
+                        title: "Remove credential".to_string(),
+                        message: "Remove this credential? This cannot be undone."
+                            .to_string(),
+                        confirm_text: "Remove".to_string(),
+                        cancel_text: "Cancel".to_string(),
+                        destructive: true,
+                        loading: *cred_deleting.read(),
+                        onconfirm: move |_| {
+                            if *cred_deleting.read() {
+                                return;
+                            }
+                            let Some(crid) = confirming_cred_delete() else {
+                                return;
+                            };
+                            cred_deleting.set(true);
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    let path = format!("/credentials/{crid}");
+                                    if crate::hooks::fetch::api::delete_authed(&path)
+                                        .await
+                                        .is_ok()
+                                    {
+                                        cred_res.restart();
+                                        audit_res.restart();
+                                    }
+                                }
+                                cred_deleting.set(false);
+                                confirming_cred_delete.set(None);
+                            });
+                        },
+                        oncancel: move |_| {
+                            if !*cred_deleting.read() {
+                                confirming_cred_delete.set(None);
+                            }
+                        },
+                    }
+                }
+            }
+
+            // MAPPS-231: add-credential modal. POSTs to the vault create
+            // endpoint, then refreshes the credentials list and audit log.
+            {
+                let mut cred_res = cred_resource;
+                let mut audit_res = audit_resource;
+                let add_id = id_for_cred_add.clone();
+                let on_add_cred = move |_| {
+                    if nc_submitting() {
+                        return;
+                    }
+                    nc_name_err.set(String::new());
+                    nc_error.set(String::new());
+                    // Validate the way the create form does: a required, capped
+                    // Name and required type/username/password before the POST,
+                    // with inline messages rather than an opaque server 422.
+                    let name = match validate_cred_name(&nc_name()) {
+                        Ok(v) => v,
+                        Err(msg) => {
+                            nc_name_err.set(msg);
+                            return;
+                        }
+                    };
+                    let credential_type = nc_type().trim().to_string();
+                    if credential_type.is_empty() {
+                        nc_error.set("Please enter a credential type.".to_string());
+                        return;
+                    }
+                    let username = nc_username();
+                    if username.trim().is_empty() {
+                        nc_error.set("Please enter a username.".to_string());
+                        return;
+                    }
+                    let password = nc_password();
+                    if password.is_empty() {
+                        nc_error.set("Please enter a password.".to_string());
+                        return;
+                    }
+                    let url = opt_str(&nc_url());
+                    let notes = opt_str(&nc_notes());
+                    let add_id = add_id.clone();
+                    nc_submitting.set(true);
+                    spawn(async move {
+                        #[cfg(feature = "web")]
+                        {
+                            let mut body = serde_json::json!({
+                                "name": name,
+                                "credential_type": credential_type,
+                                "username": username,
+                                "password": password,
+                            });
+                            if let Some(u) = url {
+                                body["url"] = serde_json::json!(u);
+                            }
+                            if let Some(n) = notes {
+                                body["notes"] = serde_json::json!(n);
+                            }
+                            match crate::hooks::fetch::api::post_authed_typed::<
+                                    serde_json::Value,
+                                    _,
+                                >(&format!("/assets/{add_id}/credentials"), &body)
+                                .await
+                            {
+                                Ok(_) => {
+                                    cred_adding.set(false);
+                                    cred_res.restart();
+                                    audit_res.restart();
+                                }
+                                Err(e) => {
+                                    // Route a server-flagged Name/URL validation
+                                    // message next to the right field; otherwise
+                                    // show the general banner.
+                                    if let Some(msg) = e.field_message("name") {
+                                        nc_name_err.set(msg);
+                                    } else if let Some(msg) = e.field_message("url") {
+                                        nc_error.set(msg);
+                                    } else {
+                                        nc_error
+                                            .set(
+                                                format!("Could not add credential: {}", e.user_message()),
+                                            );
+                                    }
+                                }
+                            }
+                        }
+                        nc_submitting.set(false);
+                    });
+                };
+                rsx! {
+                    Modal {
+                        open: cred_adding(),
+                        title: "Add Credential",
+                        onclose: move |_| cred_adding.set(false),
+                        footer: rsx! {
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                onclick: move |_| cred_adding.set(false),
+                                "Cancel"
+                            }
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                disabled: nc_submitting(),
+                                onclick: on_add_cred,
+                                if nc_submitting() { "Saving…" } else { "Add Credential" }
+                            }
+                        },
+                        div { class: "space-y-4",
+                            if !nc_error().is_empty() {
+                                p { class: "text-sm text-red-600 dark:text-red-400", "{nc_error}" }
+                            }
+                            Input {
+                                name: "cred-name",
+                                label: "Name",
+                                required: true,
+                                maxlength: CRED_NAME_MAX as i64,
+                                error: nc_name_err(),
+                                value: "{nc_name}",
+                                oninput: move |e: FormEvent| {
+                                    nc_name_err.set(String::new());
+                                    nc_name.set(e.value());
+                                },
+                            }
+                            Input {
+                                name: "cred-type",
+                                label: "Type",
+                                required: true,
+                                placeholder: "e.g. domain, ssh, rdp",
+                                value: "{nc_type}",
+                                oninput: move |e: FormEvent| nc_type.set(e.value()),
+                            }
+                            div { class: "grid grid-cols-2 gap-4",
+                                Input {
+                                    name: "cred-username",
+                                    label: "Username",
+                                    required: true,
+                                    value: "{nc_username}",
+                                    oninput: move |e: FormEvent| nc_username.set(e.value()),
+                                }
+                                Input {
+                                    name: "cred-password",
+                                    label: "Password",
+                                    r#type: "password",
+                                    required: true,
+                                    value: "{nc_password}",
+                                    oninput: move |e: FormEvent| nc_password.set(e.value()),
+                                }
+                            }
+                            Input {
+                                name: "cred-url",
+                                label: "URL",
+                                placeholder: "https://… (optional)",
+                                value: "{nc_url}",
+                                oninput: move |e: FormEvent| nc_url.set(e.value()),
+                            }
+                            Textarea {
+                                name: "cred-notes",
+                                label: "Notes",
+                                value: "{nc_notes}",
+                                oninput: move |e: FormEvent| nc_notes.set(e.value()),
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod validation_tests {
-    use super::{validate_asset_name, validate_asset_optional, ASSET_NAME_MAX, ASSET_SERIAL_MAX};
+    use super::{
+        validate_asset_name, validate_asset_optional, validate_cred_name, ASSET_NAME_MAX,
+        ASSET_SERIAL_MAX, CRED_NAME_MAX,
+    };
 
     #[test]
     fn name_required_and_trimmed() {
@@ -1621,6 +1902,17 @@ mod validation_tests {
     fn name_capped() {
         assert!(validate_asset_name(&"x".repeat(ASSET_NAME_MAX)).is_ok());
         assert!(validate_asset_name(&"x".repeat(ASSET_NAME_MAX + 1)).is_err());
+    }
+
+    #[test]
+    fn cred_name_required_trimmed_and_capped() {
+        assert!(validate_cred_name("   ").is_err());
+        assert_eq!(
+            validate_cred_name("  vault-admin  ").unwrap(),
+            "vault-admin"
+        );
+        assert!(validate_cred_name(&"x".repeat(CRED_NAME_MAX)).is_ok());
+        assert!(validate_cred_name(&"x".repeat(CRED_NAME_MAX + 1)).is_err());
     }
 
     #[test]
