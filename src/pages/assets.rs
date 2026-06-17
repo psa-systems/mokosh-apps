@@ -1437,10 +1437,41 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     }
                     let save_id = save_id.clone();
                     spawn(async move {
+                        // Mirror the create-form validation (MAPPS-238/216):
+                        // reject a blank or over-long name and over-long
+                        // optional fields before the PUT, with an inline
+                        // message, instead of posting them to the server.
+                        let asset_name = match validate_asset_name(&e_name()) {
+                            Ok(v) => v,
+                            Err(msg) => {
+                                e_error.set(msg);
+                                return;
+                            }
+                        };
+                        if let Err(msg) =
+                            validate_asset_optional(&e_serial(), "Serial number", ASSET_SERIAL_MAX)
+                        {
+                            e_error.set(msg);
+                            return;
+                        }
+                        if let Err(msg) = validate_asset_optional(
+                            &e_manufacturer(),
+                            "Manufacturer",
+                            ASSET_MANUFACTURER_MAX,
+                        ) {
+                            e_error.set(msg);
+                            return;
+                        }
+                        if let Err(msg) =
+                            validate_asset_optional(&e_model(), "Model", ASSET_MODEL_MAX)
+                        {
+                            e_error.set(msg);
+                            return;
+                        }
                         e_submitting.set(true);
                         e_error.set(String::new());
                         let mut body = serde_json::Map::new();
-                        body.insert("name".into(), serde_json::json!(e_name().trim()));
+                        body.insert("name".into(), serde_json::json!(asset_name));
                         body.insert("asset_tag".into(), serde_json::json!(opt_str(&e_tag())));
                         body.insert("asset_type_id".into(), serde_json::json!(opt_str(&e_type())));
                         body.insert("status".into(), serde_json::json!(e_status()));
@@ -1504,6 +1535,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 name: "edit-name",
                                 label: "Name",
                                 required: true,
+                                maxlength: ASSET_NAME_MAX as i64,
                                 value: "{e_name}",
                                 oninput: move |e: FormEvent| e_name.set(e.value()),
                             }
@@ -1534,12 +1566,14 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 Input {
                                     name: "edit-manufacturer",
                                     label: "Manufacturer",
+                                    maxlength: ASSET_MANUFACTURER_MAX as i64,
                                     value: "{e_manufacturer}",
                                     oninput: move |e: FormEvent| e_manufacturer.set(e.value()),
                                 }
                                 Input {
                                     name: "edit-model",
                                     label: "Model",
+                                    maxlength: ASSET_MODEL_MAX as i64,
                                     value: "{e_model}",
                                     oninput: move |e: FormEvent| e_model.set(e.value()),
                                 }
@@ -1547,6 +1581,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                             Input {
                                 name: "edit-serial",
                                 label: "Serial Number",
+                                maxlength: ASSET_SERIAL_MAX as i64,
                                 value: "{e_serial}",
                                 oninput: move |e: FormEvent| e_serial.set(e.value()),
                             }
