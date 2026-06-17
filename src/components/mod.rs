@@ -5,6 +5,7 @@
 mod asset_picker;
 mod button;
 mod card;
+mod collapsible_card;
 mod collapsible_rail;
 mod company_picker;
 mod contact_picker;
@@ -23,6 +24,7 @@ mod update_banner;
 pub use asset_picker::*;
 pub use button::*;
 pub use card::*;
+pub use collapsible_card::*;
 pub use collapsible_rail::*;
 pub use company_picker::*;
 pub use contact_picker::*;
