@@ -1083,6 +1083,9 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 confirm_text: "Delete".to_string(),
                 cancel_text: "Cancel".to_string(),
                 destructive: true,
+                // PMS-369: this delete cascades (removes sites, unlinks
+                // contacts/tickets), so gate it behind typing the company name.
+                confirm_phrase: header_title.clone(),
                 loading: *deleting.read(),
                 onconfirm: on_confirm_delete,
                 oncancel: move |_| {
