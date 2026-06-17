@@ -282,12 +282,9 @@ pub fn SchedulingSettingsPage() -> Element {
                 },
             }
             match &*snap {
+                // PMS-353: shared detail skeleton instead of a bare text line.
                 None => rsx! {
-                    Card {
-                        div { class: "py-12 text-center text-sm text-gray-500 dark:text-gray-400",
-                            "Loading scheduling settings..."
-                        }
-                    }
+                    crate::components::DetailSkeleton {}
                 },
                 Some(None) => rsx! {
                     Card {

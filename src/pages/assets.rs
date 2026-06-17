@@ -1107,7 +1107,8 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
             }
 
             if is_loading {
-                Card { p { class: "text-sm text-gray-400", "Loading asset…" } }
+                // PMS-353
+                crate::components::DetailSkeleton {}
             } else if asset.is_none() {
                 Card {
                     p { class: "text-sm text-yellow-600 dark:text-yellow-400",

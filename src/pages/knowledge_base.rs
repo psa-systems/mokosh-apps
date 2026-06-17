@@ -1072,7 +1072,8 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         AppLayout { title: "{header_title}",
             match &*article_snapshot {
                 None => rsx! {
-                    Card { div { class: "py-12 text-center text-sm text-gray-500", "Loading article..." } }
+                    // PMS-353
+                    crate::components::DetailSkeleton {}
                 },
                 Some(None) => rsx! {
                     Card {
@@ -1305,7 +1306,8 @@ pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
             PageHeader { title: "Edit Article" }
             match &*snap {
                 None => rsx! {
-                    Card { div { class: "py-12 text-center text-sm text-gray-500", "Loading article..." } }
+                    // PMS-353
+                    crate::components::DetailSkeleton {}
                 },
                 Some(None) => rsx! {
                     Card {

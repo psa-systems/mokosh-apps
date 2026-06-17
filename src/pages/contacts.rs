@@ -425,7 +425,7 @@ pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
             PageHeader { title: "Edit Company" }
             match &*snap {
                 None => rsx! {
-                    Card { div { class: "py-12 text-center text-sm text-gray-500", "Loading company..." } }
+                    crate::components::DetailSkeleton {} // PMS-353
                 },
                 Some(None) => rsx! {
                     Card {
@@ -1116,9 +1116,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
 
             match &*company_snapshot {
                 None => rsx! {
-                    Card {
-                        div { class: "py-12 text-center text-sm text-gray-500", "Loading company..." }
-                    }
+                    crate::components::DetailSkeleton {} // PMS-353
                 },
                 Some(None) => rsx! {
                     Card {
@@ -2897,7 +2895,7 @@ pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
             PageHeader { title: "Edit Contact" }
             match &*snap {
                 None => rsx! {
-                    Card { div { class: "py-12 text-center text-sm text-gray-500", "Loading contact..." } }
+                    crate::components::DetailSkeleton {} // PMS-353
                 },
                 Some(None) => rsx! {
                     Card {
@@ -3330,7 +3328,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
 
             match &*snap {
                 None => rsx! {
-                    Card { div { class: "py-12 text-center text-sm text-gray-500", "Loading contact..." } }
+                    crate::components::DetailSkeleton {} // PMS-353
                 },
                 Some(None) => rsx! {
                     Card {

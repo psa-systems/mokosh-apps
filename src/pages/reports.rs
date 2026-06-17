@@ -354,7 +354,7 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
             PageHeader { title: report_title, subtitle: "Live figures from the reports service" }
 
             if is_loading {
-                Card { p { class: "text-sm text-gray-400", "Loading report…" } }
+                crate::components::DetailSkeleton {} // PMS-353
             } else if !view.supported {
                 Card {
                     p { class: "text-sm text-gray-500 dark:text-gray-400",
@@ -600,7 +600,7 @@ fn CustomReportBuilder() -> Element {
                 }
             }
         } else if loading {
-            Card { p { class: "text-sm text-gray-400", "Loading builder…" } }
+            crate::components::DetailSkeleton {} // PMS-353
         } else {
             div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
                 // Builder controls

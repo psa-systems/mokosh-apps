@@ -15,6 +15,7 @@ mod markdown;
 mod modal;
 mod overflow_actions;
 mod setting_form_modal;
+mod skeleton;
 mod table;
 mod update_banner;
 
@@ -31,5 +32,6 @@ pub use markdown::*;
 pub use modal::*;
 pub use overflow_actions::*;
 pub use setting_form_modal::*;
+pub use skeleton::*;
 pub use table::*;
 pub use update_banner::*;
