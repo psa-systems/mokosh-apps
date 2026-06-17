@@ -311,9 +311,12 @@ pub fn CompanyListPage() -> Element {
                         TableLoading { columns: 4, rows: 5 }
                     } else if page_rows.is_empty() {
                         if has_filters {
+                            // Filtered to nothing: no CTA (creating won't help);
+                            // guide the user back to the filters.
                             TableEmpty {
                                 columns: 4,
-                                message: "No companies match your filters.".to_string(),
+                                title: "No companies match your filters".to_string(),
+                                description: "Try clearing or adjusting the filters above.".to_string(),
                             }
                         } else {
                             TableEmpty {
@@ -2771,9 +2774,12 @@ pub fn ContactListPage() -> Element {
                         TableLoading { columns: 5, rows: 5 }
                     } else if page_rows.is_empty() {
                         if has_filters {
+                            // Filtered to nothing: no CTA (creating won't help);
+                            // guide the user back to the filters.
                             TableEmpty {
                                 columns: 5,
-                                message: "No contacts match your filters.".to_string(),
+                                title: "No contacts match your filters".to_string(),
+                                description: "Try clearing or adjusting the filters above.".to_string(),
                             }
                         } else {
                             TableEmpty {

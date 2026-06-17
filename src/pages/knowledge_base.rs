@@ -858,9 +858,12 @@ pub fn KBArticleListPage(
                                 TableLoading { columns: 4, rows: 5 }
                             } else if page_rows.is_empty() {
                                 if has_filters {
+                                    // Filtered to nothing: no CTA (creating won't help);
+                                    // guide the user back to the filters.
                                     TableEmpty {
                                         columns: 4,
-                                        message: "No articles match your filters.".to_string(),
+                                        title: "No articles match your filters".to_string(),
+                                        description: "Try clearing or adjusting the filters above.".to_string(),
                                     }
                                 } else {
                                     TableEmpty {

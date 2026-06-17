@@ -409,9 +409,12 @@ pub fn InvoiceListPage() -> Element {
                     if is_loading {
                         TableLoading { columns: 7, rows: 5 }
                     } else if rows.is_empty() && has_filters {
+                        // Filtered to nothing: no CTA (creating won't help);
+                        // guide the user back to the filters.
                         TableEmpty {
                             columns: 7,
-                            message: "No invoices match your filters.".to_string(),
+                            title: "No invoices match your filters".to_string(),
+                            description: "Try clearing or adjusting the filters above.".to_string(),
                         }
                     } else if rows.is_empty() {
                         TableEmpty {
