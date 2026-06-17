@@ -548,7 +548,8 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let mut country = use_signal(|| initial.address_country.clone());
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
-    // Per-field inline validation errors (MAPPS-177, MAPPS-213).
+    // Per-field inline validation errors (MAPPS-177, MAPPS-213, MAPPS-265).
+    let mut name_err = use_signal(String::new);
     let mut website_err = use_signal(String::new);
     let mut phone_err = use_signal(String::new);
     let mut postal_err = use_signal(String::new);
@@ -570,6 +571,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
         error.set(String::new());
+        name_err.set(String::new());
         website_err.set(String::new());
         phone_err.set(String::new());
         postal_err.set(String::new());
@@ -646,14 +648,37 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         navigator.push(Route::CompanyDetail { id });
                     }
                     Err(err) => {
-                        // If the server rejected Website specifically (e.g. a
-                        // scheme rule the client did not mirror), highlight the
-                        // field rather than only showing the generic banner
-                        // (MAPPS-210 / MAPPS-213).
-                        if let Some(msg) = err.field_message("website") {
-                            website_err.set(msg);
-                        } else {
+                        // MAPPS-265: map every server-side field error from the
+                        // 422 `errors[]` envelope back onto its own inline field
+                        // (e.g. a Website scheme rule the client did not mirror,
+                        // MAPPS-210 / MAPPS-213) so each cue persists after the
+                        // failed submit. Unmatched fields, or a non-422 failure,
+                        // fall back to the top-of-form banner.
+                        let fields = err.field_errors();
+                        if fields.is_empty() {
                             error.set(format!("Could not save company: {}", err.user_message()));
+                        } else {
+                            let mut leftover = Vec::new();
+                            for fe in fields {
+                                match fe.field.as_str() {
+                                    "name" => name_err.set(fe.message.clone()),
+                                    "website" => website_err.set(fe.message.clone()),
+                                    "phone" => phone_err.set(fe.message.clone()),
+                                    "postal_code" | "address.postal_code" => {
+                                        postal_err.set(fe.message.clone())
+                                    }
+                                    "country" | "address.country" => {
+                                        country_err.set(fe.message.clone())
+                                    }
+                                    _ => leftover.push(fe.message.clone()),
+                                }
+                            }
+                            if !leftover.is_empty() {
+                                error.set(format!(
+                                    "Could not save company: {}",
+                                    leftover.join("; ")
+                                ));
+                            }
                         }
                     }
                 }
@@ -684,6 +709,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         // Mirror the server cap (CreateCompanyRequest.name: max 255).
                         maxlength: 255,
                         value: name.read().clone(),
+                        error: name_err(),
                         oninput: move |e: FormEvent| name.set(e.value()),
                     }
                     Select {
@@ -3096,7 +3122,10 @@ fn ContactForm(props: ContactFormProps) -> Element {
     let mut company_name = use_signal(|| initial.company_name.clone());
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
-    // Per-field inline validation errors (MAPPS-177).
+    // Per-field inline validation errors (MAPPS-177, MAPPS-265).
+    let mut first_name_err = use_signal(String::new);
+    let mut last_name_err = use_signal(String::new);
+    let mut email_err = use_signal(String::new);
     let mut phone_err = use_signal(String::new);
     let mut mobile_err = use_signal(String::new);
 
@@ -3116,6 +3145,9 @@ fn ContactForm(props: ContactFormProps) -> Element {
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
         error.set(String::new());
+        first_name_err.set(String::new());
+        last_name_err.set(String::new());
+        email_err.set(String::new());
         phone_err.set(String::new());
         mobile_err.set(String::new());
 
@@ -3161,17 +3193,15 @@ fn ContactForm(props: ContactFormProps) -> Element {
                     id: uuid::Uuid,
                 }
                 let result = match &mode {
-                    ContactFormMode::Create => {
-                        crate::hooks::fetch::api::post_authed::<ContactId, _>(
-                            "/contacts/contacts",
-                            &body,
-                        )
-                        .await
-                        .map(|c| c.id.to_string())
-                    }
+                    ContactFormMode::Create => crate::hooks::fetch::api::post_authed_typed::<
+                        ContactId,
+                        _,
+                    >("/contacts/contacts", &body)
+                    .await
+                    .map(|c| c.id.to_string()),
                     ContactFormMode::Edit { id } => {
                         let path = format!("/contacts/contacts/{id}");
-                        crate::hooks::fetch::api::put_authed::<ContactId, _>(&path, &body)
+                        crate::hooks::fetch::api::put_authed_typed::<ContactId, _>(&path, &body)
                             .await
                             .map(|_| id.clone())
                     }
@@ -3181,7 +3211,32 @@ fn ContactForm(props: ContactFormProps) -> Element {
                         navigator.push(Route::ContactDetail { id });
                     }
                     Err(err) => {
-                        error.set(format!("Could not save contact: {err}"));
+                        // MAPPS-265: map server-side field errors from the 422
+                        // `errors[]` envelope onto their inline fields so the cue
+                        // persists after a failed submit; unmatched fields or a
+                        // non-422 failure fall back to the top-of-form banner.
+                        let fields = err.field_errors();
+                        if fields.is_empty() {
+                            error.set(format!("Could not save contact: {}", err.user_message()));
+                        } else {
+                            let mut leftover = Vec::new();
+                            for fe in fields {
+                                match fe.field.as_str() {
+                                    "first_name" => first_name_err.set(fe.message.clone()),
+                                    "last_name" => last_name_err.set(fe.message.clone()),
+                                    "email" => email_err.set(fe.message.clone()),
+                                    "phone" => phone_err.set(fe.message.clone()),
+                                    "mobile" => mobile_err.set(fe.message.clone()),
+                                    _ => leftover.push(fe.message.clone()),
+                                }
+                            }
+                            if !leftover.is_empty() {
+                                error.set(format!(
+                                    "Could not save contact: {}",
+                                    leftover.join("; ")
+                                ));
+                            }
+                        }
                     }
                 }
             }
@@ -3215,6 +3270,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
                         label: "First Name",
                         required: true,
                         value: first_name.read().clone(),
+                        error: first_name_err(),
                         oninput: move |e: FormEvent| first_name.set(e.value()),
                     }
                     crate::components::Input {
@@ -3222,6 +3278,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
                         label: "Last Name",
                         required: true,
                         value: last_name.read().clone(),
+                        error: last_name_err(),
                         oninput: move |e: FormEvent| last_name.set(e.value()),
                     }
                     crate::components::Input {
@@ -3229,6 +3286,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
                         label: "Email",
                         r#type: "email",
                         value: email.read().clone(),
+                        error: email_err(),
                         oninput: move |e: FormEvent| email.set(e.value()),
                     }
                     crate::components::Input {

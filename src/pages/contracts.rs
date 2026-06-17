@@ -963,14 +963,33 @@ fn ContractForm(props: ContractFormProps) -> Element {
                         navigator.push(Route::ContractDetail { id });
                     }
                     Err(err) => {
-                        // PMS-364: the end < start cross-field rule comes back
-                        // keyed on `end_date`; show it inline under that field.
-                        // Server errors without a field target fall back to the
-                        // top-of-form banner.
-                        if let Some(msg) = err.field_message("end_date") {
-                            end_err.set(msg);
-                        } else {
+                        // MAPPS-265: route every server-side field error from the
+                        // 422 `errors[]` envelope back onto its own inline field
+                        // so the cue persists after the failed submit, not just a
+                        // banner. PMS-364's end < start cross-field rule arrives
+                        // keyed on `end_date` and lands under that field via the
+                        // same path. Errors with no matching field, or a non-422
+                        // failure, fall back to the top-of-form banner.
+                        let fields = err.field_errors();
+                        if fields.is_empty() {
                             error.set(err.user_message());
+                        } else {
+                            let mut leftover = Vec::new();
+                            for fe in fields {
+                                match fe.field.as_str() {
+                                    "name" => name_err.set(fe.message.clone()),
+                                    "company_id" => company_err.set(fe.message.clone()),
+                                    "billing_amount" => billing_err.set(fe.message.clone()),
+                                    "start_date" => start_err.set(fe.message.clone()),
+                                    "end_date" => end_err.set(fe.message.clone()),
+                                    "contract_number" => number_err.set(fe.message.clone()),
+                                    "notes" => notes_err.set(fe.message.clone()),
+                                    _ => leftover.push(fe.message.clone()),
+                                }
+                            }
+                            if !leftover.is_empty() {
+                                error.set(leftover.join("; "));
+                            }
                         }
                     }
                 }

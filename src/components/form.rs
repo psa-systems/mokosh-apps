@@ -101,11 +101,11 @@ pub fn Input(props: InputProps) -> Element {
                 oninput: move |e| props.oninput.call(e),
             }
             if !props.error.is_empty() {
-                p { class: "text-sm text-red-600 dark:text-red-400",
+                p { class: "text-sm leading-5 text-red-600 dark:text-red-400",
                     "{props.error}"
                 }
             } else if !props.help.is_empty() {
-                p { class: "text-sm text-muted",
+                p { class: "text-sm leading-5 text-muted",
                     "{props.help}"
                 }
             }
@@ -238,11 +238,11 @@ pub fn Textarea(props: TextareaProps) -> Element {
                 "{props.value}"
             }
             if !props.error.is_empty() {
-                p { class: "text-sm text-red-600 dark:text-red-400",
+                p { class: "text-sm leading-5 text-red-600 dark:text-red-400",
                     "{props.error}"
                 }
             } else if !props.help.is_empty() {
-                p { class: "text-sm text-muted",
+                p { class: "text-sm leading-5 text-muted",
                     "{props.help}"
                 }
             }
@@ -338,11 +338,11 @@ pub fn Select(props: SelectProps) -> Element {
                 }
             }
             if !props.error.is_empty() {
-                p { class: "text-sm text-red-600 dark:text-red-400",
+                p { class: "text-sm leading-5 text-red-600 dark:text-red-400",
                     "{props.error}"
                 }
             } else if !props.help.is_empty() {
-                p { class: "text-sm text-muted",
+                p { class: "text-sm leading-5 text-muted",
                     "{props.help}"
                 }
             }
@@ -359,6 +359,8 @@ pub struct CheckboxProps {
     checked: bool,
     #[props(default = false)]
     disabled: bool,
+    #[props(default)]
+    error: String,
     #[props(default)]
     help: String,
     #[props(default)]
@@ -393,8 +395,12 @@ pub fn Checkbox(props: CheckboxProps) -> Element {
                     class: "font-medium text-content",
                     "{props.label}"
                 }
-                if !props.help.is_empty() {
-                    p { class: "text-muted",
+                if !props.error.is_empty() {
+                    p { class: "mt-1 text-sm leading-5 text-red-600 dark:text-red-400",
+                        "{props.error}"
+                    }
+                } else if !props.help.is_empty() {
+                    p { class: "mt-1 text-sm leading-5 text-muted",
                         "{props.help}"
                     }
                 }
