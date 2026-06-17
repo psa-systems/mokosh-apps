@@ -88,6 +88,8 @@ fn humanize_billing_cycle(raw: &str) -> String {
         "quarterly" => "Quarterly".to_string(),
         "annually" | "annual" => "Annually".to_string(),
         "one_time" => "One-time".to_string(),
+        "weekly" => "Weekly".to_string(),
+        "bi_weekly" => "Bi-weekly".to_string(),
         "" => "-".to_string(),
         other => other.to_string(),
     }
@@ -710,6 +712,8 @@ fn ContractForm(props: ContractFormProps) -> Element {
         SelectOption::new("quarterly", "Quarterly"),
         SelectOption::new("annually", "Annually"),
         SelectOption::new("one_time", "One-time"),
+        SelectOption::new("weekly", "Weekly"),
+        SelectOption::new("bi_weekly", "Bi-weekly"),
     ];
     let item_type_options = contract_item_type_options();
 
