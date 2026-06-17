@@ -403,7 +403,7 @@ fn type_color(appointment_type: &str) -> &'static str {
         "ticket" => "bg-blue-500",
         "project" => "bg-green-500",
         "meeting" => "bg-purple-500",
-        "other" => "bg-gray-500",
+        "other" => "bg-gray-500", // theme-guard-allow: event-type data-viz dot palette
         _ => "bg-slate-500",
     }
 }
@@ -415,7 +415,7 @@ fn type_chip_class(appointment_type: &str) -> &'static str {
         "ticket" => "bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300",
         "project" => "bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300",
         "meeting" => "bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300",
-        _ => "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300",
+        _ => "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300", // theme-guard-allow: event-type data-viz chip palette (unknown fallback, sibling of blue/green/purple)
     }
 }
 
@@ -600,21 +600,21 @@ pub fn CalendarPage() -> Element {
                 div { class: "lg:col-span-3",
                     Card { padding: false,
                         // Toolbar
-                        div { class: "flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700",
+                        div { class: "flex items-center justify-between p-4 border-b border-line",
                             div { class: "flex items-center space-x-4",
                                 button {
                                     r#type: "button",
-                                    class: "p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded",
+                                    class: "p-2 hover:bg-surface-2 rounded",
                                     title: "Previous",
                                     onclick: go_prev,
                                     ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
                                 }
-                                h2 { class: "text-lg font-semibold text-gray-900 dark:text-white",
+                                h2 { class: "text-lg font-semibold text-content",
                                     "{header_label}"
                                 }
                                 button {
                                     r#type: "button",
-                                    class: "p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded",
+                                    class: "p-2 hover:bg-surface-2 rounded",
                                     title: "Next",
                                     onclick: go_next,
                                     ChevronRightIcon { class: "h-5 w-5".to_string() }
@@ -626,7 +626,7 @@ pub fn CalendarPage() -> Element {
                                     onclick: move |_| active_date.set(today_real),
                                     "Today"
                                 }
-                                div { class: "flex border border-gray-300 dark:border-gray-600 rounded-md overflow-hidden",
+                                div { class: "flex border border-line rounded-md overflow-hidden",
                                     ViewToggleButton {
                                         label: "Month",
                                         active: view() == CalendarView::Month,
@@ -654,7 +654,7 @@ pub fn CalendarPage() -> Element {
                                 }
                             }
                             if is_loading {
-                                div { class: "py-12 text-center text-sm text-gray-500", "Loading appointments..." }
+                                div { class: "py-12 text-center text-sm text-muted", "Loading appointments..." }
                             } else {
                                 match view() {
                                     CalendarView::Month => rsx! {
@@ -723,9 +723,9 @@ struct ViewToggleButtonProps {
 #[component]
 fn ViewToggleButton(props: ViewToggleButtonProps) -> Element {
     let class = if props.active {
-        "px-3 py-1 text-sm bg-blue-600 text-white"
+        "px-3 py-1 text-sm bg-accent text-on-accent"
     } else {
-        "px-3 py-1 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+        "px-3 py-1 text-sm text-content hover:bg-surface-2"
     };
     rsx! {
         button {
@@ -755,12 +755,12 @@ fn MonthGrid(props: MonthGridProps) -> Element {
     rsx! {
         div { class: "grid grid-cols-7 gap-px mb-2",
             for day in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] {
-                div { class: "text-center text-sm font-medium text-gray-500 dark:text-gray-400 py-2",
+                div { class: "text-center text-sm font-medium text-muted py-2",
                     "{day}"
                 }
             }
         }
-        div { class: "grid grid-cols-7 gap-px bg-gray-200 dark:bg-gray-700 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden",
+        div { class: "grid grid-cols-7 gap-px bg-surface-2 border border-line rounded-lg overflow-hidden",
             for (date, in_active) in calendar_cells(props.active_date) {
                 {
                     let day_appts: Vec<AppointmentResponse> = props
@@ -797,16 +797,16 @@ struct MonthDayCellProps {
 #[component]
 fn MonthDayCell(props: MonthDayCellProps) -> Element {
     let bg_class = if props.is_today {
-        "bg-blue-50 dark:bg-blue-900/20"
+        "bg-accent-50"
     } else {
-        "bg-white dark:bg-gray-800"
+        "bg-surface"
     };
     let text_class = if props.is_other_month {
-        "text-gray-400 dark:text-gray-600"
+        "text-subtle"
     } else if props.is_today {
-        "text-blue-600 dark:text-blue-400 font-bold"
+        "text-accent font-bold"
     } else {
-        "text-gray-900 dark:text-white"
+        "text-content"
     };
     let total = props.appointments.len();
 
@@ -835,7 +835,7 @@ fn MonthDayCell(props: MonthDayCellProps) -> Element {
                 if total > 3 {
                     {
                         let remaining = total - 3;
-                        rsx! { span { class: "text-xs text-gray-500", "+{remaining} more" } }
+                        rsx! { span { class: "text-xs text-muted", "+{remaining} more" } }
                     }
                 }
             }
@@ -862,15 +862,15 @@ fn WeekGrid(props: WeekGridProps) -> Element {
         div { class: "overflow-x-auto",
             div { class: "min-w-[700px]",
                 // Day-of-week header row (time gutter + 7 day columns).
-                div { class: "grid grid-cols-[60px_repeat(7,1fr)] border-b border-gray-200 dark:border-gray-700",
+                div { class: "grid grid-cols-[60px_repeat(7,1fr)] border-b border-line",
                     div { class: "p-2" }
                     for d in dates.iter() {
                         {
                             let is_today = *d == props.today;
                             let head_class = if is_today {
-                                "p-2 text-center text-sm font-semibold text-blue-600 dark:text-blue-400 border-l border-gray-200 dark:border-gray-700"
+                                "p-2 text-center text-sm font-semibold text-accent border-l border-line"
                             } else {
-                                "p-2 text-center text-sm font-medium text-gray-500 dark:text-gray-400 border-l border-gray-200 dark:border-gray-700"
+                                "p-2 text-center text-sm font-medium text-muted border-l border-line"
                             };
                             let weekday = d.format("%a").to_string();
                             let daynum = d.day();
@@ -891,7 +891,7 @@ fn WeekGrid(props: WeekGridProps) -> Element {
                             {
                                 let label = hour_label(hour);
                                 rsx! {
-                                    div { class: "h-12 text-right pr-2 text-xs text-gray-400 -mt-2",
+                                    div { class: "h-12 text-right pr-2 text-xs text-subtle -mt-2",
                                         "{label}"
                                     }
                                 }
@@ -944,11 +944,11 @@ struct DayColumnProps {
 fn DayColumn(props: DayColumnProps) -> Element {
     let rows = (GRID_END_HOUR - GRID_START_HOUR) as usize;
     rsx! {
-        div { class: "relative border-l border-gray-200 dark:border-gray-700",
+        div { class: "relative border-l border-line",
             style: "height: {rows as f64 * 3.0}rem;",
             // Hour grid lines.
             for _ in 0..rows {
-                div { class: "h-12 border-b border-gray-100 dark:border-gray-800" }
+                div { class: "h-12 border-b border-line" }
             }
             // Appointment blocks.
             for appt in props.appointments.iter() {
@@ -1011,7 +1011,7 @@ fn DayGrid(props: DayGridProps) -> Element {
 
     rsx! {
         if day_appts.is_empty() {
-            div { class: "mb-3 text-sm text-gray-500", "No appointments scheduled for this day." }
+            div { class: "mb-3 text-sm text-muted", "No appointments scheduled for this day." }
         }
         div { class: "grid grid-cols-[80px_1fr]",
             // Hour gutter.
@@ -1020,16 +1020,16 @@ fn DayGrid(props: DayGridProps) -> Element {
                     {
                         let label = hour_label(hour);
                         rsx! {
-                            div { class: "h-16 text-right pr-3 text-xs text-gray-400 -mt-2", "{label}" }
+                            div { class: "h-16 text-right pr-3 text-xs text-subtle -mt-2", "{label}" }
                         }
                     }
                 }
             }
             // Single positioned column (taller rows than the week view).
-            div { class: "relative border-l border-gray-200 dark:border-gray-700",
+            div { class: "relative border-l border-line",
                 style: "height: {rows as f64 * 4.0}rem;",
                 for _ in 0..rows {
-                    div { class: "h-16 border-b border-gray-100 dark:border-gray-800" }
+                    div { class: "h-16 border-b border-line" }
                 }
                 for appt in day_appts.iter() {
                     {
@@ -1085,7 +1085,7 @@ fn AgendaCard(props: AgendaCardProps) -> Element {
     rsx! {
         Card { title: "{heading}",
             if day_appts.is_empty() {
-                p { class: "text-sm text-gray-500 dark:text-gray-400", "Nothing scheduled." }
+                p { class: "text-sm text-muted", "Nothing scheduled." }
             } else {
                 div { class: "space-y-3",
                     for appt in day_appts.iter() {
@@ -1105,11 +1105,11 @@ fn AgendaCard(props: AgendaCardProps) -> Element {
                                 .map(|u| u.display_name())
                                 .unwrap_or_default();
                             rsx! {
-                                div { class: "border-l-4 {border} bg-gray-50 dark:bg-gray-800 p-3 rounded-r",
-                                    p { class: "text-xs text-gray-500 dark:text-gray-400", "{time}" }
-                                    p { class: "font-medium text-gray-900 dark:text-white", "{title}" }
+                                div { class: "border-l-4 {border} bg-surface-2 p-3 rounded-r",
+                                    p { class: "text-xs text-muted", "{time}" }
+                                    p { class: "font-medium text-content", "{title}" }
                                     if !who.is_empty() {
-                                        p { class: "text-xs text-gray-500 dark:text-gray-400", "{who}" }
+                                        p { class: "text-xs text-muted", "{who}" }
                                     }
                                 }
                             }
@@ -1639,19 +1639,19 @@ pub fn DispatchBoardPage() -> Element {
             }
 
             Card { padding: false,
-                div { class: "flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700",
+                div { class: "flex items-center justify-between p-4 border-b border-line",
                     div { class: "flex items-center space-x-4",
                         button {
                             r#type: "button",
-                            class: "p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded",
+                            class: "p-2 hover:bg-surface-2 rounded",
                             title: "Previous day",
                             onclick: move |_| active_day.set(active_day() - Duration::days(1)),
                             ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
                         }
-                        h2 { class: "text-lg font-semibold text-gray-900 dark:text-white", "{title}" }
+                        h2 { class: "text-lg font-semibold text-content", "{title}" }
                         button {
                             r#type: "button",
-                            class: "p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded",
+                            class: "p-2 hover:bg-surface-2 rounded",
                             title: "Next day",
                             onclick: move |_| active_day.set(active_day() + Duration::days(1)),
                             ChevronRightIcon { class: "h-5 w-5".to_string() }
@@ -1672,7 +1672,7 @@ pub fn DispatchBoardPage() -> Element {
                         }
                     }
                     if is_loading {
-                        div { class: "py-12 text-center text-sm text-gray-500", "Loading dispatch board..." }
+                        div { class: "py-12 text-center text-sm text-muted", "Loading dispatch board..." }
                     } else if let Some(d) = dispatch.as_ref() {
                         DispatchTimeline {
                             day,
@@ -1777,7 +1777,7 @@ fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
 
     if user_ids.is_empty() {
         return rsx! {
-            div { class: "py-12 text-center text-sm text-gray-500",
+            div { class: "py-12 text-center text-sm text-muted",
                 "No technicians scheduled for this day."
             }
         };
@@ -1787,14 +1787,14 @@ fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
         div { class: "overflow-x-auto",
             div { class: "min-w-[800px]",
                 // Hour header.
-                div { class: "grid border-b border-gray-200 dark:border-gray-700",
+                div { class: "grid border-b border-line",
                     style: "grid-template-columns: 200px repeat({GRID_END_HOUR - GRID_START_HOUR}, 1fr);",
-                    div { class: "p-2 bg-gray-50 dark:bg-gray-800 font-medium text-sm text-gray-500", "Technician" }
+                    div { class: "p-2 bg-surface-2 font-medium text-sm text-muted", "Technician" }
                     for hour in GRID_START_HOUR..GRID_END_HOUR {
                         {
                             let label = hour_label(hour);
                             rsx! {
-                                div { class: "p-2 bg-gray-50 dark:bg-gray-800 text-center text-xs text-gray-500 border-l border-gray-200 dark:border-gray-700",
+                                div { class: "p-2 bg-surface-2 text-center text-xs text-muted border-l border-line",
                                     "{label}"
                                 }
                             }
@@ -1863,18 +1863,18 @@ fn DispatchRow(props: DispatchRowProps) -> Element {
         .unwrap_or_default();
 
     rsx! {
-        div { class: "grid border-b border-gray-200 dark:border-gray-700 min-h-16",
+        div { class: "grid border-b border-line min-h-16",
             style: "grid-template-columns: 200px repeat({cols}, 1fr);",
             // Technician name + status.
             div { class: "p-2 flex items-center",
                 div { class: "flex items-center",
-                    div { class: "w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center mr-2",
-                        span { class: "text-sm font-medium text-blue-600 dark:text-blue-400",
+                    div { class: "w-8 h-8 rounded-full bg-accent-100 flex items-center justify-center mr-2",
+                        span { class: "text-sm font-medium text-accent",
                             {props.name.chars().next().unwrap_or('?').to_string()}
                         }
                     }
                     div {
-                        span { class: "font-medium text-sm text-gray-900 dark:text-white", "{props.name}" }
+                        span { class: "font-medium text-sm text-content", "{props.name}" }
                         if off_today {
                             div { class: "text-xs text-amber-600 dark:text-amber-400", "Off: {off_kind}" }
                         }
@@ -1883,13 +1883,13 @@ fn DispatchRow(props: DispatchRowProps) -> Element {
             }
 
             // Timeline area spanning the hour columns.
-            div { class: "relative border-l border-gray-200 dark:border-gray-700",
+            div { class: "relative border-l border-line",
                 style: "grid-column: 2 / -1; min-height: 4rem;",
                 // Hour divider lines.
                 div { class: "absolute inset-0 grid",
                     style: "grid-template-columns: repeat({cols}, 1fr);",
                     for _ in 0..cols {
-                        div { class: "border-l border-gray-100 dark:border-gray-800 first:border-l-0" }
+                        div { class: "border-l border-line first:border-l-0" }
                     }
                 }
                 // Availability shading (one band per available window today).

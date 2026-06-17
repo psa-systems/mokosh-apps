@@ -18,9 +18,9 @@ use crate::components::{
 #[component]
 fn ShowcaseRow(title: String, usage: String, children: Element) -> Element {
     rsx! {
-        div { class: "py-4 border-b border-gray-200 dark:border-gray-700 last:border-0",
-            h3 { class: "text-sm font-semibold text-gray-900 dark:text-white", "{title}" }
-            p { class: "mt-0.5 mb-3 text-sm text-gray-500 dark:text-gray-400", "{usage}" }
+        div { class: "py-4 border-b border-line last:border-0",
+            h3 { class: "text-sm font-semibold text-content", "{title}" }
+            p { class: "mt-0.5 mb-3 text-sm text-muted", "{usage}" }
             div { class: "flex flex-wrap items-center gap-3", {children} }
         }
     }

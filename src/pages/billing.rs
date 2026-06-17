@@ -230,17 +230,17 @@ fn NoFinancePermission(title: String) -> Element {
             PageHeader { title: "{title}" }
             Card {
                 div { class: "py-12 px-6 mx-auto flex max-w-md flex-col items-center text-center",
-                    div { class: "mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-gray-100 dark:bg-gray-800",
-                        InformationIcon { size: IconSize::Large, class: "text-gray-400".to_string() }
+                    div { class: "mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-surface-2",
+                        InformationIcon { size: IconSize::Large, class: "text-subtle".to_string() }
                     }
-                    h3 { class: "text-base font-medium text-gray-900 dark:text-white",
+                    h3 { class: "text-base font-medium text-content",
                         "Billing access required"
                     }
-                    p { class: "mt-2 text-sm text-gray-500 dark:text-gray-400",
+                    p { class: "mt-2 text-sm text-muted",
                         "Invoices and payments are restricted to administrator and finance roles. Ask an administrator to grant you access."
                     }
                     if !role.is_empty() {
-                        p { class: "mt-4 text-xs text-gray-400 dark:text-gray-500",
+                        p { class: "mt-4 text-xs text-subtle",
                             "Your current role: {role}"
                         }
                     }
@@ -478,27 +478,27 @@ fn InvoiceRow(props: InvoiceRowProps) -> Element {
             TableCell {
                 Link {
                     to: Route::InvoiceDetail { id: props.id.clone() },
-                    class: "font-medium text-blue-600 hover:text-blue-500",
+                    class: "font-medium text-accent hover:opacity-90",
                     "{props.number}"
                 }
             }
             TableCell {
                 if props.company.is_empty() {
-                    span { class: "text-gray-400", "-" }
+                    span { class: "text-subtle", "-" }
                 } else {
                     "{props.company}"
                 }
             }
             TableCell {
                 if props.date.is_empty() {
-                    span { class: "text-gray-400", "-" }
+                    span { class: "text-subtle", "-" }
                 } else {
                     "{props.date}"
                 }
             }
             TableCell {
                 if props.due_date.is_empty() {
-                    span { class: "text-gray-400", "-" }
+                    span { class: "text-subtle", "-" }
                 } else {
                     "{props.due_date}"
                 }
@@ -758,7 +758,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                             p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load invoice." }
                             Link {
                                 to: Route::InvoiceList {},
-                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                class: "text-sm text-accent hover:opacity-90",
                                 "Back to invoices"
                             }
                         }
@@ -795,18 +795,18 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                     // Header
                                     div { class: "flex justify-between mb-8",
                                         div {
-                                            h2 { class: "text-2xl font-bold text-gray-900 dark:text-white", "INVOICE" }
-                                            p { class: "text-gray-500", "{inv.invoice_number}" }
+                                            h2 { class: "text-2xl font-bold text-content", "INVOICE" }
+                                            p { class: "text-muted", "{inv.invoice_number}" }
                                         }
                                         div { class: "text-right",
                                             div { class: "mb-2",
-                                                span { class: "text-sm text-gray-500", "Invoice Date: " }
+                                                span { class: "text-sm text-muted", "Invoice Date: " }
                                                 span { class: "font-medium",
                                                     if invoice_date.is_empty() { "-" } else { "{invoice_date}" }
                                                 }
                                             }
                                             div { class: "mb-2",
-                                                span { class: "text-sm text-gray-500", "Due Date: " }
+                                                span { class: "text-sm text-muted", "Due Date: " }
                                                 span { class: "font-medium",
                                                     if due_date.is_empty() { "-" } else { "{due_date}" }
                                                 }
@@ -814,7 +814,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                             if let Some(terms) = payment_terms.clone() {
                                                 if !terms.is_empty() {
                                                     div {
-                                                        span { class: "text-sm text-gray-500", "Terms: " }
+                                                        span { class: "text-sm text-muted", "Terms: " }
                                                         span { class: "font-medium", "{terms}" }
                                                     }
                                                 }
@@ -849,22 +849,22 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                     }
 
                                     // Totals
-                                    div { class: "mt-8 border-t border-gray-200 dark:border-gray-700 pt-4",
+                                    div { class: "mt-8 border-t border-line pt-4",
                                         div { class: "flex justify-end",
                                             div { class: "w-64 space-y-2",
                                                 div { class: "flex justify-between",
-                                                    span { class: "text-gray-500", "Subtotal" }
+                                                    span { class: "text-muted", "Subtotal" }
                                                     span { "{subtotal}" }
                                                 }
                                                 div { class: "flex justify-between",
-                                                    span { class: "text-gray-500", "Tax" }
+                                                    span { class: "text-muted", "Tax" }
                                                     span { "{tax_amount}" }
                                                 }
                                                 div { class: "flex justify-between",
-                                                    span { class: "text-gray-500", "Discount" }
+                                                    span { class: "text-muted", "Discount" }
                                                     span { "{discount_amount}" }
                                                 }
-                                                div { class: "flex justify-between text-lg font-bold pt-2 border-t border-gray-200 dark:border-gray-700",
+                                                div { class: "flex justify-between text-lg font-bold pt-2 border-t border-line",
                                                     span { "Total" }
                                                     span { "{total}" }
                                                 }
@@ -875,8 +875,8 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                     if let Some(notes) = notes.clone() {
                                         if !notes.is_empty() {
                                             div { class: "mt-6 text-sm",
-                                                h3 { class: "font-medium text-gray-500 mb-1", "Notes" }
-                                                p { class: "text-gray-700 dark:text-gray-300 whitespace-pre-line", "{notes}" }
+                                                h3 { class: "font-medium text-muted mb-1", "Notes" }
+                                                p { class: "text-content whitespace-pre-line", "{notes}" }
                                             }
                                         }
                                     }
@@ -888,19 +888,19 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                 Card { title: "Status",
                                     div { class: "space-y-4",
                                         div { class: "flex justify-between items-center",
-                                            span { class: "text-gray-500", "Status" }
+                                            span { class: "text-muted", "Status" }
                                             Badge { variant: status_variant, "{status_label}" }
                                         }
                                         div { class: "flex justify-between",
-                                            span { class: "text-gray-500", "Total" }
+                                            span { class: "text-muted", "Total" }
                                             span { class: "font-medium", "{total}" }
                                         }
                                         div { class: "flex justify-between",
-                                            span { class: "text-gray-500", "Paid" }
+                                            span { class: "text-muted", "Paid" }
                                             span { class: "font-medium text-green-600", "{amount_paid}" }
                                         }
                                         div { class: "flex justify-between",
-                                            span { class: "text-gray-500", "Balance Due" }
+                                            span { class: "text-muted", "Balance Due" }
                                             span { class: "text-lg font-bold", "{balance_due}" }
                                         }
                                     }
@@ -910,25 +910,25 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                     dl { class: "space-y-3 text-sm",
                                         if !currency.is_empty() {
                                             div { class: "flex justify-between",
-                                                dt { class: "text-gray-500", "Currency" }
+                                                dt { class: "text-muted", "Currency" }
                                                 dd { "{currency}" }
                                             }
                                         }
                                         if let Some(po) = po_number.clone() {
                                             if !po.is_empty() {
                                                 div { class: "flex justify-between",
-                                                    dt { class: "text-gray-500", "PO Number" }
+                                                    dt { class: "text-muted", "PO Number" }
                                                     dd { "{po}" }
                                                 }
                                             }
                                         }
                                         if let Some(cid) = company_id.clone() {
                                             div { class: "flex justify-between",
-                                                dt { class: "text-gray-500", "Company" }
+                                                dt { class: "text-muted", "Company" }
                                                 dd {
                                                     Link {
                                                         to: Route::CompanyDetail { id: cid.clone() },
-                                                        class: "text-blue-600 hover:text-blue-500",
+                                                        class: "text-accent hover:opacity-90",
                                                         "{company_name}"
                                                     }
                                                 }
@@ -936,11 +936,11 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                         }
                                         if let Some(bcid) = billing_contact_id.clone() {
                                             div { class: "flex justify-between",
-                                                dt { class: "text-gray-500", "Billing Contact" }
+                                                dt { class: "text-muted", "Billing Contact" }
                                                 dd {
                                                     Link {
                                                         to: Route::ContactDetail { id: bcid.clone() },
-                                                        class: "text-blue-600 hover:text-blue-500",
+                                                        class: "text-accent hover:opacity-90",
                                                         "View contact"
                                                     }
                                                 }
@@ -1287,7 +1287,7 @@ pub fn InvoiceNewPage() -> Element {
                     }
 
                     div {
-                        h3 { class: "text-sm font-medium text-gray-700 dark:text-gray-300 mb-3", "Line Item" }
+                        h3 { class: "text-sm font-medium text-content mb-3", "Line Item" }
                         div { class: "grid grid-cols-1 gap-3 sm:grid-cols-[1fr_100px_140px]",
                             crate::components::Input {
                                 name: "line_description",
@@ -1329,13 +1329,13 @@ pub fn InvoiceNewPage() -> Element {
                                 },
                             }
                         }
-                        p { class: "mt-2 text-xs text-gray-500",
+                        p { class: "mt-2 text-xs text-muted",
                             "Manual invoices start with a single service line. Add more lines by editing the invoice after it is created."
                         }
                     }
 
                     div {
-                        h3 { class: "text-sm font-medium text-gray-700 dark:text-gray-300 mb-3", "Tax & Discount" }
+                        h3 { class: "text-sm font-medium text-content mb-3", "Tax & Discount" }
                         div { class: "grid grid-cols-1 gap-3 sm:grid-cols-3",
                             Select {
                                 name: "tax_rate_id",
@@ -1619,25 +1619,25 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
         TableRow {
             TableCell {
                 if props.date.is_empty() {
-                    span { class: "text-gray-400", "-" }
+                    span { class: "text-subtle", "-" }
                 } else {
                     "{props.date}"
                 }
             }
             TableCell {
                 if props.company.is_empty() {
-                    span { class: "text-gray-400", "-" }
+                    span { class: "text-subtle", "-" }
                 } else {
                     "{props.company}"
                 }
             }
             TableCell {
                 if props.invoice_id.is_empty() {
-                    span { class: "text-gray-400", "Unapplied" }
+                    span { class: "text-subtle", "Unapplied" }
                 } else {
                     Link {
                         to: Route::InvoiceDetail { id: props.invoice_id.clone() },
-                        class: "font-medium text-blue-600 hover:text-blue-500",
+                        class: "font-medium text-accent hover:opacity-90",
                         "{invoice_label}"
                     }
                 }
@@ -1645,7 +1645,7 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
             TableCell { "{props.method}" }
             TableCell {
                 if props.reference.is_empty() {
-                    span { class: "text-gray-400", "-" }
+                    span { class: "text-subtle", "-" }
                 } else {
                     "{props.reference}"
                 }
@@ -2319,7 +2319,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                 // on save and replaces the invoice's lines server-side.
                 div {
                     div { class: "flex items-center justify-between mb-3",
-                        h3 { class: "text-sm font-medium text-gray-700 dark:text-gray-300", "Line Items" }
+                        h3 { class: "text-sm font-medium text-content", "Line Items" }
                         Button {
                             variant: ButtonVariant::Secondary,
                             size: ButtonSize::Small,
@@ -2335,7 +2335,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                         }
                     }
                     if lines.read().is_empty() {
-                        p { class: "text-sm text-gray-500",
+                        p { class: "text-sm text-muted",
                             "No line items. Add at least one before saving."
                         }
                     }
@@ -2565,7 +2565,7 @@ pub fn TaxRateListPage() -> Element {
                                         TableRow { key: "{key}", clickable: true,
                                             onclick: move |_| editing.set(Some(edit_state.clone())),
                                             TableCell {
-                                                span { class: "font-medium text-blue-600", "{name}" }
+                                                span { class: "font-medium text-accent", "{name}" }
                                             }
                                             TableCell { class: "text-right", "{rate_label}%" }
                                             TableCell {
@@ -2960,7 +2960,7 @@ pub fn PaymentGatewayConfigPage() -> Element {
                                         TableRow { key: "{key}", clickable: true,
                                             onclick: move |_| editing.set(Some(edit_state.clone())),
                                             TableCell {
-                                                span { class: "font-medium text-blue-600", "{provider_label}" }
+                                                span { class: "font-medium text-accent", "{provider_label}" }
                                             }
                                             TableCell {
                                                 if is_test {

@@ -272,10 +272,10 @@ struct ReportCategoryProps {
 fn ReportCategory(props: ReportCategoryProps) -> Element {
     rsx! {
         Card {
-            h3 { class: "text-lg font-medium text-gray-900 dark:text-white mb-2",
+            h3 { class: "text-lg font-medium text-content mb-2",
                 "{props.title}"
             }
-            p { class: "text-sm text-gray-500 dark:text-gray-400 mb-4",
+            p { class: "text-sm text-muted mb-4",
                 "{props.description}"
             }
             ul { class: "space-y-2",
@@ -283,7 +283,7 @@ fn ReportCategory(props: ReportCategoryProps) -> Element {
                     li {
                         Link {
                             to: Route::ReportDetail { report_type: report_type.to_string() },
-                            class: "flex items-center text-sm text-blue-600 hover:text-blue-500",
+                            class: "flex items-center text-sm text-accent hover:opacity-90",
                             ChartIcon { size: IconSize::Small, class: "mr-2".to_string() }
                             "{name}"
                         }
@@ -357,20 +357,20 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
                 crate::components::DetailSkeleton {} // PMS-353
             } else if !view.supported {
                 Card {
-                    p { class: "text-sm text-gray-500 dark:text-gray-400",
+                    p { class: "text-sm text-muted",
                         "This report isn't available yet. The reports service powers the ticket, time, billing, project, and client reports. The custom report builder is planned but not implemented."
                     }
                 }
             } else {
                 Card { title: "Summary",
                     if view.summary.is_empty() {
-                        p { class: "text-sm text-gray-400 italic", "No data for this period." }
+                        p { class: "text-sm text-subtle italic", "No data for this period." }
                     } else {
                         div { class: "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4",
                             for (label , value) in view.summary.iter() {
-                                div { class: "text-center p-4 bg-gray-50 dark:bg-gray-800 rounded-lg",
-                                    p { class: "text-sm text-gray-500", "{label}" }
-                                    p { class: "text-3xl font-bold text-gray-900 dark:text-white", "{value}" }
+                                div { class: "text-center p-4 bg-app rounded-lg",
+                                    p { class: "text-sm text-muted", "{label}" }
+                                    p { class: "text-3xl font-bold text-content", "{value}" }
                                 }
                             }
                         }
@@ -380,11 +380,11 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
                 if !view.breakdown.is_empty() {
                     Card { title: "{view.breakdown_title}", class: "mt-6",
                         div { class: "overflow-x-auto",
-                            table { class: "min-w-full divide-y divide-gray-200 dark:divide-gray-700",
-                                tbody { class: "bg-white dark:bg-gray-900 divide-y divide-gray-200 dark:divide-gray-700",
+                            table { class: "min-w-full divide-y divide-line",
+                                tbody { class: "bg-surface divide-y divide-line",
                                     for (k , v) in view.breakdown.iter() {
                                         tr {
-                                            td { class: "px-6 py-3 text-sm text-gray-900 dark:text-white", "{k}" }
+                                            td { class: "px-6 py-3 text-sm text-content", "{k}" }
                                             td { class: "px-6 py-3 text-sm text-right font-medium", "{v}" }
                                         }
                                     }
@@ -608,11 +608,11 @@ fn CustomReportBuilder() -> Element {
                     div { class: "space-y-5",
                         // Source
                         div {
-                            label { class: "block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1",
+                            label { class: "block text-sm font-medium text-content mb-1",
                                 "Data source"
                             }
                             select {
-                                class: "w-full rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2 text-sm",
+                                class: "w-full rounded-md border border-line bg-surface px-3 py-2 text-sm",
                                 onchange: move |e| {
                                     source.set(e.value());
                                     dims.set(Vec::new());
@@ -632,7 +632,7 @@ fn CustomReportBuilder() -> Element {
                         if let Some(cur) = current.as_ref() {
                             // Dimensions
                             div {
-                                p { class: "text-sm font-medium text-gray-700 dark:text-gray-300 mb-2",
+                                p { class: "text-sm font-medium text-content mb-2",
                                     "Group by"
                                 }
                                 div { class: "space-y-1",
@@ -641,7 +641,7 @@ fn CustomReportBuilder() -> Element {
                                             let key = d.key.clone();
                                             let checked = dims().contains(&key);
                                             rsx! {
-                                                label { class: "flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300",
+                                                label { class: "flex items-center gap-2 text-sm text-content",
                                                     input {
                                                         r#type: "checkbox",
                                                         checked,
@@ -662,7 +662,7 @@ fn CustomReportBuilder() -> Element {
 
                             // Measures
                             div {
-                                p { class: "text-sm font-medium text-gray-700 dark:text-gray-300 mb-2",
+                                p { class: "text-sm font-medium text-content mb-2",
                                     "Measures"
                                 }
                                 div { class: "space-y-1",
@@ -671,7 +671,7 @@ fn CustomReportBuilder() -> Element {
                                             let key = m.key.clone();
                                             let checked = measures().contains(&key);
                                             rsx! {
-                                                label { class: "flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300",
+                                                label { class: "flex items-center gap-2 text-sm text-content",
                                                     input {
                                                         r#type: "checkbox",
                                                         checked,
@@ -712,12 +712,12 @@ fn CustomReportBuilder() -> Element {
                         }
 
                         button {
-                            class: "w-full rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50",
+                            class: "w-full rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:opacity-90 disabled:opacity-50",
                             disabled: !can_run,
                             onclick: run,
                             if running() { "Running…" } else { "Run report" }
                         }
-                        p { class: "text-xs text-gray-400",
+                        p { class: "text-xs text-subtle",
                             "Pick a source and at least one measure. Grouping is optional."
                         }
                     }
@@ -728,7 +728,7 @@ fn CustomReportBuilder() -> Element {
                     Card { title: "Result",
                         match result() {
                             None => rsx! {
-                                p { class: "text-sm text-gray-400 italic",
+                                p { class: "text-sm text-subtle italic",
                                     "Configure the report on the left and run it to see results."
                                 }
                             },
@@ -736,31 +736,31 @@ fn CustomReportBuilder() -> Element {
                                 p { class: "text-sm text-red-600", "Report failed: {e}" }
                             },
                             Some(Ok(r)) if r.rows.is_empty() => rsx! {
-                                p { class: "text-sm text-gray-400 italic", "No rows for this selection." }
+                                p { class: "text-sm text-subtle italic", "No rows for this selection." }
                             },
                             Some(Ok(r)) => {
                                 let totals: Vec<(String, String)> =
                                     r.totals.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                                 rsx! {
                                     div { class: "overflow-x-auto",
-                                        table { class: "min-w-full divide-y divide-gray-200 dark:divide-gray-700 text-sm",
+                                        table { class: "min-w-full divide-y divide-line text-sm",
                                             thead {
                                                 tr {
                                                     for col in r.columns.iter() {
-                                                        th { class: "px-4 py-2 text-left font-medium text-gray-500 dark:text-gray-400",
+                                                        th { class: "px-4 py-2 text-left font-medium text-muted",
                                                             "{col}"
                                                         }
                                                     }
                                                 }
                                             }
-                                            tbody { class: "divide-y divide-gray-200 dark:divide-gray-700",
+                                            tbody { class: "divide-y divide-line",
                                                 for row in r.rows.iter() {
                                                     tr {
                                                         for cell in row.iter() {
                                                             {
                                                                 let v = cell.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| "-".to_string());
                                                                 rsx! {
-                                                                    td { class: "px-4 py-2 text-gray-900 dark:text-white", "{v}" }
+                                                                    td { class: "px-4 py-2 text-content", "{v}" }
                                                                 }
                                                             }
                                                         }
@@ -772,9 +772,9 @@ fn CustomReportBuilder() -> Element {
                                     if !totals.is_empty() {
                                         div { class: "mt-4 flex flex-wrap gap-4",
                                             for (k , v) in totals.iter() {
-                                                div { class: "rounded-md bg-gray-50 dark:bg-gray-800 px-3 py-2",
-                                                    span { class: "text-xs text-gray-500", "Total {k}: " }
-                                                    span { class: "text-sm font-semibold text-gray-900 dark:text-white", "{v}" }
+                                                div { class: "rounded-md bg-app px-3 py-2",
+                                                    span { class: "text-xs text-muted", "Total {k}: " }
+                                                    span { class: "text-sm font-semibold text-content", "{v}" }
                                                 }
                                             }
                                         }

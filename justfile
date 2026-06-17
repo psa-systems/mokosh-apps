@@ -138,14 +138,19 @@ down:
 [group: 'dev']
 restart: down dev-sso
 
-# Run all checks (web, clippy, fmt)
+# Run all checks (web, clippy, fmt, theme tokens)
 [group: 'check']
-check: check-web check-clippy check-fmt
+check: check-web check-clippy check-fmt check-theme-tokens
 
 # Check web/WASM compilation
 [group: 'check']
 check-web:
     cargo check --target wasm32-unknown-unknown
+
+# MAPPS-259: fail on hardcoded neutral/brand color classes (use tokens)
+[group: 'check']
+check-theme-tokens:
+    bash scripts/check-theme-tokens.sh
 
 # Run clippy lints
 [group: 'check']

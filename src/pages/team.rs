@@ -108,7 +108,7 @@ pub fn TeamPage() -> Element {
                     subtitle: "Manage who can access this organization",
                 }
                 Card {
-                    p { class: "text-sm text-gray-500 dark:text-gray-400",
+                    p { class: "text-sm text-muted",
                         "You need an admin role to manage invitations."
                     }
                 }

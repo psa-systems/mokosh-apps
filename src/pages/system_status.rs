@@ -117,9 +117,9 @@ fn check_badge(value: &str) -> Element {
 #[component]
 fn StatusRow(label: String, value: String) -> Element {
     rsx! {
-        div { class: "flex items-center justify-between py-2 border-b border-gray-100 dark:border-gray-700 last:border-0",
-            span { class: "text-sm text-gray-500 dark:text-gray-400", "{label}" }
-            span { class: "text-sm font-mono text-gray-900 dark:text-white break-all text-right ml-4", "{value}" }
+        div { class: "flex items-center justify-between py-2 border-b border-line last:border-0",
+            span { class: "text-sm text-muted", "{label}" }
+            span { class: "text-sm font-mono text-content break-all text-right ml-4", "{value}" }
         }
     }
 }
@@ -173,7 +173,7 @@ pub fn SystemStatusPage() -> Element {
                 // Client build (always available, no network).
                 Card {
                     div { class: "flex items-center justify-between mb-3",
-                        h3 { class: "text-base font-semibold text-gray-900 dark:text-white", "Client build" }
+                        h3 { class: "text-base font-semibold text-content","Client build" }
                         Badge { variant: BadgeVariant::Green, "Running" }
                     }
                     StatusRow { label: "Version".to_string(), value: VERSION.to_string() }
@@ -184,7 +184,7 @@ pub fn SystemStatusPage() -> Element {
                 // API server reachability + server build.
                 Card {
                     div { class: "flex items-center justify-between mb-3",
-                        h3 { class: "text-base font-semibold text-gray-900 dark:text-white", "API server" }
+                        h3 { class: "text-base font-semibold text-content","API server" }
                         if loading {
                             Badge { variant: BadgeVariant::Gray, "Checking..." }
                         } else if matches!(&snapshot, Some(r) if r.server.is_ok()) {
@@ -195,7 +195,7 @@ pub fn SystemStatusPage() -> Element {
                     }
                     match snapshot.as_ref().map(|r| &r.server) {
                         None => rsx! {
-                            p { class: "text-sm text-gray-500 dark:text-gray-400", "Checking the API server..." }
+                            p { class: "text-sm text-muted", "Checking the API server..." }
                         },
                         Some(Ok(v)) => rsx! {
                             StatusRow { label: "Version".to_string(), value: v.version.clone() }
@@ -214,7 +214,7 @@ pub fn SystemStatusPage() -> Element {
                 // Dependency readiness breakdown.
                 Card {
                     div { class: "flex items-center justify-between mb-3",
-                        h3 { class: "text-base font-semibold text-gray-900 dark:text-white", "Dependencies" }
+                        h3 { class: "text-base font-semibold text-content","Dependencies" }
                         match snapshot.as_ref().map(|r| &r.readiness) {
                             None => rsx! { Badge { variant: BadgeVariant::Gray, "Checking..." } },
                             Some(Ok(r)) if r.status == "ready" => rsx! { Badge { variant: BadgeVariant::Green, "Ready" } },
@@ -224,15 +224,15 @@ pub fn SystemStatusPage() -> Element {
                     }
                     match snapshot.as_ref().map(|r| &r.readiness) {
                         None => rsx! {
-                            p { class: "text-sm text-gray-500 dark:text-gray-400", "Checking dependencies..." }
+                            p { class: "text-sm text-muted", "Checking dependencies..." }
                         },
                         Some(Ok(r)) => rsx! {
-                            div { class: "flex items-center justify-between py-2 border-b border-gray-100 dark:border-gray-700",
-                                span { class: "text-sm text-gray-500 dark:text-gray-400", "Database" }
+                            div { class: "flex items-center justify-between py-2 border-b border-line",
+                                span { class: "text-sm text-muted", "Database" }
                                 {check_badge(&r.checks.db)}
                             }
                             div { class: "flex items-center justify-between py-2",
-                                span { class: "text-sm text-gray-500 dark:text-gray-400", "Infisical" }
+                                span { class: "text-sm text-muted", "Infisical" }
                                 {check_badge(&r.checks.infisical)}
                             }
                         },
@@ -246,7 +246,7 @@ pub fn SystemStatusPage() -> Element {
 
                 // Resolved runtime endpoints.
                 Card {
-                    h3 { class: "text-base font-semibold text-gray-900 dark:text-white mb-3", "Connection" }
+                    h3 { class: "text-base font-semibold text-content mb-3", "Connection" }
                     StatusRow { label: "API base".to_string(), value: api_base }
                     StatusRow { label: "OIDC issuer".to_string(), value: issuer }
                     StatusRow { label: "Hub".to_string(), value: hub_url }

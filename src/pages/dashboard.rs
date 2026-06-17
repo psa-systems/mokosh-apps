@@ -161,17 +161,17 @@ pub fn DashboardPage() -> Element {
                 StatCard {
                     label: "Open Tickets",
                     value: "{open_label}",
-                    icon: rsx!(TicketIcon { class: "h-6 w-6 text-blue-600".to_string() }),
+                    icon: rsx!(TicketIcon { class: "h-6 w-6 text-accent".to_string() }),
                 }
                 StatCard {
                     label: "Hours This Week",
                     value: "{hours_week}",
-                    icon: rsx!(ClockIcon { class: "h-6 w-6 text-blue-600".to_string() }),
+                    icon: rsx!(ClockIcon { class: "h-6 w-6 text-accent".to_string() }),
                 }
                 StatCard {
                     label: "Active Projects",
                     value: "{projects_label}",
-                    icon: rsx!(FolderIcon { class: "h-6 w-6 text-blue-600".to_string() }),
+                    icon: rsx!(FolderIcon { class: "h-6 w-6 text-accent".to_string() }),
                 }
                 StatCard {
                     label: "SLA Breached",
@@ -188,7 +188,7 @@ pub fn DashboardPage() -> Element {
                     actions: rsx! {
                         Link {
                             to: Route::TicketList {},
-                            class: "text-sm text-blue-600 hover:text-blue-500",
+                            class: "text-sm text-accent hover:opacity-90",
                             "View all"
                         }
                     },
@@ -204,7 +204,7 @@ pub fn DashboardPage() -> Element {
                         TableBody {
                             if recent_tickets.is_empty() {
                                 TableRow {
-                                    TableCell { class: "text-gray-400 italic", "No tickets yet." }
+                                    TableCell { class: "text-subtle italic", "No tickets yet." }
                                 }
                             } else {
                                 for t in recent_tickets.iter() {
@@ -221,8 +221,8 @@ pub fn DashboardPage() -> Element {
                                                     Link {
                                                         to: Route::TicketDetail { id: tid.clone() },
                                                         class: "block",
-                                                        span { class: "font-medium text-blue-600", "{t.ticket_number}" }
-                                                        p { class: "text-gray-500 text-xs truncate max-w-xs", "{t.title}" }
+                                                        span { class: "font-medium text-accent", "{t.ticket_number}" }
+                                                        p { class: "text-muted text-xs truncate max-w-xs", "{t.title}" }
                                                     }
                                                 }
                                                 TableCell { Badge { variant: sv, "{snap}" } }
@@ -239,7 +239,7 @@ pub fn DashboardPage() -> Element {
                 // Open tickets by priority
                 Card { title: "Open Tickets by Priority",
                     if report.open_by_priority.is_empty() {
-                        p { class: "text-sm text-gray-400 italic", "No open tickets." }
+                        p { class: "text-sm text-subtle italic", "No open tickets." }
                     } else {
                         div { class: "space-y-3",
                             for b in report.open_by_priority.iter() {
@@ -249,7 +249,7 @@ pub fn DashboardPage() -> Element {
                                     rsx! {
                                         div { class: "flex items-center justify-between",
                                             Badge { variant: pv, "{b.label}" }
-                                            span { class: "font-medium text-gray-900 dark:text-white", "{count}" }
+                                            span { class: "font-medium text-content", "{count}" }
                                         }
                                     }
                                 }
@@ -278,7 +278,7 @@ pub fn DashboardPage() -> Element {
                     actions: rsx! {
                         Link {
                             to: Route::TimeEntryList {},
-                            class: "text-sm text-blue-600 hover:text-blue-500",
+                            class: "text-sm text-accent hover:opacity-90",
                             "View all"
                         }
                     },
@@ -294,7 +294,7 @@ pub fn DashboardPage() -> Element {
                         TableBody {
                             if recent_time.is_empty() {
                                 TableRow {
-                                    TableCell { class: "text-gray-400 italic", "No time logged yet." }
+                                    TableCell { class: "text-subtle italic", "No time logged yet." }
                                 }
                             } else {
                                 for e in recent_time.iter() {
@@ -308,7 +308,7 @@ pub fn DashboardPage() -> Element {
                                         let date = e.date.to_string();
                                         rsx! {
                                             TableRow {
-                                                TableCell { class: "text-gray-500", "{date}" }
+                                                TableCell { class: "text-muted", "{date}" }
                                                 TableCell { "{note}" }
                                                 TableCell { class: "font-medium", "{hrs}" }
                                             }

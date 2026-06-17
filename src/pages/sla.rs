@@ -62,7 +62,7 @@ pub fn SlaManagementPage() -> Element {
                 PageHeader { title: "SLA Management" }
                 Card {
                     div { class: "py-12 text-center",
-                        p { class: "text-sm text-gray-600 dark:text-gray-300",
+                        p { class: "text-sm text-content",
                             "You do not have permission to manage SLA policies. Ask an administrator for access."
                         }
                     }
@@ -81,7 +81,7 @@ pub fn SlaManagementPage() -> Element {
             }
 
             // Tab bar
-            div { class: "mb-6 border-b border-gray-200 dark:border-gray-700",
+            div { class: "mb-6 border-b border-line",
                 nav { class: "-mb-px flex space-x-6",
                     SlaTabButton {
                         label: "Policies",
@@ -120,9 +120,9 @@ struct SlaTabButtonProps {
 #[component]
 fn SlaTabButton(props: SlaTabButtonProps) -> Element {
     let class = if props.active {
-        "whitespace-nowrap border-b-2 border-blue-500 px-1 py-3 text-sm font-medium text-blue-600 dark:text-blue-400"
+        "whitespace-nowrap border-b-2 border-accent px-1 py-3 text-sm font-medium text-accent"
     } else {
-        "whitespace-nowrap border-b-2 border-transparent px-1 py-3 text-sm font-medium text-gray-500 hover:border-gray-300 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+        "whitespace-nowrap border-b-2 border-transparent px-1 py-3 text-sm font-medium text-muted hover:border-line hover:text-content"
     };
     rsx! {
         button {
@@ -219,9 +219,9 @@ fn SlaPoliciesTab() -> Element {
                                 rsx! {
                                     TableRow { key: "{key}",
                                         TableCell {
-                                            span { class: "font-medium text-gray-900 dark:text-white", "{policy.name}" }
+                                            span { class: "font-medium text-content", "{policy.name}" }
                                         }
-                                        TableCell { class: "text-gray-500", "{desc}" }
+                                        TableCell { class: "text-muted", "{desc}" }
                                         TableCell {
                                             if is_default {
                                                 Badge { variant: BadgeVariant::Green, "Default" }
@@ -231,13 +231,13 @@ fn SlaPoliciesTab() -> Element {
                                             div { class: "flex space-x-3",
                                                 button {
                                                     r#type: "button",
-                                                    class: "text-sm text-blue-600 hover:text-blue-500",
+                                                    class: "text-sm text-accent hover:opacity-90",
                                                     onclick: move |_| editing.set(Some(PolicyFormState::from_existing(&policy_for_edit))),
                                                     "Edit"
                                                 }
                                                 button {
                                                     r#type: "button",
-                                                    class: "text-sm text-blue-600 hover:text-blue-500",
+                                                    class: "text-sm text-accent hover:opacity-90",
                                                     onclick: move |_| targets_for.set(Some((policy_id.clone(), policy_name.clone()))),
                                                     "Targets"
                                                 }
@@ -566,9 +566,9 @@ fn TargetsModal(props: TargetsModalProps) -> Element {
             onclose: move |_| onclose.call(()),
             footer,
             div { class: "space-y-4",
-                p { class: "text-sm text-gray-500 dark:text-gray-400",
+                p { class: "text-sm text-muted",
                     "Targets for policy "
-                    span { class: "font-medium text-gray-900 dark:text-white", "{props.policy_name}" }
+                    span { class: "font-medium text-content", "{props.policy_name}" }
                     ". Set first-response and resolution hours per priority, then Save the row."
                 }
 
@@ -787,7 +787,7 @@ fn TargetRow(props: TargetRowProps) -> Element {
     rsx! {
         TableRow {
             TableCell {
-                span { class: "font-medium text-gray-900 dark:text-white", "{props.priority_name}" }
+                span { class: "font-medium text-content", "{props.priority_name}" }
             }
             TableCell {
                 crate::components::Input {
@@ -954,9 +954,9 @@ fn BusinessHoursTab() -> Element {
                                 rsx! {
                                     TableRow { key: "{key}",
                                         TableCell {
-                                            span { class: "font-medium text-gray-900 dark:text-white", "{bh.name}" }
+                                            span { class: "font-medium text-content", "{bh.name}" }
                                         }
-                                        TableCell { class: "text-gray-500", "{tz}" }
+                                        TableCell { class: "text-muted", "{tz}" }
                                         TableCell {
                                             if is_default {
                                                 Badge { variant: BadgeVariant::Green, "Default" }
@@ -965,7 +965,7 @@ fn BusinessHoursTab() -> Element {
                                         TableCell {
                                             button {
                                                 r#type: "button",
-                                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                                class: "text-sm text-accent hover:opacity-90",
                                                 onclick: move |_| editing.set(Some(BusinessHoursFormState::from_existing(&bh_for_edit))),
                                                 "Edit"
                                             }
@@ -1292,13 +1292,13 @@ fn HolidayCalendarsTab() -> Element {
                                 rsx! {
                                     TableRow { key: "{key}",
                                         TableCell {
-                                            span { class: "font-medium text-gray-900 dark:text-white", "{cal.name}" }
+                                            span { class: "font-medium text-content", "{cal.name}" }
                                         }
-                                        TableCell { class: "text-gray-500", "{count} dates" }
+                                        TableCell { class: "text-muted", "{count} dates" }
                                         TableCell {
                                             button {
                                                 r#type: "button",
-                                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                                class: "text-sm text-accent hover:opacity-90",
                                                 onclick: move |_| editing.set(Some(HolidayFormState::from_existing(&cal_for_edit))),
                                                 "Edit"
                                             }

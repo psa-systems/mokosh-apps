@@ -127,14 +127,14 @@ pub fn Onboarding() -> Element {
     };
 
     rsx! {
-        div { class: "min-h-screen bg-gray-100 dark:bg-gray-900 flex items-center justify-center px-4",
+        div { class: "min-h-screen bg-app flex items-center justify-center px-4",
             div { class: "max-w-md w-full",
-                div { class: "bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8",
+                div { class: "bg-surface rounded-lg shadow-lg p-8",
                     div { class: "text-center mb-6",
-                        h1 { class: "text-2xl font-semibold text-gray-900 dark:text-white",
+                        h1 { class: "text-2xl font-semibold text-content",
                             "Welcome to Mokosh"
                         }
-                        p { class: "mt-2 text-sm text-gray-600 dark:text-gray-300",
+                        p { class: "mt-2 text-sm text-content",
                             "Tell us your name so we know what to call you."
                         }
                     }
@@ -180,7 +180,7 @@ pub fn Onboarding() -> Element {
                         }
                     }
 
-                    p { class: "mt-6 text-center text-xs text-gray-500 dark:text-gray-400",
+                    p { class: "mt-6 text-center text-xs text-muted",
                         "Other profile settings (timezone, preferences) can be edited later from Profile."
                     }
                 }

@@ -156,20 +156,20 @@ pub fn TenantManagementPage() -> Element {
             // Stats
             div { class: "grid grid-cols-1 gap-5 sm:grid-cols-4 mb-6",
                 Card { class: "text-center",
-                    p { class: "text-sm text-gray-500 dark:text-gray-400", "Total Tenants" }
-                    p { class: "text-2xl font-bold text-gray-900 dark:text-white", "{total_tenants_label}" }
+                    p { class: "text-sm text-muted","Total Tenants" }
+                    p { class: "text-2xl font-bold text-content", "{total_tenants_label}" }
                 }
                 Card { class: "text-center",
-                    p { class: "text-sm text-gray-500 dark:text-gray-400", "Active" }
+                    p { class: "text-sm text-muted","Active" }
                     p { class: "text-2xl font-bold text-green-600", "{active_label}" }
                 }
                 Card { class: "text-center",
-                    p { class: "text-sm text-gray-500 dark:text-gray-400", "Trial" }
-                    p { class: "text-2xl font-bold text-blue-600", "{trial_label}" }
+                    p { class: "text-sm text-muted","Trial" }
+                    p { class: "text-2xl font-bold text-accent", "{trial_label}" }
                 }
                 Card { class: "text-center",
-                    p { class: "text-sm text-gray-500 dark:text-gray-400", "MRR" }
-                    p { class: "text-2xl font-bold text-gray-400", "-" }
+                    p { class: "text-sm text-muted","MRR" }
+                    p { class: "text-2xl font-bold text-subtle", "-" }
                 }
             }
 
@@ -299,15 +299,15 @@ fn TenantRow(props: TenantRowProps) -> Element {
         TableRow {
             TableCell {
                 div {
-                    span { class: "font-medium text-gray-900 dark:text-white", "{props.name}" }
-                    p { class: "text-sm text-gray-500", "{props.domain}.mokosh.app" }
+                    span { class: "font-medium text-content", "{props.name}" }
+                    p { class: "text-sm text-muted", "{props.domain}.mokosh.app" }
                 }
             }
             TableCell { Badge { variant: plan_variant, "{props.plan}" } }
             TableCell { "{props.users}" }
             TableCell { class: "font-medium", "{props.mrr}" }
             TableCell { Badge { variant: status_variant, "{props.status}" } }
-            TableCell { class: "text-gray-500", "{props.created}" }
+            TableCell { class: "text-muted", "{props.created}" }
         }
     }
 }

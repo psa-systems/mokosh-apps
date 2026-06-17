@@ -16,11 +16,11 @@ pub enum ButtonVariant {
 impl ButtonVariant {
     fn class(&self) -> &'static str {
         match self {
-            ButtonVariant::Primary => "bg-blue-600 text-white hover:bg-blue-700 focus:ring-blue-500",
-            ButtonVariant::Secondary => "bg-gray-200 text-gray-900 hover:bg-gray-300 focus:ring-gray-500 dark:bg-gray-700 dark:text-gray-100",
+            ButtonVariant::Primary => "bg-accent text-on-accent hover:opacity-90 focus:ring-accent",
+            ButtonVariant::Secondary => "bg-surface-2 text-content border border-line",
             ButtonVariant::Danger => "bg-red-600 text-white hover:bg-red-700 focus:ring-red-500",
-            ButtonVariant::Ghost => "bg-transparent text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800",
-            ButtonVariant::Link => "bg-transparent text-blue-600 hover:underline dark:text-blue-400",
+            ButtonVariant::Ghost => "bg-transparent text-content hover:bg-surface-2",
+            ButtonVariant::Link => "bg-transparent text-accent hover:underline",
         }
     }
 }

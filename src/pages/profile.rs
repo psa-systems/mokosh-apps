@@ -291,16 +291,16 @@ fn IdentityStrip() -> Element {
                     "{initials}"
                 }
                 div { class: "flex-1 min-w-0",
-                    p { class: "text-lg font-semibold text-gray-900 dark:text-white truncate",
+                    p { class: "text-lg font-semibold text-content truncate",
                         "{full_name}"
                     }
                     if !email.is_empty() {
-                        p { class: "text-sm text-gray-500 dark:text-gray-400 truncate",
+                        p { class: "text-sm text-muted truncate",
                             "{email}"
                         }
                     }
                     if !role.is_empty() {
-                        p { class: "mt-1 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400",
+                        p { class: "mt-1 text-xs uppercase tracking-wide text-muted",
                             "Role: {role}"
                         }
                     }
@@ -308,10 +308,10 @@ fn IdentityStrip() -> Element {
                 div { class: "flex flex-col items-end gap-1",
                     a {
                         href: "{account_settings_url}",
-                        class: "text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline",
+                        class: "text-sm font-medium text-accent hover:underline",
                         "Account Settings (Bunyip)"
                     }
-                    p { class: "text-xs text-gray-500 dark:text-gray-400 text-right max-w-xs",
+                    p { class: "text-xs text-muted text-right max-w-xs",
                         "Name, email, password, 2FA, sessions, and billing are owned by Bunyip. Change them there."
                     }
                 }
@@ -397,10 +397,10 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
         Card {
             div { class: "space-y-6 p-6",
                 div {
-                    h2 { class: "text-base font-semibold text-gray-900 dark:text-white",
+                    h2 { class: "text-base font-semibold text-content",
                         "Personal info"
                     }
-                    p { class: "text-sm text-gray-500 dark:text-gray-400",
+                    p { class: "text-sm text-muted",
                         "How you show up in this organization. Saved on mokosh."
                     }
                 }
@@ -518,8 +518,8 @@ fn DateFormatField(value: Signal<String>) -> Element {
                 help: "Applied everywhere a timestamp is shown. \"Browser default\" follows your system locale.",
                 onchange: move |e: FormEvent| value.set(e.value()),
             }
-            div { class: "flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400",
-                span { class: "font-medium text-gray-600 dark:text-gray-300",
+            div { class: "flex items-center gap-3 text-xs text-muted",
+                span { class: "font-medium text-content",
                     "Preview:"
                 }
                 span { "{preview}" }
@@ -692,9 +692,9 @@ fn CustomFormatBuilder(value: Signal<String>, open: Signal<bool>) -> Element {
                     value: draft_str.clone(),
                     oninput: move |e: FormEvent| draft.set(e.value()),
                 }
-                div { class: "rounded-md bg-gray-50 dark:bg-gray-900/60 px-3 py-2 text-sm",
-                    span { class: "font-medium text-gray-600 dark:text-gray-300", "Preview: " }
-                    span { class: "text-gray-900 dark:text-white", "{preview}" }
+                div { class: "rounded-md bg-app px-3 py-2 text-sm",
+                    span { class: "font-medium text-content", "Preview: " }
+                    span { class: "text-content", "{preview}" }
                 }
                 if !warnings.is_empty() {
                     div { class: "rounded-md bg-yellow-50 dark:bg-yellow-900/40 px-3 py-2 text-sm text-yellow-700 dark:text-yellow-200",
@@ -703,8 +703,8 @@ fn CustomFormatBuilder(value: Signal<String>, open: Signal<bool>) -> Element {
                         " -- these will appear as literal text. Fix or remove them to apply."
                     }
                 }
-                div { class: "rounded-md border border-gray-200 dark:border-gray-700 p-3 space-y-2",
-                    div { class: "text-sm font-medium text-gray-700 dark:text-gray-200",
+                div { class: "rounded-md border border-line p-3 space-y-2",
+                    div { class: "text-sm font-medium text-content",
                         "Date Builder"
                     }
                     for group in TOKEN_GROUPS.iter() {
@@ -726,7 +726,7 @@ fn TokenGroupRow(group: &'static TokenGroup, draft: Signal<String>) -> Element {
     let preview_now = chrono::Utc::now();
     rsx! {
         div { class: "flex items-start gap-3 py-1",
-            div { class: "w-20 shrink-0 text-xs text-gray-500 dark:text-gray-400 pt-1.5",
+            div { class: "w-20 shrink-0 text-xs text-muted pt-1.5",
                 "{group.label}"
             }
             div { class: "flex flex-wrap gap-1.5",
@@ -780,10 +780,10 @@ fn PreferencesCard() -> Element {
         Card {
             div { class: "space-y-6 p-6",
                 div {
-                    h2 { class: "text-base font-semibold text-gray-900 dark:text-white",
+                    h2 { class: "text-base font-semibold text-content",
                         "Preferences"
                     }
-                    p { class: "text-sm text-gray-500 dark:text-gray-400",
+                    p { class: "text-sm text-muted",
                         "Saved on this device. Applies immediately."
                     }
                 }
@@ -793,14 +793,14 @@ fn PreferencesCard() -> Element {
                     // (MAPPS-259): one account-synced picker, also reachable
                     // from the swatch in the top bar.
                     fieldset { class: "space-y-2",
-                        legend { class: "text-sm font-medium text-gray-700 dark:text-gray-300",
+                        legend { class: "text-sm font-medium text-content",
                             "Theme"
                         }
-                        p { class: "text-sm text-gray-500 dark:text-gray-400",
+                        p { class: "text-sm text-muted",
                             "Theme and accent color are set in "
                             Link {
                                 to: Route::SettingsAppearance {},
-                                class: "font-medium text-blue-600 hover:text-blue-500 dark:text-blue-400",
+                                class: "font-medium text-accent hover:opacity-90",
                                 "Settings > Appearance"
                             }
                             ", or from the swatch in the top bar."
@@ -809,12 +809,12 @@ fn PreferencesCard() -> Element {
 
                     // Time format
                     fieldset { class: "space-y-2",
-                        legend { class: "text-sm font-medium text-gray-700 dark:text-gray-300",
+                        legend { class: "text-sm font-medium text-content",
                             "Time format"
                         }
                         for (val, label) in [("12h", "12-hour (1:30 PM)"), ("24h", "24-hour (13:30)")] {
                             label {
-                                class: "flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300",
+                                class: "flex items-center gap-2 text-sm text-content",
                                 input {
                                     r#type: "radio",
                                     name: "time_format",
@@ -832,12 +832,12 @@ fn PreferencesCard() -> Element {
 
                     // First day of week
                     fieldset { class: "space-y-2",
-                        legend { class: "text-sm font-medium text-gray-700 dark:text-gray-300",
+                        legend { class: "text-sm font-medium text-content",
                             "First day of week"
                         }
                         for (val, label) in [("sunday", "Sunday"), ("monday", "Monday")] {
                             label {
-                                class: "flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300",
+                                class: "flex items-center gap-2 text-sm text-content",
                                 input {
                                     r#type: "radio",
                                     name: "first_day",
@@ -857,12 +857,12 @@ fn PreferencesCard() -> Element {
                     // across timesheets, the time list, and the
                     // dashboard (PMS-265).
                     fieldset { class: "space-y-2",
-                        legend { class: "text-sm font-medium text-gray-700 dark:text-gray-300",
+                        legend { class: "text-sm font-medium text-content",
                             "Duration format"
                         }
                         for (val , label) in [("decimal", "Decimal (1.5h)"), ("hm", "Hours:minutes (1:30)")] {
                             label {
-                                class: "flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300",
+                                class: "flex items-center gap-2 text-sm text-content",
                                 input {
                                     r#type: "radio",
                                     name: "duration_format",

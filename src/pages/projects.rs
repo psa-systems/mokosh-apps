@@ -522,20 +522,20 @@ pub fn ProjectListPage() -> Element {
             // Stats
             div { class: "grid grid-cols-1 gap-5 sm:grid-cols-4 mb-6",
                 Card { class: "text-center",
-                    p { class: "text-sm text-gray-500 dark:text-gray-400", "Active Projects" }
-                    p { class: "text-2xl font-bold text-gray-900 dark:text-white", "{active}" }
+                    p { class: "text-sm text-muted", "Active Projects" }
+                    p { class: "text-2xl font-bold text-content", "{active}" }
                 }
                 Card { class: "text-center",
-                    p { class: "text-sm text-gray-500 dark:text-gray-400", "On Hold" }
+                    p { class: "text-sm text-muted", "On Hold" }
                     p { class: "text-2xl font-bold text-yellow-600", "{on_hold}" }
                 }
                 Card { class: "text-center",
-                    p { class: "text-sm text-gray-500 dark:text-gray-400", "Completed" }
+                    p { class: "text-sm text-muted", "Completed" }
                     p { class: "text-2xl font-bold text-green-600", "{completed}" }
                 }
                 Card { class: "text-center",
-                    p { class: "text-sm text-gray-500 dark:text-gray-400", "Total Budget" }
-                    p { class: "text-2xl font-bold text-blue-600", "{total_value_label}" }
+                    p { class: "text-sm text-muted", "Total Budget" }
+                    p { class: "text-2xl font-bold text-accent", "{total_value_label}" }
                 }
             }
 
@@ -607,7 +607,7 @@ pub fn ProjectListPage() -> Element {
                                 Some(u) if u >= 90 => "bg-red-600",
                                 Some(u) if u >= 75 => "bg-yellow-500",
                                 Some(_) => "bg-green-600",
-                                None => "bg-gray-400",
+                                None => "bg-gray-400", // theme-guard-allow: neutral status-bar fill, sibling of red/yellow/green
                             };
                             let due = fmt_date(&p.target_end_date);
                             let budget = format_money_f64(p.budget_amount);
@@ -619,10 +619,10 @@ pub fn ProjectListPage() -> Element {
                                     Card { class: "hover:shadow-lg transition-shadow cursor-pointer",
                                         div { class: "flex items-start justify-between mb-4",
                                             div {
-                                                h3 { class: "text-lg font-medium text-gray-900 dark:text-white",
+                                                h3 { class: "text-lg font-medium text-content",
                                                     "{p.name}"
                                                 }
-                                                p { class: "text-sm text-gray-500 dark:text-gray-400",
+                                                p { class: "text-sm text-muted",
                                                     "{cname}"
                                                 }
                                             }
@@ -632,14 +632,14 @@ pub fn ProjectListPage() -> Element {
                                         // Budget utilization (actual vs budget)
                                         div { class: "mb-4",
                                             div { class: "flex justify-between text-sm mb-1",
-                                                span { class: "text-gray-500 dark:text-gray-400", "Budget used" }
+                                                span { class: "text-muted", "Budget used" }
                                                 if let Some(u) = util {
-                                                    span { class: "font-medium text-gray-900 dark:text-white", "{u}%" }
+                                                    span { class: "font-medium text-content", "{u}%" }
                                                 } else {
-                                                    span { class: "text-gray-400", "n/a" }
+                                                    span { class: "text-subtle", "n/a" }
                                                 }
                                             }
-                                            div { class: "w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2",
+                                            div { class: "w-full bg-surface-2 rounded-full h-2",
                                                 div {
                                                     class: "{bar_color} h-2 rounded-full transition-all",
                                                     style: "width: {util.unwrap_or(0)}%",
@@ -650,12 +650,12 @@ pub fn ProjectListPage() -> Element {
                                         // Footer info
                                         div { class: "flex justify-between text-sm",
                                             div {
-                                                span { class: "text-gray-500 dark:text-gray-400", "Due: " }
-                                                span { class: "text-gray-900 dark:text-white", "{due}" }
+                                                span { class: "text-muted", "Due: " }
+                                                span { class: "text-content", "{due}" }
                                             }
                                             div {
-                                                span { class: "text-gray-500 dark:text-gray-400", "Budget: " }
-                                                span { class: "font-medium text-gray-900 dark:text-white", "{budget}" }
+                                                span { class: "text-muted", "Budget: " }
+                                                span { class: "font-medium text-content", "{budget}" }
                                             }
                                         }
                                     }
@@ -1322,15 +1322,15 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                             }
                                         }
                                     } else {
-                                        p { class: "text-sm text-gray-400 italic", "No description provided." }
+                                        p { class: "text-sm text-subtle italic", "No description provided." }
                                     }
                                     if let Some(m) = project_edited.clone() {
-                                        p { class: "text-xs text-gray-400 italic mt-3", "{m}" }
+                                        p { class: "text-xs text-subtle italic mt-3", "{m}" }
                                     }
                                 }
                                 Card { title: "Tasks",
                                     if tasks.is_empty() {
-                                        p { class: "text-sm text-gray-400 italic", "No tasks yet." }
+                                        p { class: "text-sm text-subtle italic", "No tasks yet." }
                                     } else {
                                         div { class: "space-y-3",
                                             for t in tasks.iter() {
@@ -1352,18 +1352,18 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                     let open_task = move |_| selected_task.set(Some(task.clone()));
                                                     rsx! {
                                                         div {
-                                                            class: "flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors",
+                                                            class: "flex items-center justify-between p-3 bg-surface-2 rounded-lg cursor-pointer hover:bg-surface-2 transition-colors",
                                                             onclick: open_task,
                                                             div {
-                                                                p { class: "font-medium text-gray-900 dark:text-white", "{t.title}" }
-                                                                p { class: "text-sm text-gray-500 dark:text-gray-400", "{who}" }
+                                                                p { class: "font-medium text-content", "{t.title}" }
+                                                                p { class: "text-sm text-muted", "{who}" }
                                                             }
                                                             div { class: "flex items-center gap-4",
                                                                 div { class: "text-right",
-                                                                    div { class: "text-sm font-medium text-gray-900 dark:text-white whitespace-nowrap",
+                                                                    div { class: "text-sm font-medium text-content whitespace-nowrap",
                                                                         "Logged {logged_h} h"
                                                                     }
-                                                                    div { class: "text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap",
+                                                                    div { class: "text-xs text-muted whitespace-nowrap",
                                                                         "Approved {approved_h} h · Est {est_h} h"
                                                                     }
                                                                 }
@@ -1383,25 +1383,25 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 Card { title: "Details",
                                     dl { class: "space-y-4",
                                         div { class: "flex justify-between",
-                                            dt { class: "text-sm text-gray-500", "Status" }
+                                            dt { class: "text-sm text-muted", "Status" }
                                             dd { Badge { variant: status_variant, "{status_label}" } }
                                         }
                                         div { class: "flex justify-between",
-                                            dt { class: "text-sm text-gray-500", "Progress" }
+                                            dt { class: "text-sm text-muted", "Progress" }
                                             dd { class: "text-sm font-medium",
                                                 "{progress}% ({completed_tasks}/{total_tasks} tasks)"
                                             }
                                         }
                                         div { class: "flex justify-between",
-                                            dt { class: "text-sm text-gray-500", "Start Date" }
+                                            dt { class: "text-sm text-muted", "Start Date" }
                                             dd { class: "text-sm", "{fmt_date(&p.start_date)}" }
                                         }
                                         div { class: "flex justify-between",
-                                            dt { class: "text-sm text-gray-500", "Due Date" }
+                                            dt { class: "text-sm text-muted", "Due Date" }
                                             dd { class: "text-sm", "{fmt_date(&p.target_end_date)}" }
                                         }
                                         div { class: "flex justify-between",
-                                            dt { class: "text-sm text-gray-500", "Project Manager" }
+                                            dt { class: "text-sm text-muted", "Project Manager" }
                                             dd { class: "text-sm", "{pm}" }
                                         }
                                     }
@@ -1409,18 +1409,18 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 Card { title: "Budget",
                                     div { class: "space-y-3",
                                         div { class: "flex justify-between",
-                                            span { class: "text-sm text-gray-500", "Total Budget" }
+                                            span { class: "text-sm text-muted", "Total Budget" }
                                             span { class: "font-medium", "{format_money_f64(p.budget_amount)}" }
                                         }
                                         div { class: "flex justify-between",
-                                            span { class: "text-sm text-gray-500", "Spent" }
+                                            span { class: "text-sm text-muted", "Spent" }
                                             span { class: "font-medium text-green-600", "{format_money_f64(p.actual_amount)}" }
                                         }
                                         div { class: "flex justify-between",
-                                            span { class: "text-sm text-gray-500", "Remaining" }
+                                            span { class: "text-sm text-muted", "Remaining" }
                                             span { class: "font-medium", "{format_money_f64(Some(remaining))}" }
                                         }
-                                        div { class: "w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 mt-2",
+                                        div { class: "w-full bg-surface-2 rounded-full h-2 mt-2",
                                             div { class: "bg-green-600 h-2 rounded-full", style: "width: {util}%" }
                                         }
                                     }
@@ -1428,15 +1428,15 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 Card { title: "Time",
                                     div { class: "space-y-3",
                                         div { class: "flex justify-between",
-                                            span { class: "text-sm text-gray-500", "Estimated" }
+                                            span { class: "text-sm text-muted", "Estimated" }
                                             span { class: "font-medium", "{fmt_hours(p.budget_hours)} h" }
                                         }
                                         div { class: "flex justify-between",
-                                            span { class: "text-sm text-gray-500", "Logged" }
+                                            span { class: "text-sm text-muted", "Logged" }
                                             span { class: "font-medium", "{fmt_hours(p.actual_hours)} h" }
                                         }
                                         div { class: "flex justify-between",
-                                            span { class: "text-sm text-gray-500", "Remaining" }
+                                            span { class: "text-sm text-muted", "Remaining" }
                                             span { class: "font-medium", "{remaining_h:.1} h" }
                                         }
                                     }
@@ -1444,7 +1444,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 // PMS-205: the project's own change history.
                                 Card { title: "Change History",
                                     if project_history.is_empty() {
-                                        p { class: "text-sm text-gray-400 italic", "No edits yet." }
+                                        p { class: "text-sm text-subtle italic", "No edits yet." }
                                     } else {
                                         div { class: "space-y-3 text-sm",
                                             for e in project_history.iter().take(20) {
@@ -1456,7 +1456,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                     rsx! {
                                                         div { class: "flex justify-between gap-2",
                                                             div { class: "min-w-0",
-                                                                p { class: "text-gray-700 dark:text-gray-300",
+                                                                p { class: "text-content",
                                                                     if fields.is_empty() {
                                                                         "{label}"
                                                                     } else {
@@ -1464,7 +1464,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                                     }
                                                                 }
                                                                 if !who.is_empty() {
-                                                                    p { class: "text-xs text-gray-400", "by {who}" }
+                                                                    p { class: "text-xs text-subtle", "by {who}" }
                                                                 }
                                                                 for c in e.changes.iter() {
                                                                     {
@@ -1475,9 +1475,9 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                                             rsx! {}
                                                                         } else {
                                                                             rsx! {
-                                                                                p { class: "text-xs text-gray-500 dark:text-gray-400 mt-1",
+                                                                                p { class: "text-xs text-muted mt-1",
                                                                                     span { class: "font-medium", "{fname}: " }
-                                                                                    span { class: "line-through text-gray-400", "{old}" }
+                                                                                    span { class: "line-through text-subtle", "{old}" }
                                                                                     " → "
                                                                                     span { "{new}" }
                                                                                 }
@@ -1486,7 +1486,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                                     }
                                                                 }
                                                             }
-                                                            span { class: "text-gray-400 whitespace-nowrap", "{when}" }
+                                                            span { class: "text-subtle whitespace-nowrap", "{when}" }
                                                         }
                                                     }
                                                 }
@@ -1938,7 +1938,7 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
                     }
                     TableBody {
                         if is_loading {
-                            TableRow { TableCell { class: "text-gray-400", "Loading…" } }
+                            TableRow { TableCell { class: "text-subtle", "Loading…" } }
                         } else if load_failed {
                             TableRow {
                                 TableCell { class: "text-yellow-600 dark:text-yellow-400",
@@ -1947,7 +1947,7 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
                             }
                         } else if tasks.is_empty() {
                             TableRow {
-                                TableCell { class: "text-gray-400 italic", "No tasks yet." }
+                                TableCell { class: "text-subtle italic", "No tasks yet." }
                             }
                         } else {
                             for t in tasks.iter() {
@@ -1971,7 +1971,7 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
                                             TableCell { Badge { variant: tv, "{tl}" } }
                                             TableCell {
                                                 if unassigned {
-                                                    span { class: "text-gray-400 italic", "Unassigned" }
+                                                    span { class: "text-subtle italic", "Unassigned" }
                                                 } else {
                                                     "{who}"
                                                 }
@@ -1980,7 +1980,7 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
                                             TableCell {
                                                 div { class: "whitespace-nowrap font-medium", "Logged {logged_h} h" }
                                                 div {
-                                                    class: "text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap",
+                                                    class: "text-xs text-muted whitespace-nowrap",
                                                     "Approved {approved_h} h · Est {est_h} h"
                                                 }
                                             }
@@ -2248,7 +2248,7 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                     p { class: "text-sm text-red-600 dark:text-red-400", "{te_error}" }
                 }
                 if let Some(m) = task_edited {
-                    p { class: "text-xs text-gray-400 italic", "{m}" }
+                    p { class: "text-xs text-subtle italic", "{m}" }
                 }
                 Input {
                     name: "te-title",
@@ -2307,10 +2307,10 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                 }
 
                 // Change history for this task.
-                div { class: "border-t border-gray-200 dark:border-gray-700 pt-3",
-                    p { class: "text-sm font-medium text-gray-700 dark:text-gray-300 mb-2", "Change History" }
+                div { class: "border-t border-line pt-3",
+                    p { class: "text-sm font-medium text-content mb-2", "Change History" }
                     if task_history.is_empty() {
-                        p { class: "text-sm text-gray-400 italic", "No edits yet." }
+                        p { class: "text-sm text-subtle italic", "No edits yet." }
                     } else {
                         div { class: "space-y-2 text-sm max-h-48 overflow-y-auto",
                             for e in task_history.iter().take(20) {
@@ -2322,7 +2322,7 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                                     rsx! {
                                         div { class: "flex justify-between gap-2",
                                             div { class: "min-w-0",
-                                                p { class: "text-gray-700 dark:text-gray-300",
+                                                p { class: "text-content",
                                                     if fields.is_empty() {
                                                         "{label}"
                                                     } else {
@@ -2330,7 +2330,7 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                                                     }
                                                 }
                                                 if !who.is_empty() {
-                                                    p { class: "text-xs text-gray-400", "by {who}" }
+                                                    p { class: "text-xs text-subtle", "by {who}" }
                                                 }
                                                 for c in e.changes.iter() {
                                                     {
@@ -2341,9 +2341,9 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                                                             rsx! {}
                                                         } else {
                                                             rsx! {
-                                                                p { class: "text-xs text-gray-500 dark:text-gray-400 mt-1",
+                                                                p { class: "text-xs text-muted mt-1",
                                                                     span { class: "font-medium", "{fname}: " }
-                                                                    span { class: "line-through text-gray-400", "{old}" }
+                                                                    span { class: "line-through text-subtle", "{old}" }
                                                                     " → "
                                                                     span { "{new}" }
                                                                 }
@@ -2352,7 +2352,7 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                                                     }
                                                 }
                                             }
-                                            span { class: "text-gray-400 whitespace-nowrap", "{when}" }
+                                            span { class: "text-subtle whitespace-nowrap", "{when}" }
                                         }
                                     }
                                 }

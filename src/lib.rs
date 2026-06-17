@@ -34,7 +34,7 @@ pub fn AuthGuard() -> Element {
         // placeholder so we do not kick off the OIDC dance just to
         // find we already have a session.
         return rsx! {
-            div { class: "min-h-screen flex items-center justify-center text-sm text-gray-500",
+            div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
                 "Loading..."
             }
         };
@@ -58,7 +58,7 @@ pub fn AuthGuard() -> Element {
         let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
         let _ = crate::modules::oidc::start_login(&cfg, "");
         return rsx! {
-            div { class: "min-h-screen flex items-center justify-center text-sm text-gray-500",
+            div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
                 "Signing you in..."
             }
         };
@@ -86,7 +86,7 @@ pub fn AuthGuard() -> Element {
         if !on_onboarding_route {
             nav.replace(Route::Onboarding {});
             return rsx! {
-                div { class: "min-h-screen flex items-center justify-center text-sm text-gray-500",
+                div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
                     "Setting up your profile..."
                 }
             };
@@ -446,7 +446,7 @@ fn HubRedirect(target: String, label: &'static str) -> Element {
         }
     });
     rsx! {
-        div { class: "min-h-screen flex items-center justify-center p-8 text-sm text-gray-500 dark:text-gray-400",
+        div { class: "min-h-screen flex items-center justify-center p-8 text-sm text-muted",
             "Redirecting to {label}..."
         }
     }
@@ -474,7 +474,7 @@ fn Login() -> Element {
         let _ = crate::modules::oidc::start_login(&cfg, "/dashboard");
     });
     rsx! {
-        div { class: "min-h-screen flex items-center justify-center text-sm text-gray-500",
+        div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
             "Signing you in..."
         }
     }

@@ -417,10 +417,10 @@ pub fn AssetListPage() -> Element {
                     }
                     TableBody {
                         if is_loading {
-                            TableRow { TableCell { class: "text-gray-400", "Loading…" } }
+                            TableRow { TableCell { class: "text-subtle", "Loading…" } }
                         } else if filtered.is_empty() {
                             TableRow {
-                                TableCell { class: "text-gray-400 italic",
+                                TableCell { class: "text-subtle italic",
                                     if assets.is_empty() {
                                         "No assets yet. Create one to get started."
                                     } else {
@@ -445,7 +445,7 @@ pub fn AssetListPage() -> Element {
                                             TableCell {
                                                 Link {
                                                     to: Route::AssetDetail { id: aid.clone() },
-                                                    class: "font-medium text-blue-600 hover:text-blue-500",
+                                                    class: "font-medium text-accent hover:opacity-90",
                                                     "{a.name}"
                                                 }
                                             }
@@ -1168,31 +1168,31 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                         }
                                     },
                                     if let Some(marker) = edited_marker {
-                                        p { class: "text-xs text-gray-400 italic mb-3", "{marker}" }
+                                        p { class: "text-xs text-subtle italic mb-3", "{marker}" }
                                     }
                                     dl { class: "grid grid-cols-2 gap-4",
                                         div {
-                                            dt { class: "text-sm text-gray-500", "Type" }
+                                            dt { class: "text-sm text-muted", "Type" }
                                             dd { class: "mt-1", "{tname}" }
                                         }
                                         div {
-                                            dt { class: "text-sm text-gray-500", "Company" }
+                                            dt { class: "text-sm text-muted", "Company" }
                                             dd { class: "mt-1", "{cname}" }
                                         }
                                         div {
-                                            dt { class: "text-sm text-gray-500", "Manufacturer" }
+                                            dt { class: "text-sm text-muted", "Manufacturer" }
                                             dd { class: "mt-1", "{manufacturer}" }
                                         }
                                         div {
-                                            dt { class: "text-sm text-gray-500", "Model" }
+                                            dt { class: "text-sm text-muted", "Model" }
                                             dd { class: "mt-1", "{model}" }
                                         }
                                         div {
-                                            dt { class: "text-sm text-gray-500", "Serial Number" }
+                                            dt { class: "text-sm text-muted", "Serial Number" }
                                             dd { class: "mt-1 font-mono text-sm", "{serial}" }
                                         }
                                         div {
-                                            dt { class: "text-sm text-gray-500", "Asset Tag" }
+                                            dt { class: "text-sm text-muted", "Asset Tag" }
                                             dd { class: "mt-1 font-mono text-sm", "{tag}" }
                                         }
                                     }
@@ -1201,7 +1201,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 // Relationships
                                 Card { title: "Relationships",
                                     if relationships.is_empty() {
-                                        p { class: "text-sm text-gray-400 italic", "No relationships." }
+                                        p { class: "text-sm text-subtle italic", "No relationships." }
                                     } else {
                                         div { class: "space-y-2",
                                             for r in relationships.iter() {
@@ -1211,12 +1211,12 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                         .map(|c| c.to_string())
                                                         .unwrap_or_default();
                                                     rsx! {
-                                                        div { class: "flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-800 rounded",
+                                                        div { class: "flex items-center justify-between p-2 bg-surface-2 rounded",
                                                             Badge { variant: BadgeVariant::Blue, "{r.relationship_type}" }
                                                             if !child.is_empty() {
                                                                 Link {
                                                                     to: Route::AssetDetail { id: child.clone() },
-                                                                    class: "text-sm text-blue-600 hover:text-blue-500 font-mono",
+                                                                    class: "text-sm text-accent hover:opacity-90 font-mono",
                                                                     "{child}"
                                                                 }
                                                             }
@@ -1235,7 +1235,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 // (bidirectional).
                                 Card { title: "Related Tickets",
                                     if related_tickets.is_empty() {
-                                        p { class: "text-sm text-gray-400 italic", "No related tickets." }
+                                        p { class: "text-sm text-subtle italic", "No related tickets." }
                                     } else {
                                         div { class: "space-y-2",
                                             for t in related_tickets.iter() {
@@ -1246,11 +1246,11 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                     let status_name = t.status.name.clone();
                                                     let priority_name = t.priority.name.clone();
                                                     rsx! {
-                                                        div { class: "flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-800 rounded gap-3",
+                                                        div { class: "flex items-center justify-between p-2 bg-surface-2 rounded gap-3",
                                                             div { class: "min-w-0 flex-1",
                                                                 Link {
                                                                     to: Route::TicketDetail { id: tid.clone() },
-                                                                    class: "text-sm font-medium text-blue-600 hover:text-blue-500",
+                                                                    class: "text-sm font-medium text-accent hover:opacity-90",
                                                                     if !number.is_empty() {
                                                                         span { class: "font-mono mr-2", "{number}" }
                                                                     }
@@ -1282,7 +1282,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 // add/edit/delete affordance is offered here.
                                 Card { title: "Configuration Items",
                                     if config_items.is_empty() {
-                                        p { class: "text-sm text-gray-400 italic", "No configuration items." }
+                                        p { class: "text-sm text-subtle italic", "No configuration items." }
                                     } else {
                                         div { class: "space-y-2",
                                             for ci in config_items.iter() {
@@ -1293,14 +1293,14 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                     let path = format!("/configuration-items/{cid}");
                                                     let mut store = revealed_cfgs;
                                                     rsx! {
-                                                        div { class: "flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-800 rounded gap-3",
+                                                        div { class: "flex items-center justify-between p-2 bg-surface-2 rounded gap-3",
                                                             div { class: "min-w-0",
-                                                                p { class: "font-medium text-sm text-gray-900 dark:text-white", "{ci.name}" }
+                                                                p { class: "font-medium text-sm text-content", "{ci.name}" }
                                                                 if !category.is_empty() {
-                                                                    p { class: "text-xs text-gray-500", "{category}" }
+                                                                    p { class: "text-xs text-muted", "{category}" }
                                                                 }
                                                                 if let Some(val) = revealed {
-                                                                    p { class: "font-mono text-sm text-gray-900 dark:text-white break-all mt-1", "{val}" }
+                                                                    p { class: "font-mono text-sm text-content break-all mt-1", "{val}" }
                                                                 }
                                                             }
                                                             Button {
@@ -1346,7 +1346,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                         }
                                     },
                                     if credentials.is_empty() {
-                                        p { class: "text-sm text-gray-400 italic", "No credentials." }
+                                        p { class: "text-sm text-subtle italic", "No credentials." }
                                     } else {
                                         div { class: "space-y-2",
                                             for cr in credentials.iter() {
@@ -1357,13 +1357,13 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                     let path = format!("/credentials/{crid}");
                                                     let mut store = revealed_creds;
                                                     rsx! {
-                                                        div { class: "p-2 bg-gray-50 dark:bg-gray-800 rounded",
+                                                        div { class: "p-2 bg-surface-2 rounded",
                                                             div { class: "flex items-center justify-between gap-3",
                                                                 div { class: "min-w-0",
-                                                                    p { class: "font-medium text-sm text-gray-900 dark:text-white", "{cr.name}" }
-                                                                    p { class: "text-xs text-gray-500", "{cr.credential_type}" }
+                                                                    p { class: "font-medium text-sm text-content", "{cr.name}" }
+                                                                    p { class: "text-xs text-muted", "{cr.credential_type}" }
                                                                     if !url.is_empty() {
-                                                                        p { class: "text-xs text-gray-500 break-all", "{url}" }
+                                                                        p { class: "text-xs text-muted break-all", "{url}" }
                                                                     }
                                                                 }
                                                                 div { class: "flex items-center gap-2 shrink-0",
@@ -1388,11 +1388,11 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                                 }
                                                             }
                                                             if let Some(c) = revealed {
-                                                                div { class: "mt-2 space-y-1 font-mono text-sm text-gray-900 dark:text-white break-all",
+                                                                div { class: "mt-2 space-y-1 font-mono text-sm text-content break-all",
                                                                     p { "user: {c.username}" }
                                                                     p { "pass: {c.password}" }
                                                                     if let Some(n) = c.notes.as_ref().filter(|s| !s.is_empty()) {
-                                                                        p { class: "text-gray-500", "notes: {n}" }
+                                                                        p { class: "text-muted", "notes: {n}" }
                                                                     }
                                                                 }
                                                             }
@@ -1410,15 +1410,15 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 Card { title: "Status",
                                     div { class: "space-y-4",
                                         div { class: "flex justify-between items-center",
-                                            span { class: "text-gray-500", "Status" }
+                                            span { class: "text-muted", "Status" }
                                             Badge { variant: status_variant, "{status_label}" }
                                         }
                                         div { class: "flex justify-between",
-                                            span { class: "text-gray-500", "Warranty" }
+                                            span { class: "text-muted", "Warranty" }
                                             span { class: "font-medium", "{warranty}" }
                                         }
                                         div { class: "flex justify-between",
-                                            span { class: "text-gray-500", "Purchased" }
+                                            span { class: "text-muted", "Purchased" }
                                             span { class: "font-medium", "{purchased}" }
                                         }
                                     }
@@ -1426,7 +1426,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
 
                                 Card { title: "Change History",
                                     if audit.is_empty() {
-                                        p { class: "text-sm text-gray-400 italic", "No history yet." }
+                                        p { class: "text-sm text-subtle italic", "No history yet." }
                                     } else {
                                         div { class: "space-y-3 text-sm",
                                             for e in audit.iter().take(15) {
@@ -1453,7 +1453,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                     rsx! {
                                                         div { class: "flex justify-between gap-2",
                                                             div { class: "min-w-0",
-                                                                p { class: "text-gray-700 dark:text-gray-300",
+                                                                p { class: "text-content",
                                                                     if event.is_empty() {
                                                                         "{label}"
                                                                     } else {
@@ -1461,7 +1461,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                                     }
                                                                 }
                                                                 if who != "-" {
-                                                                    p { class: "text-xs text-gray-400", "by {who}" }
+                                                                    p { class: "text-xs text-subtle", "by {who}" }
                                                                 }
                                                                 for c in field_changes.iter() {
                                                                     {
@@ -1472,9 +1472,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                                             rsx! {}
                                                                         } else {
                                                                             rsx! {
-                                                                                p { class: "text-xs text-gray-500 dark:text-gray-400 mt-1",
+                                                                                p { class: "text-xs text-muted mt-1",
                                                                                     span { class: "font-medium", "{fname}: " }
-                                                                                    span { class: "line-through text-gray-400", "{old}" }
+                                                                                    span { class: "line-through text-subtle", "{old}" }
                                                                                     " → "
                                                                                     span { "{new}" }
                                                                                 }
@@ -1483,7 +1483,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                                     }
                                                                 }
                                                             }
-                                                            span { class: "text-gray-400 whitespace-nowrap", "{when}" }
+                                                            span { class: "text-subtle whitespace-nowrap", "{when}" }
                                                         }
                                                     }
                                                 }

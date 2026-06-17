@@ -128,9 +128,9 @@ enum BodyTab {
 
 fn body_tab_class(active: bool) -> &'static str {
     if active {
-        "px-3 py-1 text-sm border-b-2 border-blue-600 text-blue-600 dark:text-blue-400 font-medium"
+        "px-3 py-1 text-sm border-b-2 border-accent text-accent font-medium"
     } else {
-        "px-3 py-1 text-sm border-b-2 border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+        "px-3 py-1 text-sm border-b-2 border-transparent text-muted hover:text-content"
     }
 }
 
@@ -362,13 +362,13 @@ pub fn KBHomePage() -> Element {
                 div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8",
                     for _ in 0..3 {
                         Card {
-                            div { class: "h-16 bg-gray-100 dark:bg-gray-800 rounded animate-pulse" }
+                            div { class: "h-16 bg-surface-2 rounded animate-pulse" }
                         }
                     }
                 }
             } else if categories.is_empty() {
                 Card { class: "mb-8",
-                    div { class: "py-8 text-center text-sm text-gray-500",
+                    div { class: "py-8 text-center text-sm text-muted",
                         "No categories yet."
                     }
                 }
@@ -397,11 +397,11 @@ pub fn KBHomePage() -> Element {
                 } else if recent_loading {
                     div { class: "space-y-4",
                         for _ in 0..3 {
-                            div { class: "h-10 bg-gray-100 dark:bg-gray-800 rounded animate-pulse" }
+                            div { class: "h-10 bg-surface-2 rounded animate-pulse" }
                         }
                     }
                 } else if recent.is_empty() {
-                    div { class: "py-8 text-center text-sm text-gray-500",
+                    div { class: "py-8 text-center text-sm text-muted",
                         "No articles yet. Click New Article to create one."
                     }
                 } else {
@@ -525,7 +525,7 @@ fn CategoryCard(props: CategoryCardProps) -> Element {
                 onclick: move |e| e.stop_propagation(),
                 button {
                     r#type: "button",
-                    class: "p-1 rounded text-gray-400 hover:text-blue-600 hover:bg-gray-100 dark:hover:bg-gray-700",
+                    class: "p-1 rounded text-subtle hover:text-accent hover:bg-surface-2",
                     title: "Edit category",
                     "aria-label": "Edit category",
                     onclick: move |_| props.on_edit.call(edit_target.clone()),
@@ -533,7 +533,7 @@ fn CategoryCard(props: CategoryCardProps) -> Element {
                 }
                 button {
                     r#type: "button",
-                    class: "p-1 rounded text-gray-400 hover:text-red-600 hover:bg-gray-100 dark:hover:bg-gray-700",
+                    class: "p-1 rounded text-subtle hover:text-red-600 hover:bg-surface-2",
                     title: "Delete category",
                     "aria-label": "Delete category",
                     onclick: move |_| props.on_delete.call(delete_target.clone()),
@@ -551,15 +551,15 @@ fn CategoryCard(props: CategoryCardProps) -> Element {
                     });
                 },
                 div { class: "flex items-start",
-                    div { class: "flex-shrink-0 w-10 h-10 bg-blue-100 dark:bg-blue-900 rounded-lg flex items-center justify-center",
-                        crate::components::BookIcon { class: "h-5 w-5 text-blue-600 dark:text-blue-400".to_string() }
+                    div { class: "flex-shrink-0 w-10 h-10 bg-accent-100 dark:bg-accent-900 rounded-lg flex items-center justify-center",
+                        crate::components::BookIcon { class: "h-5 w-5 text-accent".to_string() }
                     }
                     div { class: "ml-4",
-                        h3 { class: "text-lg font-medium text-gray-900 dark:text-white",
+                        h3 { class: "text-lg font-medium text-content",
                             "{title}"
                         }
                         if !description.is_empty() {
-                            p { class: "text-sm text-gray-500 dark:text-gray-400 mt-1",
+                            p { class: "text-sm text-muted mt-1",
                                 "{description}"
                             }
                         }
@@ -582,12 +582,12 @@ fn ArticleItem(props: ArticleItemProps) -> Element {
     rsx! {
         Link {
             to: Route::KBArticleDetail { id: props.id.clone() },
-            class: "block p-4 -mx-4 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg transition-colors",
+            class: "block p-4 -mx-4 hover:bg-surface-2 rounded-lg transition-colors",
             div { class: "flex items-center justify-between",
                 div {
-                    h4 { class: "font-medium text-gray-900 dark:text-white", "{props.title}" }
+                    h4 { class: "font-medium text-content", "{props.title}" }
                 }
-                span { class: "text-sm text-gray-400", "{props.updated}" }
+                span { class: "text-sm text-subtle", "{props.updated}" }
             }
         }
     }
@@ -821,11 +821,11 @@ pub fn KBArticleListPage(
 
                     if tag_active {
                         div { class: "mb-4 flex items-center flex-wrap gap-2 text-sm",
-                            span { class: "text-gray-500 dark:text-gray-400", "Filtered by tag:" }
+                            span { class: "text-muted", "Filtered by tag:" }
                             Badge { variant: BadgeVariant::Blue, "#{tag_text}" }
                             Link {
                                 to: Route::KBArticleList { q: search_text.clone(), tag: String::new(), category: category_text.clone() },
-                                class: "text-blue-600 hover:text-blue-500",
+                                class: "text-accent hover:opacity-90",
                                 "Clear filter"
                             }
                         }
@@ -935,7 +935,7 @@ fn ArticleRow(props: ArticleRowProps) -> Element {
             TableCell {
                 Link {
                     to: Route::KBArticleDetail { id: props.id.clone() },
-                    class: "font-medium text-blue-600 hover:text-blue-500",
+                    class: "font-medium text-accent hover:opacity-90",
                     "{props.title}"
                 }
                 if !props.tags.is_empty() {
@@ -944,7 +944,7 @@ fn ArticleRow(props: ArticleRowProps) -> Element {
             }
             TableCell { Badge { variant: status_var, "{status_label}" } }
             TableCell { Badge { variant: vis_variant, "{vis_label}" } }
-            TableCell { class: "text-gray-500", "{props.updated}" }
+            TableCell { class: "text-muted", "{props.updated}" }
         }
     }
 }
@@ -964,7 +964,7 @@ fn TagChips(tags: Vec<String>, #[props(default)] class: String) -> Element {
                 Link {
                     key: "{tag}",
                     to: Route::KBArticleList { q: String::new(), tag: tag.clone(), category: String::new() },
-                    class: "inline-flex items-center rounded-full bg-blue-50 dark:bg-blue-900/40 px-2 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/70",
+                    class: "inline-flex items-center rounded-full bg-accent-50 dark:bg-accent-900/40 px-2 py-0.5 text-xs font-medium text-accent-700 dark:text-accent-300 hover:bg-accent-100 dark:hover:bg-accent-900/70",
                     "#{tag}"
                 }
             }
@@ -1095,7 +1095,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                             p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load article." }
                             Link {
                                 to: Route::KBHome {},
-                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                class: "text-sm text-accent hover:opacity-90",
                                 "Back to knowledge base"
                             }
                         }
@@ -1135,7 +1135,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                     ReadModeButton { left_collapsed, right_collapsed }
                                 }
                                 div { class: "mt-2 flex items-center justify-between gap-3 flex-wrap",
-                                    h1 { class: "text-2xl font-semibold text-gray-900 dark:text-white truncate", "{article.title}" }
+                                    h1 { class: "text-2xl font-semibold text-content truncate", "{article.title}" }
                                     OverflowActions {
                                         RatingBar {
                                             article_id: props.id.clone(),
@@ -1150,7 +1150,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                         DensityToggle { comfortable }
                                     }
                                 }
-                                p { class: "mt-1 text-xs text-gray-400", "Updated {updated}" }
+                                p { class: "mt-1 text-xs text-subtle", "Updated {updated}" }
                                 if !article.tags.is_empty() {
                                     TagChips { tags: article.tags.clone(), class: "mt-3".to_string() }
                                 }
@@ -1187,25 +1187,25 @@ fn VersionHistoryCard(
     let mut restoring = use_signal(|| None::<i32>);
 
     rsx! {
-        div { class: "rounded border border-gray-200 dark:border-gray-700",
-            p { class: "px-3 py-2 text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700",
+        div { class: "rounded border border-line",
+            p { class: "px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted border-b border-line",
                 "Versions"
             }
             match &*snap {
                 None => rsx! {
-                    p { class: "px-3 py-3 text-xs text-gray-400", "Loading..." }
+                    p { class: "px-3 py-3 text-xs text-subtle", "Loading..." }
                 },
                 Some(None) => rsx! {
                     p { class: "px-3 py-3 text-xs text-red-600 dark:text-red-300", "Could not load version history." }
                 },
                 Some(Some(page)) if page.data.is_empty() => rsx! {
-                    p { class: "px-3 py-3 text-xs text-gray-400", "No prior versions." }
+                    p { class: "px-3 py-3 text-xs text-subtle", "No prior versions." }
                 },
                 Some(Some(page)) => {
                     let rows = page.data.clone();
                     let article_id = article_id.clone();
                     rsx! {
-                        ul { class: "divide-y divide-gray-100 dark:divide-gray-800",
+                        ul { class: "divide-y divide-line",
                             for version in rows.into_iter() {
                                 {
                                     let key = version.id.to_string();
@@ -1216,9 +1216,9 @@ fn VersionHistoryCard(
                                     rsx! {
                                         li { key: "{key}", class: "px-3 py-2 text-xs",
                                             div { class: "flex items-center justify-between gap-2",
-                                                span { class: "font-medium text-gray-700 dark:text-gray-200", "v{n}" }
+                                                span { class: "font-medium text-content", "v{n}" }
                                                 button {
-                                                    class: "text-blue-600 hover:text-blue-500 disabled:opacity-50",
+                                                    class: "text-accent hover:opacity-90 disabled:opacity-50",
                                                     disabled: *restoring.read() == Some(n),
                                                     onclick: move |_| {
                                                         if restoring.read().is_some() { return; }
@@ -1240,8 +1240,8 @@ fn VersionHistoryCard(
                                                     "Restore"
                                                 }
                                             }
-                                            p { class: "mt-0.5 text-gray-500 dark:text-gray-400 truncate", "{title}" }
-                                            p { class: "text-gray-400", "{saved}" }
+                                            p { class: "mt-0.5 text-muted truncate", "{title}" }
+                                            p { class: "text-subtle", "{saved}" }
                                         }
                                     }
                                 }
@@ -1329,7 +1329,7 @@ pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
                             p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load article." }
                             Link {
                                 to: Route::KBHome {},
-                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                class: "text-sm text-accent hover:opacity-90",
                                 "Back to knowledge base"
                             }
                         }
@@ -1618,7 +1618,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                 }
 
                 div {
-                    div { class: "flex gap-2 border-b border-gray-200 dark:border-gray-700 mb-2",
+                    div { class: "flex gap-2 border-b border-line mb-2",
                         button { r#type: "button", class: body_tab_class(tab() == BodyTab::Write), onclick: move |_| tab.set(BodyTab::Write), "Write" }
                         button { r#type: "button", class: body_tab_class(tab() == BodyTab::Preview), onclick: move |_| tab.set(BodyTab::Preview), "Preview" }
                     }
@@ -1637,7 +1637,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                         },
                         BodyTab::Preview => rsx! {
                             article {
-                                class: "prose dark:prose-invert max-w-none p-2 min-h-40 border border-gray-200 dark:border-gray-700 rounded",
+                                class: "prose dark:prose-invert max-w-none p-2 min-h-40 border border-line rounded",
                                 dangerous_inner_html: crate::utils::markdown::render_markdown(&content.read()),
                             }
                         },
@@ -1957,18 +1957,18 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
 #[component]
 fn KbBreadcrumb(path: Vec<KbCategory>, title: String) -> Element {
     rsx! {
-        nav { class: "flex items-center flex-wrap gap-1 text-sm text-gray-500 dark:text-gray-400",
-            Link { to: Route::KBHome {}, class: "hover:text-gray-700 dark:hover:text-gray-200", "KB" }
+        nav { class: "flex items-center flex-wrap gap-1 text-sm text-muted",
+            Link { to: Route::KBHome {}, class: "hover:text-content", "KB" }
             for cat in path.iter() {
                 ChevronRightIcon { size: IconSize::Small }
                 Link {
                     to: Route::KBArticleList { q: String::new(), tag: String::new(), category: cat.id.to_string() },
-                    class: "hover:text-gray-700 dark:hover:text-gray-200",
+                    class: "hover:text-content",
                     "{cat.name}"
                 }
             }
             ChevronRightIcon { size: IconSize::Small }
-            span { class: "text-gray-700 dark:text-gray-200 font-medium", "{title}" }
+            span { class: "text-content font-medium", "{title}" }
         }
     }
 }
@@ -1982,8 +1982,8 @@ fn KbTreeNav(categories: Vec<KbCategory>, articles: Vec<KbArticle>, current_id: 
                 KbTreeCategory { node: node.clone(), current_id: current_id.clone() }
             }
             if !uncategorized.is_empty() {
-                div { class: "pt-2 mt-2 border-t border-gray-200 dark:border-gray-700",
-                    p { class: "px-2 py-1 text-xs uppercase tracking-wide text-gray-400", "Uncategorized" }
+                div { class: "pt-2 mt-2 border-t border-line",
+                    p { class: "px-2 py-1 text-xs uppercase tracking-wide text-subtle", "Uncategorized" }
                     for a in uncategorized.iter() {
                         KbTreeArticle { article: a.clone(), current_id: current_id.clone() }
                     }
@@ -1999,7 +1999,7 @@ fn KbTreeCategory(node: TreeNode, current_id: String) -> Element {
     rsx! {
         div {
             button {
-                class: "w-full flex items-center gap-1 px-2 py-1 rounded text-left text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800",
+                class: "w-full flex items-center gap-1 px-2 py-1 rounded text-left text-content hover:bg-surface-2",
                 onclick: move |_| open.toggle(),
                 span {
                     class: if open() { "rotate-90 transition-transform" } else { "transition-transform" },
@@ -2008,7 +2008,7 @@ fn KbTreeCategory(node: TreeNode, current_id: String) -> Element {
                 span { class: "font-medium truncate", "{node.category.name}" }
             }
             if open() {
-                div { class: "ml-4 border-l border-gray-200 dark:border-gray-700 pl-2 space-y-1",
+                div { class: "ml-4 border-l border-line pl-2 space-y-1",
                     for child in node.children.iter() {
                         KbTreeCategory { node: child.clone(), current_id: current_id.clone() }
                     }
@@ -2024,13 +2024,13 @@ fn KbTreeCategory(node: TreeNode, current_id: String) -> Element {
 #[component]
 fn KbTreeArticle(article: KbArticle, current_id: String) -> Element {
     let is_current = article.id.to_string() == current_id;
-    let base = "block px-2 py-1 rounded truncate hover:bg-gray-100 dark:hover:bg-gray-800";
+    let base = "block px-2 py-1 rounded truncate hover:bg-surface-2";
     let cls = if is_current {
         format!(
-            "{base} bg-blue-50 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 font-medium"
+            "{base} bg-accent-50 dark:bg-accent-900/40 text-accent-700 dark:text-accent-300 font-medium"
         )
     } else {
-        format!("{base} text-gray-600 dark:text-gray-300")
+        format!("{base} text-content")
     };
     rsx! {
         Link { to: Route::KBArticleDetail { id: article.id.to_string() }, class: "{cls}", "{article.title}" }
@@ -2059,13 +2059,13 @@ fn RatingBar(
     let helpful_class = if active_vote.as_deref() == Some("helpful") {
         "flex items-center gap-1 text-green-600 font-semibold disabled:opacity-50"
     } else {
-        "flex items-center gap-1 text-gray-600 dark:text-gray-300 hover:text-green-600 \
+        "flex items-center gap-1 text-content hover:text-green-600 \
          disabled:opacity-50"
     };
     let not_helpful_class = if active_vote.as_deref() == Some("not_helpful") {
         "flex items-center gap-1 text-red-600 font-semibold disabled:opacity-50"
     } else {
-        "flex items-center gap-1 text-gray-600 dark:text-gray-300 hover:text-red-600 \
+        "flex items-center gap-1 text-content hover:text-red-600 \
          disabled:opacity-50"
     };
 
@@ -2140,7 +2140,7 @@ fn DensityToggle(comfortable: Signal<bool>) -> Element {
     let mut comfortable = comfortable;
     rsx! {
         button {
-            class: "text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300",
+            class: "text-xs px-2 py-1 rounded border border-line text-content",
             title: "Toggle reading density",
             onclick: move |_| {
                 let next = !comfortable();
@@ -2159,7 +2159,7 @@ fn ReadModeButton(left_collapsed: Signal<bool>, right_collapsed: Signal<bool>) -
     let both = left_collapsed() && right_collapsed();
     rsx! {
         button {
-            class: "p-1 text-gray-500 hover:text-gray-700 dark:hover:text-gray-200",
+            class: "p-1 text-muted hover:text-content",
             title: if both { "Exit read mode (show panels)" } else { "Read mode (hide panels)" },
             onclick: move |_| {
                 let collapse = !(left_collapsed() && right_collapsed());

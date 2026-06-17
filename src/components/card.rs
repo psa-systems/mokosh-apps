@@ -23,8 +23,7 @@ pub struct CardProps {
 /// Card container component
 #[component]
 pub fn Card(props: CardProps) -> Element {
-    let base_class =
-        "bg-white dark:bg-gray-800 rounded-lg shadow border border-gray-200 dark:border-gray-700";
+    let base_class = "bg-surface rounded-lg shadow border border-line";
     let class = format!("{} {}", base_class, props.class);
 
     let has_header = !props.title.is_empty();
@@ -70,14 +69,14 @@ pub struct CardHeaderProps {
 #[component]
 pub fn CardHeader(props: CardHeaderProps) -> Element {
     let class = format!(
-        "flex items-center justify-between px-6 pt-6 pb-4 border-b border-gray-200 dark:border-gray-700 {}",
+        "flex items-center justify-between px-6 pt-6 pb-4 border-b border-line {}",
         props.class
     );
 
     rsx! {
         div { class: "{class}",
             div {
-                h3 { class: "text-lg font-medium text-gray-900 dark:text-white",
+                h3 { class: "text-lg font-medium text-content",
                     "{props.title}"
                 }
             }
@@ -117,7 +116,7 @@ pub fn StatCard(props: StatCardProps) -> Element {
     };
 
     let class = format!(
-        "bg-white dark:bg-gray-800 rounded-lg shadow border border-gray-200 dark:border-gray-700 p-6 {}",
+        "bg-surface rounded-lg shadow border border-line p-6 {}",
         props.class
     );
 
@@ -125,16 +124,16 @@ pub fn StatCard(props: StatCardProps) -> Element {
         div { class: "{class}",
             div { class: "flex items-center",
                 if let Some(ref icon) = props.icon {
-                    div { class: "flex-shrink-0 p-3 bg-blue-100 dark:bg-blue-900 rounded-full",
+                    div { class: "flex-shrink-0 p-3 bg-accent-100 dark:bg-accent-900 rounded-full",
                         {icon}
                     }
                 }
                 div { class: if props.icon.is_some() { "ml-4" } else { "" },
-                    p { class: "text-sm font-medium text-gray-500 dark:text-gray-400",
+                    p { class: "text-sm font-medium text-muted",
                         "{props.label}"
                     }
                     div { class: "flex items-baseline",
-                        p { class: "text-2xl font-semibold text-gray-900 dark:text-white",
+                        p { class: "text-2xl font-semibold text-content",
                             "{props.value}"
                         }
                         if !props.change.is_empty() {

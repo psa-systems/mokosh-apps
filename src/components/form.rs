@@ -65,9 +65,9 @@ pub struct InputProps {
 #[component]
 pub fn Input(props: InputProps) -> Element {
     let input_class = if props.error.is_empty() {
-        "block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+        "block w-full rounded-md border-line shadow-sm focus:border-accent focus:ring-accent bg-surface text-content sm:text-sm"
     } else {
-        "block w-full rounded-md border-red-300 shadow-sm focus:border-red-500 focus:ring-red-500 dark:bg-gray-700 dark:border-red-600 dark:text-white sm:text-sm"
+        "block w-full rounded-md border-red-300 shadow-sm focus:border-red-500 focus:ring-red-500 bg-surface dark:border-red-600 text-content sm:text-sm"
     };
 
     let class = format!("{} {}", input_class, props.class);
@@ -77,7 +77,7 @@ pub fn Input(props: InputProps) -> Element {
             if !props.label.is_empty() {
                 label {
                     r#for: "{props.name}",
-                    class: "block text-sm font-medium text-gray-700 dark:text-gray-300",
+                    class: "block text-sm font-medium text-content",
                     "{props.label}"
                     if props.required {
                         span { class: "text-red-500 ml-1", aria_label: "required", role: "img", "*" }
@@ -105,7 +105,7 @@ pub fn Input(props: InputProps) -> Element {
                     "{props.error}"
                 }
             } else if !props.help.is_empty() {
-                p { class: "text-sm text-gray-500 dark:text-gray-400",
+                p { class: "text-sm text-muted",
                     "{props.help}"
                 }
             }
@@ -206,9 +206,9 @@ pub struct TextareaProps {
 #[component]
 pub fn Textarea(props: TextareaProps) -> Element {
     let input_class = if props.error.is_empty() {
-        "block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+        "block w-full rounded-md border-line shadow-sm focus:border-accent focus:ring-accent bg-surface text-content sm:text-sm"
     } else {
-        "block w-full rounded-md border-red-300 shadow-sm focus:border-red-500 focus:ring-red-500 dark:bg-gray-700 dark:border-red-600 dark:text-white sm:text-sm"
+        "block w-full rounded-md border-red-300 shadow-sm focus:border-red-500 focus:ring-red-500 bg-surface dark:border-red-600 text-content sm:text-sm"
     };
 
     let class = format!("{} {}", input_class, props.class);
@@ -218,7 +218,7 @@ pub fn Textarea(props: TextareaProps) -> Element {
             if !props.label.is_empty() {
                 label {
                     r#for: "{props.name}",
-                    class: "block text-sm font-medium text-gray-700 dark:text-gray-300",
+                    class: "block text-sm font-medium text-content",
                     "{props.label}"
                     if props.required {
                         span { class: "text-red-500 ml-1", aria_label: "required", role: "img", "*" }
@@ -242,7 +242,7 @@ pub fn Textarea(props: TextareaProps) -> Element {
                     "{props.error}"
                 }
             } else if !props.help.is_empty() {
-                p { class: "text-sm text-gray-500 dark:text-gray-400",
+                p { class: "text-sm text-muted",
                     "{props.help}"
                 }
             }
@@ -296,9 +296,9 @@ pub struct SelectProps {
 #[component]
 pub fn Select(props: SelectProps) -> Element {
     let input_class = if props.error.is_empty() {
-        "block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white sm:text-sm"
+        "block w-full rounded-md border-line shadow-sm focus:border-accent focus:ring-accent bg-surface text-content sm:text-sm"
     } else {
-        "block w-full rounded-md border-red-300 shadow-sm focus:border-red-500 focus:ring-red-500 dark:bg-gray-700 dark:border-red-600 dark:text-white sm:text-sm"
+        "block w-full rounded-md border-red-300 shadow-sm focus:border-red-500 focus:ring-red-500 bg-surface dark:border-red-600 text-content sm:text-sm"
     };
 
     let class = format!("{} {}", input_class, props.class);
@@ -308,7 +308,7 @@ pub fn Select(props: SelectProps) -> Element {
             if !props.label.is_empty() {
                 label {
                     r#for: "{props.name}",
-                    class: "block text-sm font-medium text-gray-700 dark:text-gray-300",
+                    class: "block text-sm font-medium text-content",
                     "{props.label}"
                     if props.required {
                         span { class: "text-red-500 ml-1", aria_label: "required", role: "img", "*" }
@@ -342,7 +342,7 @@ pub fn Select(props: SelectProps) -> Element {
                     "{props.error}"
                 }
             } else if !props.help.is_empty() {
-                p { class: "text-sm text-gray-500 dark:text-gray-400",
+                p { class: "text-sm text-muted",
                     "{props.help}"
                 }
             }
@@ -370,7 +370,7 @@ pub struct CheckboxProps {
 #[component]
 pub fn Checkbox(props: CheckboxProps) -> Element {
     let class = format!(
-        "h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 {}",
+        "h-4 w-4 rounded border-line text-accent focus:ring-accent bg-surface {}",
         props.class
     );
 
@@ -390,11 +390,11 @@ pub fn Checkbox(props: CheckboxProps) -> Element {
             div { class: "ml-3 text-sm",
                 label {
                     r#for: "{props.name}",
-                    class: "font-medium text-gray-700 dark:text-gray-300",
+                    class: "font-medium text-content",
                     "{props.label}"
                 }
                 if !props.help.is_empty() {
-                    p { class: "text-gray-500 dark:text-gray-400",
+                    p { class: "text-muted",
                         "{props.help}"
                     }
                 }
@@ -419,7 +419,7 @@ pub struct SearchInputProps {
 #[component]
 pub fn SearchInput(props: SearchInputProps) -> Element {
     let class = format!(
-        "block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white dark:bg-gray-700 dark:border-gray-600 placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 sm:text-sm {}",
+        "block w-full pl-10 pr-3 py-2 border border-line rounded-md leading-5 bg-surface placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-accent focus:border-accent sm:text-sm {}",
         props.class
     );
 
@@ -427,7 +427,7 @@ pub fn SearchInput(props: SearchInputProps) -> Element {
         div { class: "relative",
             div { class: "absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none",
                 svg {
-                    class: "h-5 w-5 text-gray-400",
+                    class: "h-5 w-5 text-subtle",
                     xmlns: "http://www.w3.org/2000/svg",
                     view_box: "0 0 20 20",
                     fill: "currentColor",

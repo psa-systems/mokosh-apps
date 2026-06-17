@@ -16,10 +16,10 @@ pub fn PortalHomePage() -> Element {
         PortalLayout { title: "Home",
             // Welcome section
             div { class: "mb-8",
-                h1 { class: "text-2xl font-bold text-gray-900 dark:text-white",
+                h1 { class: "text-2xl font-bold text-content",
                     "Welcome back, Bob"
                 }
-                p { class: "text-gray-500 dark:text-gray-400 mt-1",
+                p { class: "text-muted mt-1",
                     "Here's what's happening with your account."
                 }
             }
@@ -27,16 +27,16 @@ pub fn PortalHomePage() -> Element {
             // Quick stats
             div { class: "grid grid-cols-1 md:grid-cols-3 gap-6 mb-8",
                 Card { class: "text-center",
-                    p { class: "text-sm text-gray-500", "Open Tickets" }
-                    p { class: "text-3xl font-bold text-blue-600", "3" }
+                    p { class: "text-sm text-muted", "Open Tickets" }
+                    p { class: "text-3xl font-bold text-accent", "3" }
                 }
                 Card { class: "text-center",
-                    p { class: "text-sm text-gray-500", "Pending Invoices" }
+                    p { class: "text-sm text-muted", "Pending Invoices" }
                     p { class: "text-3xl font-bold text-yellow-600", "1" }
                 }
                 Card { class: "text-center",
-                    p { class: "text-sm text-gray-500", "Outstanding Balance" }
-                    p { class: "text-3xl font-bold text-gray-900 dark:text-white", "$2,500" }
+                    p { class: "text-sm text-muted", "Outstanding Balance" }
+                    p { class: "text-3xl font-bold text-content", "$2,500" }
                 }
             }
 
@@ -47,7 +47,7 @@ pub fn PortalHomePage() -> Element {
                     actions: rsx! {
                         Link {
                             to: Route::PortalTicketList {},
-                            class: "text-sm text-blue-600 hover:text-blue-500",
+                            class: "text-sm text-accent hover:opacity-90",
                             "View all"
                         }
                     },
@@ -79,7 +79,7 @@ pub fn PortalHomePage() -> Element {
                     actions: rsx! {
                         Link {
                             to: Route::PortalInvoiceList {},
-                            class: "text-sm text-blue-600 hover:text-blue-500",
+                            class: "text-sm text-accent hover:opacity-90",
                             "View all"
                         }
                     },
@@ -102,7 +102,7 @@ pub fn PortalHomePage() -> Element {
 
             // Quick actions
             div { class: "mt-8",
-                h2 { class: "text-lg font-medium text-gray-900 dark:text-white mb-4",
+                h2 { class: "text-lg font-medium text-content mb-4",
                     "Quick Actions"
                 }
                 div { class: "grid grid-cols-1 md:grid-cols-3 gap-4",
@@ -143,15 +143,15 @@ fn PortalTicketItem(props: PortalTicketItemProps) -> Element {
     let status_variant = ticket_status_badge(&props.status);
 
     rsx! {
-        div { class: "flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg",
+        div { class: "flex items-center justify-between p-3 bg-surface-2 rounded-lg",
             div {
                 div { class: "flex items-center",
-                    span { class: "font-medium text-blue-600", "{props.number}" }
+                    span { class: "font-medium text-accent", "{props.number}" }
                     Badge { variant: status_variant, class: "ml-2", "{props.status}" }
                 }
-                p { class: "text-sm text-gray-600 dark:text-gray-400 mt-1", "{props.title}" }
+                p { class: "text-sm text-muted mt-1", "{props.title}" }
             }
-            span { class: "text-xs text-gray-400", "{props.updated}" }
+            span { class: "text-xs text-subtle", "{props.updated}" }
         }
     }
 }
@@ -173,13 +173,13 @@ fn PortalInvoiceItem(props: PortalInvoiceItemProps) -> Element {
     };
 
     rsx! {
-        div { class: "flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg",
+        div { class: "flex items-center justify-between p-3 bg-surface-2 rounded-lg",
             div {
-                span { class: "font-medium text-gray-900 dark:text-white", "{props.number}" }
-                p { class: "text-sm text-gray-500", "{props.date}" }
+                span { class: "font-medium text-content", "{props.number}" }
+                p { class: "text-sm text-muted", "{props.date}" }
             }
             div { class: "text-right",
-                span { class: "font-medium text-gray-900 dark:text-white", "{props.amount}" }
+                span { class: "font-medium text-content", "{props.amount}" }
                 div { class: "mt-1",
                     Badge { variant: status_variant, "{props.status}" }
                 }
@@ -196,7 +196,7 @@ pub fn PortalTicketListPage() -> Element {
         // action button (P1-10 dedup).
         PortalLayout {
             div { class: "flex items-center justify-between mb-6",
-                h1 { class: "text-2xl font-bold text-gray-900 dark:text-white", "My Tickets" }
+                h1 { class: "text-2xl font-bold text-content", "My Tickets" }
                 Link {
                     to: Route::PortalTicketNew {},
                     Button {
@@ -269,14 +269,14 @@ fn PortalTicketRow(props: PortalTicketRowProps) -> Element {
                 div {
                     Link {
                         to: Route::PortalTicketDetail { id: props.id.clone() },
-                        class: "font-medium text-blue-600 hover:text-blue-500",
+                        class: "font-medium text-accent hover:opacity-90",
                         "{props.number}"
                     }
-                    p { class: "text-sm text-gray-500", "{props.subject}" }
+                    p { class: "text-sm text-muted", "{props.subject}" }
                 }
             }
             TableCell { Badge { variant: status_variant, "{props.status}" } }
-            TableCell { class: "text-gray-500", "{props.updated}" }
+            TableCell { class: "text-muted", "{props.updated}" }
         }
     }
 }
@@ -287,7 +287,7 @@ pub fn PortalTicketNewPage() -> Element {
     rsx! {
         // P1-10 dedup: title rendered once below.
         PortalLayout {
-            h1 { class: "text-2xl font-bold text-gray-900 dark:text-white mb-6", "Submit a Ticket" }
+            h1 { class: "text-2xl font-bold text-content mb-6", "Submit a Ticket" }
 
             // Honest "coming soon" state. The previous form's inputs were
             // dead (no-op oninput handlers) and there is no `POST
@@ -297,10 +297,10 @@ pub fn PortalTicketNewPage() -> Element {
             // and point them at a working channel.
             Card {
                 div { class: "py-12 text-center",
-                    h2 { class: "text-lg font-medium text-gray-900 dark:text-white mb-2",
+                    h2 { class: "text-lg font-medium text-content mb-2",
                         "Coming soon"
                     }
-                    p { class: "text-sm text-gray-500 dark:text-gray-400 mb-6 max-w-md mx-auto",
+                    p { class: "text-sm text-muted mb-6 max-w-md mx-auto",
                         "Submitting tickets from the portal is not available yet. In the meantime, please contact your account team to open a request."
                     }
                     Link {
@@ -371,7 +371,7 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
             div { class: "mb-6",
                 Link {
                     to: Route::PortalTicketList {},
-                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    class: "text-sm text-accent hover:opacity-90",
                     "Back to tickets"
                 }
             }
@@ -387,7 +387,7 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
                             p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load ticket." }
                             Link {
                                 to: Route::PortalTicketList {},
-                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                class: "text-sm text-accent hover:opacity-90",
                                 "Back to tickets"
                             }
                         }
@@ -413,20 +413,20 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
                         Card {
                             div { class: "flex items-start justify-between mb-6",
                                 div {
-                                    h1 { class: "text-xl font-bold text-gray-900 dark:text-white",
+                                    h1 { class: "text-xl font-bold text-content",
                                         "{subject}"
                                     }
                                     div { class: "flex items-center mt-2 space-x-4",
                                         Badge { variant: BadgeVariant::Yellow, "{status_label}" }
                                         if !created.is_empty() {
-                                            span { class: "text-sm text-gray-500", "{created}" }
+                                            span { class: "text-sm text-muted", "{created}" }
                                         }
                                     }
                                 }
                             }
 
                             if description.is_empty() {
-                                p { class: "text-sm text-gray-500", "No description provided." }
+                                p { class: "text-sm text-muted", "No description provided." }
                             } else {
                                 div { class: "prose dark:prose-invert max-w-none",
                                     p { "{description}" }
@@ -446,7 +446,7 @@ pub fn PortalInvoiceListPage() -> Element {
     rsx! {
         // P1-10 dedup: title rendered once below.
         PortalLayout {
-            h1 { class: "text-2xl font-bold text-gray-900 dark:text-white mb-6", "Invoices" }
+            h1 { class: "text-2xl font-bold text-content mb-6", "Invoices" }
 
             Card { padding: false,
                 Table {
@@ -576,7 +576,7 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
             div { class: "mb-6",
                 Link {
                     to: Route::PortalInvoiceList {},
-                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    class: "text-sm text-accent hover:opacity-90",
                     "Back to invoices"
                 }
             }
@@ -592,7 +592,7 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                             p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load invoice." }
                             Link {
                                 to: Route::PortalInvoiceList {},
-                                class: "text-sm text-blue-600 hover:text-blue-500",
+                                class: "text-sm text-accent hover:opacity-90",
                                 "Back to invoices"
                             }
                         }
@@ -624,11 +624,11 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                         Card {
                             div { class: "flex justify-between items-start mb-6",
                                 div {
-                                    h2 { class: "text-2xl font-bold text-gray-900 dark:text-white",
+                                    h2 { class: "text-2xl font-bold text-content",
                                         "{header_title}"
                                     }
                                     if !issued.is_empty() || !due.is_empty() {
-                                        p { class: "text-sm text-gray-500", "Issued {issued} - Due {due}" }
+                                        p { class: "text-sm text-muted", "Issued {issued} - Due {due}" }
                                     }
                                 }
                                 Badge { variant: status_variant, "{status_label}" }
@@ -636,28 +636,28 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
 
                             div { class: "grid grid-cols-2 gap-6 mb-6",
                                 div {
-                                    h3 { class: "text-xs font-medium text-gray-500 uppercase mb-1", "Bill To" }
+                                    h3 { class: "text-xs font-medium text-muted uppercase mb-1", "Bill To" }
                                     p { class: "font-medium", "{company_name}" }
                                 }
                                 div {
-                                    h3 { class: "text-xs font-medium text-gray-500 uppercase mb-1", "Amount Due" }
-                                    p { class: "text-3xl font-bold text-gray-900 dark:text-white", "{amount_due}" }
+                                    h3 { class: "text-xs font-medium text-muted uppercase mb-1", "Amount Due" }
+                                    p { class: "text-3xl font-bold text-content", "{amount_due}" }
                                 }
                             }
 
                             table { class: "min-w-full text-sm mb-6",
-                                thead { class: "border-b border-gray-200 dark:border-gray-700",
+                                thead { class: "border-b border-line",
                                     tr {
-                                        th { class: "text-left py-2 text-gray-500", "Description" }
-                                        th { class: "text-right py-2 text-gray-500", "Qty" }
-                                        th { class: "text-right py-2 text-gray-500", "Unit Price" }
-                                        th { class: "text-right py-2 text-gray-500", "Total" }
+                                        th { class: "text-left py-2 text-muted", "Description" }
+                                        th { class: "text-right py-2 text-muted", "Qty" }
+                                        th { class: "text-right py-2 text-muted", "Unit Price" }
+                                        th { class: "text-right py-2 text-muted", "Total" }
                                     }
                                 }
                                 tbody {
                                     if lines.is_empty() {
                                         tr {
-                                            td { class: "py-3 text-gray-500", colspan: "4", "No line items." }
+                                            td { class: "py-3 text-muted", colspan: "4", "No line items." }
                                         }
                                     } else {
                                         for (idx, line) in lines.iter().enumerate() {
@@ -672,9 +672,9 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                                 }
                             }
 
-                            div { class: "border-t border-gray-200 dark:border-gray-700 pt-4 text-right space-y-1",
-                                p { class: "text-sm text-gray-500", "Subtotal {subtotal}" }
-                                p { class: "text-2xl font-bold text-gray-900 dark:text-white", "Total {total}" }
+                            div { class: "border-t border-line pt-4 text-right space-y-1",
+                                p { class: "text-sm text-muted", "Subtotal {subtotal}" }
+                                p { class: "text-2xl font-bold text-content", "Total {total}" }
                             }
                         }
                     }
@@ -752,7 +752,7 @@ pub fn PortalKBPage() -> Element {
     rsx! {
         // P1-10 dedup: title rendered once below.
         PortalLayout {
-            h1 { class: "text-2xl font-bold text-gray-900 dark:text-white mb-6", "Knowledge Base" }
+            h1 { class: "text-2xl font-bold text-content mb-6", "Knowledge Base" }
 
             Card { class: "mb-6",
                 SearchInput {
@@ -770,11 +770,11 @@ pub fn PortalKBPage() -> Element {
                 } else if is_loading {
                     div { class: "space-y-3",
                         for _ in 0..4 {
-                            div { class: "h-10 bg-gray-100 dark:bg-gray-800 rounded animate-pulse" }
+                            div { class: "h-10 bg-surface-2 rounded animate-pulse" }
                         }
                     }
                 } else if articles.is_empty() {
-                    div { class: "py-8 text-center text-sm text-gray-500",
+                    div { class: "py-8 text-center text-sm text-muted",
                         if search_text.is_empty() {
                             "No articles available yet."
                         } else {
@@ -810,10 +810,10 @@ fn PortalArticleItem(props: PortalArticleItemProps) -> Element {
     rsx! {
         Link {
             to: Route::KBArticleDetail { id: props.id.clone() },
-            class: "block p-3 -mx-3 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg transition-colors",
-            h4 { class: "font-medium text-gray-900 dark:text-white", "{props.title}" }
+            class: "block p-3 -mx-3 hover:bg-surface-2 rounded-lg transition-colors",
+            h4 { class: "font-medium text-content", "{props.title}" }
             if !props.summary.is_empty() {
-                p { class: "text-sm text-gray-500 mt-1", "{props.summary}" }
+                p { class: "text-sm text-muted mt-1", "{props.summary}" }
             }
         }
     }
