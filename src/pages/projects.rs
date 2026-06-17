@@ -5,8 +5,8 @@ use serde::Deserialize;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, Input, Modal,
-    PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody,
-    TableCell, TableHead, TableHeader, TableRow, Textarea,
+    OverflowActions, PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectOption, Table,
+    TableBody, TableCell, TableHead, TableHeader, TableRow, Textarea,
 };
 use crate::utils::Paginated;
 use crate::Route;
@@ -1201,6 +1201,10 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
             PageHeader {
                 title: "{header_title}",
                 actions: rsx! {
+                  // MAPPS-267: collapse the Edit/Delete/Add cluster into a
+                  // `...` menu on narrow screens instead of letting four
+                  // buttons overflow the header row.
+                  OverflowActions {
                     Link {
                         to: Route::ProjectTasks { id: props.id.clone() },
                         Button { variant: ButtonVariant::Secondary, "View Tasks" }
@@ -1262,6 +1266,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                         },
                         "Delete"
                     }
+                  }
                 },
             }
 

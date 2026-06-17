@@ -950,7 +950,11 @@ pub fn PageHeader(props: PageHeaderProps) -> Element {
                     }
                 }
                 if let Some(ref actions) = props.actions {
-                    div { class: "mt-4 flex md:ml-4 md:mt-0 space-x-3",
+                    // `shrink-0` so the action cluster keeps its width and
+                    // the title (min-w-0 + sm:truncate above) is what gives
+                    // way on a tight row, instead of the buttons collapsing
+                    // into or colliding with a long dynamic title.
+                    div { class: "mt-4 flex shrink-0 md:ml-4 md:mt-0 space-x-3",
                         {actions}
                     }
                 }
