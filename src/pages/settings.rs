@@ -4351,6 +4351,8 @@ pub fn RmmDeviceMappingsSettingsPage() -> Element {
                     Button {
                         variant: ButtonVariant::Primary,
                         disabled: no_connections,
+                        title: no_connections
+                            .then(|| "Add an RMM connection first, then map its devices here.".to_string()),
                         onclick: move |_| creating.set(true),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Mapping"
@@ -4733,6 +4735,8 @@ pub fn RmmAlertRulesSettingsPage() -> Element {
                     Button {
                         variant: ButtonVariant::Primary,
                         disabled: no_connections,
+                        title: no_connections
+                            .then(|| "Add an RMM connection first, then define alert rules for it.".to_string()),
                         onclick: move |_| creating.set(true),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Alert Rule"

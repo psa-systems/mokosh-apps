@@ -665,6 +665,8 @@ fn CustomFormatBuilder(value: Signal<String>, open: Signal<bool>) -> Element {
                 Button {
                     variant: ButtonVariant::Primary,
                     disabled: !warnings.is_empty(),
+                    title: (!warnings.is_empty())
+                        .then(|| "Resolve the format warnings before applying.".to_string()),
                     onclick: move |_| {
                         value.set(draft());
                         open.set(false);

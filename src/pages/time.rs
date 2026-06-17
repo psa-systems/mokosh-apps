@@ -1042,6 +1042,13 @@ pub fn TimesheetsPage() -> Element {
                                 Button {
                                     variant: ButtonVariant::Primary,
                                     disabled: already_approved || !has_entries,
+                                    title: if already_approved {
+                                        Some("This timesheet has already been approved.".to_string())
+                                    } else if !has_entries {
+                                        Some("No time logged this week yet.".to_string())
+                                    } else {
+                                        None
+                                    },
                                     onclick: move |_| {
                                         action_msg.set(String::new());
                                         action_err.set(String::new());
@@ -1314,6 +1321,8 @@ pub fn TimesheetsPage() -> Element {
                                 variant: ButtonVariant::Primary,
                                 loading: submitting,
                                 disabled: !certified(),
+                                title: (!certified())
+                                    .then(|| "Check the certification box to submit.".to_string()),
                                 onclick: do_submit,
                                 "Submit for Approval"
                             }
@@ -1757,6 +1766,8 @@ pub fn TimesheetApprovalsPage() -> Element {
                                 variant: ButtonVariant::Danger,
                                 loading: rejecting,
                                 disabled: reason_empty,
+                                title: reason_empty
+                                    .then(|| "Enter a reason to reject this timesheet.".to_string()),
                                 onclick: do_reject,
                                 "Reject Timesheet"
                             }

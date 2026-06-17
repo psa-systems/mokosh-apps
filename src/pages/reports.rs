@@ -714,6 +714,9 @@ fn CustomReportBuilder() -> Element {
                         button {
                             class: "w-full rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:opacity-90 disabled:opacity-50",
                             disabled: !can_run,
+                            "aria-disabled": (!can_run).then_some("true"),
+                            title: (measures().is_empty())
+                                .then(|| "Select at least one measure to run the report.".to_string()),
                             onclick: run,
                             if running() { "Running…" } else { "Run report" }
                         }
