@@ -16,6 +16,7 @@ pub fn OverflowActions(children: Element) -> Element {
             button {
                 class: "px-2 py-1 text-muted hover:text-content",
                 title: "More",
+                aria_label: "More actions",
                 onclick: move |_| open.toggle(),
                 "\u{22EF}"
             }

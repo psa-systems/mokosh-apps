@@ -48,6 +48,7 @@ pub fn CollapsibleRail(
                 button {
                     class: "h-full px-1 text-subtle hover:text-content",
                     title: "Expand panel",
+                    aria_label: "Expand panel",
                     onclick: move |_| collapsed.set(false),
                     "{chevron_expand}"
                 }
@@ -57,6 +58,7 @@ pub fn CollapsibleRail(
                         button {
                             class: "px-1 text-subtle hover:text-content",
                             title: "Collapse panel",
+                            aria_label: "Collapse panel",
                             onclick: move |_| collapsed.set(true),
                             "{chevron_collapse}"
                         }
@@ -70,6 +72,7 @@ pub fn CollapsibleRail(
             button {
                 class: "px-2 py-1 text-muted",
                 title: "Open panel",
+                aria_label: "Open panel",
                 onclick: move |_| {
                     if is_overlay_open {
                         open_overlay.set(None);
@@ -89,6 +92,8 @@ pub fn CollapsibleRail(
                     div { class: "flex justify-end",
                         button {
                             class: "text-subtle",
+                            title: "Close panel",
+                            aria_label: "Close panel",
                             onclick: move |_| open_overlay.set(None),
                             "\u{2715}"
                         }

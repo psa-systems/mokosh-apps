@@ -606,6 +606,7 @@ pub fn CalendarPage() -> Element {
                                     r#type: "button",
                                     class: "p-2 hover:bg-surface-2 rounded",
                                     title: "Previous",
+                                    aria_label: "Previous",
                                     onclick: go_prev,
                                     ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
                                 }
@@ -616,6 +617,7 @@ pub fn CalendarPage() -> Element {
                                     r#type: "button",
                                     class: "p-2 hover:bg-surface-2 rounded",
                                     title: "Next",
+                                    aria_label: "Next",
                                     onclick: go_next,
                                     ChevronRightIcon { class: "h-5 w-5".to_string() }
                                 }
@@ -1650,6 +1652,7 @@ pub fn DispatchBoardPage() -> Element {
                             r#type: "button",
                             class: "p-2 hover:bg-surface-2 rounded",
                             title: "Previous day",
+                            aria_label: "Previous day",
                             onclick: move |_| active_day.set(active_day() - Duration::days(1)),
                             ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
                         }
@@ -1658,6 +1661,7 @@ pub fn DispatchBoardPage() -> Element {
                             r#type: "button",
                             class: "p-2 hover:bg-surface-2 rounded",
                             title: "Next day",
+                            aria_label: "Next day",
                             onclick: move |_| active_day.set(active_day() + Duration::days(1)),
                             ChevronRightIcon { class: "h-5 w-5".to_string() }
                         }

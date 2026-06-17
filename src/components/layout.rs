@@ -99,6 +99,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
                 button {
                     class: "p-2 text-subtle hover:text-content",
                     aria_label: "Close navigation",
+                    title: "Close navigation",
                     onclick: move |_| props.onclose.call(()),
                     XMarkIcon { size: IconSize::Large }
                 }
@@ -414,6 +415,7 @@ pub fn TopBar(props: TopBarProps) -> Element {
                 button {
                     class: "lg:hidden p-2 mr-2 rounded-md text-subtle hover:text-content hover:bg-surface-2",
                     aria_label: "Open navigation",
+                    title: "Open navigation",
                     onclick: move |_| props.on_menu_click.call(()),
                     MenuIcon { size: IconSize::Large }
                 }
@@ -647,15 +649,20 @@ fn NotificationBell() -> Element {
             button {
                 r#type: "button",
                 aria_label: "Notifications",
+                title: "Notifications",
                 class: "p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2 relative",
                 onclick: move |_| {
                     let next = !*open.read();
                     open.set(next);
                 },
                 BellIcon {}
-                // Red dot only when something is actually unread.
+                // Red dot only when something is actually unread. MAPPS-261:
+                // the dot's meaning must not rely on color alone, so it carries
+                // an sr-only textual equivalent that names the unread count.
                 if unread > 0 {
-                    span { class: "absolute top-1 right-1 block h-2 w-2 rounded-full bg-red-400" }
+                    span { class: "absolute top-1 right-1 block h-2 w-2 rounded-full bg-red-400",
+                        span { class: "sr-only", "{unread} unread notifications" }
+                    }
                 }
             }
             if *open.read() {
