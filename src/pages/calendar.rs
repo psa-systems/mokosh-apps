@@ -24,10 +24,12 @@
 //! plus an inline error, never seeded fixtures.
 
 use chrono::{
-    DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone,
-    Timelike, Utc, Weekday,
+    DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone, Timelike, Utc,
+    Weekday,
 };
 use dioxus::prelude::*;
+
+use crate::utils::datetime::{user_timezone, user_today};
 
 use crate::components::{
     AppLayout, Button, ButtonVariant, Card, ChevronRightIcon, IconSize, Input, Modal, ModalSize,
@@ -176,7 +178,7 @@ fn local_date_start_utc(d: NaiveDate) -> DateTime<Utc> {
         // 00:00 is always valid; this branch is unreachable in practice.
         d.and_time(chrono::NaiveTime::MIN)
     });
-    match Local.from_local_datetime(&naive) {
+    match user_timezone().from_local_datetime(&naive) {
         chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc),
         chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc),
         // DST gap: fall back to treating the naive value as UTC.
@@ -196,7 +198,7 @@ fn parse_local_datetime_to_utc(s: &str) -> Option<DateTime<Utc>> {
     let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
         .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M"))
         .ok()?;
-    match Local.from_local_datetime(&naive) {
+    match user_timezone().from_local_datetime(&naive) {
         chrono::LocalResult::Single(dt) => Some(dt.with_timezone(&Utc)),
         chrono::LocalResult::Ambiguous(dt, _) => Some(dt.with_timezone(&Utc)),
         chrono::LocalResult::None => Some(Utc.from_utc_datetime(&naive)),
@@ -206,7 +208,7 @@ fn parse_local_datetime_to_utc(s: &str) -> Option<DateTime<Utc>> {
 /// Format a UTC instant as the `YYYY-MM-DDTHH:MM` string a
 /// `datetime-local` input expects, in the browser's local zone.
 fn utc_to_datetime_local_value(dt: DateTime<Utc>) -> String {
-    dt.with_timezone(&Local)
+    dt.with_timezone(&user_timezone())
         .format("%Y-%m-%dT%H:%M")
         .to_string()
 }
@@ -379,20 +381,22 @@ fn is_valid_until(value: &str) -> bool {
     }
 }
 
-/// Local clock label like `9:00 AM` for an appointment start/end.
+/// Profile-tz clock label like `9:00 AM` for an appointment start/end.
 fn time_label(dt: DateTime<Utc>) -> String {
-    dt.with_timezone(&Local).format("%-I:%M %p").to_string()
+    dt.with_timezone(&user_timezone())
+        .format("%-I:%M %p")
+        .to_string()
 }
 
-/// Local date an appointment falls on (used to bucket into day cells).
+/// Profile-tz date an appointment falls on (used to bucket into day cells).
 fn local_date(dt: DateTime<Utc>) -> NaiveDate {
-    dt.with_timezone(&Local).date_naive()
+    dt.with_timezone(&user_timezone()).date_naive()
 }
 
-/// Local hour-of-day as a float (e.g. 14.5 for 2:30 PM) for positioning
+/// Profile-tz hour-of-day as a float (e.g. 14.5 for 2:30 PM) for positioning
 /// blocks in the week/day time grids.
 fn local_hour_f(dt: DateTime<Utc>) -> f64 {
-    let local = dt.with_timezone(&Local);
+    let local = dt.with_timezone(&user_timezone());
     local.hour() as f64 + local.minute() as f64 / 60.0
 }
 
@@ -484,7 +488,7 @@ fn use_users_resource() -> Resource<Vec<RemoteUser>> {
 /// Calendar page: month / week / day views over real appointments.
 #[component]
 pub fn CalendarPage() -> Element {
-    let today_real = Local::now().naive_local().date();
+    let today_real = user_today();
     let mut active_date = use_signal(|| today_real);
     let mut view = use_signal(|| CalendarView::Month);
 
@@ -1164,7 +1168,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
     let default_start = props
         .default_date
         .and_hms_opt(9, 0, 0)
-        .map(|n| match Local.from_local_datetime(&n) {
+        .map(|n| match user_timezone().from_local_datetime(&n) {
             chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc),
             chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc),
             chrono::LocalResult::None => Utc.from_utc_datetime(&n),
@@ -1567,7 +1571,7 @@ fn optional(value: &str) -> Option<String> {
 /// on-call context surfaced alongside.
 #[component]
 pub fn DispatchBoardPage() -> Element {
-    let today_real = Local::now().naive_local().date();
+    let today_real = user_today();
     let mut active_day = use_signal(|| today_real);
     let mut form_state = use_signal(|| None::<Option<AppointmentResponse>>);
 
