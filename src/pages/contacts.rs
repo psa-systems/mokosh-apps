@@ -1079,6 +1079,20 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
             }
             PageHeader {
                 title: "{header_title}",
+                breadcrumbs: rsx! {
+                    crate::components::Breadcrumbs {
+                        items: vec![
+                            crate::components::BreadcrumbItem {
+                                label: "Companies".to_string(),
+                                route: Some(Route::CompanyList {}),
+                            },
+                            crate::components::BreadcrumbItem {
+                                label: header_title.clone(),
+                                route: None,
+                            },
+                        ],
+                    }
+                },
                 actions: rsx! {
                     Link {
                         to: Route::CompanyEdit { id: edit_id },
@@ -1156,7 +1170,11 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                     company_resource,
                                 }
                                 // Recent tickets
-                                CompanyTicketsCard { tickets_resource }
+                                CompanyTicketsCard {
+                                    company_id: company_id_str.clone(),
+                                    company_name: company.name.clone(),
+                                    tickets_resource,
+                                }
                                 // Contracts (MAPPS-195)
                                 CompanyContractsCard { contracts_resource }
                                 // Projects (MAPPS-195)
@@ -1347,21 +1365,21 @@ struct TicketStatusBadge {
 fn CompanyContactsCard(
     company_id: String,
     company_name: String,
-    contacts_resource: Resource<Option<PaginatedContacts>>,
+    mut contacts_resource: Resource<Option<PaginatedContacts>>,
 ) -> Element {
     let snap = contacts_resource.read_unchecked();
-    let new_href = format!(
-        "/contacts/new?company_id={}&company_name={}",
-        urlencoding_minimal(&company_id),
-        urlencoding_minimal(&company_name)
-    );
+    // MAPPS-207: "Add Contact" now opens a picker that can attach an
+    // *existing* contact to this company (search/select), with create-new
+    // still offered inside the same modal.
+    let mut show_add = use_signal(|| false);
     rsx! {
         Card {
             title: "Contacts",
             actions: rsx! {
-                a {
-                    href: "{new_href}",
+                button {
+                    r#type: "button",
                     class: "text-sm text-blue-600 hover:text-blue-500",
+                    onclick: move |_| show_add.set(true),
                     "Add Contact"
                 }
             },
@@ -1413,6 +1431,146 @@ fn CompanyContactsCard(
                             }
                         }
                     },
+                }
+            }
+        }
+
+        if show_add() {
+            AddContactModal {
+                company_id: company_id.clone(),
+                company_name: company_name.clone(),
+                onclose: move |_| { show_add.set(false); },
+                onsaved: move |_| {
+                    show_add.set(false);
+                    contacts_resource.restart();
+                },
+            }
+        }
+    }
+}
+
+/// MAPPS-207: "Add Contact" modal for a company. Lets the user search and
+/// select an existing contact (attaching it to this company via a PUT that
+/// sets `company_id`), or fall through to the full new-contact form with
+/// the company pre-filled.
+#[component]
+fn AddContactModal(
+    company_id: String,
+    company_name: String,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+) -> Element {
+    let mut selected_id = use_signal(String::new);
+    let mut selected_name = use_signal(String::new);
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let new_href = format!(
+        "/contacts/new?company_id={}&company_name={}",
+        urlencoding_minimal(&company_id),
+        urlencoding_minimal(&company_name)
+    );
+
+    let picker_selected_id: Option<String> =
+        if uuid::Uuid::parse_str(selected_id.read().as_str()).is_ok() {
+            Some(selected_id.read().clone())
+        } else {
+            None
+        };
+
+    let company_id_for_attach = company_id.clone();
+    let on_attach = move |_| {
+        let Ok(contact_uuid) = uuid::Uuid::parse_str(selected_id.read().as_str()) else {
+            error.set("Pick a contact to attach.".to_string());
+            return;
+        };
+        let Ok(company_uuid) = uuid::Uuid::parse_str(company_id_for_attach.as_str()) else {
+            error.set("Invalid company.".to_string());
+            return;
+        };
+        if saving() {
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                // The server's `UpdateContactRequest` accepts a bare
+                // `company_id`; every other field is optional, so a
+                // single-field PUT re-points the contact at this company.
+                let body = serde_json::json!({ "company_id": company_uuid });
+                let path = format!("/contacts/contacts/{contact_uuid}");
+                #[derive(serde::Deserialize)]
+                struct ContactId {
+                    #[allow(dead_code)]
+                    id: uuid::Uuid,
+                }
+                match crate::hooks::fetch::api::put_authed::<ContactId, _>(&path, &body).await {
+                    Ok(_) => {
+                        onsaved.call(());
+                    }
+                    Err(err) => {
+                        error.set(format!("Could not attach contact: {err}"));
+                    }
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        Modal {
+            open: true,
+            title: "Add Contact".to_string(),
+            onclose: move |_| {
+                if !saving() {
+                    onclose.call(());
+                }
+            },
+            footer: rsx! {
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| {
+                        if !saving() {
+                            onclose.call(());
+                        }
+                    },
+                    "Cancel"
+                }
+                Button {
+                    variant: ButtonVariant::Primary,
+                    loading: saving(),
+                    onclick: on_attach,
+                    "Attach Contact"
+                }
+            },
+            div { class: "space-y-4",
+                if !error.read().is_empty() {
+                    p { class: "text-sm text-red-600 dark:text-red-400", "{error}" }
+                }
+                crate::components::ContactPicker {
+                    value: selected_name.read().clone(),
+                    selected_id: picker_selected_id,
+                    label: "Existing contact".to_string(),
+                    onselect: move |(id, name): (String, String)| {
+                        selected_id.set(id);
+                        selected_name.set(name);
+                    },
+                    onclear: move |_| {
+                        selected_id.set(String::new());
+                        selected_name.set(String::new());
+                    },
+                }
+                p { class: "text-xs text-gray-500 dark:text-gray-400",
+                    "Search for a contact to attach to this company. Attaching moves the contact to this company."
+                }
+                div { class: "border-t border-gray-100 dark:border-gray-800 pt-3",
+                    a {
+                        href: "{new_href}",
+                        class: "text-sm text-blue-600 hover:text-blue-500",
+                        "+ Create a new contact instead"
+                    }
                 }
             }
         }
@@ -1869,12 +2027,29 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
 }
 
 #[component]
-fn CompanyTicketsCard(tickets_resource: Resource<Option<PaginatedTicketSummaries>>) -> Element {
+fn CompanyTicketsCard(
+    company_id: String,
+    company_name: String,
+    tickets_resource: Resource<Option<PaginatedTicketSummaries>>,
+) -> Element {
     let snap = tickets_resource.read_unchecked();
+    // MAPPS-207: offer a "New Ticket" path straight from the company so a
+    // user no longer has to leave for the global ticket list to start one.
+    // The query params pre-fill the company on the New Ticket form.
+    let new_ticket_href = format!(
+        "/tickets/new?company_id={}&company_name={}",
+        urlencoding_minimal(&company_id),
+        urlencoding_minimal(&company_name)
+    );
     rsx! {
         Card {
             title: "Recent Tickets",
             actions: rsx! {
+                a {
+                    href: "{new_ticket_href}",
+                    class: "text-sm text-blue-600 hover:text-blue-500",
+                    "New Ticket"
+                }
                 Link {
                     to: Route::TicketList {},
                     class: "text-sm text-blue-600 hover:text-blue-500",
@@ -2625,9 +2800,47 @@ pub fn ContactNewPage() -> Element {
         ..ContactFormValues::default()
     };
 
+    // MAPPS-207: when prefilled from a company, the breadcrumb points back
+    // to that company so "Create a new contact" leaves a way back.
+    let crumbs = if prefill.id.is_empty() {
+        vec![
+            crate::components::BreadcrumbItem {
+                label: "Contacts".to_string(),
+                route: Some(Route::ContactList {}),
+            },
+            crate::components::BreadcrumbItem {
+                label: "New Contact".to_string(),
+                route: None,
+            },
+        ]
+    } else {
+        vec![
+            crate::components::BreadcrumbItem {
+                label: "Companies".to_string(),
+                route: Some(Route::CompanyList {}),
+            },
+            crate::components::BreadcrumbItem {
+                label: prefill.name.clone(),
+                route: Some(Route::CompanyDetail {
+                    id: prefill.id.clone(),
+                }),
+            },
+            crate::components::BreadcrumbItem {
+                label: "New Contact".to_string(),
+                route: None,
+            },
+        ]
+    };
+
     rsx! {
         AppLayout { title: "New Contact",
-            PageHeader { title: "New Contact", subtitle: "Add a new contact" }
+            PageHeader {
+                title: "New Contact",
+                subtitle: "Add a new contact",
+                breadcrumbs: rsx! {
+                    crate::components::Breadcrumbs { items: crumbs }
+                },
+            }
             ContactForm {
                 initial,
                 mode: ContactFormMode::Create,

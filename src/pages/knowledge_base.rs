@@ -21,13 +21,13 @@ use dioxus::prelude::*;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ChevronRightIcon, CollapsibleRail,
-    DataTable, IconSize, OverflowActions, PageHeader, PlusIcon, RailSide, SearchInput, Select,
-    SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
-    TableRow,
+    ConfirmDialog, DataTable, IconSize, Modal, ModalSize, OverflowActions, PageHeader, PencilIcon,
+    PlusIcon, RailSide, SearchInput, Select, SelectOption, Table, TableBody, TableCell, TableEmpty,
+    TableHead, TableHeader, TableLoading, TableRow, TrashIcon,
 };
 use crate::modules::kb::{
-    CreateKbArticleRequest, KbArticle, KbArticleFeedback, KbArticleVersion, KbCategory,
-    UpdateKbArticleRequest,
+    CreateKbArticleRequest, CreateKbCategoryRequest, KbArticle, KbArticleFeedback,
+    KbArticleVersion, KbCategory, UpdateKbArticleRequest, UpdateKbCategoryRequest,
 };
 use crate::utils::url::urlencoding_minimal;
 use crate::utils::Paginated;
@@ -261,7 +261,7 @@ pub fn KBHomePage() -> Element {
     let mut search = use_signal(String::new);
     let navigator = use_navigator();
 
-    let categories_resource = use_resource(move || async move {
+    let mut categories_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
         crate::hooks::fetch::api::get_with_auth::<Paginated<KbCategory>>(
@@ -271,6 +271,15 @@ pub fn KBHomePage() -> Element {
         .await
         .ok()
     });
+
+    // Category CRUD UI state (MAPPS-230). `category_form` drives the
+    // create/edit modal (`None` = closed); `deleting_category` drives the
+    // delete confirmation. Both restart `categories_resource` on success so
+    // the grid reflects the change without a full reload.
+    let mut category_form = use_signal(|| None::<CategoryEdit>);
+    let mut deleting_category = use_signal(|| None::<KbCategory>);
+    let mut delete_busy = use_signal(|| false);
+    let mut delete_error = use_signal(String::new);
 
     let recent_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -318,6 +327,12 @@ pub fn KBHomePage() -> Element {
                 title: "Knowledge Base",
                 subtitle: "Documentation and troubleshooting guides",
                 actions: rsx! {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| category_form.set(Some(CategoryEdit::New)),
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "New Category"
+                    }
                     Link {
                         to: Route::KBArticleNew {},
                         Button {
@@ -362,9 +377,12 @@ pub fn KBHomePage() -> Element {
                     for category in categories.iter().cloned() {
                         CategoryCard {
                             key: "{category.id}",
-                            id: category.id.to_string(),
-                            title: category.name,
-                            description: category.description.unwrap_or_default(),
+                            category: category.clone(),
+                            on_edit: move |c: KbCategory| category_form.set(Some(CategoryEdit::Existing(c))),
+                            on_delete: move |c: KbCategory| {
+                                delete_error.set(String::new());
+                                deleting_category.set(Some(c));
+                            },
                         }
                     }
                 }
@@ -399,47 +417,150 @@ pub fn KBHomePage() -> Element {
                     }
                 }
             }
+
+            // Create / edit category modal (MAPPS-230).
+            if let Some(edit) = category_form() {
+                CategoryFormModal {
+                    edit,
+                    categories: categories.clone(),
+                    on_close: move |_| category_form.set(None),
+                    on_saved: move |_| {
+                        category_form.set(None);
+                        categories_resource.restart();
+                    },
+                }
+            }
+
+            // Delete category confirmation (MAPPS-230).
+            ConfirmDialog {
+                open: deleting_category.read().is_some(),
+                title: "Delete category".to_string(),
+                message: {
+                    let name = deleting_category
+                        .read()
+                        .as_ref()
+                        .map(|c| c.name.clone())
+                        .unwrap_or_default();
+                    let mut msg = format!(
+                        "Delete the \"{name}\" category? Articles filed under it are not deleted; \
+                         they become uncategorized."
+                    );
+                    if !delete_error.read().is_empty() {
+                        msg.push_str(&format!("\n\n{}", delete_error.read()));
+                    }
+                    msg
+                },
+                confirm_text: "Delete".to_string(),
+                destructive: true,
+                loading: *delete_busy.read(),
+                oncancel: move |_| {
+                    deleting_category.set(None);
+                    delete_error.set(String::new());
+                },
+                onconfirm: move |_| {
+                    let Some(target) = deleting_category.read().clone() else {
+                        return;
+                    };
+                    if *delete_busy.read() {
+                        return;
+                    }
+                    delete_busy.set(true);
+                    delete_error.set(String::new());
+                    spawn(async move {
+                        #[cfg(feature = "web")]
+                        {
+                            let path = format!("/kb/categories/{}", target.id);
+                            match crate::hooks::fetch::api::delete_authed(&path).await {
+                                Ok(()) => {
+                                    deleting_category.set(None);
+                                    categories_resource.restart();
+                                }
+                                Err(err) => {
+                                    delete_error.set(format!("Could not delete category: {err}"));
+                                }
+                            }
+                        }
+                        #[cfg(not(feature = "web"))]
+                        let _ = &target;
+                        delete_busy.set(false);
+                    });
+                },
+            }
         }
     }
 }
 
+/// Whether the category modal is creating a new category or editing an
+/// existing one (MAPPS-230).
+#[derive(Clone, PartialEq)]
+enum CategoryEdit {
+    New,
+    Existing(KbCategory),
+}
+
 #[derive(Props, Clone, PartialEq)]
 struct CategoryCardProps {
-    id: String,
-    title: String,
-    description: String,
+    category: KbCategory,
+    on_edit: EventHandler<KbCategory>,
+    on_delete: EventHandler<KbCategory>,
 }
 
 #[component]
 fn CategoryCard(props: CategoryCardProps) -> Element {
     let navigator = use_navigator();
-    let category_id = props.id.clone();
-    // Clicking lands on the article list pre-filtered to this category: the
-    // id rides the route's `?category=` query so the list pre-selects the
-    // dropdown and fetches `GET /kb/articles?category_id=...`.
+    let category_id = props.category.id.to_string();
+    let title = props.category.name.clone();
+    let description = props.category.description.clone().unwrap_or_default();
+    let edit_target = props.category.clone();
+    let delete_target = props.category.clone();
+    // Clicking the card body lands on the article list pre-filtered to this
+    // category: the id rides the route's `?category=` query so the list
+    // pre-selects the dropdown and fetches `GET /kb/articles?category_id=...`.
+    // The edit/delete buttons (MAPPS-230) sit in the top-right corner and
+    // stop propagation so they never trigger that navigation.
     rsx! {
-        button {
-            r#type: "button",
-            class: "block w-full text-left",
-            onclick: move |_| {
-                navigator.push(Route::KBArticleList {
-                    q: String::new(),
-                    tag: String::new(),
-                    category: category_id.clone(),
-                });
-            },
-            Card { class: "hover:shadow-lg transition-shadow cursor-pointer",
+        Card { class: "relative hover:shadow-lg transition-shadow",
+            div {
+                class: "absolute top-2 right-2 flex gap-1",
+                onclick: move |e| e.stop_propagation(),
+                button {
+                    r#type: "button",
+                    class: "p-1 rounded text-gray-400 hover:text-blue-600 hover:bg-gray-100 dark:hover:bg-gray-700",
+                    title: "Edit category",
+                    "aria-label": "Edit category",
+                    onclick: move |_| props.on_edit.call(edit_target.clone()),
+                    PencilIcon { size: IconSize::Small }
+                }
+                button {
+                    r#type: "button",
+                    class: "p-1 rounded text-gray-400 hover:text-red-600 hover:bg-gray-100 dark:hover:bg-gray-700",
+                    title: "Delete category",
+                    "aria-label": "Delete category",
+                    onclick: move |_| props.on_delete.call(delete_target.clone()),
+                    TrashIcon { size: IconSize::Small }
+                }
+            }
+            button {
+                r#type: "button",
+                class: "block w-full text-left cursor-pointer pr-12",
+                onclick: move |_| {
+                    navigator.push(Route::KBArticleList {
+                        q: String::new(),
+                        tag: String::new(),
+                        category: category_id.clone(),
+                    });
+                },
                 div { class: "flex items-start",
                     div { class: "flex-shrink-0 w-10 h-10 bg-blue-100 dark:bg-blue-900 rounded-lg flex items-center justify-center",
                         crate::components::BookIcon { class: "h-5 w-5 text-blue-600 dark:text-blue-400".to_string() }
                     }
                     div { class: "ml-4",
                         h3 { class: "text-lg font-medium text-gray-900 dark:text-white",
-                            "{props.title}"
+                            "{title}"
                         }
-                        if !props.description.is_empty() {
+                        if !description.is_empty() {
                             p { class: "text-sm text-gray-500 dark:text-gray-400 mt-1",
-                                "{props.description}"
+                                "{description}"
                             }
                         }
                     }
@@ -1511,6 +1632,295 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     Link {
                         to: Route::KBHome {},
                         Button { variant: ButtonVariant::Secondary, "Cancel" }
+                    }
+                    Button {
+                        r#type: "submit",
+                        variant: ButtonVariant::Primary,
+                        loading: *is_submitting.read(),
+                        "{submit_label}"
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Category create / edit modal
+// ============================================================================
+
+/// Create or edit a KB category (MAPPS-230). Posts to `/kb/categories` (create)
+/// or puts to `/kb/categories/{id}` (edit), then calls `on_saved` so the home
+/// grid refetches. Mirrors the article form's slug handling: the slug follows
+/// the name until the author edits it, and is normalized through [`slugify`]
+/// on save.
+#[derive(Props, Clone, PartialEq)]
+struct CategoryFormModalProps {
+    edit: CategoryEdit,
+    categories: Vec<KbCategory>,
+    on_close: EventHandler<()>,
+    on_saved: EventHandler<()>,
+}
+
+#[component]
+fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
+    let existing = match &props.edit {
+        CategoryEdit::New => None,
+        CategoryEdit::Existing(c) => Some(c.clone()),
+    };
+    let is_edit = existing.is_some();
+    let edit_id = existing.as_ref().map(|c| c.id);
+
+    let mut name = use_signal(|| {
+        existing
+            .as_ref()
+            .map(|c| c.name.clone())
+            .unwrap_or_default()
+    });
+    let mut slug = use_signal(|| {
+        existing
+            .as_ref()
+            .map(|c| c.slug.clone())
+            .unwrap_or_default()
+    });
+    let mut description = use_signal(|| {
+        existing
+            .as_ref()
+            .and_then(|c| c.description.clone())
+            .unwrap_or_default()
+    });
+    let mut parent_id = use_signal(|| {
+        existing
+            .as_ref()
+            .and_then(|c| c.parent_id)
+            .map(|id| id.to_string())
+            .unwrap_or_default()
+    });
+    let mut visibility = use_signal(|| {
+        existing
+            .as_ref()
+            .map(|c| {
+                if c.visibility.is_empty() {
+                    "internal".to_string()
+                } else {
+                    c.visibility.clone()
+                }
+            })
+            .unwrap_or_else(|| "internal".to_string())
+    });
+    let mut sort_order = use_signal(|| {
+        existing
+            .as_ref()
+            .map(|c| c.sort_order.to_string())
+            .unwrap_or_else(|| "0".to_string())
+    });
+    // In edit mode the slug is already published, so start it touched so
+    // editing the name never clobbers an existing URL slug.
+    let mut slug_touched = use_signal(|| is_edit);
+    let mut is_submitting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    // Parent dropdown: "None" plus every other category. The category being
+    // edited is excluded so it cannot be made its own parent.
+    let mut parent_options = vec![SelectOption::new("", "None (top-level)")];
+    for c in props.categories.iter() {
+        if Some(c.id) == edit_id {
+            continue;
+        }
+        parent_options.push(SelectOption::new(c.id.to_string(), c.name.clone()));
+    }
+
+    let visibility_options = vec![
+        SelectOption::new("internal", "Internal"),
+        SelectOption::new("public", "Public"),
+        SelectOption::new("client_specific", "Client-specific"),
+    ];
+
+    let title = if is_edit {
+        "Edit Category"
+    } else {
+        "New Category"
+    };
+    let submit_label = if is_edit { "Save Changes" } else { "Create" };
+
+    let on_saved = props.on_saved;
+    let handle_submit = move |e: FormEvent| {
+        e.prevent_default();
+        let name_val = name.read().trim().to_string();
+        if name_val.is_empty() {
+            error.set("Name is required.".to_string());
+            return;
+        }
+        is_submitting.set(true);
+        error.set(String::new());
+
+        // Slug normalized through `slugify`, derived from the name when blank.
+        let slug_raw = slug.read().trim().to_string();
+        let slug_source = if slug_raw.is_empty() {
+            &name_val
+        } else {
+            &slug_raw
+        };
+        let slug_val = slugify(slug_source);
+        let description_val = description.read().trim().to_string();
+        let description_opt = if description_val.is_empty() {
+            None
+        } else {
+            Some(description_val)
+        };
+        let parent_opt = {
+            let raw = parent_id.read().clone();
+            if raw.is_empty() {
+                None
+            } else {
+                raw.parse::<uuid::Uuid>().ok()
+            }
+        };
+        let visibility_val = visibility.read().clone();
+        let sort_val = sort_order.read().trim().parse::<i32>().unwrap_or(0);
+
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let result = match edit_id {
+                    None => {
+                        let body = CreateKbCategoryRequest {
+                            name: name_val.clone(),
+                            slug: slug_val.clone(),
+                            description: description_opt.clone(),
+                            parent_id: parent_opt,
+                            visibility: visibility_val.clone(),
+                            sort_order: sort_val,
+                        };
+                        crate::hooks::fetch::api::post_authed::<KbCategory, _>(
+                            "/kb/categories",
+                            &body,
+                        )
+                        .await
+                        .map(|_| ())
+                    }
+                    Some(id) => {
+                        let body = UpdateKbCategoryRequest {
+                            name: Some(name_val.clone()),
+                            slug: Some(slug_val.clone()),
+                            description: description_opt.clone(),
+                            parent_id: parent_opt,
+                            visibility: Some(visibility_val.clone()),
+                            sort_order: Some(sort_val),
+                        };
+                        let path = format!("/kb/categories/{id}");
+                        crate::hooks::fetch::api::put_authed::<KbCategory, _>(&path, &body)
+                            .await
+                            .map(|_| ())
+                    }
+                };
+                match result {
+                    Ok(()) => {
+                        on_saved.call(());
+                    }
+                    Err(err) => {
+                        error.set(format!("Could not save category: {err}"));
+                    }
+                }
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                let _ = (
+                    &name_val,
+                    &slug_val,
+                    &description_opt,
+                    &parent_opt,
+                    &visibility_val,
+                    sort_val,
+                    edit_id,
+                );
+            }
+            is_submitting.set(false);
+        });
+    };
+
+    rsx! {
+        Modal {
+            open: true,
+            title: title.to_string(),
+            size: ModalSize::Large,
+            onclose: move |_| props.on_close.call(()),
+            form {
+                class: "space-y-4",
+                onsubmit: handle_submit,
+
+                if !error.read().is_empty() {
+                    div {
+                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                        "{error.read()}"
+                    }
+                }
+
+                crate::components::Input {
+                    name: "name",
+                    label: "Name",
+                    placeholder: "e.g. Networking",
+                    required: true,
+                    value: name.read().clone(),
+                    oninput: move |e: FormEvent| {
+                        name.set(e.value());
+                        if let Some(s) = next_slug(&e.value(), slug_touched()) {
+                            slug.set(s);
+                        }
+                    },
+                }
+
+                crate::components::Input {
+                    name: "slug",
+                    label: "Slug",
+                    placeholder: "Leave blank to derive from the name",
+                    help: "URL-safe identifier; normalized to lowercase hyphenated form on save, and auto-generated from the name when blank.",
+                    value: slug.read().clone(),
+                    oninput: move |e: FormEvent| {
+                        slug_touched.set(true);
+                        slug.set(e.value());
+                    },
+                }
+
+                crate::components::Input {
+                    name: "description",
+                    label: "Description",
+                    placeholder: "Short one-line description (optional)",
+                    value: description.read().clone(),
+                    oninput: move |e: FormEvent| description.set(e.value()),
+                }
+
+                div { class: "grid grid-cols-1 gap-4 sm:grid-cols-3",
+                    Select {
+                        name: "parent",
+                        label: "Parent category",
+                        options: parent_options,
+                        value: parent_id.read().clone(),
+                        onchange: move |e: FormEvent| parent_id.set(e.value()),
+                    }
+                    Select {
+                        name: "visibility",
+                        label: "Visibility",
+                        options: visibility_options,
+                        value: visibility.read().clone(),
+                        onchange: move |e: FormEvent| visibility.set(e.value()),
+                    }
+                    crate::components::Input {
+                        name: "sort_order",
+                        label: "Sort order",
+                        placeholder: "0",
+                        help: "Lower numbers sort first within their level.",
+                        value: sort_order.read().clone(),
+                        oninput: move |e: FormEvent| sort_order.set(e.value()),
+                    }
+                }
+
+                div { class: "flex justify-end space-x-3 pt-2",
+                    Button {
+                        r#type: "button",
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| props.on_close.call(()),
+                        "Cancel"
                     }
                     Button {
                         r#type: "submit",

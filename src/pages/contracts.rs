@@ -5,7 +5,10 @@
 //!
 //! Rate cards and their line items are fully editable here (MAPPS-160),
 //! finance-gated to match the server's `RequireFinance` write guard.
-//! Contract-item edit/delete is still ahead of the frontend (MAPPS-138).
+//! Contract line items are managed from the contract detail page's Line
+//! Items card: add via `POST /contracts/{id}/items`, edit via
+//! `PUT /contract-items/{id}`, delete via `DELETE /contract-items/{id}`
+//! (MAPPS-196).
 
 use dioxus::prelude::*;
 use rust_decimal::Decimal;
@@ -578,8 +581,10 @@ struct ContractFormValues {
     auto_renew: bool,
     contract_number: String,
     notes: String,
-    /// Initial line items (create flow only; the edit flow manages items
-    /// from the detail page so it starts empty).
+    /// Initial line items, entered only on the create flow. After a
+    /// contract exists, its line items are added, edited, and removed from
+    /// the detail page's Line Items card (MAPPS-196), so the edit flow
+    /// leaves this empty.
     items: Vec<ItemFormValues>,
 }
 
@@ -685,13 +690,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
         SelectOption::new("annually", "Annually"),
         SelectOption::new("one_time", "One-time"),
     ];
-    let item_type_options = vec![
-        SelectOption::new("recurring_service", "Recurring Service"),
-        SelectOption::new("block_hours", "Block Hours"),
-        SelectOption::new("retainer", "Retainer"),
-        SelectOption::new("product", "Product"),
-        SelectOption::new("one_time", "One-time"),
-    ];
+    let item_type_options = contract_item_type_options();
 
     let navigator = use_navigator();
     let submit_label = if is_edit {
@@ -1271,8 +1270,9 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
     let id_for_balance = id_str.clone();
     let id_for_edit = id_str.clone();
     let id_for_delete = id_str.clone();
+    let id_for_item_modal = id_str.clone();
 
-    let contract_resource = use_resource(move || {
+    let mut contract_resource = use_resource(move || {
         let id = id_for_contract.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -1281,7 +1281,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                 .ok()
         }
     });
-    let items_resource = use_resource(move || {
+    let mut items_resource = use_resource(move || {
         let id = id_for_items.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -1312,6 +1312,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
 
     let navigator = use_navigator();
     let mut deleting = use_signal(|| false);
+    let mut editing_item = use_signal(|| None::<ContractItemFormState>);
     // MAPPS-189: the Delete button opens the styled ConfirmDialog; the
     // actual DELETE fires from `on_confirm_delete` when confirmed.
     let mut confirming_delete = use_signal(|| false);
@@ -1461,7 +1462,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                                     }
                                 }
 
-                                ContractItemsCard { items_resource }
+                                ContractItemsCard { items_resource, editing_item }
                                 ContractHourBalanceCard { balance_resource }
                             }
 
@@ -1493,17 +1494,50 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                     }
                 },
             }
+
+            if let Some(state) = editing_item.read().clone() {
+                ContractItemFormModal {
+                    state,
+                    contract_id: id_for_item_modal.clone(),
+                    onclose: move |_| editing_item.set(None),
+                    onsaved: move |_| {
+                        editing_item.set(None);
+                        // Refresh the items table and the contract itself so
+                        // per-row totals and the Summary "Value" reflect the
+                        // change (the server derives Value from items).
+                        items_resource.restart();
+                        contract_resource.restart();
+                    },
+                }
+            }
         }
     }
 }
 
 #[component]
-fn ContractItemsCard(items_resource: Resource<Option<Paginated<ContractItemResponse>>>) -> Element {
+fn ContractItemsCard(
+    items_resource: Resource<Option<Paginated<ContractItemResponse>>>,
+    editing_item: Signal<Option<ContractItemFormState>>,
+) -> Element {
+    let mut editing_item = editing_item;
     let snap = items_resource.read_unchecked();
+    // Newly added items sort after the existing rows.
+    let next_sort_order = match &*snap {
+        Some(Some(resp)) => resp.data.len() as i32,
+        _ => 0,
+    };
     rsx! {
         Card {
             title: "Line Items",
             padding: false,
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    onclick: move |_| editing_item.set(Some(ContractItemFormState::new(next_sort_order))),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "Add Item"
+                }
+            },
             Table {
                 TableHead {
                     TableRow {
@@ -1533,8 +1567,12 @@ fn ContractItemsCard(items_resource: Resource<Option<Paginated<ContractItemRespo
                                         let unit = format_money(item.unit_price);
                                         let total = format_money(item.total_price);
                                         let type_label = humanize_contract_type(&item.item_type);
+                                        let edit_state = ContractItemFormState::from_existing(&item);
                                         rsx! {
-                                            TableRow { key: "{key}",
+                                            TableRow {
+                                                key: "{key}",
+                                                clickable: true,
+                                                onclick: move |_| editing_item.set(Some(edit_state.clone())),
                                                 TableCell { class: "font-medium", "{item.name}" }
                                                 TableCell { "{type_label}" }
                                                 TableCell { "{qty}" }
@@ -1549,6 +1587,301 @@ fn ContractItemsCard(items_resource: Resource<Option<Paginated<ContractItemRespo
                     },
                 }
             }
+        }
+    }
+}
+
+/// Line-item type options for the contract-item editors. Values must match
+/// the server's `contract_items.item_type` CHECK set (MAPPS-190); the create
+/// form and the detail-page Add/Edit modal share this single list so they
+/// cannot drift apart.
+fn contract_item_type_options() -> Vec<SelectOption> {
+    vec![
+        SelectOption::new("recurring_service", "Recurring Service"),
+        SelectOption::new("block_hours", "Block Hours"),
+        SelectOption::new("retainer", "Retainer"),
+        SelectOption::new("product", "Product"),
+        SelectOption::new("one_time", "One-time"),
+    ]
+}
+
+/// Editable state for the detail-page Add/Edit line-item modal. The form
+/// exposes only name, type, quantity, and unit price; on edit, `original`
+/// retains every other field of the existing row so a `PUT` (full replace)
+/// does not wipe description, included hours, rollover settings, etc.
+#[derive(Clone, Debug, PartialEq)]
+struct ContractItemFormState {
+    /// Full original row when editing (enables Delete; preserves unexposed
+    /// fields). `None` when adding a new item.
+    original: Option<ContractItemResponse>,
+    name: String,
+    item_type: String,
+    quantity: String,
+    unit_price: String,
+    /// sort_order applied to a newly added item; ignored on edit, which
+    /// keeps the original row's sort_order.
+    new_sort_order: i32,
+}
+
+impl ContractItemFormState {
+    fn new(next_sort_order: i32) -> Self {
+        Self {
+            original: None,
+            name: String::new(),
+            item_type: "recurring_service".to_string(),
+            quantity: "1".to_string(),
+            unit_price: String::new(),
+            new_sort_order: next_sort_order,
+        }
+    }
+
+    fn from_existing(i: &ContractItemResponse) -> Self {
+        Self {
+            original: Some(i.clone()),
+            name: i.name.clone(),
+            item_type: if i.item_type.is_empty() {
+                "recurring_service".to_string()
+            } else {
+                i.item_type.clone()
+            },
+            quantity: i.quantity.normalize().to_string(),
+            unit_price: i.unit_price.to_string(),
+            new_sort_order: 0,
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct ContractItemFormModalProps {
+    state: ContractItemFormState,
+    contract_id: String,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
+    let initial = props.state.clone();
+    let original = initial.original.clone();
+    let is_edit = original.is_some();
+
+    let mut name = use_signal(|| initial.name.clone());
+    let mut item_type = use_signal(|| initial.item_type.clone());
+    let mut quantity = use_signal(|| initial.quantity.clone());
+    let mut unit_price = use_signal(|| initial.unit_price.clone());
+    let mut saving = use_signal(|| false);
+    let mut deleting = use_signal(|| false);
+    let mut confirm_delete = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+    let type_options = contract_item_type_options();
+
+    let original_for_save = original.clone();
+    let contract_for_save = props.contract_id.clone();
+    let new_sort_order = initial.new_sort_order;
+    let handle_save = move |_| {
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        let name_val = name.read().trim().to_string();
+        if name_val.is_empty() {
+            error.set("Name is required.".to_string());
+            return;
+        }
+        let qty_val = match quantity.read().trim().parse::<Decimal>() {
+            Ok(d) if !d.is_sign_negative() => d,
+            Ok(_) => {
+                error.set("Quantity cannot be negative.".to_string());
+                return;
+            }
+            Err(_) => {
+                error.set("Quantity is required and must be a number.".to_string());
+                return;
+            }
+        };
+        // Unit price is optional; a blank value bills at zero.
+        let price_val = {
+            let raw = unit_price.read().trim().to_string();
+            if raw.is_empty() {
+                Decimal::ZERO
+            } else {
+                match raw.parse::<Decimal>() {
+                    Ok(d) if !d.is_sign_negative() => d,
+                    Ok(_) => {
+                        error.set("Unit price cannot be negative.".to_string());
+                        return;
+                    }
+                    Err(_) => {
+                        error.set("Unit price must be a number.".to_string());
+                        return;
+                    }
+                }
+            }
+        };
+        let type_val = {
+            let t = item_type.read().clone();
+            if t.is_empty() {
+                "recurring_service".to_string()
+            } else {
+                t
+            }
+        };
+
+        saving.set(true);
+        error.set(String::new());
+        let orig = original_for_save.clone();
+        let contract = contract_for_save.clone();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                use crate::modules::contracts::UpsertContractItemRequest;
+                // Preserve the fields the form does not expose so an edit
+                // (full-replace PUT) does not clear them.
+                let body = UpsertContractItemRequest {
+                    name: name_val.clone(),
+                    description: orig.as_ref().and_then(|o| o.description.clone()),
+                    item_type: type_val.clone(),
+                    quantity: qty_val,
+                    unit_price: price_val,
+                    billing_frequency: orig
+                        .as_ref()
+                        .map(|o| o.billing_frequency.clone())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "monthly".to_string()),
+                    work_type_id: orig.as_ref().and_then(|o| o.work_type_id),
+                    included_hours: orig.as_ref().and_then(|o| o.included_hours),
+                    overage_rate: orig.as_ref().and_then(|o| o.overage_rate),
+                    rollover_enabled: orig.as_ref().map(|o| o.rollover_enabled).unwrap_or(false),
+                    max_rollover_hours: orig.as_ref().and_then(|o| o.max_rollover_hours),
+                    sort_order: orig
+                        .as_ref()
+                        .map(|o| o.sort_order)
+                        .unwrap_or(new_sort_order),
+                };
+                let result = match &orig {
+                    None => crate::hooks::fetch::api::post_authed_typed::<ContractItemResponse, _>(
+                        &format!("/contracts/{contract}/items"),
+                        &body,
+                    )
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.user_message()),
+                    Some(o) => {
+                        crate::hooks::fetch::api::put_authed_typed::<ContractItemResponse, _>(
+                            &format!("/contract-items/{}", o.id),
+                            &body,
+                        )
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| e.user_message())
+                    }
+                };
+                match result {
+                    Ok(()) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not save line item: {err}")),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    // Delete opens an in-app confirm dialog (MAPPS-189), never the native
+    // `window.confirm`.
+    let handle_delete_click = move |_| {
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        confirm_delete.set(true);
+    };
+
+    let del_id = original.as_ref().map(|o| o.id.to_string());
+    let perform_delete = move |_| {
+        let Some(iid) = del_id.clone() else { return };
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        deleting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match crate::hooks::fetch::api::delete_authed_typed(&format!(
+                    "/contract-items/{iid}"
+                ))
+                .await
+                {
+                    Ok(()) => onsaved.call(()),
+                    Err(err) => {
+                        error.set(format!(
+                            "Could not delete line item: {}",
+                            err.user_message()
+                        ));
+                    }
+                }
+            }
+            confirm_delete.set(false);
+            deleting.set(false);
+        });
+    };
+
+    rsx! {
+        SettingFormModal {
+            title: if is_edit { "Edit Line Item".to_string() } else { "Add Line Item".to_string() },
+            is_edit,
+            saving: *saving.read(),
+            deleting: *deleting.read(),
+            error: error.read().clone(),
+            create_label: "Add Item".to_string(),
+            onclose: move |_| onclose.call(()),
+            onsave: handle_save,
+            ondelete: handle_delete_click,
+            crate::components::Input {
+                name: "contract_item_name",
+                label: "Name",
+                placeholder: "e.g. Managed Workstation",
+                required: true,
+                value: name.read().clone(),
+                oninput: move |e: FormEvent| name.set(e.value()),
+            }
+            crate::components::Select {
+                name: "contract_item_type",
+                label: "Type",
+                options: type_options,
+                value: item_type.read().clone(),
+                onchange: move |e: FormEvent| item_type.set(e.value()),
+            }
+            crate::components::Input {
+                name: "contract_item_qty",
+                label: "Quantity",
+                r#type: "number",
+                step: "0.01".to_string(),
+                min: "0".to_string(),
+                required: true,
+                value: quantity.read().clone(),
+                oninput: move |e: FormEvent| quantity.set(e.value()),
+            }
+            crate::components::Input {
+                name: "contract_item_price",
+                label: "Unit Price",
+                r#type: "number",
+                step: "0.01".to_string(),
+                min: "0".to_string(),
+                placeholder: "0.00",
+                value: unit_price.read().clone(),
+                oninput: move |e: FormEvent| unit_price.set(e.value()),
+            }
+        }
+        crate::components::ConfirmDialog {
+            open: *confirm_delete.read(),
+            title: "Delete line item".to_string(),
+            message: "Delete this line item? This cannot be undone.".to_string(),
+            confirm_text: "Delete".to_string(),
+            destructive: true,
+            loading: *deleting.read(),
+            onconfirm: perform_delete,
+            oncancel: move |_| confirm_delete.set(false),
         }
     }
 }
