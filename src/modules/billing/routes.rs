@@ -38,7 +38,10 @@ pub fn billing_routes(service: BillingService) -> Router {
             get(get_invoice).put(update_invoice),
         )
         .route("/payments", get(list_payments).post(create_payment))
-        .route("/payments/{payment_id}", delete(delete_payment))
+        .route(
+            "/payments/{payment_id}",
+            put(update_payment).delete(delete_payment),
+        )
         .route(
             "/payment-gateways",
             get(list_payment_gateways).put(upsert_payment_gateway),
@@ -206,6 +209,21 @@ async fn create_payment(
     let p = state
         .service
         .create_payment(user.tenant_id, &request)
+        .await?;
+    Ok(Json(p))
+}
+
+async fn update_payment(
+    State(state): State<BillingRouterState>,
+    RequireAuth(user): RequireAuth,
+    _finance: RequireFinance,
+    Path(payment_id): Path<Uuid>,
+    Json(request): Json<UpdatePaymentRequest>,
+) -> AppResult<Json<PaymentResponse>> {
+    request.validate()?;
+    let p = state
+        .service
+        .update_payment(user.tenant_id, payment_id, &request)
         .await?;
     Ok(Json(p))
 }

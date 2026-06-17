@@ -1001,6 +1001,157 @@ impl BillingService {
         Ok(())
     }
 
+    /// MAPPS-235: edit a recorded payment in place. Rewrites the payment row,
+    /// then reconciles the affected invoice(s): the previously linked invoice
+    /// (if any) and the newly linked invoice (if any) each have their
+    /// `amount_paid` / `balance_due` / `status` recomputed from the live sum of
+    /// their payments, so a changed amount, method, or applied invoice settles
+    /// correctly. A payment cannot be applied to a void/written-off invoice,
+    /// matching `create_payment`.
+    #[tracing::instrument(skip_all, fields(tenant_id = %tenant_id))]
+    pub async fn update_payment(
+        &self,
+        tenant_id: Uuid,
+        payment_id: Uuid,
+        request: &UpdatePaymentRequest,
+    ) -> AppResult<PaymentResponse> {
+        let mut tx = self.db.pool().begin().await?;
+
+        // Confirm the payment exists for this tenant and capture the invoice it
+        // is currently applied to, so that invoice is reconciled even when the
+        // edit moves the payment to a different invoice (or unapplies it).
+        let existing: Option<(Option<Uuid>,)> =
+            sqlx::query_as("SELECT invoice_id FROM payments WHERE id = $1 AND tenant_id = $2")
+                .bind(payment_id)
+                .bind(tenant_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some((old_invoice_id,)) = existing else {
+            return Err(AppError::NotFound("Payment".to_string()));
+        };
+
+        // A payment must never be applied to a cancelled invoice. Mirror the
+        // create-time gate on the terminal frozen subset.
+        if let Some(new_invoice_id) = request.invoice_id {
+            let status_raw: Option<String> =
+                sqlx::query_scalar("SELECT status FROM invoices WHERE id = $1 AND tenant_id = $2")
+                    .bind(new_invoice_id)
+                    .bind(tenant_id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            let Some(status_raw) = status_raw else {
+                return Err(AppError::NotFound("Invoice".to_string()));
+            };
+            let status = InvoiceStatus::from_str(&status_raw).ok_or_else(|| {
+                AppError::Database(format!("unknown invoice status '{status_raw}'"))
+            })?;
+            if matches!(status, InvoiceStatus::Void | InvoiceStatus::WrittenOff) {
+                return Err(AppError::Conflict(format!(
+                    "Invoice in status '{}' cannot accept payments",
+                    status.as_str()
+                )));
+            }
+        }
+
+        let created_at: chrono::DateTime<Utc> = sqlx::query_scalar(
+            r#"
+            UPDATE payments SET
+                invoice_id             = $3,
+                company_id             = $4,
+                payment_date           = $5,
+                amount                 = $6,
+                payment_method         = $7,
+                reference_number       = $8,
+                gateway_transaction_id = $9,
+                notes                  = $10
+            WHERE id = $1 AND tenant_id = $2
+            RETURNING created_at
+            "#,
+        )
+        .bind(payment_id)
+        .bind(tenant_id)
+        .bind(request.invoice_id)
+        .bind(request.company_id)
+        .bind(request.payment_date)
+        .bind(request.amount)
+        .bind(request.payment_method.as_str())
+        .bind(&request.reference_number)
+        .bind(&request.gateway_transaction_id)
+        .bind(&request.notes)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        // Reconcile every invoice touched by the edit. Recomputing from the
+        // live payment sum keeps the old and new invoice correct even when both
+        // refer to the same row (the delta nets out) or the payment is moved.
+        let mut affected: Vec<Uuid> = Vec::new();
+        if let Some(id) = old_invoice_id {
+            affected.push(id);
+        }
+        if let Some(id) = request.invoice_id {
+            if !affected.contains(&id) {
+                affected.push(id);
+            }
+        }
+        for invoice_id in affected {
+            let totals: Option<(Decimal,)> =
+                sqlx::query_as("SELECT total FROM invoices WHERE id = $1 AND tenant_id = $2")
+                    .bind(invoice_id)
+                    .bind(tenant_id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            let Some((total,)) = totals else {
+                continue;
+            };
+            let new_paid: Decimal = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(amount), 0) FROM payments WHERE invoice_id = $1",
+            )
+            .bind(invoice_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            let new_balance = total - new_paid;
+            let new_status = if new_paid <= Decimal::ZERO {
+                "sent"
+            } else if new_balance <= Decimal::ZERO {
+                "paid"
+            } else {
+                "partially_paid"
+            };
+            sqlx::query(
+                r#"
+                UPDATE invoices SET
+                    amount_paid = $2,
+                    balance_due = $3,
+                    status      = $4,
+                    paid_at     = CASE WHEN $4 = 'paid' THEN COALESCE(paid_at, NOW()) ELSE NULL END,
+                    updated_at  = NOW()
+                WHERE id = $1
+                "#,
+            )
+            .bind(invoice_id)
+            .bind(new_paid)
+            .bind(new_balance)
+            .bind(new_status)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(PaymentResponse {
+            id: payment_id,
+            tenant_id,
+            invoice_id: request.invoice_id,
+            company_id: request.company_id,
+            payment_date: request.payment_date,
+            amount: request.amount,
+            payment_method: request.payment_method,
+            reference_number: request.reference_number.clone(),
+            gateway_transaction_id: request.gateway_transaction_id.clone(),
+            notes: request.notes.clone(),
+            created_at,
+        })
+    }
+
     /// PMS-38: update an invoice header and optionally replace its
     /// line items in one transaction. Rejects edits on
     /// `InvoiceStatus::is_frozen` invoices (sent, paid, partially paid,
