@@ -674,6 +674,9 @@ pub fn ProjectListPage() -> Element {
 pub fn ProjectNewPage() -> Element {
     let mut name = use_signal(String::new);
     let mut company = use_signal(String::new);
+    // PMS-367: `company` holds the selected company UUID; CompanyPicker reports
+    // the display name back here so the autocomplete renders the chosen company.
+    let mut company_name = use_signal(String::new);
     let mut description = use_signal(String::new);
     let mut budget_amount = use_signal(String::new);
     let mut budget_hours = use_signal(String::new);
@@ -693,25 +696,15 @@ pub fn ProjectNewPage() -> Element {
     let mut amount_err = use_signal(String::new);
     let mut hours_err = use_signal(String::new);
 
-    // Real company picker from the live companies list.
-    let companies_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<CompanyOption>>("/contacts/companies")
-            .await
-            .ok()
-            .map(|p| p.data)
-            .unwrap_or_default()
-    });
-    let companies = companies_resource
-        .read_unchecked()
-        .clone()
-        .unwrap_or_default();
-    let mut company_options = vec![SelectOption::new("", "No company")];
-    company_options.extend(
-        companies
-            .iter()
-            .map(|c| SelectOption::new(c.id.to_string(), c.name.clone())),
-    );
+    // PMS-367: company is chosen via the shared autocomplete CompanyPicker
+    // (same component as Ticket/Contact/Asset/Contract), which fetches and
+    // filters its own list, so this form no longer builds a native Select.
+    let company_picker_selected_id: Option<String> =
+        if uuid::Uuid::parse_str(company.read().as_str()).is_ok() {
+            Some(company.read().clone())
+        } else {
+            None
+        };
 
     // PMS-361: users list for the Project Manager Select. Same endpoint
     // and shape the Edit modal uses on the detail page.
@@ -866,13 +859,22 @@ pub fn ProjectNewPage() -> Element {
                         oninput: move |e: FormEvent| name.set(e.value()),
                     }
 
-                    Select {
-                        name: "company",
-                        label: "Company",
-                        options: company_options,
-                        value: company.read().clone(),
-                        placeholder: "Select a company",
-                        onchange: move |e: FormEvent| company.set(e.value()),
+                    // PMS-367: autocomplete CompanyPicker (with inline create),
+                    // matching the Ticket/Contact/Asset/Contract forms. Company
+                    // is optional on a project, so `required` is false.
+                    crate::components::CompanyPicker {
+                        value: company_name.read().clone(),
+                        selected_id: company_picker_selected_id,
+                        required: false,
+                        allow_inline_create: true,
+                        onselect: move |(id, name): (String, String)| {
+                            company.set(id);
+                            company_name.set(name);
+                        },
+                        onclear: move |_| {
+                            company.set(String::new());
+                            company_name.set(String::new());
+                        },
                     }
 
                     crate::components::Textarea {

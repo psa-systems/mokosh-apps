@@ -997,17 +997,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
 #[component]
 pub fn InvoiceNewPage() -> Element {
     let mut company_id = use_signal(String::new);
-    let companies_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        load_companies().await
-    });
-    let company_options = company_select_options(
-        &companies_resource
-            .read_unchecked()
-            .clone()
-            .unwrap_or_default(),
-        "Select a company",
-    );
+    let mut company_name = use_signal(String::new);
     let mut invoice_date = use_signal(String::new);
     let mut due_date = use_signal(String::new);
     let mut po_number = use_signal(String::new);
@@ -1225,6 +1215,14 @@ pub fn InvoiceNewPage() -> Element {
         .clone()
         .unwrap_or_else(|| computed_tax.read().clone());
 
+    // PMS-367 AC1: company chosen via the shared autocomplete CompanyPicker.
+    let company_picker_selected_id: Option<String> =
+        if uuid::Uuid::parse_str(company_id.read().as_str()).is_ok() {
+            Some(company_id.read().clone())
+        } else {
+            None
+        };
+
     rsx! {
         AppLayout { title: "New Invoice",
             PageHeader {
@@ -1244,14 +1242,19 @@ pub fn InvoiceNewPage() -> Element {
                         }
                     }
 
-                    Select {
-                        name: "company_id",
-                        label: "Company",
-                        options: company_options,
+                    crate::components::CompanyPicker {
+                        value: company_name.read().clone(),
+                        selected_id: company_picker_selected_id,
                         required: true,
-                        placeholder: "Select a company",
-                        value: company_id.read().clone(),
-                        onchange: move |e: FormEvent| company_id.set(e.value()),
+                        allow_inline_create: true,
+                        onselect: move |(id, name): (String, String)| {
+                            company_id.set(id);
+                            company_name.set(name);
+                        },
+                        onclear: move |_| {
+                            company_id.set(String::new());
+                            company_name.set(String::new());
+                        },
                     }
 
                     div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
@@ -1710,17 +1713,7 @@ struct RecordPaymentModalProps {
 #[component]
 fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
     let mut company_id = use_signal(|| props.company_id.clone());
-    let companies_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        load_companies().await
-    });
-    let company_options = company_select_options(
-        &companies_resource
-            .read_unchecked()
-            .clone()
-            .unwrap_or_default(),
-        "Select a company",
-    );
+    let mut company_name = use_signal(String::new);
     let mut invoice_id = use_signal(|| props.invoice_id.clone());
     // MAPPS-191: invoice picker options for the selected company. Reading
     // `company_id` inside the resource subscribes it, so the list re-fetches
@@ -1764,6 +1757,14 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
+
+    // PMS-367 AC1: company chosen via the shared autocomplete CompanyPicker.
+    let company_picker_selected_id: Option<String> =
+        if uuid::Uuid::parse_str(company_id.read().as_str()).is_ok() {
+            Some(company_id.read().clone())
+        } else {
+            None
+        };
 
     let handle_save = move |_| {
         if *saving.read() {
@@ -1927,17 +1928,21 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                         "{error.read()}"
                     }
                 }
-                Select {
-                    name: "payment_company_id",
-                    label: "Company",
-                    options: company_options,
+                crate::components::CompanyPicker {
+                    value: company_name.read().clone(),
+                    selected_id: company_picker_selected_id,
                     required: true,
-                    placeholder: "Select a company",
-                    value: company_id.read().clone(),
-                    onchange: move |e: FormEvent| {
+                    allow_inline_create: true,
+                    onselect: move |(id, name): (String, String)| {
                         // Switching companies invalidates any previously picked
                         // invoice; clear it so a stale UUID can't be submitted.
-                        company_id.set(e.value());
+                        company_id.set(id);
+                        company_name.set(name);
+                        invoice_id.set(String::new());
+                    },
+                    onclear: move |_| {
+                        company_id.set(String::new());
+                        company_name.set(String::new());
                         invoice_id.set(String::new());
                     },
                 }
