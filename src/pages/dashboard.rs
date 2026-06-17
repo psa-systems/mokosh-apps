@@ -6,7 +6,8 @@ use serde::Deserialize;
 
 use crate::components::{
     ticket_status_badge, AppLayout, Badge, BadgeVariant, Card, ClockIcon, FolderIcon, PageHeader,
-    StatCard, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, TicketIcon,
+    StatCard, StatCardTone, Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+    TicketIcon,
 };
 use crate::utils::Paginated;
 use crate::Route;
@@ -161,22 +162,23 @@ pub fn DashboardPage() -> Element {
                 StatCard {
                     label: "Open Tickets",
                     value: "{open_label}",
-                    icon: rsx!(TicketIcon { class: "h-6 w-6 text-accent".to_string() }),
+                    icon: rsx!(TicketIcon { class: "h-6 w-6".to_string() }),
                 }
                 StatCard {
                     label: "Hours This Week",
                     value: "{hours_week}",
-                    icon: rsx!(ClockIcon { class: "h-6 w-6 text-accent".to_string() }),
+                    icon: rsx!(ClockIcon { class: "h-6 w-6".to_string() }),
                 }
                 StatCard {
                     label: "Active Projects",
                     value: "{projects_label}",
-                    icon: rsx!(FolderIcon { class: "h-6 w-6 text-accent".to_string() }),
+                    icon: rsx!(FolderIcon { class: "h-6 w-6".to_string() }),
                 }
                 StatCard {
                     label: "SLA Breached",
                     value: "{breached_label}",
-                    icon: rsx!(TicketIcon { class: "h-6 w-6 text-red-600".to_string() }),
+                    icon_tone: StatCardTone::Danger,
+                    icon: rsx!(TicketIcon { class: "h-6 w-6".to_string() }),
                 }
             }
 

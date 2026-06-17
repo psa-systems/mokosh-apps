@@ -87,6 +87,33 @@ pub fn CardHeader(props: CardHeaderProps) -> Element {
     }
 }
 
+/// Semantic tone for a [`StatCard`]'s icon container. Lets a stat that
+/// carries meaning (an SLA breach, an at-risk warning) tint its icon
+/// circle accordingly instead of every stat sitting in the same accent
+/// circle, which previously left e.g. a red icon stranded inside an
+/// accent-colored container. The tone drives both the container
+/// background and the `currentColor` the icon inherits, so callers pass
+/// an uncolored icon and the tone colors the glyph too.
+#[derive(Clone, Copy, PartialEq, Default)]
+pub enum StatCardTone {
+    #[default]
+    Accent,
+    Warning,
+    Danger,
+}
+
+impl StatCardTone {
+    fn icon_container_class(self) -> &'static str {
+        match self {
+            StatCardTone::Accent => "bg-accent-100 dark:bg-accent-900 text-accent",
+            StatCardTone::Warning => {
+                "bg-yellow-100 dark:bg-yellow-900/40 text-yellow-600 dark:text-yellow-400"
+            }
+            StatCardTone::Danger => "bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400",
+        }
+    }
+}
+
 /// Stats card for dashboard metrics
 #[derive(Props, Clone, PartialEq)]
 pub struct StatCardProps {
@@ -96,6 +123,11 @@ pub struct StatCardProps {
     value: String,
     /// Optional icon
     icon: Option<Element>,
+    /// Semantic tone for the icon container (default accent). The icon
+    /// inherits this color via `currentColor`, so the caller's icon
+    /// should not set its own `text-*` color.
+    #[props(default)]
+    icon_tone: StatCardTone,
     /// Optional change indicator (e.g., "+12%")
     #[props(default)]
     change: String,
@@ -119,12 +151,13 @@ pub fn StatCard(props: StatCardProps) -> Element {
         "bg-surface rounded-lg shadow border border-line p-6 {}",
         props.class
     );
+    let icon_container = props.icon_tone.icon_container_class();
 
     rsx! {
         div { class: "{class}",
             div { class: "flex items-center",
                 if let Some(ref icon) = props.icon {
-                    div { class: "flex-shrink-0 p-3 bg-accent-100 dark:bg-accent-900 rounded-full",
+                    div { class: "flex-shrink-0 p-3 rounded-full {icon_container}",
                         {icon}
                     }
                 }
