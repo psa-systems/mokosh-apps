@@ -1223,7 +1223,13 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     }
                                 }
 
-                                // Configuration items (reveal on demand)
+                                // MAPPS-232: configuration items are crypto-vault
+                                // secrets surfaced on demand through the audited
+                                // `GET /configuration-items/{id}` reveal, exactly
+                                // like the Credentials card below. The server
+                                // exposes no create / edit / delete route for them,
+                                // so this card is intentionally reveal-only: no
+                                // add/edit/delete affordance is offered here.
                                 Card { title: "Configuration Items",
                                     if config_items.is_empty() {
                                         p { class: "text-sm text-gray-400 italic", "No configuration items." }
