@@ -825,17 +825,46 @@ pub fn ProjectNewPage() -> Element {
                                 if !end_v.is_empty() {
                                     body["target_end_date"] = serde_json::json!(end_v);
                                 }
-                                match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
-                                        "/projects",
-                                        &body,
-                                    )
+                                match crate::hooks::fetch::api::post_authed_typed::<
+                                        serde_json::Value,
+                                        _,
+                                    >("/projects", &body)
                                     .await
                                 {
                                     Ok(_) => {
                                         dioxus::prelude::navigator().push(Route::ProjectList {});
                                     }
-                                    Err(e) => {
-                                        error.set(format!("Could not create project: {e}"));
+                                    Err(err) => {
+                                        // MAPPS-265: route server-side field errors
+                                        // onto their inline fields so the cue
+                                        // persists after a failed submit; unmatched
+                                        // fields or a non-422 failure fall back to
+                                        // the top-of-form banner.
+                                        let fields = err.field_errors();
+                                        if fields.is_empty() {
+                                            error
+                                                .set(format!(
+                                                    "Could not create project: {}",
+                                                    err.user_message(),
+                                                ));
+                                        } else {
+                                            let mut leftover = Vec::new();
+                                            for fe in fields {
+                                                match fe.field.as_str() {
+                                                    "name" => name_err.set(fe.message.clone()),
+                                                    "budget_amount" => {
+                                                        amount_err.set(fe.message.clone())
+                                                    }
+                                                    "budget_hours" => {
+                                                        hours_err.set(fe.message.clone())
+                                                    }
+                                                    _ => leftover.push(fe.message.clone()),
+                                                }
+                                            }
+                                            if !leftover.is_empty() {
+                                                error.set(leftover.join("; "));
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1712,7 +1741,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                         );
                         insert_opt_uuid(&mut body, "project_manager_id", &pe_manager());
                         let body = serde_json::Value::Object(body);
-                        match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
+                        match crate::hooks::fetch::api::put_authed_typed::<serde_json::Value, _>(
                             &format!("/projects/{save_id}"),
                             &body,
                         )
@@ -1726,7 +1755,31 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                             }
                             Err(err) => {
                                 pe_submitting.set(false);
-                                pe_error.set(err);
+                                // MAPPS-265: route server-side field errors onto
+                                // their inline fields so the cue persists after a
+                                // failed submit; unmatched fields or a non-422
+                                // failure fall back to the modal's banner.
+                                let fields = err.field_errors();
+                                if fields.is_empty() {
+                                    pe_error.set(err.user_message());
+                                } else {
+                                    let mut leftover = Vec::new();
+                                    for fe in fields {
+                                        match fe.field.as_str() {
+                                            "name" => pe_name_err.set(fe.message.clone()),
+                                            "budget_amount" => {
+                                                pe_amount_err.set(fe.message.clone())
+                                            }
+                                            "budget_hours" => {
+                                                pe_hours_err.set(fe.message.clone())
+                                            }
+                                            _ => leftover.push(fe.message.clone()),
+                                        }
+                                    }
+                                    if !leftover.is_empty() {
+                                        pe_error.set(leftover.join("; "));
+                                    }
+                                }
                             }
                         }
                     });
