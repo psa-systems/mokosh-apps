@@ -685,8 +685,20 @@ fn TargetRow(props: TargetRowProps) -> Element {
             );
             return;
         };
-        let first = parse_hours(&first_hours.read());
-        let resolution = parse_hours(&resolution_hours.read());
+        let first = match validate_hours(&first_hours.read()) {
+            Ok(v) => v,
+            Err(msg) => {
+                crate::hooks::push_toast(crate::components::AlertType::Error, msg);
+                return;
+            }
+        };
+        let resolution = match validate_hours(&resolution_hours.read()) {
+            Ok(v) => v,
+            Err(msg) => {
+                crate::hooks::push_toast(crate::components::AlertType::Error, msg);
+                return;
+            }
+        };
         let ops = {
             let v = operational_hours.read().clone();
             if v.is_empty() {
@@ -1069,18 +1081,24 @@ fn BusinessHoursFormModal(props: BusinessHoursFormModalProps) -> Element {
                 return;
             }
         };
+        // Validate the timezone as an IANA name (empty defaults to UTC) so a
+        // typo surfaces here instead of as an opaque 422 (MAPPS-240).
+        let timezone_value = {
+            let tz = timezone.read().trim().to_string();
+            if tz.is_empty() {
+                "UTC".to_string()
+            } else if tz.parse::<chrono_tz::Tz>().is_err() {
+                error.set("Time zone must be an IANA name (e.g. America/New_York).".to_string());
+                return;
+            } else {
+                tz
+            }
+        };
         saving.set(true);
         error.set(String::new());
         let req = crate::modules::sla::UpsertBusinessHoursRequest {
             name: name.read().trim().to_string(),
-            timezone: {
-                let tz = timezone.read().trim().to_string();
-                if tz.is_empty() {
-                    "UTC".to_string()
-                } else {
-                    tz
-                }
-            },
+            timezone: timezone_value,
             schedule,
             is_default: *is_default.read(),
         };
@@ -1500,6 +1518,24 @@ fn parse_hours(value: &str) -> Option<rust_decimal::Decimal> {
         return Some(rust_decimal::Decimal::from(mins) / rust_decimal::Decimal::from(60));
     }
     trimmed.parse::<rust_decimal::Decimal>().ok()
+}
+
+/// Validate a target-hours input before saving. Empty stays `None` (no
+/// commitment for this dimension); a non-empty value must parse and be
+/// non-negative, otherwise an error message is returned so the save is
+/// rejected with visible feedback instead of silently dropping the input or
+/// storing a negative target (MAPPS-239).
+fn validate_hours(value: &str) -> Result<Option<rust_decimal::Decimal>, &'static str> {
+    if value.trim().is_empty() {
+        return Ok(None);
+    }
+    match parse_hours(value) {
+        Some(d) if d >= rust_decimal::Decimal::ZERO => Ok(Some(d)),
+        Some(_) => Err("SLA target hours cannot be negative."),
+        None => {
+            Err("Enter SLA target hours as a number, a decimal, or H:MM (e.g. 2, 2.5, or 1:30).")
+        }
+    }
 }
 
 /// Pretty-print a JSON value for an editor textarea. Falls back to the

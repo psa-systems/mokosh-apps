@@ -2,11 +2,15 @@
 
 use dioxus::prelude::*;
 
+use chrono::Datelike;
+
 use crate::Route;
 
 /// Landing page component
 #[component]
 pub fn HomePage() -> Element {
+    // Derive the copyright year at render so it never goes stale (MAPPS-229).
+    let current_year = chrono::Utc::now().year();
     rsx! {
         div { class: "min-h-screen bg-gradient-to-br from-blue-600 to-indigo-900",
             // Navigation
@@ -116,12 +120,7 @@ pub fn HomePage() -> Element {
                 div { class: "container mx-auto px-6",
                     div { class: "flex flex-col md:flex-row items-center justify-between",
                         span { class: "text-gray-400 text-sm",
-                            "© 2025 Mokosh Platform. All rights reserved."
-                        }
-                        div { class: "flex space-x-6 mt-4 md:mt-0",
-                            a { class: "text-gray-400 hover:text-white text-sm", "Privacy Policy" }
-                            a { class: "text-gray-400 hover:text-white text-sm", "Terms of Service" }
-                            a { class: "text-gray-400 hover:text-white text-sm", "Contact" }
+                            "© {current_year} Mokosh Platform. All rights reserved."
                         }
                     }
                 }
