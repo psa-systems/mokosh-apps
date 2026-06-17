@@ -528,6 +528,10 @@ pub fn AssetNewPage() -> Element {
     let mut name = use_signal(String::new);
     let mut asset_type = use_signal(String::new);
     let mut company = use_signal(String::new);
+    // PMS-352 AC3: `company` holds the selected company UUID; CompanyPicker
+    // reports the display name back here so the picker can render the chosen
+    // company and a tenant with no companies can create one inline.
+    let mut company_name = use_signal(String::new);
     let mut serial = use_signal(String::new);
     let mut manufacturer = use_signal(String::new);
     let mut model = use_signal(String::new);
@@ -555,19 +559,10 @@ pub fn AssetNewPage() -> Element {
             .map(|p| p.data)
             .unwrap_or_default()
     });
-    let companies_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<CompanyOpt>>("/contacts/companies")
-            .await
-            .ok()
-            .map(|p| p.data)
-            .unwrap_or_default()
-    });
+    // PMS-352 AC3: company is now chosen via CompanyPicker (which fetches and
+    // filters its own company list with an inline-create affordance), so the
+    // page no longer builds a company Select option list.
     let types = types_resource.read_unchecked().clone().unwrap_or_default();
-    let companies = companies_resource
-        .read_unchecked()
-        .clone()
-        .unwrap_or_default();
 
     let mut type_options = vec![SelectOption::new("", "Select a type")];
     type_options.extend(
@@ -575,12 +570,15 @@ pub fn AssetNewPage() -> Element {
             .iter()
             .map(|t| SelectOption::new(t.id.to_string(), t.name.clone())),
     );
-    let mut company_options = vec![SelectOption::new("", "Select a company")];
-    company_options.extend(
-        companies
-            .iter()
-            .map(|c| SelectOption::new(c.id.to_string(), c.name.clone())),
-    );
+
+    // Feed CompanyPicker its "already selected" state: Some(id) when a company
+    // is picked (renders the selected chip), None otherwise (search dropdown).
+    let company_picker_selected_id: Option<String> =
+        if uuid::Uuid::parse_str(company.read().as_str()).is_ok() {
+            Some(company.read().clone())
+        } else {
+            None
+        };
 
     let err = error.read().clone();
 
@@ -752,18 +750,29 @@ pub fn AssetNewPage() -> Element {
                     }
 
                     div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
-                        Select {
-                            name: "company",
-                            label: "Company",
-                            options: company_options,
-                            value: company.read().clone(),
-                            placeholder: "Select a company",
-                            required: true,
-                            error: company_err(),
-                            onchange: move |e: FormEvent| {
-                                company_err.set(String::new());
-                                company.set(e.value());
-                            },
+                        // PMS-352 AC3: CompanyPicker (with inline create) so a
+                        // tenant with no companies can create one without
+                        // leaving the New Asset form. CompanyPicker has no
+                        // error prop, so surface company_err just below it.
+                        div { class: "space-y-1",
+                            crate::components::CompanyPicker {
+                                value: company_name.read().clone(),
+                                selected_id: company_picker_selected_id,
+                                required: true,
+                                allow_inline_create: true,
+                                onselect: move |(id, name): (String, String)| {
+                                    company.set(id);
+                                    company_name.set(name);
+                                    company_err.set(String::new());
+                                },
+                                onclear: move |_| {
+                                    company.set(String::new());
+                                    company_name.set(String::new());
+                                },
+                            }
+                            if !company_err().is_empty() {
+                                p { class: "text-sm text-red-600 dark:text-red-400", "{company_err}" }
+                            }
                         }
                         Input {
                             name: "serial",
