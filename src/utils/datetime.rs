@@ -351,6 +351,20 @@ pub fn user_timezone() -> Tz {
         .unwrap_or(Tz::UTC)
 }
 
+/// The user's current calendar date in their profile timezone (PMS-360),
+/// so "today" highlighting and day bucketing agree across every screen
+/// instead of mixing browser-local and UTC.
+pub fn user_today() -> chrono::NaiveDate {
+    Utc::now().with_timezone(&user_timezone()).date_naive()
+}
+
+/// The calendar date a UTC instant falls on in the user's profile
+/// timezone (PMS-360); buckets an appointment/entry into the same day
+/// cell the rest of the app uses, matching the records' timezone.
+pub fn user_local_date(dt: DateTime<Utc>) -> chrono::NaiveDate {
+    dt.with_timezone(&user_timezone()).date_naive()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
