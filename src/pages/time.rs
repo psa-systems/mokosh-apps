@@ -45,6 +45,20 @@ struct RemoteTimeEntry {
     billing_status: String,
 }
 
+/// Per-key tenant setting response (`GET /settings/...`). Only `value` is
+/// read; the server stores the max-hours-per-day cap as a JSON integer
+/// (MAPPS-244 / PMS-396).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct SettingValueRow {
+    #[serde(default)]
+    value: serde_json::Value,
+}
+
+/// Hard upper bound on a single entry's duration, and the fallback per-day
+/// cap when the tenant has not configured one (404). Kept as minutes.
+const MAX_SINGLE_ENTRY_MINUTES: i64 = 24 * 60;
+const DEFAULT_MAX_MINUTES_PER_DAY: i64 = 24 * 60;
+
 /// A ticket, used to populate the Work Item picker. Selecting one supplies
 /// both `ticket_id` and the required `company_id` for the create request.
 #[derive(Clone, Debug, Deserialize)]
@@ -449,6 +463,49 @@ pub fn TimeEntryNewPage() -> Element {
         }
     });
 
+    // MAPPS-244: the configured per-day cap (minutes). A missing setting
+    // (404) or any fetch failure falls back to the 24h default so a settings
+    // outage never blocks logging; the server still enforces the real cap.
+    let cap_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        #[cfg(feature = "web")]
+        {
+            match crate::hooks::fetch::api::get_authed_typed::<SettingValueRow>(
+                "/settings/time_tracking/max_hours_per_day",
+            )
+            .await
+            {
+                Ok(row) => row
+                    .value
+                    .as_i64()
+                    .filter(|h| (1..=24).contains(h))
+                    .map(|h| h * 60)
+                    .unwrap_or(DEFAULT_MAX_MINUTES_PER_DAY),
+                Err(_) => DEFAULT_MAX_MINUTES_PER_DAY,
+            }
+        }
+        #[cfg(not(feature = "web"))]
+        {
+            DEFAULT_MAX_MINUTES_PER_DAY
+        }
+    });
+
+    // MAPPS-244: minutes already logged by this user for today, so the cap
+    // check below sees the day's running total. The page always logs against
+    // today (see `date` in the submit handler). Any failure falls back to 0.
+    let today_total_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let today = Utc::now().date_naive();
+        let user_id = auth.read().user.as_ref().map(|u| u.id)?;
+        let path = format!(
+            "/time-entries?user_id={user_id}&date_from={today}&date_to={today}&per_page=500"
+        );
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimeEntry>>(&path)
+            .await
+            .ok()
+            .map(|p| p.data.iter().map(|e| e.duration_minutes).sum::<i64>())
+    });
+
     let tickets = tickets_resource
         .read_unchecked()
         .clone()
@@ -462,6 +519,12 @@ pub fn TimeEntryNewPage() -> Element {
         .clone()
         .unwrap_or_default();
     let tasks = tasks_resource.read_unchecked().clone().unwrap_or_default();
+
+    // Snapshots captured by the submit closure for the pre-flight day-cap
+    // check (MAPPS-244). Both are `Some` only once their resource resolves;
+    // while loading, the pre-flight check is skipped and the server enforces.
+    let cap_minutes: i64 = (*cap_resource.read_unchecked()).unwrap_or(DEFAULT_MAX_MINUTES_PER_DAY);
+    let existing_today_minutes: Option<i64> = (*today_total_resource.read_unchecked()).flatten();
 
     let mut work_item_options = vec![SelectOption::new("", "Select a work item")];
     work_item_options.extend(tickets.iter().map(|t| {
@@ -522,7 +585,9 @@ pub fn TimeEntryNewPage() -> Element {
                         let duration_minutes = match crate::utils::duration::parse_input_to_minutes(
                             &hrs,
                         ) {
-                            Some(m) if m > 0 && m <= 24 * 60 => m,
+                            // Hard upper bound on a single entry stays at 24h
+                            // regardless of the per-day cap (MAPPS-244 AC6).
+                            Some(m) if m > 0 && m <= MAX_SINGLE_ENTRY_MINUTES => m,
                             _ => {
                                 error.set(
                                     "Enter time as hours (2.5) or H:MM (1:30), greater than 0 and at most 24h."
@@ -531,6 +596,22 @@ pub fn TimeEntryNewPage() -> Element {
                                 return;
                             }
                         };
+                        // MAPPS-244: pre-flight per-day cap check. Once today's
+                        // existing total is known, block (before the network
+                        // call) any entry that would push the day over the
+                        // configured cap, naming the cap and the minutes left.
+                        if let Some(existing) = existing_today_minutes {
+                            if existing + duration_minutes > cap_minutes {
+                                let remaining = (cap_minutes - existing).max(0);
+                                error.set(format!(
+                                    "This entry would put today's total over the {}h/day cap. \
+                                     You have {} minute(s) left to log today.",
+                                    cap_minutes / 60,
+                                    remaining,
+                                ));
+                                return;
+                            }
+                        }
                         // Resolve the work item into (ticket_id, project_id,
                         // task_id, company_id). A ticket carries its company;
                         // a project carries its own (required, which is why the
@@ -601,7 +682,7 @@ pub fn TimeEntryNewPage() -> Element {
                                 if let Some(tk) = task_id {
                                     body["task_id"] = serde_json::json!(tk);
                                 }
-                                match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
+                                match crate::hooks::fetch::api::post_authed_typed::<serde_json::Value, _>(
                                     "/time-entries",
                                     &body,
                                 )
@@ -610,8 +691,15 @@ pub fn TimeEntryNewPage() -> Element {
                                     Ok(_) => {
                                         dioxus::prelude::navigator().push(Route::TimeEntryList {});
                                     }
+                                    // MAPPS-244: surface the server's day-cap
+                                    // rejection (409/422 from PMS-396, e.g. a
+                                    // race past the pre-flight check) and any
+                                    // other validation message in the banner.
                                     Err(e) => {
-                                        error.set(format!("Could not save time entry: {e}"));
+                                        error.set(format!(
+                                            "Could not save time entry: {}",
+                                            e.user_message()
+                                        ));
                                     }
                                 }
                             }

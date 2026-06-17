@@ -329,6 +329,9 @@ pub enum Route {
     // MAPPS-259: per-user theme + accent picker.
     #[route("/settings/appearance")]
     SettingsAppearance {},
+    // MAPPS-244: tenant-wide max hours per day (PMS-396 server setting).
+    #[route("/settings/time-tracking")]
+    SettingsTimeTracking {},
     #[route("/settings/rate-cards")]
     SettingsRateCards {},
     #[route("/settings/tax-rates")]
@@ -799,6 +802,11 @@ fn SettingsScheduling() -> Element {
 #[component]
 fn SettingsAppearance() -> Element {
     rsx! { settings::AppearanceSettingsPage {} }
+}
+
+#[component]
+fn SettingsTimeTracking() -> Element {
+    rsx! { settings::MaxHoursPerDaySettingsPage {} }
 }
 
 #[component]

@@ -148,6 +148,11 @@ pub fn SettingsHomePage() -> Element {
                     description: "Standard due date applied to new tasks and tickets when none is set.",
                 }
                 SettingsCard {
+                    to: Route::SettingsTimeTracking {},
+                    title: "Time Tracking",
+                    description: "Maximum hours a user may log against a single day.",
+                }
+                SettingsCard {
                     to: Route::SettingsRateCards {},
                     title: "Rate Cards",
                     description: "Hourly rates billed per work type.",
@@ -410,6 +415,182 @@ fn StandardDueDateForm(initial: u32) -> Element {
                 }
                 p { class: "text-sm text-muted",
                     "New tasks without a due date, and tickets that match no SLA, default to this many business days from the day they are created (weekends skipped). Set 0 to leave new work with no default due date."
+                }
+                div {
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        loading: *saving.read(),
+                        onclick: handle_save,
+                        "Save Changes"
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Time tracking: max hours per day (MAPPS-244 / PMS-396)
+// GET/PUT `/settings/time_tracking/max_hours_per_day`
+// ============================================================================
+
+const MAX_HOURS_PER_DAY_SETTING_PATH: &str = "/settings/time_tracking/max_hours_per_day";
+/// Server stores the cap as an integer number of hours validated `1..=24`;
+/// an unconfigured tenant (404) falls back to a full 24-hour day.
+const MAX_HOURS_PER_DAY_CEILING: u32 = 24;
+const DEFAULT_MAX_HOURS_PER_DAY: u32 = 24;
+
+/// `/settings/time-tracking` - edit the tenant-wide cap on how many hours of
+/// time entries a single user may log against one day. The server enforces
+/// the cap and `validate_setting_value` mirrors the `1..=24` range (PMS-396);
+/// this page mirrors that range client-side for an inline error instead of a
+/// 422 round-trip.
+#[component]
+pub fn MaxHoursPerDaySettingsPage() -> Element {
+    if !use_is_admin() {
+        return rsx! { AdminOnlyNotice { title: "Time Tracking" } };
+    }
+
+    let resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        #[cfg(feature = "web")]
+        {
+            // A missing setting (404) is the unconfigured state, not an
+            // error: treat it as the full 24-hour default. Any other failure
+            // is surfaced so the form does not silently seed a wrong cap.
+            match crate::hooks::fetch::api::get_authed_typed::<SettingValueRow>(
+                MAX_HOURS_PER_DAY_SETTING_PATH,
+            )
+            .await
+            {
+                Ok(row) => Some(
+                    row.value
+                        .as_u64()
+                        .unwrap_or(u64::from(DEFAULT_MAX_HOURS_PER_DAY))
+                        .clamp(1, u64::from(MAX_HOURS_PER_DAY_CEILING)) as u32,
+                ),
+                Err(e) if e.status_code() == Some(404) => Some(DEFAULT_MAX_HOURS_PER_DAY),
+                Err(_) => None,
+            }
+        }
+        #[cfg(not(feature = "web"))]
+        {
+            None::<u32>
+        }
+    });
+
+    let snap = resource.read_unchecked();
+    rsx! {
+        AppLayout { title: "Time Tracking",
+            PageHeader {
+                title: "Time Tracking",
+                subtitle: "Maximum hours a user may log against a single day",
+                actions: rsx! {
+                    Link { to: Route::SettingsHome {},
+                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
+                    }
+                },
+            }
+            match &*snap {
+                None => rsx! {
+                    crate::components::DetailSkeleton {}
+                },
+                Some(None) => rsx! {
+                    Card {
+                        div { class: "py-12 text-center",
+                            p { class: "text-sm text-red-600 dark:text-red-300",
+                                "Could not load time tracking settings. Refresh the page to retry."
+                            }
+                        }
+                    }
+                },
+                Some(Some(hours)) => rsx! {
+                    MaxHoursPerDayForm { initial: *hours }
+                },
+            }
+        }
+    }
+}
+
+#[component]
+fn MaxHoursPerDayForm(initial: u32) -> Element {
+    let mut value = use_signal(|| initial.to_string());
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(String::new);
+    let mut saved = use_signal(|| false);
+
+    let handle_save = move |_| {
+        if *saving.read() {
+            return;
+        }
+        let raw = value.read().trim().to_string();
+        // Mirror the server-side validation (1..=24) so the user gets an
+        // inline message instead of a 422 round-trip.
+        let parsed = match raw.parse::<u32>() {
+            Ok(n) if (1..=MAX_HOURS_PER_DAY_CEILING).contains(&n) => n,
+            _ => {
+                error.set(format!(
+                    "Enter a whole number of hours from 1 to {MAX_HOURS_PER_DAY_CEILING}."
+                ));
+                saved.set(false);
+                return;
+            }
+        };
+        saving.set(true);
+        error.set(String::new());
+        saved.set(false);
+        let body = serde_json::json!({ "value": parsed });
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match crate::hooks::fetch::api::put_authed_typed::<SettingValueRow, _>(
+                    MAX_HOURS_PER_DAY_SETTING_PATH,
+                    &body,
+                )
+                .await
+                {
+                    Ok(_) => saved.set(true),
+                    Err(e) => error.set(format!(
+                        "Could not save time tracking settings: {}",
+                        e.user_message()
+                    )),
+                }
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                let _ = &body;
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        Card {
+            div { class: "space-y-4 p-6",
+                if saved() {
+                    div { class: "text-sm text-green-700 dark:text-green-300", "Time tracking settings saved." }
+                }
+                if !error.read().is_empty() {
+                    div {
+                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                        "{error}"
+                    }
+                }
+                crate::components::Input {
+                    name: "max_hours_per_day",
+                    label: "Maximum hours per day",
+                    r#type: "number",
+                    min: "1".to_string(),
+                    max: MAX_HOURS_PER_DAY_CEILING.to_string(),
+                    step: "1".to_string(),
+                    value: value.read().clone(),
+                    oninput: move |e: FormEvent| {
+                        saved.set(false);
+                        value.set(e.value());
+                    },
+                }
+                p { class: "text-sm text-gray-500 dark:text-gray-400",
+                    "A user's time entries for any one day cannot total more than this many hours. The log-time screen warns before submitting once a day's entries would exceed the cap."
                 }
                 div {
                     Button {
