@@ -719,17 +719,51 @@ fn TicketRow(props: TicketRowProps) -> Element {
     }
 }
 
+/// MAPPS-207: optional company prefill carried on the New Ticket URL
+/// (`/tickets/new?company_id=<uuid>&company_name=<name>`). The company
+/// detail "New Ticket" affordance links here so the form opens with the
+/// company already selected.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct CompanyPrefill {
+    id: String,
+    name: String,
+}
+
+fn read_company_prefill_from_url() -> CompanyPrefill {
+    #[cfg(feature = "web")]
+    {
+        if let Some(search) = web_sys::window().and_then(|w| w.location().search().ok()) {
+            if let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) {
+                let id = params.get("company_id").unwrap_or_default();
+                let name = params.get("company_name").unwrap_or_default();
+                if uuid::Uuid::parse_str(&id).is_ok() {
+                    return CompanyPrefill { id, name };
+                }
+            }
+        }
+    }
+    CompanyPrefill::default()
+}
+
 /// New ticket page
 #[component]
 pub fn TicketNewPage() -> Element {
+    // MAPPS-207: seed the company from the URL when linked from a company.
+    let prefill = use_signal(read_company_prefill_from_url);
+    let prefill = prefill.read().clone();
+
     let mut title = use_signal(String::new);
     let mut description = use_signal(String::new);
     // The company field holds a real company UUID (string) plus its human
     // name, both fed by the CompanyPicker. The old hardcoded "1"/"2"/"3"
     // Select submitted non-UUID ids that fell back to the nil UUID, so the
     // create always failed against the server (MAPPS-122).
-    let mut company_id = use_signal(String::new);
-    let mut company_name = use_signal(String::new);
+    let mut company_id = use_signal(|| prefill.id.clone());
+    let mut company_name = use_signal(|| prefill.name.clone());
+    // MAPPS-207: optional contact association. Scoped to the selected
+    // company via the ContactPicker's `company_filter`.
+    let mut contact_id = use_signal(String::new);
+    let mut contact_name = use_signal(String::new);
     // PMS-358: priority is a tenant-scoped lookup whose IDs are UUIDs. The
     // signal stores the selected UUID as a string (empty = "use tenant
     // default"). The hardcoded ["critical", "high", "medium", "low"]
@@ -820,6 +854,10 @@ pub fn TicketNewPage() -> Element {
         // PMS-344: asset is optional. Empty string = not picked.
         let asset_uuid: Option<uuid::Uuid> = uuid::Uuid::parse_str(asset_id.read().as_str()).ok();
 
+        // MAPPS-207: contact is optional. Empty string = not picked.
+        let contact_uuid: Option<uuid::Uuid> =
+            uuid::Uuid::parse_str(contact_id.read().as_str()).ok();
+
         // Snapshot signals so the spawn doesn't need to read them.
         let title_v = title.read().clone();
         let description_v = description.read().clone();
@@ -831,6 +869,7 @@ pub fn TicketNewPage() -> Element {
                     "title": title_v,
                     "description": if description_v.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(description_v) },
                     "company_id": company_uuid,
+                    "contact_id": contact_uuid,
                     "priority_id": priority_uuid,
                     "asset_id": asset_uuid,
                 });
@@ -877,11 +916,38 @@ pub fn TicketNewPage() -> Element {
             None
         };
 
+    let contact_company_filter: Option<String> =
+        if uuid::Uuid::parse_str(company_id.read().as_str()).is_ok() {
+            Some(company_id.read().clone())
+        } else {
+            None
+        };
+    let picker_contact_selected_id: Option<String> =
+        if uuid::Uuid::parse_str(contact_id.read().as_str()).is_ok() {
+            Some(contact_id.read().clone())
+        } else {
+            None
+        };
+
     rsx! {
         AppLayout { title: "New Ticket",
             PageHeader {
                 title: "New Ticket",
                 subtitle: "Create a new support ticket",
+                breadcrumbs: rsx! {
+                    crate::components::Breadcrumbs {
+                        items: vec![
+                            crate::components::BreadcrumbItem {
+                                label: "Tickets".to_string(),
+                                route: Some(Route::TicketList {}),
+                            },
+                            crate::components::BreadcrumbItem {
+                                label: "New Ticket".to_string(),
+                                route: None,
+                            },
+                        ],
+                    }
+                },
             }
 
             Card {
@@ -926,10 +992,35 @@ pub fn TicketNewPage() -> Element {
                             onselect: move |(id, name): (String, String)| {
                                 company_id.set(id);
                                 company_name.set(name);
+                                // Contacts are scoped to a company; clear
+                                // any prior pick when the company changes.
+                                contact_id.set(String::new());
+                                contact_name.set(String::new());
                             },
                             onclear: move |_| {
                                 company_id.set(String::new());
                                 company_name.set(String::new());
+                                contact_id.set(String::new());
+                                contact_name.set(String::new());
+                            },
+                        }
+
+                        // MAPPS-207: optional contact on create, scoped to
+                        // the selected company. Sends the server's
+                        // `contact_id` field on TicketCreateRequest; empty
+                        // signal sends null (no contact).
+                        crate::components::ContactPicker {
+                            value: contact_name.read().clone(),
+                            selected_id: picker_contact_selected_id,
+                            label: "Contact".to_string(),
+                            company_filter: contact_company_filter,
+                            onselect: move |(id, name): (String, String)| {
+                                contact_id.set(id);
+                                contact_name.set(name);
+                            },
+                            onclear: move |_| {
+                                contact_id.set(String::new());
+                                contact_name.set(String::new());
                             },
                         }
                     }

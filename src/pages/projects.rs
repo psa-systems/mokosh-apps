@@ -1830,6 +1830,10 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                         selected_task.set(None);
                         tasks_resource.restart();
                     },
+                    ondeleted: move |_| {
+                        selected_task.set(None);
+                        tasks_resource.restart();
+                    },
                 }
             }
         }
@@ -1983,6 +1987,10 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
                         selected_task.set(None);
                         tasks_resource.restart();
                     },
+                    ondeleted: move |_| {
+                        selected_task.set(None);
+                        tasks_resource.restart();
+                    },
                 }
             }
         }
@@ -2007,6 +2015,7 @@ struct TaskEditModalProps {
     users: Vec<RemoteUser>,
     onclose: EventHandler<()>,
     onsaved: EventHandler<()>,
+    ondeleted: EventHandler<()>,
 }
 
 #[component]
@@ -2017,6 +2026,7 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
     let users = props.users.clone();
     let onclose = props.onclose;
     let onsaved = props.onsaved;
+    let ondeleted = props.ondeleted;
 
     let mut te_title = use_signal(|| task.title.clone());
     let mut te_description = use_signal(|| task.description.clone().unwrap_or_default());
@@ -2144,13 +2154,67 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
         });
     };
 
+    // MAPPS-237: Delete affordance for project tasks. The Danger button in the
+    // footer opens the styled ConfirmDialog; the actual `DELETE /tasks/{id}`
+    // fires from `on_confirm_delete` when confirmed (parity with the
+    // project/asset detail-page delete).
+    let mut te_deleting = use_signal(|| false);
+    let mut confirming_delete = use_signal(|| false);
+
+    let on_confirm_delete = move |_: ()| {
+        if te_deleting() {
+            return;
+        }
+        te_deleting.set(true);
+        te_error.set(String::new());
+        spawn(async move {
+            match crate::hooks::fetch::api::delete_authed(&format!("/tasks/{tid}")).await {
+                Ok(()) => {
+                    te_deleting.set(false);
+                    confirming_delete.set(false);
+                    ondeleted.call(());
+                }
+                Err(err) => {
+                    te_deleting.set(false);
+                    confirming_delete.set(false);
+                    te_error.set(err);
+                }
+            }
+        });
+    };
+
     rsx! {
+        crate::components::ConfirmDialog {
+            open: confirming_delete(),
+            title: "Delete task".to_string(),
+            message: "Delete this task? This cannot be undone.".to_string(),
+            confirm_text: "Delete".to_string(),
+            cancel_text: "Cancel".to_string(),
+            destructive: true,
+            loading: te_deleting(),
+            onconfirm: on_confirm_delete,
+            oncancel: move |_| {
+                if !te_deleting() {
+                    confirming_delete.set(false);
+                }
+            },
+        }
         Modal {
             open: true,
             title: "Edit Task",
             size: crate::components::ModalSize::Large,
             onclose: move |_| onclose.call(()),
             footer: rsx! {
+                Button {
+                    variant: ButtonVariant::Danger,
+                    loading: te_deleting(),
+                    onclick: move |_| {
+                        if !te_deleting() {
+                            confirming_delete.set(true);
+                        }
+                    },
+                    "Delete"
+                }
                 Button {
                     variant: ButtonVariant::Secondary,
                     onclick: move |_| onclose.call(()),
