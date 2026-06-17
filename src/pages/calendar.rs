@@ -1203,6 +1203,12 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
         .or(signed_in_user_id)
         .map(|id| id.to_string())
         .unwrap_or_default();
+    // The RRULE lives only on the series master; expanded occurrences carry
+    // `None`, so editing one shows an empty field (MAPPS-236).
+    let init_recurrence = existing
+        .as_ref()
+        .and_then(|a| a.recurrence_rule.clone())
+        .unwrap_or_default();
 
     let mut title = use_signal(|| init_title);
     let mut description = use_signal(|| init_desc);
@@ -1212,7 +1218,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
     let mut start_value = use_signal(|| utc_to_datetime_local_value(init_start));
     let mut end_value = use_signal(|| utc_to_datetime_local_value(init_end));
     let mut assignee = use_signal(|| init_assignee);
-    let mut recurrence = use_signal(String::new);
+    let mut recurrence = use_signal(|| init_recurrence);
     let mut recurrence_error = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
@@ -1319,6 +1325,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                             timezone: None,
                             status: Some(status_val),
                             location: loc,
+                            recurrence_rule: rrule,
                         };
                         let path = format!("/appointments/{id}");
                         crate::hooks::fetch::api::put_authed_typed::<AppointmentResponse, _>(
@@ -1496,20 +1503,18 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                         oninput: move |e: FormEvent| location.set(e.value()),
                     }
                 }
-                if !is_edit {
-                    Input {
-                        name: "appt_recurrence",
-                        label: "Recurrence (RRULE, optional)",
-                        placeholder: "e.g. FREQ=WEEKLY;BYDAY=MO",
-                        help: "RFC 5545 rule. Leave blank for a one-off. The series is anchored on the start time."
-                            .to_string(),
-                        error: recurrence_error.read().clone(),
-                        value: recurrence.read().clone(),
-                        oninput: move |e: FormEvent| {
-                            recurrence_error.set(String::new());
-                            recurrence.set(e.value());
-                        },
-                    }
+                Input {
+                    name: "appt_recurrence",
+                    label: "Recurrence (RRULE, optional)",
+                    placeholder: "e.g. FREQ=WEEKLY;BYDAY=MO",
+                    help: "RFC 5545 rule. Leave blank for a one-off. The series is anchored on the start time."
+                        .to_string(),
+                    error: recurrence_error.read().clone(),
+                    value: recurrence.read().clone(),
+                    oninput: move |e: FormEvent| {
+                        recurrence_error.set(String::new());
+                        recurrence.set(e.value());
+                    },
                 }
                 Textarea {
                     name: "appt_description",
