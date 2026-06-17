@@ -3886,7 +3886,7 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                match delete_lookup(&id, "/rmm/connections", "connection").await {
+                match delete_lookup(&id, "/rmm/connections").await {
                     Ok(true) => onsaved.call(()),
                     Ok(false) => {}
                     Err(err) => error.set(format!("Could not delete connection: {err}")),
@@ -4232,7 +4232,7 @@ pub fn RmmDeviceMappingsSettingsPage() -> Element {
                                                         spawn(async move {
                                                             #[cfg(feature = "web")]
                                                             {
-                                                                match delete_lookup(&rid.to_string(), "/rmm/device-mappings", "device mapping").await {
+                                                                match delete_lookup(&rid.to_string(), "/rmm/device-mappings").await {
                                                                     Ok(true) => resource.restart(),
                                                                     Ok(false) => {}
                                                                     Err(err) => row_error.set(format!("Could not delete mapping: {err}")),
@@ -4618,7 +4618,7 @@ pub fn RmmAlertRulesSettingsPage() -> Element {
                                                         spawn(async move {
                                                             #[cfg(feature = "web")]
                                                             {
-                                                                match delete_lookup(&rid.to_string(), "/rmm/alert-rules", "alert rule").await {
+                                                                match delete_lookup(&rid.to_string(), "/rmm/alert-rules").await {
                                                                     Ok(true) => resource.restart(),
                                                                     Ok(false) => {}
                                                                     Err(err) => row_error.set(format!("Could not delete rule: {err}")),
