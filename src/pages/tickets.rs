@@ -1312,6 +1312,12 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let total_minutes: i32 = time_entries.iter().map(|e| e.duration_minutes).sum();
     let total_hours_label = format!("{:.1} hours", total_minutes as f64 / 60.0);
 
+    // PMS-362: carry the ticket into the Log Time flow so the work-item picker
+    // opens preselected. A plain <a href> (not a routed Link) because the
+    // TimeEntryNew route declares no query params, so a Link would strip
+    // `?ticket_id=`; the router still intercepts the same-origin anchor click.
+    let log_time_href = format!("/time/new?ticket_id={}", props.id);
+
     rsx! {
         AppLayout { title: "{header_title}",
             PageHeader {
@@ -1326,8 +1332,8 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "Add Note"
                     }
-                    Link {
-                        to: Route::TimeEntryNew {},
+                    a {
+                        href: "{log_time_href}",
                         Button {
                             variant: ButtonVariant::Primary,
                             ClockIcon { size: IconSize::Small, class: "mr-2".to_string() }
