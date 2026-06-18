@@ -265,7 +265,8 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
 
             NavSection { title: "Operations", rail_collapsed: collapsed,
                 NavItem { to: Route::Calendar {}, icon: rsx!(CalendarIcon {}), label: "Calendar", collapsed }
-                NavItem { to: Route::DispatchBoard {}, icon: rsx!(CalendarIcon {}), label: "Dispatch", collapsed }
+                NavItem { to: Route::DispatchBoard {}, icon: rsx!(TruckIcon {}), label: "Dispatch", collapsed }
+                NavItem { to: Route::SchedulingTemplates {}, icon: rsx!(SwatchIcon {}), label: "Scheduling Templates", collapsed }
             }
 
             NavSection { title: "Contracts & Billing", rail_collapsed: collapsed,

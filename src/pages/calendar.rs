@@ -32,13 +32,15 @@ use dioxus::prelude::*;
 use crate::utils::datetime::{user_timezone, user_today};
 
 use crate::components::{
-    AppLayout, Button, ButtonVariant, Card, ChevronRightIcon, IconSize, Input, Modal, ModalSize,
-    PageHeader, PlusIcon, Select, SelectOption, Textarea,
+    AppLayout, Button, ButtonVariant, Card, ChevronRightIcon, EmptyState, IconSize, Input, Modal,
+    ModalSize, PageHeader, PencilIcon, PlusIcon, Select, SelectOption, SwatchIcon, Textarea,
 };
 use crate::modules::calendar::{
-    AppointmentResponse, CreateAppointmentRequest, DispatchResponse, OnCallNowResponse,
-    TimeOffResponse, UpdateAppointmentRequest, UserAvailabilityResponse,
+    AppointmentResponse, CreateAppointmentRequest, CreateSchedulingTemplateRequest,
+    DispatchResponse, OnCallNowResponse, SchedulingTemplateResponse, TimeOffResponse,
+    UpdateAppointmentRequest, UpdateSchedulingTemplateRequest, UserAvailabilityResponse,
 };
+use crate::Route;
 
 // ============================================================================
 // Shared helpers
@@ -103,6 +105,17 @@ impl RemoteUser {
 struct PaginatedUsers {
     #[serde(default)]
     data: Vec<RemoteUser>,
+}
+
+/// Subset of the server's `PaginatedResponse<SchedulingTemplateResponse>`
+/// envelope (MAPPS-253). The scheduling-templates list endpoint wraps its
+/// rows in `{ data, meta }` like the other list endpoints; we only read
+/// `data` (the picker fetches up to `per_page=100`, which covers any
+/// realistic per-tenant template count).
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PaginatedTemplates {
+    #[serde(default)]
+    data: Vec<SchedulingTemplateResponse>,
 }
 
 /// Add `delta` months to `date`, anchored on day 1 of the result (the
@@ -494,6 +507,100 @@ fn appointment_status_options() -> Vec<SelectOption> {
         SelectOption::new("completed", "Completed"),
         SelectOption::new("cancelled", "Cancelled"),
     ]
+}
+
+/// Scheduling-template `kind` options for the management form (MAPPS-253).
+/// Values match the server CHECK (`dispatch` / `calendar`).
+fn template_kind_options() -> Vec<SelectOption> {
+    vec![
+        SelectOption::new("dispatch", "Dispatch (on-site work)"),
+        SelectOption::new("calendar", "Calendar (client calls / status updates)"),
+    ]
+}
+
+/// Human label for a template `kind` value, used in picker option labels and
+/// the management list. Falls back to the raw value for an unknown kind.
+fn template_kind_label(kind: &str) -> &'static str {
+    match kind {
+        "dispatch" => "Dispatch",
+        "calendar" => "Calendar",
+        _ => "Template",
+    }
+}
+
+/// Render a duration in minutes as a compact `2h`, `1h 30m`, or `45m` label
+/// for template picker options (MAPPS-253).
+fn humanize_minutes(minutes: i32) -> String {
+    let minutes = minutes.max(0);
+    let h = minutes / 60;
+    let m = minutes % 60;
+    match (h, m) {
+        (0, m) => format!("{m}m"),
+        (h, 0) => format!("{h}h"),
+        (h, m) => format!("{h}h {m}m"),
+    }
+}
+
+/// Picker option label for a template, e.g.
+/// `Dispatch: On-site visit (2h)` (MAPPS-253). Lets the dispatcher tell the
+/// kind and length apart at a glance.
+fn template_option_label(t: &SchedulingTemplateResponse) -> String {
+    format!(
+        "{}: {} ({})",
+        template_kind_label(&t.kind),
+        t.name,
+        humanize_minutes(t.duration_minutes)
+    )
+}
+
+/// Advisory helper text describing a dispatch template's travel buffers, or
+/// `None` when both are zero / the template is a calendar template
+/// (MAPPS-253). The buffers are display-only for this issue: the saved
+/// appointment spans only the on-site duration.
+fn travel_buffer_help(t: &SchedulingTemplateResponse) -> Option<String> {
+    if t.kind != "dispatch" {
+        return None;
+    }
+    let before = t.travel_before_minutes.max(0);
+    let after = t.travel_after_minutes.max(0);
+    match (before, after) {
+        (0, 0) => None,
+        (b, 0) => Some(format!("Includes {} travel before.", humanize_minutes(b))),
+        (0, a) => Some(format!("Includes {} travel after.", humanize_minutes(a))),
+        (b, a) => Some(format!(
+            "Includes {} travel before and {} after.",
+            humanize_minutes(b),
+            humanize_minutes(a)
+        )),
+    }
+}
+
+/// Fetch the tenant's scheduling templates for the picker / management page
+/// (MAPPS-253). `kind` filters server-side to one kind (`dispatch` /
+/// `calendar`); `None` fetches both. Returns an empty vec on failure so the
+/// picker just shows the blank-appointment default. Reads the tenant
+/// generation so it re-runs on an org switch, mirroring
+/// [`use_users_resource`].
+fn use_templates_resource(kind: Option<&'static str>) -> Resource<Vec<SchedulingTemplateResponse>> {
+    use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        #[cfg(feature = "web")]
+        {
+            let path = match kind {
+                Some(k) => format!("/scheduling-templates?kind={k}&per_page=100"),
+                None => "/scheduling-templates?per_page=100".to_string(),
+            };
+            crate::hooks::fetch::api::get_authed::<PaginatedTemplates>(&path)
+                .await
+                .map(|p| p.data)
+                .unwrap_or_default()
+        }
+        #[cfg(not(feature = "web"))]
+        {
+            let _ = kind;
+            Vec::<SchedulingTemplateResponse>::new()
+        }
+    })
 }
 
 /// Fetch the tenant's users once for assignee dropdowns / technician
@@ -1312,6 +1419,29 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
 
+    // Template picker (create mode only; MAPPS-253). Fetched unconditionally
+    // to satisfy the rules of hooks, but only rendered when creating. The
+    // selected template's id drives the picker `Select` value; applying it
+    // pre-fills the existing field signals and stashes the template's linked
+    // ticket so the create body can carry it. Buffers are surfaced as
+    // advisory helper text only.
+    let templates_resource = use_templates_resource(None);
+    let templates = templates_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    let mut selected_template = use_signal(String::new);
+    let mut template_ticket_id = use_signal(|| None::<uuid::Uuid>);
+    // Travel-buffer advisory text for the currently selected dispatch
+    // template, recomputed from the picker selection.
+    let selected_buffer_help: Option<String> = {
+        let sel = selected_template.read().clone();
+        templates
+            .iter()
+            .find(|t| t.id.to_string() == sel)
+            .and_then(travel_buffer_help)
+    };
+
     let assignee_options: Vec<SelectOption> = {
         let mut opts = vec![SelectOption::new("", "Select technician...")];
         for u in props.users.iter() {
@@ -1319,6 +1449,22 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
         }
         opts
     };
+
+    // Picker options: a blank-appointment default plus one entry per
+    // template, labeled by kind and length (MAPPS-253).
+    let template_options: Vec<SelectOption> = {
+        let mut opts = vec![SelectOption::new("", "None (blank appointment)")];
+        for t in templates.iter() {
+            opts.push(SelectOption::new(
+                t.id.to_string(),
+                template_option_label(t),
+            ));
+        }
+        opts
+    };
+    // Snapshot the templates the picker's onchange handler needs so the
+    // closure owns its data (it cannot borrow `templates` across the move).
+    let pickable_templates = templates.clone();
 
     let onsaved = props.onsaved;
     let onclose = props.onclose;
@@ -1391,6 +1537,9 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
         let type_val = appointment_type.read().clone();
         let status_val = status.read().clone();
         let rrule = optional(&recurrence.read());
+        // Linked ticket from a selected template (create mode only;
+        // MAPPS-253). `None` for a blank appointment or in edit mode.
+        let ticket_id = *template_ticket_id.read();
 
         // Reject a malformed RRULE at the field before submit so an invalid
         // rule is never persisted (MAPPS-219). Empty -> one-off, no rule.
@@ -1414,7 +1563,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                             title: title_val,
                             description: desc,
                             appointment_type: type_val,
-                            ticket_id: None,
+                            ticket_id,
                             task_id: None,
                             site_id: None,
                             project_id: None,
@@ -1567,6 +1716,72 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                         "{error.read()}"
                     }
                 }
+                // Template picker + scheduling-vs-template explainer
+                // (create mode only; MAPPS-253). Hidden when editing an
+                // existing appointment, where a template does not apply.
+                if !is_edit {
+                    div {
+                        class: "text-sm text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900 rounded-md px-3 py-2",
+                        "You are scheduling an appointment now. To save a reusable shape (type, duration, title) for next time, create a template on the Scheduling Templates page instead."
+                    }
+                    Select {
+                        name: "appt_template",
+                        label: "Start from a template",
+                        options: template_options.clone(),
+                        help: "Templates pre-fill an appointment; pick one, then choose a start time. Dispatch templates are for on-site work, calendar templates for client calls and status updates."
+                            .to_string(),
+                        value: selected_template.read().clone(),
+                        onchange: move |e: FormEvent| {
+                            let id = e.value();
+                            selected_template.set(id.clone());
+                            let Some(t) = pickable_templates
+                                .iter()
+                                .find(|t| t.id.to_string() == id)
+                            else {
+                                // "None (blank appointment)": clear the linked
+                                // ticket but leave the user's other edits.
+                                template_ticket_id.set(None);
+                                return;
+                            };
+                            // Pre-fill type / title / location from the
+                            // template defaults; blanks fall back to the
+                            // existing field value rather than clobbering it.
+                            if !t.appointment_type.trim().is_empty() {
+                                appointment_type.set(t.appointment_type.clone());
+                            }
+                            if let Some(dt) = t.default_title.as_ref().filter(|s| !s.trim().is_empty())
+                            {
+                                title.set(dt.clone());
+                            }
+                            if let Some(dl) = t.default_location.as_ref() {
+                                location.set(dl.clone());
+                            }
+                            template_ticket_id.set(t.default_ticket_id);
+                            // Duration model (MAPPS-252): land on the matching
+                            // preset, or fall into the Custom path with an
+                            // explicit End computed from the current Start.
+                            let mins = i64::from(t.duration_minutes.max(0));
+                            duration_minutes.set(mins);
+                            if PRESETS.contains(&mins) {
+                                duration_choice.set(mins.to_string());
+                            } else {
+                                if let Some(end) =
+                                    add_minutes_to_local(&start_value.read(), mins)
+                                {
+                                    end_value.set(end);
+                                }
+                                duration_choice.set(DURATION_CUSTOM.to_string());
+                            }
+                        },
+                    }
+                    div { class: "text-sm",
+                        Link {
+                            to: Route::SchedulingTemplates {},
+                            class: "text-accent hover:opacity-90",
+                            "Manage templates..."
+                        }
+                    }
+                }
                 Input {
                     name: "appt_title",
                     label: "Title",
@@ -1685,6 +1900,12 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                                 }
                             }
                         }
+                    }
+                    // Advisory travel-buffer note for a selected dispatch
+                    // template (MAPPS-253). Display-only: the saved
+                    // appointment still spans just the on-site duration.
+                    if let Some(buffer_help) = selected_buffer_help.clone() {
+                        p { class: "text-sm leading-5 text-muted", "{buffer_help}" }
                     }
                 }
                 div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
@@ -1842,7 +2063,7 @@ pub fn DispatchBoardPage() -> Element {
         AppLayout { title: "Dispatch Board",
             PageHeader {
                 title: "Dispatch Board",
-                subtitle: "Manage technician schedules and appointments",
+                subtitle: "A per-technician day view: each technician's appointments, availability, time off, and on-call status laid out on one timeline. Schedule on-site work here, or start from a dispatch template.",
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
@@ -2174,6 +2395,484 @@ fn availability_geometry(w: &UserAvailabilityResponse) -> (f64, f64) {
     (left.max(0.0), width.max(0.0))
 }
 
+// ============================================================================
+// Scheduling templates management page
+// ============================================================================
+
+/// Client `maxlength` caps for the template text fields (MAPPS-253), matching
+/// the server's `validator` length bounds.
+const TEMPLATE_NAME_MAX: i64 = 100;
+const TEMPLATE_TITLE_MAX: i64 = 255;
+
+/// Scheduling templates management page (MAPPS-253). Lists the tenant's
+/// dispatch and calendar templates and lets a user create, edit, and delete
+/// as many as they want via `GET|POST|PUT|DELETE /api/v1/scheduling-templates`.
+/// Reachable from the sidebar and from the appointment form's picker.
+#[component]
+pub fn SchedulingTemplatesPage() -> Element {
+    // Modal state: None = closed, Some(None) = creating, Some(Some(t)) =
+    // editing that template (mirrors the appointment form's `form_state`).
+    let mut form_state = use_signal(|| None::<Option<SchedulingTemplateResponse>>);
+
+    let mut templates_resource = use_templates_resource(None);
+    let snapshot = templates_resource.read_unchecked();
+    let is_loading = snapshot.is_none();
+    let templates: Vec<SchedulingTemplateResponse> = snapshot.clone().unwrap_or_default();
+
+    rsx! {
+        AppLayout { title: "Scheduling Templates",
+            PageHeader {
+                title: "Scheduling Templates",
+                subtitle: "Reusable appointment shapes. Pick one on the appointment form to pre-fill the type, duration, title, and location, then just choose a start time. Dispatch templates are for on-site work; calendar templates are for client calls and status updates.",
+                actions: rsx! {
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        onclick: move |_| form_state.set(Some(None)),
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "New Template"
+                    }
+                },
+            }
+
+            Card { padding: false,
+                if is_loading {
+                    div { class: "py-12 text-center text-sm text-muted", "Loading templates..." }
+                } else if templates.is_empty() {
+                    div { class: "p-6",
+                        EmptyState {
+                            icon: rsx! { SwatchIcon { size: IconSize::Large } },
+                            title: "No templates yet".to_string(),
+                            description: "Create a dispatch or calendar template to speed up scheduling. Templates pre-fill an appointment so you only pick a start time.".to_string(),
+                            actions: rsx! {
+                                Button {
+                                    variant: ButtonVariant::Primary,
+                                    onclick: move |_| form_state.set(Some(None)),
+                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                    "New Template"
+                                }
+                            },
+                        }
+                    }
+                } else {
+                    ul { class: "divide-y divide-line",
+                        for t in templates.iter() {
+                            {
+                                let row = t.clone();
+                                let edit_row = t.clone();
+                                let kind_label = template_kind_label(&t.kind);
+                                let type_label = t.appointment_type.clone();
+                                let duration = humanize_minutes(t.duration_minutes);
+                                let buffer = travel_buffer_help(t);
+                                let name = t.name.clone();
+                                rsx! {
+                                    li { key: "{row.id}", class: "flex items-center justify-between gap-4 p-4",
+                                        div { class: "min-w-0",
+                                            div { class: "flex items-center gap-2",
+                                                span { class: "font-medium text-content", "{name}" }
+                                                span { class: "text-xs rounded-full bg-surface-2 text-muted px-2 py-0.5", "{kind_label}" }
+                                            }
+                                            p { class: "text-sm text-muted",
+                                                "{type_label} - {duration}"
+                                            }
+                                            if let Some(b) = buffer {
+                                                p { class: "text-xs text-muted", "{b}" }
+                                            }
+                                        }
+                                        div { class: "flex items-center gap-2 shrink-0",
+                                            Button {
+                                                variant: ButtonVariant::Secondary,
+                                                onclick: move |_| form_state.set(Some(Some(edit_row.clone()))),
+                                                PencilIcon { size: IconSize::Small, class: "mr-1".to_string() }
+                                                "Edit"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(editing) = form_state.read().clone() {
+            TemplateFormModal {
+                existing: editing,
+                onclose: move |_| form_state.set(None),
+                onsaved: move |_| {
+                    form_state.set(None);
+                    templates_resource.restart();
+                },
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct TemplateFormModalProps {
+    /// `None` => create a new template; `Some(t)` => edit it.
+    existing: Option<SchedulingTemplateResponse>,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn TemplateFormModal(props: TemplateFormModalProps) -> Element {
+    let existing = props.existing.clone();
+    let is_edit = existing.is_some();
+    let modal_title = if is_edit {
+        "Edit Template"
+    } else {
+        "New Template"
+    };
+
+    let init_name = existing
+        .as_ref()
+        .map(|t| t.name.clone())
+        .unwrap_or_default();
+    let init_kind = existing
+        .as_ref()
+        .map(|t| t.kind.clone())
+        .filter(|k| !k.is_empty())
+        .unwrap_or_else(|| "dispatch".to_string());
+    let init_type = existing
+        .as_ref()
+        .map(|t| t.appointment_type.clone())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| "meeting".to_string());
+    let init_duration = existing
+        .as_ref()
+        .map(|t| t.duration_minutes.max(0))
+        .unwrap_or(60);
+    let init_before = existing
+        .as_ref()
+        .map(|t| t.travel_before_minutes.max(0))
+        .unwrap_or(0);
+    let init_after = existing
+        .as_ref()
+        .map(|t| t.travel_after_minutes.max(0))
+        .unwrap_or(0);
+    let init_title = existing
+        .as_ref()
+        .and_then(|t| t.default_title.clone())
+        .unwrap_or_default();
+    let init_location = existing
+        .as_ref()
+        .and_then(|t| t.default_location.clone())
+        .unwrap_or_default();
+    let init_notes = existing
+        .as_ref()
+        .and_then(|t| t.notes.clone())
+        .unwrap_or_default();
+
+    let mut name = use_signal(|| init_name);
+    let mut kind = use_signal(|| init_kind);
+    let mut appointment_type = use_signal(|| init_type);
+    let mut duration_value = use_signal(|| init_duration.to_string());
+    let mut before_value = use_signal(|| init_before.to_string());
+    let mut after_value = use_signal(|| init_after.to_string());
+    let mut default_title = use_signal(|| init_title);
+    let mut default_location = use_signal(|| init_location);
+    let mut notes = use_signal(|| init_notes);
+    let mut saving = use_signal(|| false);
+    let mut deleting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+    let mut confirming_delete = use_signal(|| false);
+
+    let onsaved = props.onsaved;
+    let onclose = props.onclose;
+    let edit_id = existing.as_ref().map(|t| t.id);
+    let is_dispatch = kind.read().as_str() == "dispatch";
+
+    let handle_save = move |_| {
+        if saving() || deleting() {
+            return;
+        }
+        let name_val = name.read().trim().to_string();
+        if name_val.is_empty() {
+            error.set("Name is required.".to_string());
+            return;
+        }
+        let Some(duration) = parse_positive_i32(&duration_value.read()) else {
+            error.set("Duration must be a whole number of minutes greater than 0.".to_string());
+            return;
+        };
+        // Buffers are dispatch-only: a calendar template stores zeroes. A
+        // blank buffer reads as 0.
+        let (before, after) = if is_dispatch {
+            let Some(b) = parse_nonneg_i32(&before_value.read()) else {
+                error.set("Travel before must be 0 or more minutes.".to_string());
+                return;
+            };
+            let Some(a) = parse_nonneg_i32(&after_value.read()) else {
+                error.set("Travel after must be 0 or more minutes.".to_string());
+                return;
+            };
+            (b, a)
+        } else {
+            (0, 0)
+        };
+
+        let kind_val = kind.read().clone();
+        let type_val = appointment_type.read().clone();
+        let title = optional(&default_title.read());
+        let location = optional(&default_location.read());
+        let notes_val = optional(&notes.read());
+
+        saving.set(true);
+        error.set(String::new());
+
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let result: Result<(), crate::hooks::fetch::api::ApiError> = match edit_id {
+                    None => {
+                        let body = CreateSchedulingTemplateRequest {
+                            name: name_val,
+                            kind: kind_val,
+                            appointment_type: type_val,
+                            duration_minutes: duration,
+                            travel_before_minutes: before,
+                            travel_after_minutes: after,
+                            default_title: title,
+                            default_location: location,
+                            default_ticket_id: None,
+                            notes: notes_val,
+                        };
+                        crate::hooks::fetch::api::post_authed_typed::<SchedulingTemplateResponse, _>(
+                            "/scheduling-templates",
+                            &body,
+                        )
+                        .await
+                        .map(|_| ())
+                    }
+                    Some(id) => {
+                        // `default_ticket_id` is intentionally omitted: this
+                        // form has no ticket picker, and a missing field is
+                        // COALESCE'd to the stored value server-side, so a
+                        // ticket set via the API is preserved across edits.
+                        let body = UpdateSchedulingTemplateRequest {
+                            name: Some(name_val),
+                            kind: Some(kind_val),
+                            appointment_type: Some(type_val),
+                            duration_minutes: Some(duration),
+                            travel_before_minutes: Some(before),
+                            travel_after_minutes: Some(after),
+                            default_title: title,
+                            default_location: location,
+                            default_ticket_id: None,
+                            notes: notes_val,
+                        };
+                        let path = format!("/scheduling-templates/{id}");
+                        crate::hooks::fetch::api::put_authed_typed::<SchedulingTemplateResponse, _>(
+                            &path, &body,
+                        )
+                        .await
+                        .map(|_| ())
+                    }
+                };
+                match result {
+                    Ok(()) => onsaved.call(()),
+                    Err(e) => error.set(format!("Could not save template: {}", e.user_message())),
+                }
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                let _ = (
+                    edit_id, name_val, kind_val, type_val, duration, before, after, title,
+                    location, notes_val,
+                );
+            }
+            saving.set(false);
+        });
+    };
+
+    let handle_delete = move |_| {
+        if edit_id.is_none() || saving() || deleting() {
+            return;
+        }
+        confirming_delete.set(true);
+    };
+    let on_confirm_delete = move |_: ()| {
+        let Some(id) = edit_id else { return };
+        if deleting() {
+            return;
+        }
+        deleting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let path = format!("/scheduling-templates/{id}");
+                match crate::hooks::fetch::api::delete_authed_typed(&path).await {
+                    Ok(()) => onsaved.call(()),
+                    Err(e) => error.set(format!("Could not delete template: {}", e.user_message())),
+                }
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                let _ = id;
+            }
+            deleting.set(false);
+            confirming_delete.set(false);
+        });
+    };
+
+    let footer = rsx! {
+        if is_edit {
+            Button {
+                variant: ButtonVariant::Danger,
+                loading: *deleting.read(),
+                onclick: handle_delete,
+                "Delete"
+            }
+        }
+        div { class: "flex-1" }
+        Button {
+            variant: ButtonVariant::Secondary,
+            onclick: move |_| onclose.call(()),
+            "Cancel"
+        }
+        Button {
+            variant: ButtonVariant::Primary,
+            loading: *saving.read(),
+            onclick: handle_save,
+            if is_edit { "Save Changes" } else { "Create Template" }
+        }
+    };
+
+    rsx! {
+        Modal {
+            open: true,
+            title: modal_title,
+            size: ModalSize::Large,
+            onclose: move |_| onclose.call(()),
+            footer,
+            div { class: "space-y-4",
+                if !error.read().is_empty() {
+                    div {
+                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                        "{error.read()}"
+                    }
+                }
+                Input {
+                    name: "tmpl_name",
+                    label: "Name",
+                    placeholder: "e.g. On-site visit",
+                    required: true,
+                    maxlength: TEMPLATE_NAME_MAX,
+                    value: name.read().clone(),
+                    oninput: move |e: FormEvent| name.set(e.value()),
+                }
+                div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
+                    Select {
+                        name: "tmpl_kind",
+                        label: "Kind",
+                        options: template_kind_options(),
+                        help: "Dispatch templates are for on-site work (with optional travel buffers); calendar templates are for client calls and status updates."
+                            .to_string(),
+                        value: kind.read().clone(),
+                        onchange: move |e: FormEvent| kind.set(e.value()),
+                    }
+                    Select {
+                        name: "tmpl_type",
+                        label: "Appointment type",
+                        options: appointment_type_options(),
+                        value: appointment_type.read().clone(),
+                        onchange: move |e: FormEvent| appointment_type.set(e.value()),
+                    }
+                }
+                div { class: "grid grid-cols-1 gap-4 sm:grid-cols-3",
+                    Input {
+                        name: "tmpl_duration",
+                        label: "Duration (minutes)",
+                        r#type: "number".to_string(),
+                        min: "1".to_string(),
+                        required: true,
+                        value: duration_value.read().clone(),
+                        oninput: move |e: FormEvent| duration_value.set(e.value()),
+                    }
+                    if is_dispatch {
+                        Input {
+                            name: "tmpl_before",
+                            label: "Travel before (min)",
+                            r#type: "number".to_string(),
+                            min: "0".to_string(),
+                            value: before_value.read().clone(),
+                            oninput: move |e: FormEvent| before_value.set(e.value()),
+                        }
+                        Input {
+                            name: "tmpl_after",
+                            label: "Travel after (min)",
+                            r#type: "number".to_string(),
+                            min: "0".to_string(),
+                            value: after_value.read().clone(),
+                            oninput: move |e: FormEvent| after_value.set(e.value()),
+                        }
+                    }
+                }
+                Input {
+                    name: "tmpl_default_title",
+                    label: "Default title",
+                    placeholder: "Pre-fills the appointment title (optional)",
+                    maxlength: TEMPLATE_TITLE_MAX,
+                    value: default_title.read().clone(),
+                    oninput: move |e: FormEvent| default_title.set(e.value()),
+                }
+                Input {
+                    name: "tmpl_default_location",
+                    label: "Default location",
+                    placeholder: "e.g. Client site / Remote (optional)",
+                    value: default_location.read().clone(),
+                    oninput: move |e: FormEvent| default_location.set(e.value()),
+                }
+                Textarea {
+                    name: "tmpl_notes",
+                    label: "Notes",
+                    rows: 3,
+                    help: "Internal notes about this template (optional).".to_string(),
+                    value: notes.read().clone(),
+                    oninput: move |e: FormEvent| notes.set(e.value()),
+                }
+            }
+        }
+        crate::components::ConfirmDialog {
+            open: confirming_delete(),
+            title: "Delete template".to_string(),
+            message: "Delete this template? This cannot be undone. Existing appointments are not affected.".to_string(),
+            confirm_text: "Delete".to_string(),
+            cancel_text: "Cancel".to_string(),
+            destructive: true,
+            loading: *deleting.read(),
+            onconfirm: on_confirm_delete,
+            oncancel: move |_| {
+                if !*deleting.read() {
+                    confirming_delete.set(false);
+                }
+            },
+        }
+    }
+}
+
+/// Parse a positive whole-number minutes string from a `type="number"` input.
+/// `None` for empty / non-numeric / non-positive values so the form surfaces
+/// a validation error (MAPPS-253).
+fn parse_positive_i32(s: &str) -> Option<i32> {
+    let n: i32 = s.trim().parse().ok()?;
+    (n > 0).then_some(n)
+}
+
+/// Parse a non-negative whole-number minutes string; a blank value reads as
+/// `0` (an omitted travel buffer). `None` for non-numeric / negative input.
+fn parse_nonneg_i32(s: &str) -> Option<i32> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Some(0);
+    }
+    let n: i32 = trimmed.parse().ok()?;
+    (n >= 0).then_some(n)
+}
+
 #[cfg(test)]
 mod rrule_tests {
     use super::validate_rrule;
@@ -2274,5 +2973,113 @@ mod duration_tests {
     fn rejects_malformed_start() {
         assert_eq!(add_minutes_to_local("", 60), None);
         assert_eq!(add_minutes_to_local("not-a-date", 60), None);
+    }
+}
+
+#[cfg(test)]
+mod template_tests {
+    use super::{
+        humanize_minutes, parse_nonneg_i32, parse_positive_i32, template_kind_label,
+        template_option_label, travel_buffer_help,
+    };
+    use crate::modules::calendar::SchedulingTemplateResponse;
+
+    fn template(
+        kind: &str,
+        name: &str,
+        duration: i32,
+        before: i32,
+        after: i32,
+    ) -> SchedulingTemplateResponse {
+        SchedulingTemplateResponse {
+            id: uuid::Uuid::nil(),
+            name: name.to_string(),
+            kind: kind.to_string(),
+            appointment_type: "meeting".to_string(),
+            duration_minutes: duration,
+            travel_before_minutes: before,
+            travel_after_minutes: after,
+            default_title: None,
+            default_location: None,
+            default_ticket_id: None,
+            notes: None,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn humanizes_durations() {
+        assert_eq!(humanize_minutes(45), "45m");
+        assert_eq!(humanize_minutes(60), "1h");
+        assert_eq!(humanize_minutes(90), "1h 30m");
+        assert_eq!(humanize_minutes(120), "2h");
+        // Defensive: a negative value clamps to zero rather than panicking.
+        assert_eq!(humanize_minutes(-5), "0m");
+    }
+
+    #[test]
+    fn labels_picker_option_by_kind_and_length() {
+        let t = template("dispatch", "On-site visit", 120, 30, 30);
+        assert_eq!(template_option_label(&t), "Dispatch: On-site visit (2h)");
+        let c = template("calendar", "Discovery call", 60, 0, 0);
+        assert_eq!(template_option_label(&c), "Calendar: Discovery call (1h)");
+    }
+
+    #[test]
+    fn kind_label_falls_back_for_unknown() {
+        assert_eq!(template_kind_label("dispatch"), "Dispatch");
+        assert_eq!(template_kind_label("calendar"), "Calendar");
+        assert_eq!(template_kind_label("mystery"), "Template");
+    }
+
+    #[test]
+    fn travel_buffer_help_only_for_dispatch_with_buffers() {
+        // Calendar templates never surface buffers.
+        assert_eq!(
+            travel_buffer_help(&template("calendar", "Call", 60, 30, 30)),
+            None
+        );
+        // Dispatch with zero buffers => no note.
+        assert_eq!(
+            travel_buffer_help(&template("dispatch", "Visit", 60, 0, 0)),
+            None
+        );
+        // Both buffers set.
+        assert_eq!(
+            travel_buffer_help(&template("dispatch", "Visit", 60, 30, 30)).as_deref(),
+            Some("Includes 30m travel before and 30m after.")
+        );
+        // Only before.
+        assert_eq!(
+            travel_buffer_help(&template("dispatch", "Visit", 60, 15, 0)).as_deref(),
+            Some("Includes 15m travel before.")
+        );
+        // Only after.
+        assert_eq!(
+            travel_buffer_help(&template("dispatch", "Visit", 60, 0, 45)).as_deref(),
+            Some("Includes 45m travel after.")
+        );
+    }
+
+    #[test]
+    fn parses_positive_duration() {
+        assert_eq!(parse_positive_i32("60"), Some(60));
+        assert_eq!(parse_positive_i32("  90 "), Some(90));
+        assert_eq!(parse_positive_i32("0"), None);
+        assert_eq!(parse_positive_i32("-5"), None);
+        assert_eq!(parse_positive_i32(""), None);
+        assert_eq!(parse_positive_i32("abc"), None);
+    }
+
+    #[test]
+    fn parses_nonneg_buffer_with_blank_as_zero() {
+        assert_eq!(parse_nonneg_i32("0"), Some(0));
+        assert_eq!(parse_nonneg_i32("30"), Some(30));
+        // Blank reads as an omitted (zero) buffer.
+        assert_eq!(parse_nonneg_i32(""), Some(0));
+        assert_eq!(parse_nonneg_i32("   "), Some(0));
+        assert_eq!(parse_nonneg_i32("-1"), None);
+        assert_eq!(parse_nonneg_i32("x"), None);
     }
 }
