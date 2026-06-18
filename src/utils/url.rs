@@ -22,6 +22,39 @@ pub fn urlencoding_minimal(s: &str) -> String {
     out
 }
 
+/// Read a query-string parameter from the current browser URL.
+///
+/// MAPPS-249: the company context cards' "View All" links carry a
+/// `?company_id=<uuid>` so the destination list page can scope itself to that
+/// company. The list pages read it back through this helper. Returns `None`
+/// off-web, when the key is absent, or when its value is empty. Values are
+/// matched on the raw (percent-encoded) text; callers that need a decoded
+/// value should decode it themselves, but `company_id` is a bare UUID so no
+/// decoding is required.
+pub fn current_query_param(key: &str) -> Option<String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let search = web_sys::window()?.location().search().ok()?;
+        let search = search.strip_prefix('?').unwrap_or(&search);
+        for pair in search.split('&') {
+            let mut parts = pair.splitn(2, '=');
+            if parts.next() == Some(key) {
+                let value = parts.next().unwrap_or("").trim();
+                if value.is_empty() {
+                    return None;
+                }
+                return Some(value.to_string());
+            }
+        }
+        None
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = key;
+        None
+    }
+}
+
 /// Extract the explicit URL scheme from `value`, lower-cased, if present.
 ///
 /// Returns `None` for a scheme-less / relative reference. The scheme is the

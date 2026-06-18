@@ -440,9 +440,15 @@ pub fn ProjectListPage() -> Element {
         SelectOption::new("cancelled", "Cancelled"),
     ];
 
+    // MAPPS-249: scope to one company when a context card's "View All" passes
+    // `?company_id=<uuid>`.
     let projects_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteProject>>("/projects")
+        let mut path = String::from("/projects");
+        if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
+            path.push_str(&format!("?company_id={company_id}"));
+        }
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteProject>>(&path)
             .await
             .ok()
             .map(|p| p.data)

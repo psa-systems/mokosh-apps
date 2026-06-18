@@ -1274,13 +1274,26 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                     tickets_resource,
                                 }
                                 // Contracts (MAPPS-195)
-                                CompanyContractsCard { contracts_resource }
+                                CompanyContractsCard {
+                                    company_id: company_id_str.clone(),
+                                    contracts_resource,
+                                }
                                 // Projects (MAPPS-195)
-                                CompanyProjectsCard { projects_resource }
+                                CompanyProjectsCard {
+                                    company_id: company_id_str.clone(),
+                                    projects_resource,
+                                }
                                 // Invoices (MAPPS-195)
-                                CompanyInvoicesCard { invoices_resource }
+                                CompanyInvoicesCard {
+                                    company_id: company_id_str.clone(),
+                                    invoices_resource,
+                                }
                                 // Assets (MAPPS-195)
-                                CompanyAssetsCard { assets_resource, asset_types_resource }
+                                CompanyAssetsCard {
+                                    company_id: company_id_str.clone(),
+                                    assets_resource,
+                                    asset_types_resource,
+                                }
                             }
                             // Sidebar
                             div { class: "space-y-6",
@@ -1442,6 +1455,11 @@ struct PaginatedSites {
 #[derive(Clone, Debug, Deserialize)]
 struct PaginatedTicketSummaries {
     data: Vec<TicketSummary>,
+    // MAPPS-249: the capped preview fetch carries the full count in
+    // `meta.total` so the tickets card can show the same count badge as the
+    // other collapsible relationship cards.
+    #[serde(default)]
+    meta: PaginationMeta,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1463,6 +1481,124 @@ struct TicketStatusBadge {
     is_closed: bool,
 }
 
+/// MAPPS-249: per-row hover actions for the company context cards.
+///
+/// A three-dot (`⋯`) trigger that stays hidden until the row is hovered (the
+/// row carries the Tailwind `group` class) and opens a small dropdown offering
+/// Edit and Delete. Edit defers to the caller (`on_edit`) so each card can
+/// navigate to its module's edit surface or open its own modal; Delete routes
+/// through the shared `ConfirmDialog`, calls the module's DELETE endpoint, and
+/// on success fires `on_deleted` so the card can restart its resource.
+///
+/// This is a focused row-level companion to `OverflowActions`: that component
+/// collapses *header* action clusters at the `sm` breakpoint and would render
+/// always-visible inline buttons on desktop, which is the opposite of the
+/// hover-revealed row menu this card design calls for.
+#[component]
+fn RowActions(
+    on_edit: EventHandler<()>,
+    /// API path to DELETE, e.g. `"/tickets/{id}"`.
+    delete_path: String,
+    /// Lower-case singular noun for the confirm copy, e.g. `"ticket"`.
+    delete_label: String,
+    /// Fired after a successful delete so the caller can refresh its resource.
+    on_deleted: EventHandler<()>,
+) -> Element {
+    let mut open = use_signal(|| false);
+    let mut confirming = use_signal(|| false);
+    let mut deleting = use_signal(|| false);
+
+    // Keep the trigger visible while its menu is open; otherwise reveal it only
+    // on row hover (or keyboard focus within the cell, for accessibility).
+    let trigger_class = if open() {
+        "opacity-100"
+    } else {
+        "opacity-0 group-hover:opacity-100 focus-within:opacity-100"
+    };
+
+    let path = delete_path.clone();
+    let on_confirm_delete = move |_: ()| {
+        if deleting() {
+            return;
+        }
+        deleting.set(true);
+        let path = path.clone();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
+                    confirming.set(false);
+                    open.set(false);
+                    on_deleted.call(());
+                }
+            }
+            deleting.set(false);
+        });
+    };
+
+    rsx! {
+        div { class: "relative flex justify-end transition-opacity {trigger_class}",
+            button {
+                r#type: "button",
+                class: "px-2 py-1 text-muted hover:text-content rounded",
+                title: "Actions",
+                aria_label: "Row actions",
+                onclick: move |e: MouseEvent| {
+                    e.stop_propagation();
+                    open.toggle();
+                },
+                "\u{22EF}"
+            }
+            if open() {
+                div {
+                    class: "fixed inset-0 z-40",
+                    onclick: move |e: MouseEvent| {
+                        e.stop_propagation();
+                        open.set(false);
+                    },
+                }
+                div { class: "absolute right-0 top-full z-50 mt-1 w-32 rounded-md bg-raised shadow-lg ring-1 ring-black/5 py-1 flex flex-col",
+                    button {
+                        r#type: "button",
+                        class: "px-3 py-1.5 text-left text-sm text-content hover:bg-surface-2",
+                        onclick: move |e: MouseEvent| {
+                            e.stop_propagation();
+                            open.set(false);
+                            on_edit.call(());
+                        },
+                        "Edit"
+                    }
+                    button {
+                        r#type: "button",
+                        class: "px-3 py-1.5 text-left text-sm text-red-600 dark:text-red-400 hover:bg-surface-2",
+                        onclick: move |e: MouseEvent| {
+                            e.stop_propagation();
+                            open.set(false);
+                            confirming.set(true);
+                        },
+                        "Delete"
+                    }
+                }
+            }
+        }
+        crate::components::ConfirmDialog {
+            open: confirming(),
+            title: format!("Delete {delete_label}"),
+            message: format!("Delete this {delete_label}? This cannot be undone."),
+            confirm_text: "Delete".to_string(),
+            cancel_text: "Cancel".to_string(),
+            destructive: true,
+            loading: deleting(),
+            onconfirm: on_confirm_delete,
+            oncancel: move |_| {
+                if !deleting() {
+                    confirming.set(false);
+                }
+            },
+        }
+    }
+}
+
 #[component]
 fn CompanyContactsCard(
     company_id: String,
@@ -1480,6 +1616,11 @@ fn CompanyContactsCard(
     // *existing* contact to this company (search/select), with create-new
     // still offered inside the same modal.
     let mut show_add = use_signal(|| false);
+    let navigator = use_navigator();
+    // MAPPS-249: "View All" stays inside this company by carrying its id to the
+    // scoped contact list (a plain anchor, matching the file's existing
+    // query-param navigation pattern).
+    let view_all_href = format!("/contacts?company_id={}", urlencoding_minimal(&company_id));
     rsx! {
         CollapsibleCard {
             title: "Contacts",
@@ -1491,9 +1632,9 @@ fn CompanyContactsCard(
                     onclick: move |_| show_add.set(true),
                     "Add Contact"
                 }
-                Link {
-                    to: Route::ContactList {},
-                    class: "text-sm text-blue-600 hover:text-blue-500",
+                a {
+                    href: "{view_all_href}",
+                    class: "text-sm text-accent hover:opacity-90",
                     "View All"
                 }
             },
@@ -1505,21 +1646,26 @@ fn CompanyContactsCard(
                         TableHeader { "Email" }
                         TableHeader { "Phone" }
                         TableHeader { "Role" }
+                        TableHeader { span { class: "sr-only", "Actions" } }
                     }
                 }
                 match &*snap {
-                    None => rsx! { TableLoading { columns: 4, rows: 3 } },
-                    Some(None) => rsx! { TableEmpty { columns: 4, message: "Could not load contacts.".to_string() } },
+                    None => rsx! { TableLoading { columns: 5, rows: 3 } },
+                    Some(None) => rsx! { TableEmpty { columns: 5, message: "Could not load contacts.".to_string() } },
                     Some(Some(page)) if page.data.is_empty() => rsx! {
-                        TableEmpty { columns: 4, message: "No contacts at this company yet.".to_string() }
+                        TableEmpty { columns: 5, message: "No contacts at this company yet.".to_string() }
                     },
                     Some(Some(page)) => {
-                        let rows = page.data.clone();
+                        // MAPPS-249: cap the preview at three rows; "View All" is
+                        // the path to the full set.
+                        let rows: Vec<_> = page.data.iter().take(3).cloned().collect();
                         rsx! {
                             TableBody {
                                 for contact in rows.into_iter() {
                                     {
                                         let id = contact.id.to_string();
+                                        let edit_id = id.clone();
+                                        let delete_path = format!("/contacts/contacts/{id}");
                                         let name = format!("{} {}", contact.first_name, contact.last_name).trim().to_string();
                                         let email = contact.email.clone().unwrap_or_default();
                                         let phone = contact.phone.clone().unwrap_or_default();
@@ -1527,7 +1673,7 @@ fn CompanyContactsCard(
                                             contact.contact_type.as_deref().unwrap_or_default(),
                                         );
                                         rsx! {
-                                            TableRow { key: "{id}",
+                                            TableRow { key: "{id}", class: "group",
                                                 TableCell {
                                                     Link {
                                                         to: Route::ContactDetail { id: id.clone() },
@@ -1538,6 +1684,14 @@ fn CompanyContactsCard(
                                                 TableCell { "{email}" }
                                                 TableCell { "{phone}" }
                                                 TableCell { "{role}" }
+                                                TableCell { class: "w-10",
+                                                    RowActions {
+                                                        on_edit: move |_| { navigator.push(Route::ContactEdit { id: edit_id.clone() }); },
+                                                        delete_path,
+                                                        delete_label: "contact".to_string(),
+                                                        on_deleted: move |_| { contacts_resource.restart(); },
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -1734,22 +1888,25 @@ fn CompanySitesCard(
                         TableHeader { "Name" }
                         TableHeader { "Address" }
                         TableHeader { "Primary" }
+                        TableHeader { span { class: "sr-only", "Actions" } }
                     }
                 }
                 match &*snap {
-                    None => rsx! { TableLoading { columns: 3, rows: 2 } },
-                    Some(None) => rsx! { TableEmpty { columns: 3, message: "Could not load sites.".to_string() } },
+                    None => rsx! { TableLoading { columns: 4, rows: 2 } },
+                    Some(None) => rsx! { TableEmpty { columns: 4, message: "Could not load sites.".to_string() } },
                     Some(Some(page)) if page.data.is_empty() => rsx! {
-                        TableEmpty { columns: 3, message: "No sites for this company yet.".to_string() }
+                        TableEmpty { columns: 4, message: "No sites for this company yet.".to_string() }
                     },
                     Some(Some(page)) => {
-                        let rows = page.data.clone();
+                        // MAPPS-249: cap the preview at three rows.
+                        let rows: Vec<_> = page.data.iter().take(3).cloned().collect();
                         let company_id = company_id.clone();
                         rsx! {
                             TableBody {
                                 for site in rows.into_iter() {
                                     {
                                         let key = site.id.to_string();
+                                        let delete_path = format!("/contacts/sites/{key}");
                                         let parts: Vec<String> = [
                                             site.address.line1.clone(),
                                             site.address.city.clone(),
@@ -1763,8 +1920,10 @@ fn CompanySitesCard(
                                         let is_primary = site.is_primary;
                                         let site_for_edit = site.clone();
                                         let company_id_for_edit = company_id.clone();
+                                        let site_for_actions = site.clone();
+                                        let company_id_for_actions = company_id.clone();
                                         rsx! {
-                                            TableRow { key: "{key}",
+                                            TableRow { key: "{key}", class: "group",
                                                 TableCell {
                                                     button {
                                                         r#type: "button",
@@ -1782,6 +1941,22 @@ fn CompanySitesCard(
                                                 TableCell {
                                                     if is_primary {
                                                         Badge { variant: BadgeVariant::Blue, "Primary" }
+                                                    }
+                                                }
+                                                TableCell { class: "w-10",
+                                                    RowActions {
+                                                        on_edit: move |_| {
+                                                            editing.set(Some(SiteFormState::from_existing(
+                                                                &company_id_for_actions,
+                                                                &site_for_actions,
+                                                            )));
+                                                        },
+                                                        delete_path,
+                                                        delete_label: "site".to_string(),
+                                                        on_deleted: move |_| {
+                                                            sites_resource.restart();
+                                                            company_resource.restart();
+                                                        },
                                                     }
                                                 }
                                             }
@@ -2151,9 +2326,14 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
 fn CompanyTicketsCard(
     company_id: String,
     company_name: String,
-    tickets_resource: Resource<Option<PaginatedTicketSummaries>>,
+    mut tickets_resource: Resource<Option<PaginatedTicketSummaries>>,
 ) -> Element {
     let snap = tickets_resource.read_unchecked();
+    let count = match &*snap {
+        Some(Some(page)) => Some(page.meta.total),
+        _ => None,
+    };
+    let navigator = use_navigator();
     // MAPPS-207: offer a "New Ticket" path straight from the company so a
     // user no longer has to leave for the global ticket list to start one.
     // The query params pre-fill the company on the New Ticket form.
@@ -2162,17 +2342,20 @@ fn CompanyTicketsCard(
         urlencoding_minimal(&company_id),
         urlencoding_minimal(&company_name)
     );
+    // MAPPS-249: "View All" stays scoped to this company.
+    let view_all_href = format!("/tickets?company_id={}", urlencoding_minimal(&company_id));
     rsx! {
-        Card {
+        CollapsibleCard {
             title: "Recent Tickets",
+            count,
             actions: rsx! {
                 a {
                     href: "{new_ticket_href}",
                     class: "text-sm text-accent hover:opacity-90",
                     "New Ticket"
                 }
-                Link {
-                    to: Route::TicketList {},
+                a {
+                    href: "{view_all_href}",
                     class: "text-sm text-accent hover:opacity-90",
                     "View All"
                 }
@@ -2183,22 +2366,26 @@ fn CompanyTicketsCard(
                     TableRow {
                         TableHeader { "Ticket" }
                         TableHeader { "Status" }
+                        TableHeader { span { class: "sr-only", "Actions" } }
                     }
                 }
                 match &*snap {
-                    None => rsx! { TableLoading { columns: 2, rows: 3 } },
-                    Some(None) => rsx! { TableEmpty { columns: 2, message: "Could not load tickets.".to_string() } },
+                    None => rsx! { TableLoading { columns: 3, rows: 3 } },
+                    Some(None) => rsx! { TableEmpty { columns: 3, message: "Could not load tickets.".to_string() } },
                     Some(Some(page)) if page.data.is_empty() => rsx! {
-                        TableEmpty { columns: 2, message: "No tickets for this company yet.".to_string() }
+                        TableEmpty { columns: 3, message: "No tickets for this company yet.".to_string() }
                     },
                     Some(Some(page)) => {
-                        let rows = page.data.clone();
+                        // MAPPS-249: cap the preview at three rows.
+                        let rows: Vec<_> = page.data.iter().take(3).cloned().collect();
                         rsx! {
                             TableBody {
                                 for ticket in rows.into_iter() {
                                     {
                                         let id = ticket.id.to_string();
                                         let key = id.clone();
+                                        let edit_id = id.clone();
+                                        let delete_path = format!("/tickets/{id}");
                                         let number = ticket.ticket_number.clone();
                                         let title = ticket.title.clone();
                                         let status_name = ticket.status.name.clone();
@@ -2208,7 +2395,7 @@ fn CompanyTicketsCard(
                                             BadgeVariant::Blue
                                         };
                                         rsx! {
-                                            TableRow { key: "{key}",
+                                            TableRow { key: "{key}", class: "group",
                                                 TableCell {
                                                     div {
                                                         Link {
@@ -2221,6 +2408,14 @@ fn CompanyTicketsCard(
                                                 }
                                                 TableCell {
                                                     Badge { variant, "{status_name}" }
+                                                }
+                                                TableCell { class: "w-10",
+                                                    RowActions {
+                                                        on_edit: move |_| { navigator.push(Route::TicketDetail { id: edit_id.clone() }); },
+                                                        delete_path,
+                                                        delete_label: "ticket".to_string(),
+                                                        on_deleted: move |_| { tickets_resource.restart(); },
+                                                    }
                                                 }
                                             }
                                         }
@@ -2326,20 +2521,23 @@ struct AssetTypeOption {
 
 #[component]
 fn CompanyContractsCard(
-    contracts_resource: Resource<Option<Paginated<ContractSummary>>>,
+    company_id: String,
+    mut contracts_resource: Resource<Option<Paginated<ContractSummary>>>,
 ) -> Element {
     let snap = contracts_resource.read_unchecked();
     let count = match &*snap {
         Some(Some(page)) => Some(page.meta.total),
         _ => None,
     };
+    let navigator = use_navigator();
+    let view_all_href = format!("/contracts?company_id={}", urlencoding_minimal(&company_id));
     rsx! {
         CollapsibleCard {
             title: "Contracts",
             count,
             actions: rsx! {
-                Link {
-                    to: Route::ContractList {},
+                a {
+                    href: "{view_all_href}",
                     class: "text-sm text-accent hover:opacity-90",
                     "View All"
                 }
@@ -2351,27 +2549,30 @@ fn CompanyContractsCard(
                         TableHeader { "Contract" }
                         TableHeader { "Value" }
                         TableHeader { "Status" }
+                        TableHeader { span { class: "sr-only", "Actions" } }
                     }
                 }
                 match &*snap {
-                    None => rsx! { TableLoading { columns: 3, rows: 3 } },
-                    Some(None) => rsx! { TableEmpty { columns: 3, message: "Could not load contracts.".to_string() } },
+                    None => rsx! { TableLoading { columns: 4, rows: 3 } },
+                    Some(None) => rsx! { TableEmpty { columns: 4, message: "Could not load contracts.".to_string() } },
                     Some(Some(page)) if page.data.is_empty() => rsx! {
-                        TableEmpty { columns: 3, message: "No contracts for this company yet.".to_string() }
+                        TableEmpty { columns: 4, message: "No contracts for this company yet.".to_string() }
                     },
                     Some(Some(page)) => {
-                        let rows = page.data.clone();
+                        let rows: Vec<_> = page.data.iter().take(3).cloned().collect();
                         rsx! {
                             TableBody {
                                 for contract in rows.into_iter() {
                                     {
                                         let id = contract.id.to_string();
                                         let key = id.clone();
+                                        let edit_id = id.clone();
+                                        let delete_path = format!("/contracts/{id}");
                                         let name = contract.name.clone();
                                         let value = money_label(&contract.billing_amount);
                                         let (variant, label) = contract_status_badge(&contract.status);
                                         rsx! {
-                                            TableRow { key: "{key}",
+                                            TableRow { key: "{key}", class: "group",
                                                 TableCell {
                                                     Link {
                                                         to: Route::ContractDetail { id: id.clone() },
@@ -2381,6 +2582,14 @@ fn CompanyContractsCard(
                                                 }
                                                 TableCell { class: "font-medium", "{value}" }
                                                 TableCell { Badge { variant, "{label}" } }
+                                                TableCell { class: "w-10",
+                                                    RowActions {
+                                                        on_edit: move |_| { navigator.push(Route::ContractEdit { id: edit_id.clone() }); },
+                                                        delete_path,
+                                                        delete_label: "contract".to_string(),
+                                                        on_deleted: move |_| { contracts_resource.restart(); },
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -2395,19 +2604,24 @@ fn CompanyContractsCard(
 }
 
 #[component]
-fn CompanyProjectsCard(projects_resource: Resource<Option<Paginated<ProjectSummary>>>) -> Element {
+fn CompanyProjectsCard(
+    company_id: String,
+    mut projects_resource: Resource<Option<Paginated<ProjectSummary>>>,
+) -> Element {
     let snap = projects_resource.read_unchecked();
     let count = match &*snap {
         Some(Some(page)) => Some(page.meta.total),
         _ => None,
     };
+    let navigator = use_navigator();
+    let view_all_href = format!("/projects?company_id={}", urlencoding_minimal(&company_id));
     rsx! {
         CollapsibleCard {
             title: "Projects",
             count,
             actions: rsx! {
-                Link {
-                    to: Route::ProjectList {},
+                a {
+                    href: "{view_all_href}",
                     class: "text-sm text-accent hover:opacity-90",
                     "View All"
                 }
@@ -2419,27 +2633,30 @@ fn CompanyProjectsCard(projects_resource: Resource<Option<Paginated<ProjectSumma
                         TableHeader { "Project" }
                         TableHeader { "Budget" }
                         TableHeader { "Status" }
+                        TableHeader { span { class: "sr-only", "Actions" } }
                     }
                 }
                 match &*snap {
-                    None => rsx! { TableLoading { columns: 3, rows: 3 } },
-                    Some(None) => rsx! { TableEmpty { columns: 3, message: "Could not load projects.".to_string() } },
+                    None => rsx! { TableLoading { columns: 4, rows: 3 } },
+                    Some(None) => rsx! { TableEmpty { columns: 4, message: "Could not load projects.".to_string() } },
                     Some(Some(page)) if page.data.is_empty() => rsx! {
-                        TableEmpty { columns: 3, message: "No projects for this company yet.".to_string() }
+                        TableEmpty { columns: 4, message: "No projects for this company yet.".to_string() }
                     },
                     Some(Some(page)) => {
-                        let rows = page.data.clone();
+                        let rows: Vec<_> = page.data.iter().take(3).cloned().collect();
                         rsx! {
                             TableBody {
                                 for project in rows.into_iter() {
                                     {
                                         let id = project.id.to_string();
                                         let key = id.clone();
+                                        let edit_id = id.clone();
+                                        let delete_path = format!("/projects/{id}");
                                         let name = project.name.clone();
                                         let budget = money_label(&project.budget_amount);
                                         let (variant, label) = project_status_badge(&project.status);
                                         rsx! {
-                                            TableRow { key: "{key}",
+                                            TableRow { key: "{key}", class: "group",
                                                 TableCell {
                                                     Link {
                                                         to: Route::ProjectDetail { id: id.clone() },
@@ -2449,6 +2666,14 @@ fn CompanyProjectsCard(projects_resource: Resource<Option<Paginated<ProjectSumma
                                                 }
                                                 TableCell { class: "font-medium", "{budget}" }
                                                 TableCell { Badge { variant, "{label}" } }
+                                                TableCell { class: "w-10",
+                                                    RowActions {
+                                                        on_edit: move |_| { navigator.push(Route::ProjectDetail { id: edit_id.clone() }); },
+                                                        delete_path,
+                                                        delete_label: "project".to_string(),
+                                                        on_deleted: move |_| { projects_resource.restart(); },
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -2463,19 +2688,24 @@ fn CompanyProjectsCard(projects_resource: Resource<Option<Paginated<ProjectSumma
 }
 
 #[component]
-fn CompanyInvoicesCard(invoices_resource: Resource<Option<Paginated<InvoiceSummary>>>) -> Element {
+fn CompanyInvoicesCard(
+    company_id: String,
+    mut invoices_resource: Resource<Option<Paginated<InvoiceSummary>>>,
+) -> Element {
     let snap = invoices_resource.read_unchecked();
     let count = match &*snap {
         Some(Some(page)) => Some(page.meta.total),
         _ => None,
     };
+    let navigator = use_navigator();
+    let view_all_href = format!("/invoices?company_id={}", urlencoding_minimal(&company_id));
     rsx! {
         CollapsibleCard {
             title: "Invoices",
             count,
             actions: rsx! {
-                Link {
-                    to: Route::InvoiceList {},
+                a {
+                    href: "{view_all_href}",
                     class: "text-sm text-accent hover:opacity-90",
                     "View All"
                 }
@@ -2487,27 +2717,30 @@ fn CompanyInvoicesCard(invoices_resource: Resource<Option<Paginated<InvoiceSumma
                         TableHeader { "Invoice" }
                         TableHeader { "Balance" }
                         TableHeader { "Status" }
+                        TableHeader { span { class: "sr-only", "Actions" } }
                     }
                 }
                 match &*snap {
-                    None => rsx! { TableLoading { columns: 3, rows: 3 } },
-                    Some(None) => rsx! { TableEmpty { columns: 3, message: "Could not load invoices.".to_string() } },
+                    None => rsx! { TableLoading { columns: 4, rows: 3 } },
+                    Some(None) => rsx! { TableEmpty { columns: 4, message: "Could not load invoices.".to_string() } },
                     Some(Some(page)) if page.data.is_empty() => rsx! {
-                        TableEmpty { columns: 3, message: "No invoices for this company yet.".to_string() }
+                        TableEmpty { columns: 4, message: "No invoices for this company yet.".to_string() }
                     },
                     Some(Some(page)) => {
-                        let rows = page.data.clone();
+                        let rows: Vec<_> = page.data.iter().take(3).cloned().collect();
                         rsx! {
                             TableBody {
                                 for invoice in rows.into_iter() {
                                     {
                                         let id = invoice.id.to_string();
                                         let key = id.clone();
+                                        let edit_id = id.clone();
+                                        let delete_path = format!("/invoices/{id}");
                                         let number = invoice.invoice_number.clone();
                                         let balance = money_label(&invoice.balance_due);
                                         let (variant, label) = invoice_status_badge(&invoice.status);
                                         rsx! {
-                                            TableRow { key: "{key}",
+                                            TableRow { key: "{key}", class: "group",
                                                 TableCell {
                                                     Link {
                                                         to: Route::InvoiceDetail { id: id.clone() },
@@ -2517,6 +2750,14 @@ fn CompanyInvoicesCard(invoices_resource: Resource<Option<Paginated<InvoiceSumma
                                                 }
                                                 TableCell { class: "font-medium", "{balance}" }
                                                 TableCell { Badge { variant, "{label}" } }
+                                                TableCell { class: "w-10",
+                                                    RowActions {
+                                                        on_edit: move |_| { navigator.push(Route::InvoiceDetail { id: edit_id.clone() }); },
+                                                        delete_path,
+                                                        delete_label: "invoice".to_string(),
+                                                        on_deleted: move |_| { invoices_resource.restart(); },
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -2532,7 +2773,8 @@ fn CompanyInvoicesCard(invoices_resource: Resource<Option<Paginated<InvoiceSumma
 
 #[component]
 fn CompanyAssetsCard(
-    assets_resource: Resource<Option<Paginated<AssetSummary>>>,
+    company_id: String,
+    mut assets_resource: Resource<Option<Paginated<AssetSummary>>>,
     asset_types_resource: Resource<Option<Paginated<AssetTypeOption>>>,
 ) -> Element {
     let snap = assets_resource.read_unchecked();
@@ -2540,6 +2782,8 @@ fn CompanyAssetsCard(
         Some(Some(page)) => Some(page.meta.total),
         _ => None,
     };
+    let navigator = use_navigator();
+    let view_all_href = format!("/assets?company_id={}", urlencoding_minimal(&company_id));
     let types_snap = asset_types_resource.read_unchecked();
     // Build an id -> type-name lookup from the (best-effort) type list.
     let type_name = |id: &Option<uuid::Uuid>| -> String {
@@ -2561,8 +2805,8 @@ fn CompanyAssetsCard(
             title: "Assets",
             count,
             actions: rsx! {
-                Link {
-                    to: Route::AssetList {},
+                a {
+                    href: "{view_all_href}",
                     class: "text-sm text-accent hover:opacity-90",
                     "View All"
                 }
@@ -2574,27 +2818,30 @@ fn CompanyAssetsCard(
                         TableHeader { "Asset" }
                         TableHeader { "Type" }
                         TableHeader { "Status" }
+                        TableHeader { span { class: "sr-only", "Actions" } }
                     }
                 }
                 match &*snap {
-                    None => rsx! { TableLoading { columns: 3, rows: 3 } },
-                    Some(None) => rsx! { TableEmpty { columns: 3, message: "Could not load assets.".to_string() } },
+                    None => rsx! { TableLoading { columns: 4, rows: 3 } },
+                    Some(None) => rsx! { TableEmpty { columns: 4, message: "Could not load assets.".to_string() } },
                     Some(Some(page)) if page.data.is_empty() => rsx! {
-                        TableEmpty { columns: 3, message: "No assets for this company yet.".to_string() }
+                        TableEmpty { columns: 4, message: "No assets for this company yet.".to_string() }
                     },
                     Some(Some(page)) => {
-                        let rows = page.data.clone();
+                        let rows: Vec<_> = page.data.iter().take(3).cloned().collect();
                         rsx! {
                             TableBody {
                                 for asset in rows.into_iter() {
                                     {
                                         let id = asset.id.to_string();
                                         let key = id.clone();
+                                        let edit_id = id.clone();
+                                        let delete_path = format!("/assets/{id}");
                                         let name = asset.name.clone();
                                         let tname = type_name(&asset.asset_type_id);
                                         let (variant, label) = asset_status_badge(&asset.status);
                                         rsx! {
-                                            TableRow { key: "{key}",
+                                            TableRow { key: "{key}", class: "group",
                                                 TableCell {
                                                     Link {
                                                         to: Route::AssetDetail { id: id.clone() },
@@ -2604,6 +2851,14 @@ fn CompanyAssetsCard(
                                                 }
                                                 TableCell { class: "text-muted", "{tname}" }
                                                 TableCell { Badge { variant, "{label}" } }
+                                                TableCell { class: "w-10",
+                                                    RowActions {
+                                                        on_edit: move |_| { navigator.push(Route::AssetDetail { id: edit_id.clone() }); },
+                                                        delete_path,
+                                                        delete_label: "asset".to_string(),
+                                                        on_deleted: move |_| { assets_resource.restart(); },
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -2659,6 +2914,11 @@ pub fn ContactListPage() -> Element {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let token = crate::hooks::fetch::api::current_access_token()?;
             let mut path = format!("/contacts/contacts?page={current_page}&per_page={PER_PAGE}");
+            // MAPPS-249: scope to one company when a context card's "View All"
+            // passes `?company_id=<uuid>`.
+            if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
+                path.push_str(&format!("&company_id={}", urlencoding_minimal(&company_id)));
+            }
             if !q.is_empty() {
                 path.push_str(&format!("&q={}", urlencoding_minimal(&q)));
             }
