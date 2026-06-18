@@ -63,14 +63,22 @@ pub fn Onboarding() -> Element {
     // hits /onboarding/profile directly (bookmark, refresh, manual
     // URL), bounce them to the dashboard. Otherwise this route would
     // let a user re-trigger the onboarding flow for no reason.
+    //
+    // BUNYIP-141 (slice C of BUNYIP-103): also auto-skip when the user
+    // already carries non-empty first + last name. This catches the
+    // bunyip-provisioned case where the SSO dance bringing the user to
+    // mokosh-apps already supplied the names via the `profile` scope, so
+    // the JIT path on mokosh-server seeded them into the local row.
+    // Without this skip the user would be asked to retype their name even
+    // though every visible field is already populated.
     use_effect(move || {
-        if auth
-            .read()
-            .user
-            .as_ref()
-            .is_some_and(|u| u.profile_completed)
-        {
-            nav.replace(Route::Dashboard {});
+        let a = auth.read();
+        if let Some(u) = a.user.as_ref() {
+            let has_first = !u.first_name.trim().is_empty();
+            let has_last = !u.last_name.trim().is_empty();
+            if u.profile_completed || (has_first && has_last) {
+                nav.replace(Route::Dashboard {});
+            }
         }
     });
 
