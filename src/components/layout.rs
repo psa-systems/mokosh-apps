@@ -88,6 +88,22 @@ pub fn Sidebar(props: SidebarProps) -> Element {
         "-translate-x-full"
     };
 
+    // MAPPS-250: outer-level rail collapse. App-root-owned so the choice
+    // survives the per-navigation AppLayout re-mount, exactly like the
+    // scroll offset and per-section collapse. Only the desktop rail honors
+    // it; the mobile drawer is unchanged.
+    let mut rail_collapsed = crate::hooks::use_sidebar_collapsed();
+    let collapsed = rail_collapsed.read().0;
+    // Expanded keeps today's lg:w-64; collapsed shrinks to a narrow
+    // icon-only strip.
+    let desktop_width = if collapsed { "lg:w-16" } else { "lg:w-64" };
+    let toggle_glyph = if collapsed { "\u{203A}" } else { "\u{2039}" };
+    let toggle_title = if collapsed {
+        "Expand sidebar"
+    } else {
+        "Collapse sidebar"
+    };
+
     rsx! {
         // Mobile sidebar drawer (full-height, slides in from left).
         // No brand block - the brand lives in the top bar now. The
@@ -107,7 +123,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
             // Mobile drawer closes on every navigation (its open state
             // lives in the re-mounting AppLayout), so there is no scroll
             // position worth preserving here.
-            SidebarContent { persist_scroll: false }
+            SidebarContent { persist_scroll: false, collapsed: false }
         }
 
         // Desktop sidebar - sits below the top bar in the flex column
@@ -116,8 +132,26 @@ pub fn Sidebar(props: SidebarProps) -> Element {
         // so when the viewport is short enough that the nav list must
         // scroll, the user sees the affordance instead of silently
         // clipping behind the main panel's own scrollbar (PMC-22).
-        aside { class: "hidden lg:flex lg:w-64 lg:flex-col bg-surface-2 border-r border-line overflow-y-auto overscroll-contain scrollbar-thin",
-            SidebarContent { persist_scroll: true }
+        aside { class: "hidden lg:flex {desktop_width} lg:flex-col bg-surface-2 border-r border-line overflow-y-auto overscroll-contain scrollbar-thin",
+            // Outer rail collapse toggle. Mirrors the chevron-glyph
+            // "Collapse panel" / "Expand panel" affordance from
+            // CollapsibleRail (collapsible_rail.rs:48-63). Sits above the
+            // nav so it stays put while the nav below scrolls.
+            div {
+                class: if collapsed { "flex justify-center px-1 py-2 shrink-0" } else { "flex justify-end px-2 py-2 shrink-0" },
+                button {
+                    class: "p-1 rounded-md text-subtle hover:text-content focus:outline-none",
+                    aria_label: "{toggle_title}",
+                    aria_expanded: if collapsed { "false" } else { "true" },
+                    title: "{toggle_title}",
+                    onclick: move |_| {
+                        let now = rail_collapsed.read().0;
+                        rail_collapsed.set(crate::hooks::SidebarCollapsed(!now));
+                    },
+                    "{toggle_glyph}"
+                }
+            }
+            SidebarContent { persist_scroll: true, collapsed }
         }
     }
 }
@@ -147,7 +181,7 @@ fn restore_sidebar_scroll(top: i32) {
 }
 
 #[component]
-fn SidebarContent(persist_scroll: bool) -> Element {
+fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
     // Admin-only nav (audit log, SLA management): rendered only for
     // admin/super_admin users (reactive on sign-in). The pages re-check
     // server-side, so this is a UX affordance, not a security boundary.
@@ -186,7 +220,9 @@ fn SidebarContent(persist_scroll: bool) -> Element {
             // below stays pinned.
             nav {
                 id: nav_id,
-                class: "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin px-2 py-4 space-y-1",
+                // Collapsed: tighter horizontal padding so icons center in the
+                // narrow strip; expanded keeps the original px-2.
+                class: if collapsed { "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin px-1 py-4 space-y-1" } else { "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin px-2 py-4 space-y-1" },
                 // On mount of the persistent desktop sidebar, jump straight
                 // to the offset recorded before the last navigation so the
                 // re-mount is invisible. `peek` so reading it here never
@@ -207,62 +243,66 @@ fn SidebarContent(persist_scroll: bool) -> Element {
                         }
                     }
                 },
-                NavItem { to: Route::Dashboard {}, icon: rsx!(HomeIcon {}), label: "Dashboard" }
+                NavItem { to: Route::Dashboard {}, icon: rsx!(HomeIcon {}), label: "Dashboard", collapsed }
 
-            NavSection { title: "Service Desk",
-                NavItem { to: Route::TicketList {}, icon: rsx!(TicketIcon {}), label: "Tickets" }
-                NavItem { to: Route::TimeEntryList {}, icon: rsx!(ClockIcon {}), label: "Time Entries" }
-                NavItem { to: Route::Timesheets {}, icon: rsx!(DocumentIcon {}), label: "Timesheets" }
+            NavSection { title: "Service Desk", rail_collapsed: collapsed,
+                NavItem { to: Route::TicketList {}, icon: rsx!(TicketIcon {}), label: "Tickets", collapsed }
+                NavItem { to: Route::TimeEntryList {}, icon: rsx!(ClockIcon {}), label: "Time Entries", collapsed }
+                NavItem { to: Route::Timesheets {}, icon: rsx!(DocumentIcon {}), label: "Timesheets", collapsed }
                 if can_manage {
-                    NavItem { to: Route::TimesheetApprovals {}, icon: rsx!(DocumentIcon {}), label: "Timesheet Approvals" }
+                    NavItem { to: Route::TimesheetApprovals {}, icon: rsx!(DocumentIcon {}), label: "Timesheet Approvals", collapsed }
                 }
             }
 
-            NavSection { title: "Projects",
-                NavItem { to: Route::ProjectList {}, icon: rsx!(FolderIcon {}), label: "Projects" }
+            NavSection { title: "Projects", rail_collapsed: collapsed,
+                NavItem { to: Route::ProjectList {}, icon: rsx!(FolderIcon {}), label: "Projects", collapsed }
             }
 
-            NavSection { title: "CRM",
-                NavItem { to: Route::CompanyList {}, icon: rsx!(BuildingIcon {}), label: "Companies" }
-                NavItem { to: Route::ContactList {}, icon: rsx!(UsersIcon {}), label: "Contacts" }
+            NavSection { title: "CRM", rail_collapsed: collapsed,
+                NavItem { to: Route::CompanyList {}, icon: rsx!(BuildingIcon {}), label: "Companies", collapsed }
+                NavItem { to: Route::ContactList {}, icon: rsx!(UsersIcon {}), label: "Contacts", collapsed }
             }
 
-            NavSection { title: "Operations",
-                NavItem { to: Route::Calendar {}, icon: rsx!(CalendarIcon {}), label: "Calendar" }
-                NavItem { to: Route::DispatchBoard {}, icon: rsx!(CalendarIcon {}), label: "Dispatch" }
+            NavSection { title: "Operations", rail_collapsed: collapsed,
+                NavItem { to: Route::Calendar {}, icon: rsx!(CalendarIcon {}), label: "Calendar", collapsed }
+                NavItem { to: Route::DispatchBoard {}, icon: rsx!(CalendarIcon {}), label: "Dispatch", collapsed }
             }
 
-            NavSection { title: "Contracts & Billing",
-                NavItem { to: Route::ContractList {}, icon: rsx!(DocumentIcon {}), label: "Contracts" }
-                NavItem { to: Route::RateCardList {}, icon: rsx!(DocumentIcon {}), label: "Rate Cards" }
-                NavItem { to: Route::InvoiceList {}, icon: rsx!(CurrencyIcon {}), label: "Invoices" }
-                NavItem { to: Route::PaymentList {}, icon: rsx!(CurrencyIcon {}), label: "Payments" }
+            NavSection { title: "Contracts & Billing", rail_collapsed: collapsed,
+                NavItem { to: Route::ContractList {}, icon: rsx!(DocumentIcon {}), label: "Contracts", collapsed }
+                NavItem { to: Route::RateCardList {}, icon: rsx!(DocumentIcon {}), label: "Rate Cards", collapsed }
+                NavItem { to: Route::InvoiceList {}, icon: rsx!(CurrencyIcon {}), label: "Invoices", collapsed }
+                NavItem { to: Route::PaymentList {}, icon: rsx!(CurrencyIcon {}), label: "Payments", collapsed }
             }
 
-            NavSection { title: "Assets",
-                NavItem { to: Route::AssetList {}, icon: rsx!(ServerIcon {}), label: "Assets" }
+            NavSection { title: "Assets", rail_collapsed: collapsed,
+                NavItem { to: Route::AssetList {}, icon: rsx!(ServerIcon {}), label: "Assets", collapsed }
             }
 
-            NavSection { title: "Knowledge",
-                NavItem { to: Route::KBHome {}, icon: rsx!(BookIcon {}), label: "Knowledge Base" }
+            NavSection { title: "Knowledge", rail_collapsed: collapsed,
+                NavItem { to: Route::KBHome {}, icon: rsx!(BookIcon {}), label: "Knowledge Base", collapsed }
             }
 
-            NavSection { title: "Analytics",
-                NavItem { to: Route::Reports {}, icon: rsx!(ChartIcon {}), label: "Reports" }
+            NavSection { title: "Analytics", rail_collapsed: collapsed,
+                NavItem { to: Route::Reports {}, icon: rsx!(ChartIcon {}), label: "Reports", collapsed }
             }
 
             if is_admin {
-                NavSection { title: "Admin",
-                    NavItem { to: Route::Team {}, icon: rsx!(UsersIcon {}), label: "Team" }
-                    NavItem { to: Route::AuditLog {}, icon: rsx!(DocumentIcon {}), label: "Audit Log" }
-                    NavItem { to: Route::SlaManagement {}, icon: rsx!(DocumentIcon {}), label: "SLA Management" }
+                NavSection { title: "Admin", rail_collapsed: collapsed,
+                    NavItem { to: Route::Team {}, icon: rsx!(UsersIcon {}), label: "Team", collapsed }
+                    NavItem { to: Route::AuditLog {}, icon: rsx!(DocumentIcon {}), label: "Audit Log", collapsed }
+                    NavItem { to: Route::SlaManagement {}, icon: rsx!(DocumentIcon {}), label: "SLA Management", collapsed }
                     // MAPPS-169: single entry into the centralized Settings hub.
-                    NavItem { to: Route::SettingsHome {}, icon: rsx!(CogIcon {}), label: "Settings" }
+                    NavItem { to: Route::SettingsHome {}, icon: rsx!(CogIcon {}), label: "Settings", collapsed }
                 }
             }
 
             }
-            VersionFooter {}
+            // Hide the build-info line in the narrow collapsed strip: it
+            // wraps illegibly at lg:w-16. It returns when the rail expands.
+            if !collapsed {
+                VersionFooter {}
+            }
         }
     }
 }
@@ -293,6 +333,14 @@ fn VersionFooter() -> Element {
 #[derive(Props, Clone, PartialEq)]
 struct NavSectionProps {
     title: String,
+    /// MAPPS-250: when the WHOLE rail is collapsed to the icon-only strip,
+    /// the section header (title + per-section chevron) is hidden and the
+    /// child icons render directly, since there is no room for the title and
+    /// the per-section toggle is unreachable in the narrow strip. Defaults
+    /// to false so the mobile drawer and expanded desktop rail keep the
+    /// existing two-level header.
+    #[props(default)]
+    rail_collapsed: bool,
     children: Element,
 }
 
@@ -301,6 +349,18 @@ fn NavSection(props: NavSectionProps) -> Element {
     let mut state = crate::hooks::use_sidebar_state();
     let title = props.title.clone();
     let collapsed = crate::hooks::is_section_collapsed(&state.read(), &title);
+
+    // Outer rail collapsed: drop the section header entirely and show the
+    // child icons. The inner per-section collapse state is preserved (we
+    // never touch it here) so re-expanding the rail restores each section's
+    // prior open/closed state.
+    if props.rail_collapsed {
+        return rsx! {
+            div { class: "pt-2 space-y-1",
+                {props.children}
+            }
+        };
+    }
 
     let toggle_title = title.clone();
     let toggle = move |_| {
@@ -339,6 +399,11 @@ struct NavItemProps {
     to: Route,
     icon: Element,
     label: String,
+    /// MAPPS-250: render as an icon-only link (label hidden, label moved to
+    /// the `title` tooltip) when the whole rail is collapsed. Defaults to
+    /// false so the mobile drawer and expanded desktop rail show full labels.
+    #[props(default)]
+    collapsed: bool,
 }
 
 /// Map a route to the nav list it lives under, so a detail page keeps its
@@ -370,6 +435,28 @@ fn NavItem(props: NavItemProps) -> Element {
     // "Rate Cards" highlighted.
     let current_route: Route = use_route();
     let is_active = section_route(&current_route) == props.to;
+
+    // Collapsed rail: icon-only link, centered in the narrow strip, with the
+    // label exposed as a `title` tooltip for discoverability (AC4). The link
+    // stays a working router `Link` so navigation works from the strip.
+    if props.collapsed {
+        let class = if is_active {
+            "group flex items-center justify-center px-2 py-2 rounded-md bg-surface text-content border-l-2 border-accent"
+        } else {
+            "group flex items-center justify-center px-2 py-2 rounded-md text-muted hover:bg-surface hover:text-content"
+        };
+        return rsx! {
+            Link {
+                to: props.to,
+                class: "{class}",
+                title: "{props.label}",
+                aria_label: "{props.label}",
+                span { class: "text-subtle group-hover:text-content",
+                    {props.icon}
+                }
+            }
+        };
+    }
 
     let class = if is_active {
         "group flex items-center px-3 py-2 text-sm font-medium rounded-md bg-surface text-content border-l-2 border-accent"

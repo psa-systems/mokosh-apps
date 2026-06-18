@@ -63,3 +63,33 @@ pub fn use_sidebar_scroll_provider() -> Signal<SidebarScroll> {
 pub fn use_sidebar_scroll() -> Signal<SidebarScroll> {
     use_context::<Signal<SidebarScroll>>()
 }
+
+/// Whether the desktop sidebar rail is collapsed to a narrow icon-only strip.
+///
+/// MAPPS-250: the outer level of YouTrack-style two-level collapsible nav.
+/// The inner level is the per-section `NavSection` collapse above; this flag
+/// collapses the WHOLE desktop rail. Like the scroll offset and per-section
+/// state, it is owned by the App root so the user's choice survives the
+/// `AppLayout` re-mount on every SPA navigation instead of resetting to the
+/// default each click.
+///
+/// Default is `false` (expanded), matching today's `lg:w-64` rail. Held in
+/// App-root context only (not yet persisted to the server profile).
+///
+/// A newtype rather than a bare `Signal<bool>` so the context lookup cannot
+/// collide with any other bool signal provided at the root.
+#[derive(Clone, Copy, Default)]
+pub struct SidebarCollapsed(pub bool);
+
+/// Provide the rail-collapsed signal at the App root. Mirrors
+/// [`use_sidebar_scroll_provider`].
+pub fn use_sidebar_collapsed_provider() -> Signal<SidebarCollapsed> {
+    let state = use_signal(SidebarCollapsed::default);
+    use_context_provider(|| state);
+    state
+}
+
+/// Consume the rail-collapsed signal in the desktop sidebar.
+pub fn use_sidebar_collapsed() -> Signal<SidebarCollapsed> {
+    use_context::<Signal<SidebarCollapsed>>()
+}
