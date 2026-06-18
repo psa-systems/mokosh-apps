@@ -579,6 +579,15 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         postal_err.set(String::new());
         country_err.set(String::new());
         // Validate the formatted/structured fields inline before submit (MAPPS-177, MAPPS-213).
+        // Company name is required, so check it first and bail before touching
+        // the optional fields (MAPPS-246).
+        let name_value = match validate_name_field(&name.read()) {
+            Ok(v) => v,
+            Err(msg) => {
+                name_err.set(msg);
+                return;
+            }
+        };
         let website_value = match validate_website_field(&website.read()) {
             Ok(v) => v,
             Err(msg) => {
@@ -609,7 +618,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         };
         is_submitting.set(true);
         let body = serde_json::json!({
-            "name": name.read().trim(),
+            "name": name_value,
             "company_type": company_type.read().clone(),
             "industry": optional_string(&industry.read()),
             "website": website_value,
@@ -650,6 +659,27 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         navigator.push(Route::CompanyDetail { id });
                     }
                     Err(err) => {
+                        // MAPPS-246: a duplicate company name comes back as a
+                        // 409 from the create/edit endpoint (b3 work). Route the
+                        // server's conflict message onto the Company Name field
+                        // inline instead of the generic banner. Detect it by
+                        // status code when available, otherwise fall back to the
+                        // conflict message text so the cue still lands if the
+                        // helper ever drops the code. Either way the normal
+                        // success / other-error paths stay intact.
+                        let is_name_conflict = err.status_code() == Some(409)
+                            || (err.status_code().is_none() && {
+                                let m = err.user_message().to_ascii_lowercase();
+                                m.contains("already")
+                                    || m.contains("duplicate")
+                                    || m.contains("taken")
+                                    || m.contains("exists")
+                            });
+                        if is_name_conflict {
+                            name_err.set(err.user_message());
+                            is_submitting.set(false);
+                            return;
+                        }
                         // MAPPS-265: map every server-side field error from the
                         // 422 `errors[]` envelope back onto its own inline field
                         // (e.g. a Website scheme rule the client did not mirror,
@@ -834,6 +864,22 @@ fn optional_string(value: &str) -> serde_json::Value {
 /// common formatting (spaces, dashes, parens, dots) and requires E.164: an
 /// optional leading `+` then 2-15 digits, the first 1-9. Returns the normalized
 /// value or an inline error message. `label` names the field in the message.
+/// Validate the required company name, mirroring the server's
+/// `validate_company_name` rule (PMS / b3 work): trim, reject empty or
+/// whitespace-only input, and reject control characters. On success returns the
+/// trimmed name so the client surfaces the "Company name is required" cue inline
+/// (MAPPS-246) before any request instead of bouncing off an opaque server 422.
+fn validate_name_field(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("Company name is required.".to_string());
+    }
+    if trimmed.chars().any(|c| c.is_control()) {
+        return Err("Company name must not contain control characters.".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
 fn validate_phone_field(raw: &str, label: &str) -> Result<serde_json::Value, String> {
     let normalized: String = raw
         .chars()
@@ -3795,10 +3841,22 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
 #[cfg(test)]
 mod validation_tests {
     use super::{
-        validate_country_field, validate_phone_field, validate_postal_field,
+        validate_country_field, validate_name_field, validate_phone_field, validate_postal_field,
         validate_timezone_field, validate_website_field,
     };
     use serde_json::Value;
+
+    #[test]
+    fn name_required_and_rejects_control_chars() {
+        // Trims and returns the cleaned name.
+        assert_eq!(validate_name_field("  Acme Co  ").unwrap(), "Acme Co");
+        // Empty / whitespace-only rejected.
+        assert!(validate_name_field("").is_err());
+        assert!(validate_name_field("   ").is_err());
+        // Control characters rejected.
+        assert!(validate_name_field("Acme\tCo").is_err());
+        assert!(validate_name_field("Acme\u{0007}Co").is_err());
+    }
 
     #[test]
     fn website_requires_http_scheme_and_rejects_dangerous() {
