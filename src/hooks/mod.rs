@@ -16,6 +16,7 @@ mod sidebar;
 pub mod theme;
 pub mod theme_sync;
 pub mod toast;
+pub mod tv_view;
 pub mod update_check;
 pub mod version_cache;
 

@@ -31,9 +31,9 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
-    PlusIcon, Select, SelectOption, SettingFormModal, Table, TableBody, TableCell, TableEmpty,
-    TableHead, TableHeader, TableLoading, TableRow, ThemePicker,
+    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, Checkbox, DataTable, IconSize,
+    Input, PageHeader, PlusIcon, Select, SelectOption, SettingFormModal, Table, TableBody,
+    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, ThemePicker,
 };
 use crate::utils::money::format_money_str;
 use crate::utils::Paginated;
@@ -96,6 +96,63 @@ pub fn AppearanceSettingsPage() -> Element {
     }
 }
 
+/// `/settings/tv-view` - per-user wall-monitor TV-view toggle (MAPPS-256).
+/// Not admin-gated; every user personalizes their own view. Writes the
+/// `mokosh_tv_view` boolean and the optional `mokosh_tv_team` team id via
+/// `prefs.rs` (through the `tv_view` hook), mirroring the theme precedent.
+#[component]
+pub fn TvViewSettingsPage() -> Element {
+    let mut enabled = use_signal(crate::hooks::tv_view::is_enabled);
+    let mut team = use_signal(crate::hooks::tv_view::selected_team);
+
+    rsx! {
+        AppLayout { title: "TV View",
+            PageHeader {
+                title: "TV View",
+                subtitle: "Full-screen wall-monitor dashboard, scoped to your team, saved to this browser",
+            }
+            Card {
+                div { class: "p-6 space-y-6 max-w-xl",
+                    Checkbox {
+                        name: "tv_view_enabled",
+                        label: "Enable TV view",
+                        checked: enabled(),
+                        help: "Shows a link into the full-screen dashboard from your normal dashboard.",
+                        onchange: move |e: FormEvent| {
+                            let on = e.checked();
+                            enabled.set(on);
+                            crate::hooks::tv_view::set_enabled(on);
+                        },
+                    }
+
+                    div {
+                        Input {
+                            name: "tv_view_team",
+                            label: "Team id (optional)",
+                            value: team(),
+                            placeholder: "Leave blank to show all your teams",
+                            help: "Pin the board to a single team's tickets and KPIs. Blank uses the union of every team you belong to.",
+                            oninput: move |e: FormEvent| {
+                                let v = e.value();
+                                team.set(v.clone());
+                                crate::hooks::tv_view::set_selected_team(&v);
+                            },
+                        }
+                    }
+
+                    if enabled() {
+                        Link {
+                            to: Route::DashboardTv {},
+                            class: "inline-flex items-center rounded-md bg-accent text-on-accent px-4 py-2 text-sm font-medium hover:opacity-90",
+                            "Open TV view"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[component]
 pub fn SettingsHomePage() -> Element {
     rsx! {
@@ -110,6 +167,11 @@ pub fn SettingsHomePage() -> Element {
                     to: Route::SettingsAppearance {},
                     title: "Appearance",
                     description: "Theme (light, dark, or system) and accent color for your account.",
+                }
+                SettingsCard {
+                    to: Route::SettingsTvView {},
+                    title: "TV View",
+                    description: "Full-screen wall-monitor dashboard, scoped to your team. Toggle it on and pick a team.",
                 }
             }
 

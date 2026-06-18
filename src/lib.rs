@@ -147,6 +147,13 @@ pub enum Route {
       #[route("/dashboard")]
       Dashboard {},
 
+      // MAPPS-256: full-screen, team-scoped wall-monitor "TV view" of the
+      // dashboard. Inside AuthGuard like every authenticated route, but the
+      // page renders WITHOUT `AppLayout` so no TopBar / Sidebar / banners /
+      // ToastRoot chrome appears over the bare table.
+      #[route("/dashboard/tv")]
+      DashboardTv {},
+
     // Tickets
     #[route("/tickets")]
     TicketList {},
@@ -332,6 +339,9 @@ pub enum Route {
     // MAPPS-259: per-user theme + accent picker.
     #[route("/settings/appearance")]
     SettingsAppearance {},
+    // MAPPS-256: per-user wall-monitor TV-view toggle + team scope.
+    #[route("/settings/tv-view")]
+    SettingsTvView {},
     // MAPPS-244: tenant-wide max hours per day (PMS-396 server setting).
     #[route("/settings/time-tracking")]
     SettingsTimeTracking {},
@@ -519,6 +529,11 @@ fn SignupComplete(token: String) -> Element {
 #[component]
 fn Dashboard() -> Element {
     rsx! { dashboard::DashboardPage {} }
+}
+
+#[component]
+fn DashboardTv() -> Element {
+    rsx! { dashboard::DashboardTvPage {} }
 }
 
 #[component]
@@ -810,6 +825,11 @@ fn SettingsScheduling() -> Element {
 #[component]
 fn SettingsAppearance() -> Element {
     rsx! { settings::AppearanceSettingsPage {} }
+}
+
+#[component]
+fn SettingsTvView() -> Element {
+    rsx! { settings::TvViewSettingsPage {} }
 }
 
 #[component]
