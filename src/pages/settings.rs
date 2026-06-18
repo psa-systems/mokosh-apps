@@ -31,9 +31,10 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
-    PlusIcon, Select, SelectOption, SettingFormModal, Table, TableBody, TableCell, TableEmpty,
-    TableHead, TableHeader, TableLoading, TableRow, ThemePicker,
+    AppLayout, Badge, BadgeVariant, BreadcrumbItem, Breadcrumbs, Button, ButtonVariant, Card,
+    DataTable, IconSize, PageHeader, PlusIcon, SearchInput, Select, SelectOption, SettingFormModal,
+    Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+    ThemePicker,
 };
 use crate::utils::money::format_money_str;
 use crate::utils::Paginated;
@@ -86,6 +87,9 @@ pub fn AppearanceSettingsPage() -> Element {
             PageHeader {
                 title: "Appearance",
                 subtitle: "Theme and accent color, saved to your account",
+                breadcrumbs: rsx! {
+                    SettingsBreadcrumb { current: Route::SettingsAppearance {} }
+                },
             }
             Card {
                 div { class: "p-6",
@@ -96,8 +100,289 @@ pub fn AppearanceSettingsPage() -> Element {
     }
 }
 
+// ============================================================================
+// Settings taxonomy (MAPPS-258)
+//
+// One const table is the single source of truth for the settings
+// information architecture: it drives the grouped index, the per-group
+// landing pages, the breadcrumb trail on every sub-page, and the search
+// filter. Adding a surface here gives it a card, a breadcrumb, and a search
+// hit for free, with no per-page wiring to drift out of sync.
+// ============================================================================
+
+/// Top-level settings domain. Each admin group is reached through its own
+/// landing route so the `/settings` index lists groups rather than all the
+/// leaves at once (Windows/JetBrains-style nesting). Personalization is not
+/// nested: its single surface (Appearance) shows directly on the index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsGroupKey {
+    Personalization,
+    ServiceTypes,
+    Billing,
+    Tickets,
+    Integrations,
+}
+
+impl SettingsGroupKey {
+    /// Heading on the index and the middle crumb in a leaf's breadcrumb.
+    fn title(self) -> &'static str {
+        match self {
+            SettingsGroupKey::Personalization => "Personalization",
+            SettingsGroupKey::ServiceTypes => "Service & Asset Types",
+            SettingsGroupKey::Billing => "Billing & SLA",
+            SettingsGroupKey::Tickets => "Tickets",
+            SettingsGroupKey::Integrations => "Integrations",
+        }
+    }
+
+    /// One-line summary shown on the group card on the index.
+    fn description(self) -> &'static str {
+        match self {
+            SettingsGroupKey::Personalization => "Theme and accent color for your account.",
+            SettingsGroupKey::ServiceTypes => {
+                "Work types, task statuses, asset types, and project types."
+            }
+            SettingsGroupKey::Billing => {
+                "SLA, scheduling, time tracking, rate cards, taxes, gateways, and payment terms."
+            }
+            SettingsGroupKey::Tickets => "Statuses, priorities, types, queues, and categories.",
+            SettingsGroupKey::Integrations => "RMM connections, device mappings, and alert rules.",
+        }
+    }
+
+    /// Landing route for the group, or `None` for Personalization which is
+    /// not nested (its surfaces render directly on the index).
+    fn landing(self) -> Option<Route> {
+        match self {
+            SettingsGroupKey::Personalization => None,
+            SettingsGroupKey::ServiceTypes => Some(Route::SettingsGroupServiceTypes {}),
+            SettingsGroupKey::Billing => Some(Route::SettingsGroupBilling {}),
+            SettingsGroupKey::Tickets => Some(Route::SettingsGroupTickets {}),
+            SettingsGroupKey::Integrations => Some(Route::SettingsGroupIntegrations {}),
+        }
+    }
+}
+
+/// The four nested admin groups, in index display order. Personalization is
+/// rendered separately (it is a direct leaf, not a group card).
+const SETTINGS_GROUP_ORDER: &[SettingsGroupKey] = &[
+    SettingsGroupKey::ServiceTypes,
+    SettingsGroupKey::Billing,
+    SettingsGroupKey::Tickets,
+    SettingsGroupKey::Integrations,
+];
+
+/// One configuration surface (a leaf settings page).
+struct SettingsSurface {
+    route: Route,
+    title: &'static str,
+    description: &'static str,
+    group: SettingsGroupKey,
+    /// Hidden in basic mode; shown only when "Show advanced settings" is on.
+    advanced: bool,
+}
+
+/// localStorage key for the basic/advanced toggle (MAPPS-258). Defaults to
+/// basic (false) so casual users are not shown the advanced surfaces.
+const PREF_SHOW_ADVANCED: &str = "settings_show_advanced";
+
+/// Single source of truth for every settings surface. Order within a group
+/// is the display order on the index, group landing, and search results.
+/// The advanced set (per MAPPS-258) is Tax Rates, Payment Gateways, Ticket
+/// Categories, and the three RMM surfaces.
+const SETTINGS_SURFACES: &[SettingsSurface] = &[
+    SettingsSurface {
+        route: Route::SettingsAppearance {},
+        title: "Appearance",
+        description: "Theme (light, dark, or system) and accent color for your account.",
+        group: SettingsGroupKey::Personalization,
+        advanced: false,
+    },
+    SettingsSurface {
+        route: Route::SettingsWorkTypes {},
+        title: "Work Types",
+        description: "Billable work categories used when logging time entries.",
+        group: SettingsGroupKey::ServiceTypes,
+        advanced: false,
+    },
+    SettingsSurface {
+        route: Route::SettingsTaskStatuses {},
+        title: "Task Statuses",
+        description: "Workflow states a project task can move through.",
+        group: SettingsGroupKey::ServiceTypes,
+        advanced: false,
+    },
+    SettingsSurface {
+        route: Route::SettingsAssetTypes {},
+        title: "Asset Types",
+        description: "Categories for the assets you track per company.",
+        group: SettingsGroupKey::ServiceTypes,
+        advanced: false,
+    },
+    SettingsSurface {
+        route: Route::SettingsProjectTypes {},
+        title: "Project Types",
+        description: "Classify projects (e.g. client vs internal).",
+        group: SettingsGroupKey::ServiceTypes,
+        advanced: false,
+    },
+    SettingsSurface {
+        route: Route::SettingsSla {},
+        title: "SLA Management",
+        description: "Service-level policies, business hours, and holiday calendars.",
+        group: SettingsGroupKey::Billing,
+        advanced: false,
+    },
+    SettingsSurface {
+        route: Route::SettingsScheduling {},
+        title: "Scheduling",
+        description: "Standard due date applied to new tasks and tickets when none is set.",
+        group: SettingsGroupKey::Billing,
+        advanced: false,
+    },
+    SettingsSurface {
+        route: Route::SettingsTimeTracking {},
+        title: "Time Tracking",
+        description: "Maximum hours a user may log against a single day.",
+        group: SettingsGroupKey::Billing,
+        advanced: false,
+    },
+    SettingsSurface {
+        route: Route::SettingsRateCards {},
+        title: "Rate Cards",
+        description: "Hourly rates billed per work type.",
+        group: SettingsGroupKey::Billing,
+        advanced: false,
+    },
+    SettingsSurface {
+        route: Route::SettingsTaxRates {},
+        title: "Tax Rates",
+        description: "Tax rates applied to invoice line items.",
+        group: SettingsGroupKey::Billing,
+        advanced: true,
+    },
+    SettingsSurface {
+        route: Route::SettingsGateways {},
+        title: "Payment Gateways",
+        description: "Connect and configure payment providers.",
+        group: SettingsGroupKey::Billing,
+        advanced: true,
+    },
+    SettingsSurface {
+        route: Route::SettingsPaymentTerms {},
+        title: "Payment Terms",
+        description: "Options for the invoice payment-terms dropdown.",
+        group: SettingsGroupKey::Billing,
+        advanced: false,
+    },
+    SettingsSurface {
+        route: Route::SettingsTicketStatuses {},
+        title: "Ticket Statuses",
+        description: "Workflow states a ticket can move through.",
+        group: SettingsGroupKey::Tickets,
+        advanced: false,
+    },
+    SettingsSurface {
+        route: Route::SettingsTicketPriorities {},
+        title: "Ticket Priorities",
+        description: "Priority levels and their SLA multipliers.",
+        group: SettingsGroupKey::Tickets,
+        advanced: false,
+    },
+    SettingsSurface {
+        route: Route::SettingsTicketTypes {},
+        title: "Ticket Types",
+        description: "Categories for the kind of work a ticket represents.",
+        group: SettingsGroupKey::Tickets,
+        advanced: false,
+    },
+    SettingsSurface {
+        route: Route::SettingsTicketQueues {},
+        title: "Ticket Queues",
+        description: "Queues tickets are routed into.",
+        group: SettingsGroupKey::Tickets,
+        advanced: false,
+    },
+    SettingsSurface {
+        route: Route::SettingsTicketCategories {},
+        title: "Ticket Categories",
+        description: "Hierarchical categories for classifying tickets.",
+        group: SettingsGroupKey::Tickets,
+        advanced: true,
+    },
+    SettingsSurface {
+        route: Route::SettingsRmmConnections {},
+        title: "RMM Connections",
+        description: "Connect remote monitoring providers and test reachability.",
+        group: SettingsGroupKey::Integrations,
+        advanced: true,
+    },
+    SettingsSurface {
+        route: Route::SettingsRmmDeviceMappings {},
+        title: "RMM Device Mappings",
+        description: "Map monitored RMM devices to assets and companies.",
+        group: SettingsGroupKey::Integrations,
+        advanced: true,
+    },
+    SettingsSurface {
+        route: Route::SettingsRmmAlertRules {},
+        title: "RMM Alert Rules",
+        description: "Turn RMM alerts into tickets automatically.",
+        group: SettingsGroupKey::Integrations,
+        advanced: true,
+    },
+];
+
+/// Surfaces filed under `group`, honoring the basic/advanced filter.
+fn surfaces_in_group(
+    group: SettingsGroupKey,
+    show_advanced: bool,
+) -> impl Iterator<Item = &'static SettingsSurface> {
+    SETTINGS_SURFACES
+        .iter()
+        .filter(move |s| s.group == group && (show_advanced || !s.advanced))
+}
+
+/// `/settings` - the hub index. With no search query it shows the
+/// Personalization leaf plus the four nested group cards; typing a query
+/// flattens to matching leaf cards across every group (MAPPS-258).
 #[component]
 pub fn SettingsHomePage() -> Element {
+    let mut query = use_signal(String::new);
+    let mut show_advanced = use_signal(|| crate::utils::prefs::get_bool(PREF_SHOW_ADVANCED, false));
+
+    let adv = *show_advanced.read();
+    let q = query.read().trim().to_lowercase();
+
+    // Personalization renders as a direct leaf (it is not nested).
+    let personalization: Vec<&SettingsSurface> =
+        surfaces_in_group(SettingsGroupKey::Personalization, adv).collect();
+
+    // A group card is shown only when the group has at least one visible
+    // surface in the current mode (so an all-advanced group like
+    // Integrations drops off the basic index instead of leading to an
+    // empty landing).
+    let group_cards: Vec<(Route, &'static str, &'static str)> = SETTINGS_GROUP_ORDER
+        .iter()
+        .copied()
+        .filter(|g| surfaces_in_group(*g, adv).next().is_some())
+        .filter_map(|g| g.landing().map(|route| (route, g.title(), g.description())))
+        .collect();
+
+    // Search reaches every leaf across all groups (bypassing the nesting),
+    // matching title or description case-insensitively.
+    let results: Vec<&SettingsSurface> = if q.is_empty() {
+        Vec::new()
+    } else {
+        SETTINGS_SURFACES
+            .iter()
+            .filter(|s| adv || !s.advanced)
+            .filter(|s| {
+                s.title.to_lowercase().contains(&q) || s.description.to_lowercase().contains(&q)
+            })
+            .collect()
+    };
+
     rsx! {
         AppLayout { title: "Settings",
             PageHeader {
@@ -105,121 +390,180 @@ pub fn SettingsHomePage() -> Element {
                 subtitle: "Manage the standard types and configuration that shape how your workspace behaves",
             }
 
-            SettingsGroup { heading: "Personalization",
-                SettingsCard {
-                    to: Route::SettingsAppearance {},
-                    title: "Appearance",
-                    description: "Theme (light, dark, or system) and accent color for your account.",
+            div { class: "mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between",
+                div { class: "w-full sm:max-w-xs",
+                    SearchInput {
+                        value: query.read().clone(),
+                        placeholder: "Search settings...".to_string(),
+                        oninput: move |e: FormEvent| query.set(e.value()),
+                    }
+                }
+                label { class: "flex shrink-0 items-center gap-2 text-sm text-content select-none",
+                    input {
+                        r#type: "checkbox",
+                        class: "h-4 w-4 rounded border-line text-accent focus:ring-accent",
+                        checked: adv,
+                        onchange: move |_| {
+                            let next = !*show_advanced.read();
+                            show_advanced.set(next);
+                            crate::utils::prefs::set_bool(PREF_SHOW_ADVANCED, next);
+                        },
+                    }
+                    "Show advanced settings"
                 }
             }
 
-            SettingsGroup { heading: "Service & Asset Types",
-                SettingsCard {
-                    to: Route::SettingsWorkTypes {},
-                    title: "Work Types",
-                    description: "Billable work categories used when logging time entries.",
+            if q.is_empty() {
+                if !personalization.is_empty() {
+                    SettingsGroup { heading: SettingsGroupKey::Personalization.title().to_string(),
+                        for surface in personalization {
+                            SettingsCard {
+                                to: surface.route.clone(),
+                                title: surface.title.to_string(),
+                                description: surface.description.to_string(),
+                            }
+                        }
+                    }
                 }
-                SettingsCard {
-                    to: Route::SettingsTaskStatuses {},
-                    title: "Task Statuses",
-                    description: "Workflow states a project task can move through.",
+                SettingsGroup { heading: "Configuration".to_string(),
+                    for (route, title, description) in group_cards {
+                        SettingsCard {
+                            to: route,
+                            title: title.to_string(),
+                            description: description.to_string(),
+                        }
+                    }
                 }
-                SettingsCard {
-                    to: Route::SettingsAssetTypes {},
-                    title: "Asset Types",
-                    description: "Categories for the assets you track per company.",
+            } else if results.is_empty() {
+                Card {
+                    div { class: "py-12 text-center text-sm text-muted",
+                        "No settings match \"{query}\"."
+                    }
                 }
-                SettingsCard {
-                    to: Route::SettingsProjectTypes {},
-                    title: "Project Types",
-                    description: "Classify projects (e.g. client vs internal).",
-                }
-            }
-
-            SettingsGroup { heading: "Billing & SLA",
-                SettingsCard {
-                    to: Route::SettingsSla {},
-                    title: "SLA Management",
-                    description: "Service-level policies, business hours, and holiday calendars.",
-                }
-                SettingsCard {
-                    to: Route::SettingsScheduling {},
-                    title: "Scheduling",
-                    description: "Standard due date applied to new tasks and tickets when none is set.",
-                }
-                SettingsCard {
-                    to: Route::SettingsTimeTracking {},
-                    title: "Time Tracking",
-                    description: "Maximum hours a user may log against a single day.",
-                }
-                SettingsCard {
-                    to: Route::SettingsRateCards {},
-                    title: "Rate Cards",
-                    description: "Hourly rates billed per work type.",
-                }
-                SettingsCard {
-                    to: Route::SettingsTaxRates {},
-                    title: "Tax Rates",
-                    description: "Tax rates applied to invoice line items.",
-                }
-                SettingsCard {
-                    to: Route::SettingsGateways {},
-                    title: "Payment Gateways",
-                    description: "Connect and configure payment providers.",
-                }
-                SettingsCard {
-                    to: Route::SettingsPaymentTerms {},
-                    title: "Payment Terms",
-                    description: "Options for the invoice payment-terms dropdown.",
-                }
-            }
-
-            SettingsGroup { heading: "Tickets",
-                SettingsCard {
-                    to: Route::SettingsTicketStatuses {},
-                    title: "Ticket Statuses",
-                    description: "Workflow states a ticket can move through.",
-                }
-                SettingsCard {
-                    to: Route::SettingsTicketPriorities {},
-                    title: "Ticket Priorities",
-                    description: "Priority levels and their SLA multipliers.",
-                }
-                SettingsCard {
-                    to: Route::SettingsTicketTypes {},
-                    title: "Ticket Types",
-                    description: "Categories for the kind of work a ticket represents.",
-                }
-                SettingsCard {
-                    to: Route::SettingsTicketQueues {},
-                    title: "Ticket Queues",
-                    description: "Queues tickets are routed into.",
-                }
-                SettingsCard {
-                    to: Route::SettingsTicketCategories {},
-                    title: "Ticket Categories",
-                    description: "Hierarchical categories for classifying tickets.",
-                }
-            }
-
-            SettingsGroup { heading: "Integrations",
-                SettingsCard {
-                    to: Route::SettingsRmmConnections {},
-                    title: "RMM Connections",
-                    description: "Connect remote monitoring providers and test reachability.",
-                }
-                SettingsCard {
-                    to: Route::SettingsRmmDeviceMappings {},
-                    title: "RMM Device Mappings",
-                    description: "Map monitored RMM devices to assets and companies.",
-                }
-                SettingsCard {
-                    to: Route::SettingsRmmAlertRules {},
-                    title: "RMM Alert Rules",
-                    description: "Turn RMM alerts into tickets automatically.",
+            } else {
+                div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3",
+                    for surface in results {
+                        SettingsCard {
+                            to: surface.route.clone(),
+                            title: surface.title.to_string(),
+                            description: surface.description.to_string(),
+                        }
+                    }
                 }
             }
         }
+    }
+}
+
+/// Breadcrumb trail for a leaf settings page, derived from the taxonomy:
+/// Settings > {Group} > {Leaf}, with every ancestor a clickable `Link`.
+#[component]
+fn SettingsBreadcrumb(current: Route) -> Element {
+    let mut items = vec![BreadcrumbItem {
+        label: "Settings".to_string(),
+        route: Some(Route::SettingsHome {}),
+    }];
+    if let Some(surface) = SETTINGS_SURFACES.iter().find(|s| s.route == current) {
+        if let Some(landing) = surface.group.landing() {
+            items.push(BreadcrumbItem {
+                label: surface.group.title().to_string(),
+                route: Some(landing),
+            });
+        }
+        items.push(BreadcrumbItem {
+            label: surface.title.to_string(),
+            route: None,
+        });
+    }
+    rsx! {
+        Breadcrumbs { items }
+    }
+}
+
+/// Shared body for a group landing page: a breadcrumb (Settings > Group),
+/// a back button, and the group's surfaces as cards (advanced filter
+/// honored from the persisted pref).
+#[component]
+fn SettingsGroupLanding(group: SettingsGroupKey) -> Element {
+    let show_advanced = crate::utils::prefs::get_bool(PREF_SHOW_ADVANCED, false);
+    let title = group.title();
+    let visible: Vec<&SettingsSurface> = surfaces_in_group(group, show_advanced).collect();
+
+    rsx! {
+        AppLayout { title: title.to_string(),
+            PageHeader {
+                title: title.to_string(),
+                subtitle: group.description().to_string(),
+                breadcrumbs: rsx! {
+                    Breadcrumbs {
+                        items: vec![
+                            BreadcrumbItem { label: "Settings".to_string(), route: Some(Route::SettingsHome {}) },
+                            BreadcrumbItem { label: title.to_string(), route: None },
+                        ],
+                    }
+                },
+                actions: rsx! {
+                    Link { to: Route::SettingsHome {},
+                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
+                    }
+                },
+            }
+            if visible.is_empty() {
+                Card {
+                    div { class: "p-6 text-sm text-muted",
+                        "These settings are marked advanced. Turn on \"Show advanced settings\" on the "
+                        Link {
+                            to: Route::SettingsHome {},
+                            class: "font-medium text-accent hover:opacity-90",
+                            "Settings home"
+                        }
+                        " to view them."
+                    }
+                }
+            } else {
+                div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3",
+                    for surface in visible {
+                        SettingsCard {
+                            to: surface.route.clone(),
+                            title: surface.title.to_string(),
+                            description: surface.description.to_string(),
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `/settings/group/service-types` - Service & Asset Types landing.
+#[component]
+pub fn ServiceTypesGroupPage() -> Element {
+    rsx! {
+        SettingsGroupLanding { group: SettingsGroupKey::ServiceTypes }
+    }
+}
+
+/// `/settings/group/billing` - Billing & SLA landing.
+#[component]
+pub fn BillingGroupPage() -> Element {
+    rsx! {
+        SettingsGroupLanding { group: SettingsGroupKey::Billing }
+    }
+}
+
+/// `/settings/group/tickets` - Tickets landing.
+#[component]
+pub fn TicketsGroupPage() -> Element {
+    rsx! {
+        SettingsGroupLanding { group: SettingsGroupKey::Tickets }
+    }
+}
+
+/// `/settings/group/integrations` - Integrations landing.
+#[component]
+pub fn IntegrationsGroupPage() -> Element {
+    rsx! {
+        SettingsGroupLanding { group: SettingsGroupKey::Integrations }
     }
 }
 
@@ -308,10 +652,8 @@ pub fn SchedulingSettingsPage() -> Element {
             PageHeader {
                 title: "Scheduling",
                 subtitle: "Standard due date applied to new work when none is set",
-                actions: rsx! {
-                    Link { to: Route::SettingsHome {},
-                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
-                    }
+                breadcrumbs: rsx! {
+                    SettingsBreadcrumb { current: Route::SettingsScheduling {} }
                 },
             }
             match &*snap {
@@ -485,10 +827,8 @@ pub fn MaxHoursPerDaySettingsPage() -> Element {
             PageHeader {
                 title: "Time Tracking",
                 subtitle: "Maximum hours a user may log against a single day",
-                actions: rsx! {
-                    Link { to: Route::SettingsHome {},
-                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
-                    }
+                breadcrumbs: rsx! {
+                    SettingsBreadcrumb { current: Route::SettingsTimeTracking {} }
                 },
             }
             match &*snap {
@@ -658,10 +998,10 @@ pub fn WorkTypesSettingsPage() -> Element {
             PageHeader {
                 title: "Work Types",
                 subtitle: "Billable work categories used when logging time entries",
+                breadcrumbs: rsx! {
+                    SettingsBreadcrumb { current: Route::SettingsWorkTypes {} }
+                },
                 actions: rsx! {
-                    Link { to: Route::SettingsHome {},
-                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
-                    }
                     Button {
                         variant: ButtonVariant::Primary,
                         onclick: move |_| editing.set(Some(WorkTypeFormState::new())),
@@ -985,10 +1325,10 @@ pub fn TaskStatusesSettingsPage() -> Element {
             PageHeader {
                 title: "Task Statuses",
                 subtitle: "Workflow states a project task can move through",
+                breadcrumbs: rsx! {
+                    SettingsBreadcrumb { current: Route::SettingsTaskStatuses {} }
+                },
                 actions: rsx! {
-                    Link { to: Route::SettingsHome {},
-                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
-                    }
                     Button {
                         variant: ButtonVariant::Primary,
                         onclick: move |_| editing.set(Some(TaskStatusFormState::new())),
@@ -1279,10 +1619,10 @@ pub fn AssetTypesSettingsPage() -> Element {
             PageHeader {
                 title: "Asset Types",
                 subtitle: "Categories for the assets you track per company",
+                breadcrumbs: rsx! {
+                    SettingsBreadcrumb { current: Route::SettingsAssetTypes {} }
+                },
                 actions: rsx! {
-                    Link { to: Route::SettingsHome {},
-                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
-                    }
                     Button {
                         variant: ButtonVariant::Primary,
                         onclick: move |_| editing.set(Some(AssetTypeFormState::new())),
@@ -1562,10 +1902,10 @@ pub fn ProjectTypesSettingsPage() -> Element {
             PageHeader {
                 title: "Project Types",
                 subtitle: "Classify projects (e.g. client vs internal)",
+                breadcrumbs: rsx! {
+                    SettingsBreadcrumb { current: Route::SettingsProjectTypes {} }
+                },
                 actions: rsx! {
-                    Link { to: Route::SettingsHome {},
-                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
-                    }
                     Button {
                         variant: ButtonVariant::Primary,
                         onclick: move |_| editing.set(Some(ProjectTypeFormState::new())),
@@ -1870,10 +2210,10 @@ pub fn PaymentTermsSettingsPage() -> Element {
             PageHeader {
                 title: "Payment Terms",
                 subtitle: "Options for the invoice payment-terms dropdown",
+                breadcrumbs: rsx! {
+                    SettingsBreadcrumb { current: Route::SettingsPaymentTerms {} }
+                },
                 actions: rsx! {
-                    Link { to: Route::SettingsHome {},
-                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
-                    }
                     Button {
                         variant: ButtonVariant::Primary,
                         onclick: move |_| editing.set(Some(PaymentTermFormState::new())),
@@ -2159,10 +2499,10 @@ pub fn TicketStatusesSettingsPage() -> Element {
             PageHeader {
                 title: "Ticket Statuses",
                 subtitle: "Workflow states a ticket can move through",
+                breadcrumbs: rsx! {
+                    SettingsBreadcrumb { current: Route::SettingsTicketStatuses {} }
+                },
                 actions: rsx! {
-                    Link { to: Route::SettingsHome {},
-                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
-                    }
                     Button {
                         variant: ButtonVariant::Primary,
                         onclick: move |_| editing.set(Some(TicketStatusFormState::new())),
@@ -2473,10 +2813,10 @@ pub fn TicketPrioritiesSettingsPage() -> Element {
             PageHeader {
                 title: "Ticket Priorities",
                 subtitle: "Priority levels and their SLA multipliers",
+                breadcrumbs: rsx! {
+                    SettingsBreadcrumb { current: Route::SettingsTicketPriorities {} }
+                },
                 actions: rsx! {
-                    Link { to: Route::SettingsHome {},
-                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
-                    }
                     Button {
                         variant: ButtonVariant::Primary,
                         onclick: move |_| editing.set(Some(TicketPriorityFormState::new())),
@@ -2802,10 +3142,10 @@ pub fn TicketTypesSettingsPage() -> Element {
             PageHeader {
                 title: "Ticket Types",
                 subtitle: "Categories for the kind of work a ticket represents",
+                breadcrumbs: rsx! {
+                    SettingsBreadcrumb { current: Route::SettingsTicketTypes {} }
+                },
                 actions: rsx! {
-                    Link { to: Route::SettingsHome {},
-                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
-                    }
                     Button {
                         variant: ButtonVariant::Primary,
                         onclick: move |_| editing.set(Some(TicketTypeFormState::new())),
@@ -3102,10 +3442,10 @@ pub fn TicketQueuesSettingsPage() -> Element {
             PageHeader {
                 title: "Ticket Queues",
                 subtitle: "Queues tickets are routed into",
+                breadcrumbs: rsx! {
+                    SettingsBreadcrumb { current: Route::SettingsTicketQueues {} }
+                },
                 actions: rsx! {
-                    Link { to: Route::SettingsHome {},
-                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
-                    }
                     Button {
                         variant: ButtonVariant::Primary,
                         onclick: move |_| editing.set(Some(TicketQueueFormState::new())),
@@ -3446,10 +3786,10 @@ pub fn TicketCategoriesSettingsPage() -> Element {
             PageHeader {
                 title: "Ticket Categories",
                 subtitle: "Hierarchical categories for classifying tickets",
+                breadcrumbs: rsx! {
+                    SettingsBreadcrumb { current: Route::SettingsTicketCategories {} }
+                },
                 actions: rsx! {
-                    Link { to: Route::SettingsHome {},
-                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
-                    }
                     Button {
                         variant: ButtonVariant::Primary,
                         onclick: move |_| editing.set(Some(TicketCategoryFormState::new())),
@@ -3839,10 +4179,10 @@ pub fn RmmConnectionsSettingsPage() -> Element {
             PageHeader {
                 title: "RMM Connections",
                 subtitle: "Connect remote monitoring providers and test reachability",
+                breadcrumbs: rsx! {
+                    SettingsBreadcrumb { current: Route::SettingsRmmConnections {} }
+                },
                 actions: rsx! {
-                    Link { to: Route::SettingsHome {},
-                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
-                    }
                     Button {
                         variant: ButtonVariant::Primary,
                         onclick: move |_| editing.set(Some(RmmConnectionFormState::new())),
@@ -4344,10 +4684,10 @@ pub fn RmmDeviceMappingsSettingsPage() -> Element {
             PageHeader {
                 title: "RMM Device Mappings",
                 subtitle: "Map monitored RMM devices to assets and companies",
+                breadcrumbs: rsx! {
+                    SettingsBreadcrumb { current: Route::SettingsRmmDeviceMappings {} }
+                },
                 actions: rsx! {
-                    Link { to: Route::SettingsHome {},
-                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
-                    }
                     Button {
                         variant: ButtonVariant::Primary,
                         disabled: no_connections,
@@ -4728,10 +5068,10 @@ pub fn RmmAlertRulesSettingsPage() -> Element {
             PageHeader {
                 title: "RMM Alert Rules",
                 subtitle: "Turn RMM alerts into tickets automatically",
+                breadcrumbs: rsx! {
+                    SettingsBreadcrumb { current: Route::SettingsRmmAlertRules {} }
+                },
                 actions: rsx! {
-                    Link { to: Route::SettingsHome {},
-                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
-                    }
                     Button {
                         variant: ButtonVariant::Primary,
                         disabled: no_connections,
