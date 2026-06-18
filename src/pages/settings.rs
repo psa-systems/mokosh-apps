@@ -105,7 +105,12 @@ pub fn SettingsHomePage() -> Element {
                 subtitle: "Manage the standard types and configuration that shape how your workspace behaves",
             }
 
-            SettingsGroup { heading: "Personalization",
+            // Constrain the index to roughly 80% of the max-w-7xl content
+            // box (max-w-5xl is 64rem vs 80rem) so it reads as a focused
+            // settings surface rather than spanning full-bleed (MAPPS-257).
+            div { class: "mx-auto w-full max-w-5xl",
+
+            SettingsGroup { heading: "Personalization", color: SectionColor::Rose,
                 SettingsCard {
                     to: Route::SettingsAppearance {},
                     title: "Appearance",
@@ -113,7 +118,7 @@ pub fn SettingsHomePage() -> Element {
                 }
             }
 
-            SettingsGroup { heading: "Service & Asset Types",
+            SettingsGroup { heading: "Service & Asset Types", color: SectionColor::Emerald, prominent: true,
                 SettingsCard {
                     to: Route::SettingsWorkTypes {},
                     title: "Work Types",
@@ -136,7 +141,7 @@ pub fn SettingsHomePage() -> Element {
                 }
             }
 
-            SettingsGroup { heading: "Billing & SLA",
+            SettingsGroup { heading: "Billing & SLA", color: SectionColor::Amber, prominent: true,
                 SettingsCard {
                     to: Route::SettingsSla {},
                     title: "SLA Management",
@@ -174,7 +179,7 @@ pub fn SettingsHomePage() -> Element {
                 }
             }
 
-            SettingsGroup { heading: "Tickets",
+            SettingsGroup { heading: "Tickets", color: SectionColor::Blue,
                 SettingsCard {
                     to: Route::SettingsTicketStatuses {},
                     title: "Ticket Statuses",
@@ -202,7 +207,7 @@ pub fn SettingsHomePage() -> Element {
                 }
             }
 
-            SettingsGroup { heading: "Integrations",
+            SettingsGroup { heading: "Integrations", color: SectionColor::Violet,
                 SettingsCard {
                     to: Route::SettingsRmmConnections {},
                     title: "RMM Connections",
@@ -219,28 +224,106 @@ pub fn SettingsHomePage() -> Element {
                     description: "Turn RMM alerts into tickets automatically.",
                 }
             }
+
+            }
         }
     }
 }
 
+/// Per-section color identity tying each Settings group to its
+/// corresponding left-nav area (MAPPS-257). Tailwind needs literal class
+/// names, so every arm spells the class out in full - the color name is
+/// never interpolated into a class string at runtime. Light- and
+/// dark-mode variants are supplied for each color so both modes keep
+/// adequate contrast.
+#[derive(Clone, Copy, PartialEq)]
+enum SectionColor {
+    /// Service & Asset Types -> Assets / Operations nav area.
+    Emerald,
+    /// Billing & SLA -> Contracts & Billing nav area.
+    Amber,
+    /// Tickets -> Service Desk (the existing active-nav accent hue).
+    Blue,
+    /// Integrations -> Admin nav area.
+    Violet,
+    /// Personalization -> per-user, not a nav domain, so it stands apart
+    /// in its own hue rather than borrowing a section color.
+    Rose,
+}
+
+impl SectionColor {
+    /// Heading tint, with a lighter dark-mode variant for contrast.
+    fn heading_class(self) -> &'static str {
+        match self {
+            SectionColor::Emerald => "text-emerald-600 dark:text-emerald-400",
+            SectionColor::Amber => "text-amber-600 dark:text-amber-400",
+            SectionColor::Blue => "text-blue-600 dark:text-blue-400",
+            SectionColor::Violet => "text-violet-600 dark:text-violet-400",
+            SectionColor::Rose => "text-rose-600 dark:text-rose-400",
+        }
+    }
+
+    /// Colored left-accent border for a card: base + same-family hover,
+    /// each with a lighter dark-mode variant.
+    fn card_border_class(self) -> &'static str {
+        match self {
+            SectionColor::Emerald => "border-l-emerald-500 hover:border-l-emerald-400 dark:border-l-emerald-400 dark:hover:border-l-emerald-300",
+            SectionColor::Amber => "border-l-amber-500 hover:border-l-amber-400 dark:border-l-amber-400 dark:hover:border-l-amber-300",
+            SectionColor::Blue => "border-l-blue-500 hover:border-l-blue-400 dark:border-l-blue-400 dark:hover:border-l-blue-300",
+            SectionColor::Violet => "border-l-violet-500 hover:border-l-violet-400 dark:border-l-violet-400 dark:hover:border-l-violet-300",
+            SectionColor::Rose => "border-l-rose-500 hover:border-l-rose-400 dark:border-l-rose-400 dark:hover:border-l-rose-300",
+        }
+    }
+}
+
+/// Group styling shared down to each `SettingsCard` via context so the
+/// card call sites stay free of repeated color/size props.
+#[derive(Clone, Copy, PartialEq)]
+struct GroupStyle {
+    color: SectionColor,
+    prominent: bool,
+}
+
 #[component]
-fn SettingsGroup(heading: String, children: Element) -> Element {
+fn SettingsGroup(
+    heading: String,
+    color: SectionColor,
+    #[props(default)] prominent: bool,
+    children: Element,
+) -> Element {
+    use_context_provider(|| GroupStyle { color, prominent });
+    let heading_class = color.heading_class();
+    // Prominent groups read as larger: fewer, wider columns so each card
+    // claims more of the row. `items-stretch` + `h-full` on the card keep
+    // every card the same height so none dominates its row.
+    let grid = if prominent {
+        "grid grid-cols-1 gap-4 items-stretch sm:grid-cols-2"
+    } else {
+        "grid grid-cols-1 gap-4 items-stretch sm:grid-cols-2 lg:grid-cols-3"
+    };
     rsx! {
         div { class: "mb-8",
-            h2 { class: "text-sm font-semibold uppercase tracking-wide text-muted mb-3",
+            h2 { class: "text-sm font-semibold uppercase tracking-wide mb-3 {heading_class}",
                 "{heading}"
             }
-            div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3", {children} }
+            div { class: "{grid}", {children} }
         }
     }
 }
 
 #[component]
 fn SettingsCard(to: Route, title: String, description: String) -> Element {
+    // Default keeps the card sensible if ever rendered outside a group.
+    let style = try_use_context::<GroupStyle>().unwrap_or(GroupStyle {
+        color: SectionColor::Blue,
+        prominent: false,
+    });
+    let border = style.color.card_border_class();
+    let padding = if style.prominent { "p-6" } else { "p-4" };
     rsx! {
         Link {
             to,
-            class: "block rounded-lg border border-line bg-surface p-4 hover:border-accent hover:shadow-sm transition-colors",
+            class: "block h-full rounded-lg border border-line border-l-4 bg-surface {padding} {border} hover:shadow-sm transition-colors",
             div { class: "font-medium text-content", "{title}" }
             div { class: "mt-1 text-sm text-muted", "{description}" }
         }
