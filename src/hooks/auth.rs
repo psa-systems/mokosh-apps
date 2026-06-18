@@ -119,6 +119,7 @@ fn initial_auth_context() -> AuthContext {
                 avatar_url: None,
                 profile_completed: true,
                 date_format_string: None,
+                own_company_id: None,
             }),
             is_loading: false,
             error: None,
@@ -197,6 +198,9 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
             // matching note in pages/auth_callback.rs.
             profile_completed: true,
             date_format_string: None,
+            // The id_token has no own-company claim; the post-rehydrate
+            // /me fetch (use_current_user_loader) fills it in within a tick.
+            own_company_id: None,
         }),
         is_loading: false,
         error: None,
@@ -381,6 +385,10 @@ async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
         profile_completed: bool,
         #[serde(default)]
         date_format_string: Option<String>,
+        // PMS-413: the tenant's own-company id, used to attribute a
+        // General / overhead time entry. `None` on a pre-backfill tenant.
+        #[serde(default)]
+        own_company_id: Option<uuid::Uuid>,
     }
     fn default_true_me() -> bool {
         true
@@ -420,6 +428,7 @@ async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
         }
         u.profile_completed = me.profile_completed;
         u.date_format_string = me.date_format_string;
+        u.own_company_id = me.own_company_id;
     }
     // Force the memberships loader to re-fetch by clearing the cached
     // list; the use_memberships_loader effect re-runs when

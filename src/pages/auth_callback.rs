@@ -103,6 +103,9 @@ pub fn AuthCallbackPage() -> Element {
                         // onboarding gate redirects them.
                         profile_completed: true,
                         date_format_string: None,
+                        // The id_token carries no own-company claim; the
+                        // post-login /me fetch fills it within a tick.
+                        own_company_id: None,
                     });
                     a.is_loading = false;
                     a.error = None;

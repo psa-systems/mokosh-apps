@@ -194,6 +194,14 @@ pub struct CurrentUser {
     /// "use the browser locale" (the legacy rendering behaviour).
     #[serde(default)]
     pub date_format_string: Option<String>,
+    /// PMS-413: the tenant's own-company id, surfaced on the `/auth/me`
+    /// (and login) user payload so the SPA can attribute a General /
+    /// overhead time entry (no ticket, no project) without an extra
+    /// round-trip. Tenant-scoped, so the same value for every user in the
+    /// tenant. `None` only on a tenant that predates the backfill; the
+    /// `#[serde(default)]` keeps older server responses deserialising.
+    #[serde(default)]
+    pub own_company_id: Option<Uuid>,
 }
 
 impl CurrentUser {
@@ -260,6 +268,10 @@ impl User {
             // conversion never traps a user in onboarding.
             profile_completed: true,
             date_format_string: self.date_format_string.clone(),
+            // The client-side `User` is a legacy snapshot with no
+            // own-company column; the live value reaches the SPA via the
+            // `/auth/me` payload (see `MeBody` in hooks/auth.rs).
+            own_company_id: None,
         }
     }
 }
@@ -419,6 +431,7 @@ mod tests {
             avatar_url: None,
             profile_completed: true,
             date_format_string: None,
+            own_company_id: None,
         };
         let tenant_id = user.tenant_id;
 
@@ -441,6 +454,7 @@ mod tests {
             avatar_url: None,
             profile_completed: true,
             date_format_string: None,
+            own_company_id: None,
         };
         let tenant_id = user.tenant_id;
         let state = AuthState::authenticated(user, tenant_id);
@@ -463,6 +477,7 @@ mod tests {
             avatar_url: None,
             profile_completed: true,
             date_format_string: None,
+            own_company_id: None,
         };
 
         assert_eq!(user.full_name(), "John Doe");
@@ -481,6 +496,7 @@ mod tests {
             avatar_url: None,
             profile_completed: true,
             date_format_string: None,
+            own_company_id: None,
         };
 
         assert_eq!(user.initials(), "JD");
@@ -502,6 +518,7 @@ mod tests {
             avatar_url: None,
             profile_completed: true,
             date_format_string: None,
+            own_company_id: None,
         };
         let tenant_id = user.tenant_id;
         let auth_state = AuthState::authenticated(user, tenant_id);
@@ -524,6 +541,7 @@ mod tests {
             avatar_url: None,
             profile_completed: true,
             date_format_string: None,
+            own_company_id: None,
         };
         let tenant_id = user.tenant_id;
         let auth_state = AuthState::authenticated(user, tenant_id);

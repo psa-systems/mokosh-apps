@@ -27,6 +27,12 @@ struct RemoteTimeEntry {
     ticket_id: Option<uuid::Uuid>,
     #[serde(default)]
     project_id: Option<uuid::Uuid>,
+    // PMS-394 / MAPPS-243: server classifier for the kind of work
+    // ("ticketed" | "project" | "general"). Drives the "General" label for
+    // a ticketless overhead entry. `None` on older entries the server has
+    // not classified.
+    #[serde(default)]
+    work_category: Option<String>,
     // Work-item names joined server-side (PMS-332) so the list can show the
     // ticket/project and task name instead of a bare "Ticket"/"Project".
     #[serde(default)]
@@ -132,7 +138,8 @@ fn monday_of_week(date: NaiveDate) -> NaiveDate {
 }
 
 /// Human label for a time entry's work item: "Ticket {n}: {title}" or
-/// "{project} · {task}" using the names joined server-side (PMS-332). Falls
+/// "{project} · {task}" using the names joined server-side (PMS-332).
+/// MAPPS-243: a ticketless general/overhead entry shows "General". Falls
 /// back to the bare kind when a name is missing, or "-" when unlinked.
 fn work_item_label(e: &RemoteTimeEntry) -> String {
     if e.ticket_id.is_some() {
@@ -150,6 +157,10 @@ fn work_item_label(e: &RemoteTimeEntry) -> String {
             Some(t) if !t.is_empty() => format!("{p} · {t}"),
             _ => p,
         }
+    } else if e.work_category.as_deref() == Some("general") {
+        // MAPPS-243: a deliberate overhead entry (no ticket, no project),
+        // classified server-side. Distinguishes it from an unlinked "-".
+        "General".to_string()
     } else {
         "-".to_string()
     }
@@ -318,6 +329,13 @@ pub fn TimeEntryListPage() -> Element {
                                                             "{wi_label}"
                                                         }
                                                     }
+                                                } else if e.work_category.as_deref()
+                                                    == Some("general")
+                                                {
+                                                    // MAPPS-243: a ticketless overhead entry. No
+                                                    // detail page to link to, so render the
+                                                    // "General" label as plain content.
+                                                    span { class: "font-medium text-content", "{wi_label}" }
                                                 } else {
                                                     span { class: "text-subtle", "-" }
                                                 }
@@ -526,7 +544,24 @@ pub fn TimeEntryNewPage() -> Element {
     let cap_minutes: i64 = (*cap_resource.read_unchecked()).unwrap_or(DEFAULT_MAX_MINUTES_PER_DAY);
     let existing_today_minutes: Option<i64> = (*today_total_resource.read_unchecked()).flatten();
 
+    // MAPPS-243: the tenant's own-company id (PMS-413), the company_id a
+    // General / overhead entry is attributed to. Sourced from the cached
+    // `/auth/me` user. `None` only on a tenant that predates the backfill;
+    // in that case the General option is offered but disabled (see below)
+    // rather than POSTing a null company_id.
+    let own_company_id: Option<uuid::Uuid> =
+        auth.read().user.as_ref().and_then(|u| u.own_company_id);
+
     let mut work_item_options = vec![SelectOption::new("", "Select a work item")];
+    // MAPPS-243: a deliberate General (no ticket or project) overhead entry,
+    // modeled like the required Work Type field. Offered only when the tenant
+    // has an own-company to attribute it to; otherwise the option is disabled
+    // (see the inline notice under the picker) so we never send a null
+    // company_id.
+    work_item_options.push(SelectOption {
+        disabled: own_company_id.is_none(),
+        ..SelectOption::new("general", "General (no ticket or project)")
+    });
     work_item_options.extend(tickets.iter().map(|t| {
         SelectOption::new(
             format!("ticket:{}", t.id),
@@ -557,6 +592,14 @@ pub fn TimeEntryNewPage() -> Element {
     let tickets_for_submit = tickets.clone();
     let projects_for_submit = projects.clone();
     let err = error.read().clone();
+    // MAPPS-243: explain the disabled "General" option when the tenant has no
+    // own-company on file yet (pre-backfill), so the greyed-out row is not a
+    // dead end. Empty otherwise (no help text).
+    let work_item_help = if own_company_id.is_none() {
+        "General (no ticket or project) needs your company on file, which isn't set yet."
+    } else {
+        ""
+    };
 
     rsx! {
         AppLayout { title: "Log Time",
@@ -613,44 +656,63 @@ pub fn TimeEntryNewPage() -> Element {
                             }
                         }
                         // Resolve the work item into (ticket_id, project_id,
-                        // task_id, company_id). A ticket carries its company;
-                        // a project carries its own (required, which is why the
-                        // picker only lists projects that have one).
-                        let (ticket_id, project_id, task_id, company_id) = if let Some(tid) =
-                            wi.strip_prefix("ticket:")
-                        {
-                            match tickets_for_submit.iter().find(|t| t.id.to_string() == tid) {
-                                Some(t) => (Some(tid.to_string()), None, None, t.company_id),
-                                None => {
-                                    error.set("Could not resolve the ticket.".to_string());
-                                    return;
-                                }
-                            }
-                        } else if let Some(pid) = wi.strip_prefix("project:") {
-                            match projects_for_submit.iter().find(|p| p.id.to_string() == pid) {
-                                Some(p) => match p.company_id {
-                                    Some(cid) => {
-                                        let tk = task.read().clone();
-                                        let tk = if tk.is_empty() { None } else { Some(tk) };
-                                        (None, Some(pid.to_string()), tk, cid)
-                                    }
+                        // task_id, company_id, work_category). A ticket carries
+                        // its company; a project carries its own (required,
+                        // which is why the picker only lists projects that have
+                        // one). MAPPS-243: a "general" selection carries no work
+                        // item and attributes to the tenant's own company; the
+                        // server classifies it via work_category (PMS-394).
+                        let (ticket_id, project_id, task_id, company_id, work_category) =
+                            if wi == "general" {
+                                // MAPPS-243: a deliberate overhead entry. The
+                                // option is UI-disabled when own_company_id is
+                                // None, but re-check here so we never POST a
+                                // null company_id (no invented fallback).
+                                match own_company_id {
+                                    Some(cid) => (None, None, None, cid, "general"),
                                     None => {
                                         error.set(
-                                            "That project has no company; pick a ticket or a project with a company."
+                                            "General time needs your company on file, which isn't set yet. Pick a ticket or project, or contact an admin."
                                                 .to_string(),
                                         );
                                         return;
                                     }
-                                },
-                                None => {
-                                    error.set("Could not resolve the project.".to_string());
-                                    return;
                                 }
-                            }
-                        } else {
-                            error.set("Please pick a work item.".to_string());
-                            return;
-                        };
+                            } else if let Some(tid) = wi.strip_prefix("ticket:") {
+                                match tickets_for_submit.iter().find(|t| t.id.to_string() == tid) {
+                                    Some(t) => {
+                                        (Some(tid.to_string()), None, None, t.company_id, "ticketed")
+                                    }
+                                    None => {
+                                        error.set("Could not resolve the ticket.".to_string());
+                                        return;
+                                    }
+                                }
+                            } else if let Some(pid) = wi.strip_prefix("project:") {
+                                match projects_for_submit.iter().find(|p| p.id.to_string() == pid) {
+                                    Some(p) => match p.company_id {
+                                        Some(cid) => {
+                                            let tk = task.read().clone();
+                                            let tk = if tk.is_empty() { None } else { Some(tk) };
+                                            (None, Some(pid.to_string()), tk, cid, "project")
+                                        }
+                                        None => {
+                                            error.set(
+                                                "That project has no company; pick a ticket or a project with a company."
+                                                    .to_string(),
+                                            );
+                                            return;
+                                        }
+                                    },
+                                    None => {
+                                        error.set("Could not resolve the project.".to_string());
+                                        return;
+                                    }
+                                }
+                            } else {
+                                error.set("Please pick a work item.".to_string());
+                                return;
+                            };
                         let user_id = match auth.read().user.as_ref().map(|u| u.id) {
                             Some(id) => id,
                             None => {
@@ -670,6 +732,13 @@ pub fn TimeEntryNewPage() -> Element {
                                     "duration_minutes": duration_minutes,
                                     "work_type_id": wtid,
                                     "company_id": company_id,
+                                    // MAPPS-243 / PMS-394: classify the entry so
+                                    // reports split overhead ("general") from
+                                    // client-attributable work. "ticketed" with
+                                    // a ticket and "project" with a project both
+                                    // pass the server's derive_work_category
+                                    // consistency check.
+                                    "work_category": work_category,
                                     "notes": desc,
                                     "is_billable": billable,
                                 });
@@ -721,6 +790,7 @@ pub fn TimeEntryNewPage() -> Element {
                             value: work_item.read().clone(),
                             placeholder: "Select work item",
                             required: true,
+                            help: work_item_help.to_string(),
                             onchange: move |e: FormEvent| {
                                 work_item.set(e.value());
                                 // Reset the task when the work item changes so a
@@ -2046,5 +2116,73 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
                 }
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A bare entry with everything unset; each test overrides only the
+    /// fields it exercises so `work_item_label`'s branch under test is clear.
+    fn entry() -> RemoteTimeEntry {
+        RemoteTimeEntry {
+            id: uuid::Uuid::nil(),
+            date: NaiveDate::from_ymd_opt(2026, 6, 18).unwrap(),
+            duration_minutes: 60,
+            work_type_id: None,
+            ticket_id: None,
+            project_id: None,
+            work_category: None,
+            ticket_number: None,
+            ticket_title: None,
+            project_name: None,
+            task_title: None,
+            notes: None,
+            is_billable: false,
+            billing_status: String::new(),
+        }
+    }
+
+    // MAPPS-243: a ticketless entry the server classified as "general" reads
+    // as "General", not the bare "-" used for a truly unlinked entry.
+    #[test]
+    fn work_item_label_general_entry_reads_general() {
+        let e = RemoteTimeEntry {
+            work_category: Some("general".to_string()),
+            ..entry()
+        };
+        assert_eq!(work_item_label(&e), "General");
+    }
+
+    // An entry with no work item and no category stays "-" (no regression):
+    // "General" is reserved for the explicit server classification.
+    #[test]
+    fn work_item_label_unlinked_entry_reads_dash() {
+        assert_eq!(work_item_label(&entry()), "-");
+    }
+
+    // Ticket and project labels are unchanged by the general branch.
+    #[test]
+    fn work_item_label_ticket_and_project_unchanged() {
+        let ticketed = RemoteTimeEntry {
+            ticket_id: Some(uuid::Uuid::nil()),
+            ticket_number: Some("123".to_string()),
+            ticket_title: Some("Fix login".to_string()),
+            // A real ticketed entry also carries the category; the label must
+            // still prefer the ticket, not fall through to "General".
+            work_category: Some("ticketed".to_string()),
+            ..entry()
+        };
+        assert_eq!(work_item_label(&ticketed), "Ticket 123: Fix login");
+
+        let project = RemoteTimeEntry {
+            project_id: Some(uuid::Uuid::nil()),
+            project_name: Some("Migration".to_string()),
+            task_title: Some("Cutover".to_string()),
+            work_category: Some("project".to_string()),
+            ..entry()
+        };
+        assert_eq!(work_item_label(&project), "Migration · Cutover");
     }
 }
