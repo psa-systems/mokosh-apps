@@ -3,8 +3,9 @@
 use dioxus::prelude::*;
 use mokosh_apps::hooks::{
     use_apply_theme, use_auth_provider, use_bfcache_invalidator, use_current_user_loader,
-    use_memberships_loader, use_sidebar_provider, use_sidebar_scroll_provider, use_theme_sync,
-    use_token_refresh, use_update_check, use_version_cache_provider,
+    use_memberships_loader, use_sidebar_collapsed_provider, use_sidebar_provider,
+    use_sidebar_scroll_provider, use_theme_sync, use_token_refresh, use_update_check,
+    use_version_cache_provider,
 };
 use mokosh_apps::Route;
 
@@ -29,6 +30,10 @@ fn App() -> Element {
     // it the re-mounted sidebar starts at scrollTop 0 and visibly jumps to
     // the top on every nav click.
     use_sidebar_scroll_provider();
+    // MAPPS-250: hold the desktop rail's collapsed/expanded choice at the App
+    // root, alongside the scroll offset above, so it survives the AppLayout
+    // re-mount on each navigation instead of resetting to expanded every click.
+    use_sidebar_collapsed_provider();
     // MAPPS-203: cache the result of GET /api/v1/version at App root so
     // the admin UpdateBanner does not re-run its async fetch (and the
     // 200ms reserve-then-collapse animation that goes with the

@@ -16,9 +16,9 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, PageHeader,
-    PlusIcon, Select, SelectOption, SettingFormModal, Table, TableBody, TableCell, TableEmpty,
-    TableHead, TableHeader, TableLoading, TableRow,
+    contract_status_badge, AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable,
+    IconSize, PageHeader, PlusIcon, Select, SelectOption, SettingFormModal, Table, TableBody,
+    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::modules::contracts::{
     ContractHourBalanceResponse, ContractItemResponse, ContractResponse, CreateContractRequest,
@@ -66,19 +66,6 @@ fn contract_type_variant(raw: &str) -> BadgeVariant {
     }
 }
 
-/// Status tags (`draft`, `active`, `expired`, `cancelled`, ...) to a
-/// title-case label.
-fn humanize_contract_status(raw: &str) -> String {
-    match raw {
-        "draft" => "Draft".to_string(),
-        "active" => "Active".to_string(),
-        "expired" => "Expired".to_string(),
-        "cancelled" | "canceled" => "Cancelled".to_string(),
-        "pending" => "Pending".to_string(),
-        other => other.to_string(),
-    }
-}
-
 /// Title-case a billing-cycle enum for display (PMS-365). Mirrors the
 /// `cycle_options` labels in the contract form so the detail panel does not
 /// leak the raw lowercase value (e.g. `monthly`).
@@ -92,17 +79,6 @@ fn humanize_billing_cycle(raw: &str) -> String {
         "bi_weekly" => "Bi-weekly".to_string(),
         "" => "-".to_string(),
         other => other.to_string(),
-    }
-}
-
-fn status_variant(raw: &str) -> BadgeVariant {
-    match raw {
-        "active" => BadgeVariant::Green,
-        "expired" => BadgeVariant::Red,
-        "cancelled" | "canceled" => BadgeVariant::Gray,
-        "pending" => BadgeVariant::Yellow,
-        "draft" => BadgeVariant::Blue,
-        _ => BadgeVariant::Gray,
     }
 }
 
@@ -383,7 +359,10 @@ fn ContractRow(props: ContractRowProps) -> Element {
             TableCell { "{props.start}" }
             TableCell { "{props.expires}" }
             TableCell {
-                Badge { variant: status_variant(&props.status), "{humanize_contract_status(&props.status)}" }
+                {
+                    let (status_variant, status_label) = contract_status_badge(&props.status);
+                    rsx! { Badge { variant: status_variant, "{status_label}" } }
+                }
             }
         }
     }
@@ -1495,7 +1474,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                 },
                 Some(Some(contract)) => {
                     let type_label = humanize_contract_type(&contract.contract_type);
-                    let status_label = humanize_contract_status(&contract.status);
+                    let (status_variant, status_label) = contract_status_badge(&contract.status);
                     // PMS-365: title-case the enum instead of leaking raw `monthly`.
                     let billing_cycle = humanize_billing_cycle(&contract.billing_cycle);
                     let billing_amount = format_money_opt(contract.billing_amount);
@@ -1556,7 +1535,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                                     dl { class: "space-y-4",
                                         div { class: "flex justify-between",
                                             dt { class: "text-sm text-muted", "Status" }
-                                            dd { Badge { variant: status_variant(&contract.status), "{status_label}" } }
+                                            dd { Badge { variant: status_variant, "{status_label}" } }
                                         }
                                         div { class: "flex justify-between",
                                             dt { class: "text-sm text-muted", "Value" }

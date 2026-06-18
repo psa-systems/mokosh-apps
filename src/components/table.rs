@@ -459,13 +459,14 @@ pub fn DataTable(props: DataTableProps) -> Element {
 }
 
 /// Badge/tag component for status display
-#[derive(Clone, Copy, PartialEq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum BadgeVariant {
     #[default]
     Gray,
     Blue,
     Green,
     Yellow,
+    Orange,
     Red,
     Purple,
 }
@@ -481,27 +482,14 @@ impl BadgeVariant {
             BadgeVariant::Yellow => {
                 "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300"
             }
+            BadgeVariant::Orange => {
+                "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300"
+            }
             BadgeVariant::Red => "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300",
             BadgeVariant::Purple => {
                 "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300"
             }
         }
-    }
-}
-
-/// Badge color for a ticket status. Accepts either the raw server status
-/// name (`open`, `in_progress`) or its humanized label (`Open`, `In
-/// Progress`) by normalizing case and spaces. This is the single source
-/// for the dashboard, ticket-list, and portal ticket tables, which each
-/// previously kept a divergent copy (some omitted the `closed` arm).
-pub fn ticket_status_badge(status: &str) -> BadgeVariant {
-    match status.to_lowercase().replace(' ', "_").as_str() {
-        "open" => BadgeVariant::Blue,
-        "in_progress" => BadgeVariant::Yellow,
-        "pending" => BadgeVariant::Gray,
-        "resolved" => BadgeVariant::Green,
-        "closed" => BadgeVariant::Gray,
-        _ => BadgeVariant::Gray,
     }
 }
 

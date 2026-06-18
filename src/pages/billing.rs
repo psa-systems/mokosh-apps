@@ -21,9 +21,10 @@ use serde::Deserialize;
 use std::str::FromStr;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, DataTable, IconSize,
-    InformationIcon, Modal, ModalSize, PageHeader, PlusIcon, Select, SelectOption, Table,
-    TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+    invoice_status_badge, AppLayout, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card,
+    DataTable, IconSize, InformationIcon, Modal, ModalSize, PageHeader, PlusIcon, Select,
+    SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
+    TableRow,
 };
 use crate::utils::Paginated;
 use crate::Route;
@@ -35,32 +36,6 @@ const PER_PAGE: usize = 25;
 // `format_money_str` parses the server's decimal string and renders it with
 // grouped thousands + two decimals, matching projects and contracts.
 use crate::utils::money::format_money_str;
-
-/// Map the server's snake_case `InvoiceStatus` tag to a title-case label.
-/// Unknown values fall through unchanged so future statuses don't vanish.
-fn humanize_invoice_status(raw: &str) -> String {
-    match raw {
-        "draft" => "Draft".to_string(),
-        "pending" => "Pending".to_string(),
-        "sent" => "Sent".to_string(),
-        "paid" => "Paid".to_string(),
-        "partially_paid" => "Partially Paid".to_string(),
-        "void" => "Void".to_string(),
-        "written_off" => "Written Off".to_string(),
-        other => other.to_string(),
-    }
-}
-
-/// Badge colour for an invoice status tag.
-fn invoice_status_variant(raw: &str) -> BadgeVariant {
-    match raw {
-        "paid" => BadgeVariant::Green,
-        "sent" | "pending" => BadgeVariant::Blue,
-        "partially_paid" => BadgeVariant::Yellow,
-        "void" | "written_off" => BadgeVariant::Red,
-        _ => BadgeVariant::Gray,
-    }
-}
 
 /// Map the server's snake_case `PaymentMethod` tag to a readable label.
 fn humanize_payment_method(raw: &str) -> String {
@@ -469,8 +444,7 @@ struct InvoiceRowProps {
 
 #[component]
 fn InvoiceRow(props: InvoiceRowProps) -> Element {
-    let status_label = humanize_invoice_status(&props.status);
-    let status_variant = invoice_status_variant(&props.status);
+    let (status_variant, status_label) = invoice_status_badge(&props.status);
     let navigator = use_navigator();
     let id = props.id.clone();
 
@@ -768,8 +742,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                     }
                 },
                 Some(Some(inv)) => {
-                    let status_label = humanize_invoice_status(&inv.status);
-                    let status_variant = invoice_status_variant(&inv.status);
+                    let (status_variant, status_label) = invoice_status_badge(&inv.status);
                     let lines = inv.lines.clone().unwrap_or_default();
                     let currency = inv.currency.clone().unwrap_or_default();
                     let notes = inv.notes.clone();

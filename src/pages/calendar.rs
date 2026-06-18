@@ -24,10 +24,12 @@
 //! plus an inline error, never seeded fixtures.
 
 use chrono::{
-    DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone,
-    Timelike, Utc, Weekday,
+    DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone, Timelike, Utc,
+    Weekday,
 };
 use dioxus::prelude::*;
+
+use crate::utils::datetime::{user_timezone, user_today};
 
 use crate::components::{
     AppLayout, Button, ButtonVariant, Card, ChevronRightIcon, IconSize, Input, Modal, ModalSize,
@@ -176,7 +178,7 @@ fn local_date_start_utc(d: NaiveDate) -> DateTime<Utc> {
         // 00:00 is always valid; this branch is unreachable in practice.
         d.and_time(chrono::NaiveTime::MIN)
     });
-    match Local.from_local_datetime(&naive) {
+    match user_timezone().from_local_datetime(&naive) {
         chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc),
         chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc),
         // DST gap: fall back to treating the naive value as UTC.
@@ -196,7 +198,7 @@ fn parse_local_datetime_to_utc(s: &str) -> Option<DateTime<Utc>> {
     let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
         .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M"))
         .ok()?;
-    match Local.from_local_datetime(&naive) {
+    match user_timezone().from_local_datetime(&naive) {
         chrono::LocalResult::Single(dt) => Some(dt.with_timezone(&Utc)),
         chrono::LocalResult::Ambiguous(dt, _) => Some(dt.with_timezone(&Utc)),
         chrono::LocalResult::None => Some(Utc.from_utc_datetime(&naive)),
@@ -206,9 +208,59 @@ fn parse_local_datetime_to_utc(s: &str) -> Option<DateTime<Utc>> {
 /// Format a UTC instant as the `YYYY-MM-DDTHH:MM` string a
 /// `datetime-local` input expects, in the browser's local zone.
 fn utc_to_datetime_local_value(dt: DateTime<Utc>) -> String {
-    dt.with_timezone(&Local)
+    dt.with_timezone(&user_timezone())
         .format("%Y-%m-%dT%H:%M")
         .to_string()
+}
+
+/// Format a UTC instant as the `YYYY-MM-DD` string a `date` input expects,
+/// in the browser's local zone. Used by the all-day / multi-day editor.
+fn utc_to_date_value(dt: DateTime<Utc>) -> String {
+    dt.with_timezone(&user_timezone())
+        .format("%Y-%m-%d")
+        .to_string()
+}
+
+/// Parse a `<input type="date">` value (`YYYY-MM-DD`) into a `NaiveDate`.
+/// Returns `None` on a malformed / empty value so the form can surface a
+/// validation error.
+fn parse_date_value(s: &str) -> Option<NaiveDate> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
+}
+
+/// Sentinel value the duration `Select` uses for the "Custom" path, where
+/// the user picks an explicit End instead of a preset increment.
+const DURATION_CUSTOM: &str = "custom";
+
+/// Preset duration increments offered by the appointment form, plus a
+/// "Custom" entry that switches to an explicit End-time picker. The integer
+/// values are minutes; `DURATION_CUSTOM` is the sentinel for the custom
+/// path (MAPPS-252).
+fn duration_options() -> Vec<SelectOption> {
+    vec![
+        SelectOption::new("15", "15 min"),
+        SelectOption::new("30", "30 min"),
+        SelectOption::new("45", "45 min"),
+        SelectOption::new("60", "1 hour"),
+        SelectOption::new("90", "1 hour 30 min"),
+        SelectOption::new("120", "2 hours"),
+        SelectOption::new(DURATION_CUSTOM, "Custom"),
+    ]
+}
+
+/// Add `minutes` to a `datetime-local` Start string and re-render the result
+/// as a `datetime-local` value in the browser's local zone. Parses via the
+/// same local path as Start, so the derived End display stays consistent with
+/// what the user typed. Returns `None` when Start is malformed/empty (MAPPS-252).
+fn add_minutes_to_local(start_value: &str, minutes: i64) -> Option<String> {
+    let start = parse_local_datetime_to_utc(start_value)?;
+    Some(utc_to_datetime_local_value(
+        start + Duration::minutes(minutes),
+    ))
 }
 
 /// Client `maxlength` caps for the appointment text fields (MAPPS-219). The
@@ -379,20 +431,22 @@ fn is_valid_until(value: &str) -> bool {
     }
 }
 
-/// Local clock label like `9:00 AM` for an appointment start/end.
+/// Profile-tz clock label like `9:00 AM` for an appointment start/end.
 fn time_label(dt: DateTime<Utc>) -> String {
-    dt.with_timezone(&Local).format("%-I:%M %p").to_string()
+    dt.with_timezone(&user_timezone())
+        .format("%-I:%M %p")
+        .to_string()
 }
 
-/// Local date an appointment falls on (used to bucket into day cells).
+/// Profile-tz date an appointment falls on (used to bucket into day cells).
 fn local_date(dt: DateTime<Utc>) -> NaiveDate {
-    dt.with_timezone(&Local).date_naive()
+    dt.with_timezone(&user_timezone()).date_naive()
 }
 
-/// Local hour-of-day as a float (e.g. 14.5 for 2:30 PM) for positioning
+/// Profile-tz hour-of-day as a float (e.g. 14.5 for 2:30 PM) for positioning
 /// blocks in the week/day time grids.
 fn local_hour_f(dt: DateTime<Utc>) -> f64 {
-    let local = dt.with_timezone(&Local);
+    let local = dt.with_timezone(&user_timezone());
     local.hour() as f64 + local.minute() as f64 / 60.0
 }
 
@@ -484,7 +538,7 @@ fn use_users_resource() -> Resource<Vec<RemoteUser>> {
 /// Calendar page: month / week / day views over real appointments.
 #[component]
 pub fn CalendarPage() -> Element {
-    let today_real = Local::now().naive_local().date();
+    let today_real = user_today();
     let mut active_date = use_signal(|| today_real);
     let mut view = use_signal(|| CalendarView::Month);
 
@@ -1164,7 +1218,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
     let default_start = props
         .default_date
         .and_hms_opt(9, 0, 0)
-        .map(|n| match Local.from_local_datetime(&n) {
+        .map(|n| match user_timezone().from_local_datetime(&n) {
             chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc),
             chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc),
             chrono::LocalResult::None => Utc.from_utc_datetime(&n),
@@ -1217,8 +1271,40 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
     let mut appointment_type = use_signal(|| init_type);
     let mut status = use_signal(|| init_status);
     let mut location = use_signal(|| init_location);
+    // Start + duration editing model (MAPPS-252). End is derived from
+    // Start + `duration_minutes`, never stored independently, so editing
+    // Start shifts End by the same delta with the duration intact. The
+    // "Custom" path falls back to an explicit End signal and back-computes
+    // the duration on save.
+    let init_all_day = existing.as_ref().map(|a| a.all_day).unwrap_or(false);
+    let init_duration_minutes = (init_end - init_start).num_minutes().max(0);
+    // A new appointment defaults to the 9-10am block => 60 minutes; an
+    // existing one seeds from its persisted span.
+    let seed_duration = if is_edit { init_duration_minutes } else { 60 };
+    // Pick the matching preset when the seed duration is one of the offered
+    // increments, otherwise drop into the Custom path with an explicit End.
+    const PRESETS: [i64; 6] = [15, 30, 45, 60, 90, 120];
+    let seed_is_preset = PRESETS.contains(&seed_duration);
     let mut start_value = use_signal(|| utc_to_datetime_local_value(init_start));
     let mut end_value = use_signal(|| utc_to_datetime_local_value(init_end));
+    let mut duration_minutes = use_signal(|| seed_duration);
+    // Which entry the duration `Select` shows: a preset string or the
+    // `DURATION_CUSTOM` sentinel.
+    let mut duration_choice = use_signal(|| {
+        if seed_is_preset {
+            seed_duration.to_string()
+        } else {
+            DURATION_CUSTOM.to_string()
+        }
+    });
+    let mut all_day = use_signal(|| init_all_day);
+    let mut start_date_value = use_signal(|| utc_to_date_value(init_start));
+    // All-day End date is inclusive in the UI: the persisted End is local
+    // 00:00 of the day AFTER this date, so a single-day span reads as one day.
+    let mut end_date_value = use_signal(|| {
+        let inclusive_end = (init_end - Duration::days(1)).max(init_start);
+        utc_to_date_value(inclusive_end)
+    });
     let mut assignee = use_signal(|| init_assignee);
     let mut recurrence = use_signal(|| init_recurrence);
     let mut recurrence_error = use_signal(String::new);
@@ -1253,14 +1339,48 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
             error.set("Please pick a technician to assign.".to_string());
             return;
         };
-        let Some(start_time) = parse_local_datetime_to_utc(&start_value.read()) else {
-            error.set("Please enter a valid start time.".to_string());
-            return;
+        let is_all_day = all_day();
+        // Resolve the start/end instants from whichever editor is active:
+        // an all-day date span, or the timed start + duration model.
+        let (start_time, end_time) = if is_all_day {
+            let Some(start_date) = parse_date_value(&start_date_value.read()) else {
+                error.set("Please enter a valid start date.".to_string());
+                return;
+            };
+            let Some(end_date) = parse_date_value(&end_date_value.read()) else {
+                error.set("Please enter a valid end date.".to_string());
+                return;
+            };
+            if end_date < start_date {
+                error.set("End date must be on or after the start date.".to_string());
+                return;
+            }
+            // Span whole local days: Start at local 00:00 of the start date,
+            // End at local 00:00 of the day after the (inclusive) end date,
+            // so a single-day all-day event is a 24h span the grids render.
+            let start = local_date_start_utc(start_date);
+            let end = local_date_start_utc(end_date + Duration::days(1));
+            (start, end)
+        } else {
+            let Some(start) = parse_local_datetime_to_utc(&start_value.read()) else {
+                error.set("Please enter a valid start time.".to_string());
+                return;
+            };
+            // End follows Start + the chosen duration. The custom path stores
+            // an explicit End in `end_value`; presets store minutes directly.
+            let end = if duration_choice.read().as_str() == DURATION_CUSTOM {
+                let Some(custom_end) = parse_local_datetime_to_utc(&end_value.read()) else {
+                    error.set("Please enter a valid end time.".to_string());
+                    return;
+                };
+                custom_end
+            } else {
+                start + Duration::minutes(duration_minutes())
+            };
+            (start, end)
         };
-        let Some(end_time) = parse_local_datetime_to_utc(&end_value.read()) else {
-            error.set("Please enter a valid end time.".to_string());
-            return;
-        };
+        // Defensive guard: a non-positive custom duration would invert the
+        // span. Presets and the all-day path can never trip this.
         if end_time < start_time {
             error.set("End time must be on or after the start time.".to_string());
             return;
@@ -1303,7 +1423,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                             assigned_to_id,
                             start_time,
                             end_time,
-                            all_day: false,
+                            all_day: is_all_day,
                             timezone: "UTC".to_string(),
                             location: loc,
                             recurrence_rule: rrule,
@@ -1323,7 +1443,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                             assigned_to_id: Some(assigned_to_id),
                             start_time: Some(start_time),
                             end_time: Some(end_time),
-                            all_day: Some(false),
+                            all_day: Some(is_all_day),
                             timezone: None,
                             status: Some(status_val),
                             location: loc,
@@ -1456,23 +1576,118 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                     value: title.read().clone(),
                     oninput: move |e: FormEvent| title.set(e.value()),
                 }
+                crate::components::Checkbox {
+                    name: "appt_all_day",
+                    label: "All day",
+                    checked: all_day(),
+                    help: "Switch to a multi-day date span. Off keeps a single date with start and end times.",
+                    onchange: move |e: FormEvent| all_day.set(e.checked()),
+                }
+                if all_day() {
+                    // Multi-day all-day span: Start date + (inclusive) End date.
+                    div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
+                        Input {
+                            name: "appt_start_date",
+                            label: "Start date",
+                            r#type: "date".to_string(),
+                            required: true,
+                            value: start_date_value.read().clone(),
+                            oninput: move |e: FormEvent| start_date_value.set(e.value()),
+                        }
+                        Input {
+                            name: "appt_end_date",
+                            label: "End date",
+                            r#type: "date".to_string(),
+                            required: true,
+                            help: "Inclusive. The event spans whole days through this date.".to_string(),
+                            value: end_date_value.read().clone(),
+                            oninput: move |e: FormEvent| end_date_value.set(e.value()),
+                        }
+                    }
+                } else {
+                    // Timed single-date: Start + duration; End is derived
+                    // (preset) or explicit (Custom).
+                    div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
+                        Input {
+                            name: "appt_start",
+                            label: "Start",
+                            r#type: "datetime-local".to_string(),
+                            required: true,
+                            value: start_value.read().clone(),
+                            oninput: move |e: FormEvent| {
+                                let next = e.value();
+                                // Keep the Custom End anchored to the new Start
+                                // by shifting it by the same delta, preserving
+                                // the custom duration.
+                                if duration_choice.read().as_str() == DURATION_CUSTOM {
+                                    if let Some(shifted) =
+                                        add_minutes_to_local(&next, duration_minutes())
+                                    {
+                                        end_value.set(shifted);
+                                    }
+                                }
+                                start_value.set(next);
+                            },
+                        }
+                        Select {
+                            name: "appt_duration",
+                            label: "Duration",
+                            options: duration_options(),
+                            help: "End time follows the start time; change the duration to resize."
+                                .to_string(),
+                            value: duration_choice.read().clone(),
+                            onchange: move |e: FormEvent| {
+                                let choice = e.value();
+                                if choice.as_str() == DURATION_CUSTOM {
+                                    // Seed the explicit End from the current
+                                    // Start + last known duration.
+                                    if let Some(end) =
+                                        add_minutes_to_local(&start_value.read(), duration_minutes())
+                                    {
+                                        end_value.set(end);
+                                    }
+                                } else if let Ok(mins) = choice.parse::<i64>() {
+                                    duration_minutes.set(mins);
+                                }
+                                duration_choice.set(choice);
+                            },
+                        }
+                        if duration_choice.read().as_str() == DURATION_CUSTOM {
+                            Input {
+                                name: "appt_end",
+                                label: "End",
+                                r#type: "datetime-local".to_string(),
+                                required: true,
+                                value: end_value.read().clone(),
+                                oninput: move |e: FormEvent| {
+                                    let next = e.value();
+                                    // Back-compute the duration so a later Start
+                                    // edit preserves this custom span.
+                                    if let (Some(start), Some(end)) = (
+                                        parse_local_datetime_to_utc(&start_value.read()),
+                                        parse_local_datetime_to_utc(&next),
+                                    ) {
+                                        duration_minutes.set((end - start).num_minutes());
+                                    }
+                                    end_value.set(next);
+                                },
+                            }
+                        } else {
+                            // Read-only derived End display in the local zone.
+                            div { class: "space-y-1",
+                                label { class: "block text-sm font-medium text-content", "End" }
+                                div {
+                                    class: "block w-full rounded-md border-line bg-surface text-muted sm:text-sm px-3 py-2",
+                                    {
+                                        add_minutes_to_local(&start_value.read(), duration_minutes())
+                                            .unwrap_or_else(|| "-".to_string())
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
-                    Input {
-                        name: "appt_start",
-                        label: "Start",
-                        r#type: "datetime-local".to_string(),
-                        required: true,
-                        value: start_value.read().clone(),
-                        oninput: move |e: FormEvent| start_value.set(e.value()),
-                    }
-                    Input {
-                        name: "appt_end",
-                        label: "End",
-                        r#type: "datetime-local".to_string(),
-                        required: true,
-                        value: end_value.read().clone(),
-                        oninput: move |e: FormEvent| end_value.set(e.value()),
-                    }
                     Select {
                         name: "appt_type",
                         label: "Type",
@@ -1567,7 +1782,7 @@ fn optional(value: &str) -> Option<String> {
 /// on-call context surfaced alongside.
 #[component]
 pub fn DispatchBoardPage() -> Element {
-    let today_real = Local::now().naive_local().date();
+    let today_real = user_today();
     let mut active_day = use_signal(|| today_real);
     let mut form_state = use_signal(|| None::<Option<AppointmentResponse>>);
 
@@ -2007,5 +2222,57 @@ mod rrule_tests {
     #[test]
     fn rejects_count_and_until_together() {
         assert!(validate_rrule("FREQ=DAILY;COUNT=5;UNTIL=20271231").is_err());
+    }
+}
+
+#[cfg(test)]
+mod duration_tests {
+    use super::{add_minutes_to_local, parse_local_datetime_to_utc};
+
+    // Outside a Dioxus runtime `user_timezone()` falls back to UTC, so the
+    // local parse/format round-trips through UTC deterministically here.
+
+    #[test]
+    fn adds_preset_duration_to_start() {
+        // Start + 60 minutes => End one hour later.
+        assert_eq!(
+            add_minutes_to_local("2026-06-18T09:00", 60).as_deref(),
+            Some("2026-06-18T10:00")
+        );
+        // 90 minutes crosses the hour boundary.
+        assert_eq!(
+            add_minutes_to_local("2026-06-18T09:00", 90).as_deref(),
+            Some("2026-06-18T10:30")
+        );
+        // Crossing midnight rolls the date forward.
+        assert_eq!(
+            add_minutes_to_local("2026-06-18T23:30", 60).as_deref(),
+            Some("2026-06-19T00:30")
+        );
+    }
+
+    #[test]
+    fn shifting_start_preserves_duration() {
+        // The derived End is always Start + duration, so moving Start by 30
+        // minutes shifts End by the same delta with the duration intact.
+        let early = add_minutes_to_local("2026-06-18T09:00", 60).unwrap();
+        let late = add_minutes_to_local("2026-06-18T09:30", 60).unwrap();
+        let early_end = parse_local_datetime_to_utc(&early).unwrap();
+        let late_end = parse_local_datetime_to_utc(&late).unwrap();
+        assert_eq!((late_end - early_end).num_minutes(), 30);
+    }
+
+    #[test]
+    fn back_computes_custom_duration() {
+        // The custom End path back-computes minutes from (end - start).
+        let start = parse_local_datetime_to_utc("2026-06-18T09:00").unwrap();
+        let end = parse_local_datetime_to_utc("2026-06-18T11:15").unwrap();
+        assert_eq!((end - start).num_minutes(), 135);
+    }
+
+    #[test]
+    fn rejects_malformed_start() {
+        assert_eq!(add_minutes_to_local("", 60), None);
+        assert_eq!(add_minutes_to_local("not-a-date", 60), None);
     }
 }

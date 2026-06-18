@@ -3,9 +3,9 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    ticket_status_badge, Badge, BadgeVariant, BookIcon, Button, ButtonVariant, Card, CurrencyIcon,
-    IconSize, PlusIcon, PortalLayout, SearchInput, Table, TableBody, TableCell, TableHead,
-    TableHeader, TableRow,
+    invoice_status_badge, ticket_status_badge, Badge, BadgeVariant, BookIcon, Button,
+    ButtonVariant, Card, CurrencyIcon, IconSize, PlusIcon, PortalLayout, SearchInput, Table,
+    TableBody, TableCell, TableHead, TableHeader, TableRow,
 };
 use crate::Route;
 
@@ -599,16 +599,12 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                     }
                 },
                 Some(Some(inv)) => {
-                    let status_label = if inv.status.is_empty() {
-                        "Pending".to_string()
+                    let status_raw = if inv.status.is_empty() {
+                        "pending"
                     } else {
-                        inv.status.clone()
+                        inv.status.as_str()
                     };
-                    let status_variant = match inv.status.as_str() {
-                        "paid" => BadgeVariant::Green,
-                        "overdue" | "void" => BadgeVariant::Red,
-                        _ => BadgeVariant::Yellow,
-                    };
+                    let (status_variant, status_label) = invoice_status_badge(status_raw);
                     let issued = inv.invoice_date.clone().unwrap_or_default();
                     let due = inv.due_date.clone().unwrap_or_default();
                     let company_name = inv

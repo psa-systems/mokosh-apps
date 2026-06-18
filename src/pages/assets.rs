@@ -6,9 +6,9 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, Input, Modal,
-    PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectOption, Table, TableBody,
-    TableCell, TableHead, TableHeader, TableRow, Textarea, TrashIcon,
+    asset_status_badge, AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable,
+    IconSize, Input, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectOption,
+    Table, TableBody, TableCell, TableHead, TableHeader, TableRow, Textarea, TrashIcon,
 };
 use crate::utils::Paginated;
 use crate::Route;
@@ -162,18 +162,6 @@ struct FieldChange {
     old: Option<serde_json::Value>,
     #[serde(default)]
     new: Option<serde_json::Value>,
-}
-
-/// (badge colour, label) for an asset status.
-fn status_badge(status: &str) -> (BadgeVariant, &'static str) {
-    match status {
-        "active" => (BadgeVariant::Green, "Active"),
-        "in_repair" => (BadgeVariant::Yellow, "In Repair"),
-        "in_stock" => (BadgeVariant::Blue, "In Stock"),
-        "retired" => (BadgeVariant::Red, "Retired"),
-        "inactive" => (BadgeVariant::Gray, "Inactive"),
-        _ => (BadgeVariant::Gray, "Unknown"),
-    }
 }
 
 /// "Feb 28, 2025 3:45 PM" from an ISO datetime; falls back to the date-only
@@ -431,7 +419,7 @@ pub fn AssetListPage() -> Element {
                         } else {
                             for a in filtered.iter() {
                                 {
-                                    let (variant, label) = status_badge(&a.status);
+                                    let (variant, label) = asset_status_badge(&a.status);
                                     let tname = type_name(&a.asset_type_id);
                                     let cname = company_name(&a.company_id);
                                     let serial = a
@@ -1118,7 +1106,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
             } else {
                 {
                     let a = asset.clone().unwrap();
-                    let (status_variant, status_label) = status_badge(&a.status);
+                    let (status_variant, status_label) = asset_status_badge(&a.status);
                     let tname = a
                         .asset_type_id
                         .and_then(|tid| types.iter().find(|t| t.id == tid))

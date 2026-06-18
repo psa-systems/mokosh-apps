@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
+    asset_status_badge, contract_status_badge, invoice_status_badge, project_status_badge,
     AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, CollapsibleCard, DataTable,
     IconSize, Modal, PageHeader, PlusIcon, SearchInput, Select, SelectOption, SortDirection, Table,
     TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
@@ -578,6 +579,15 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         postal_err.set(String::new());
         country_err.set(String::new());
         // Validate the formatted/structured fields inline before submit (MAPPS-177, MAPPS-213).
+        // Company name is required, so check it first and bail before touching
+        // the optional fields (MAPPS-246).
+        let name_value = match validate_name_field(&name.read()) {
+            Ok(v) => v,
+            Err(msg) => {
+                name_err.set(msg);
+                return;
+            }
+        };
         let website_value = match validate_website_field(&website.read()) {
             Ok(v) => v,
             Err(msg) => {
@@ -608,7 +618,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         };
         is_submitting.set(true);
         let body = serde_json::json!({
-            "name": name.read().trim(),
+            "name": name_value,
             "company_type": company_type.read().clone(),
             "industry": optional_string(&industry.read()),
             "website": website_value,
@@ -649,6 +659,27 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         navigator.push(Route::CompanyDetail { id });
                     }
                     Err(err) => {
+                        // MAPPS-246: a duplicate company name comes back as a
+                        // 409 from the create/edit endpoint (b3 work). Route the
+                        // server's conflict message onto the Company Name field
+                        // inline instead of the generic banner. Detect it by
+                        // status code when available, otherwise fall back to the
+                        // conflict message text so the cue still lands if the
+                        // helper ever drops the code. Either way the normal
+                        // success / other-error paths stay intact.
+                        let is_name_conflict = err.status_code() == Some(409)
+                            || (err.status_code().is_none() && {
+                                let m = err.user_message().to_ascii_lowercase();
+                                m.contains("already")
+                                    || m.contains("duplicate")
+                                    || m.contains("taken")
+                                    || m.contains("exists")
+                            });
+                        if is_name_conflict {
+                            name_err.set(err.user_message());
+                            is_submitting.set(false);
+                            return;
+                        }
                         // MAPPS-265: map every server-side field error from the
                         // 422 `errors[]` envelope back onto its own inline field
                         // (e.g. a Website scheme rule the client did not mirror,
@@ -833,6 +864,22 @@ fn optional_string(value: &str) -> serde_json::Value {
 /// common formatting (spaces, dashes, parens, dots) and requires E.164: an
 /// optional leading `+` then 2-15 digits, the first 1-9. Returns the normalized
 /// value or an inline error message. `label` names the field in the message.
+/// Validate the required company name, mirroring the server's
+/// `validate_company_name` rule (PMS / b3 work): trim, reject empty or
+/// whitespace-only input, and reject control characters. On success returns the
+/// trimmed name so the client surfaces the "Company name is required" cue inline
+/// (MAPPS-246) before any request instead of bouncing off an opaque server 422.
+fn validate_name_field(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("Company name is required.".to_string());
+    }
+    if trimmed.chars().any(|c| c.is_control()) {
+        return Err("Company name must not contain control characters.".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
 fn validate_phone_field(raw: &str, label: &str) -> Result<serde_json::Value, String> {
     let normalized: String = raw
         .chars()
@@ -2277,75 +2324,6 @@ struct AssetTypeOption {
     name: String,
 }
 
-/// (badge variant, label) for a contract status, mirroring contracts.rs.
-fn contract_status_badge(raw: &str) -> (BadgeVariant, String) {
-    let variant = match raw {
-        "active" => BadgeVariant::Green,
-        "expired" => BadgeVariant::Red,
-        "cancelled" | "canceled" => BadgeVariant::Gray,
-        "pending" => BadgeVariant::Yellow,
-        "draft" => BadgeVariant::Blue,
-        _ => BadgeVariant::Gray,
-    };
-    let label = match raw {
-        "active" => "Active",
-        "expired" => "Expired",
-        "cancelled" | "canceled" => "Cancelled",
-        "pending" => "Pending",
-        "draft" => "Draft",
-        other => other,
-    };
-    (variant, label.to_string())
-}
-
-/// (badge variant, label) for a project status, mirroring projects.rs.
-fn project_status_badge(raw: &str) -> (BadgeVariant, String) {
-    let (variant, label) = match raw {
-        "active" => (BadgeVariant::Green, "Active"),
-        "on_hold" => (BadgeVariant::Yellow, "On Hold"),
-        "completed" => (BadgeVariant::Blue, "Completed"),
-        "cancelled" => (BadgeVariant::Gray, "Cancelled"),
-        "planning" => (BadgeVariant::Gray, "Planning"),
-        _ => (BadgeVariant::Gray, "Unknown"),
-    };
-    (variant, label.to_string())
-}
-
-/// (badge variant, label) for an invoice status, mirroring billing.rs.
-fn invoice_status_badge(raw: &str) -> (BadgeVariant, String) {
-    let variant = match raw {
-        "paid" => BadgeVariant::Green,
-        "sent" | "pending" => BadgeVariant::Blue,
-        "partially_paid" => BadgeVariant::Yellow,
-        "void" | "written_off" => BadgeVariant::Red,
-        _ => BadgeVariant::Gray,
-    };
-    let label = match raw {
-        "draft" => "Draft",
-        "pending" => "Pending",
-        "sent" => "Sent",
-        "paid" => "Paid",
-        "partially_paid" => "Partially Paid",
-        "void" => "Void",
-        "written_off" => "Written Off",
-        other => other,
-    };
-    (variant, label.to_string())
-}
-
-/// (badge variant, label) for an asset status, mirroring assets.rs.
-fn asset_status_badge(raw: &str) -> (BadgeVariant, String) {
-    let (variant, label) = match raw {
-        "active" => (BadgeVariant::Green, "Active"),
-        "in_repair" => (BadgeVariant::Yellow, "In Repair"),
-        "in_stock" => (BadgeVariant::Blue, "In Stock"),
-        "retired" => (BadgeVariant::Red, "Retired"),
-        "inactive" => (BadgeVariant::Gray, "Inactive"),
-        _ => (BadgeVariant::Gray, "Unknown"),
-    };
-    (variant, label.to_string())
-}
-
 #[component]
 fn CompanyContractsCard(
     contracts_resource: Resource<Option<Paginated<ContractSummary>>>,
@@ -2878,10 +2856,16 @@ fn ContactRow(props: ContactRowProps) -> Element {
                 }
             }
             TableCell {
-                Link {
-                    to: Route::CompanyDetail { id: props.company_id.clone() },
-                    class: "text-muted hover:text-accent",
-                    "{props.company}"
+                // MAPPS-251: a freeform-only contact carries an empty company_id;
+                // render its company name as plain text (no CompanyDetail link).
+                if !props.company_id.is_empty() {
+                    Link {
+                        to: Route::CompanyDetail { id: props.company_id.clone() },
+                        class: "text-muted hover:text-accent",
+                        "{props.company}"
+                    }
+                } else {
+                    span { class: "text-muted", "{props.company}" }
                 }
             }
             TableCell { "{props.email}" }
@@ -3037,7 +3021,10 @@ pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
                         } else {
                             payload.contact_type.clone()
                         },
-                        company_id: payload.company_id.to_string(),
+                        company_id: payload
+                            .company_id
+                            .map(|id| id.to_string())
+                            .unwrap_or_default(),
                         company_name: payload.company_name.clone().unwrap_or_default(),
                     };
                     let id = id_for_form.clone();
@@ -3071,7 +3058,10 @@ struct ContactEditPayload {
     department: Option<String>,
     #[serde(default)]
     contact_type: String,
-    company_id: uuid::Uuid,
+    // MAPPS-251: optional so a freeform-company contact (company_name only,
+    // no FK) deserializes without a null/absent company_id panicking.
+    #[serde(default)]
+    company_id: Option<uuid::Uuid>,
     #[serde(default)]
     company_name: Option<String>,
 }
@@ -3122,6 +3112,20 @@ fn ContactForm(props: ContactFormProps) -> Element {
     });
     let mut company_id = use_signal(|| initial.company_id.clone());
     let mut company_name = use_signal(|| initial.company_name.clone());
+    // MAPPS-251: a contact's company can be a freeform typed name instead of an
+    // FK-linked CRM company. Open in freeform mode when the loaded contact has a
+    // company_name but no resolvable company_id (a freeform-only contact); else
+    // open in the existing "link a CRM company" picker mode.
+    let initial_freeform = uuid::Uuid::parse_str(initial.company_id.as_str()).is_err()
+        && !initial.company_name.trim().is_empty();
+    let mut freeform_mode = use_signal(|| initial_freeform);
+    let mut freeform_company = use_signal(|| {
+        if initial_freeform {
+            initial.company_name.clone()
+        } else {
+            String::new()
+        }
+    });
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
     // Per-field inline validation errors (MAPPS-177, MAPPS-265).
@@ -3153,11 +3157,15 @@ fn ContactForm(props: ContactFormProps) -> Element {
         phone_err.set(String::new());
         mobile_err.set(String::new());
 
-        let parsed_company = uuid::Uuid::parse_str(company_id.read().as_str()).ok();
-        let Some(company_uuid) = parsed_company else {
-            error.set("Please pick a company first.".to_string());
+        // MAPPS-251: company is now optional and can be either an FK-linked CRM
+        // company (company_id) or a freeform typed name (company_name). Supplying
+        // both is rejected client-side, mirroring the backend 422.
+        let picked_company = uuid::Uuid::parse_str(company_id.read().as_str()).ok();
+        let freeform_name = freeform_company.read().trim().to_string();
+        if picked_company.is_some() && !freeform_name.is_empty() {
+            error.set("Pick an existing company or type a new one, not both.".to_string());
             return;
-        };
+        }
         // Validate phone/mobile inline before submit (MAPPS-177).
         let phone_value = match validate_phone_field(&phone.read(), "Phone") {
             Ok(v) => v,
@@ -3175,8 +3183,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
         };
         is_submitting.set(true);
 
-        let body = serde_json::json!({
-            "company_id": company_uuid,
+        let mut body = serde_json::json!({
             "first_name": first_name.read().trim(),
             "last_name": last_name.read().trim(),
             "email": optional_string(&email.read()),
@@ -3186,6 +3193,13 @@ fn ContactForm(props: ContactFormProps) -> Element {
             "department": optional_string(&department.read()),
             "contact_type": contact_type.read().clone(),
         });
+        // MAPPS-251: send company_id when a CRM company is picked, company_name
+        // when a freeform name is typed, and neither when left blank.
+        if let Some(company_uuid) = picked_company {
+            body["company_id"] = serde_json::json!(company_uuid);
+        } else if !freeform_name.is_empty() {
+            body["company_name"] = serde_json::json!(freeform_name);
+        }
         let mode = mode.clone();
         spawn(async move {
             #[cfg(feature = "web")]
@@ -3326,24 +3340,67 @@ fn ContactForm(props: ContactFormProps) -> Element {
                     }
                 }
 
-                crate::components::CompanyPicker {
-                    value: company_name.read().clone(),
-                    selected_id: picker_selected_id,
-                    required: true,
-                    // PMS-352 AC3: a contact requires a company, so the same
-                    // empty-state dead-end the New Ticket form had applies here.
-                    // Opt into the inline "+ Create new company" affordance so a
-                    // first-time tenant with zero companies can create a contact
-                    // without leaving the form.
-                    allow_inline_create: true,
-                    onselect: move |(id, name): (String, String)| {
-                        company_id.set(id);
-                        company_name.set(name);
-                    },
-                    onclear: move |_| {
-                        company_id.set(String::new());
-                        company_name.set(String::new());
-                    },
+                // MAPPS-251: company is optional and can be entered two ways. The
+                // toggle flips between "link an existing CRM company" (the picker)
+                // and "+ Add Company" (a freeform typed name that creates no
+                // `companies` row). Switching modes clears the other mode's value
+                // so only one company source is ever submitted.
+                div { class: "space-y-2",
+                    div { class: "flex items-center justify-between",
+                        span { class: "block text-sm font-medium text-gray-700 dark:text-gray-300", "Company" }
+                        button {
+                            r#type: "button",
+                            class: "inline-flex items-center text-sm text-blue-600 hover:text-blue-500",
+                            onclick: move |_| {
+                                let next = !*freeform_mode.read();
+                                if next {
+                                    company_id.set(String::new());
+                                    company_name.set(String::new());
+                                } else {
+                                    freeform_company.set(String::new());
+                                }
+                                freeform_mode.set(next);
+                            },
+                            if *freeform_mode.read() {
+                                "Link existing company"
+                            } else {
+                                PlusIcon { size: IconSize::Small, class: "mr-1".to_string() }
+                                "Add Company"
+                            }
+                        }
+                    }
+                    if *freeform_mode.read() {
+                        crate::components::Input {
+                            name: "company_name_freeform",
+                            value: freeform_company.read().clone(),
+                            oninput: move |e: FormEvent| freeform_company.set(e.value()),
+                        }
+                        p { class: "text-xs text-gray-500 dark:text-gray-400",
+                            "Typed company name only. Not linked to a CRM company record."
+                        }
+                    } else {
+                        crate::components::CompanyPicker {
+                            value: company_name.read().clone(),
+                            selected_id: picker_selected_id,
+                            // MAPPS-251: company is no longer mandatory; a contact
+                            // can be saved with no company at all.
+                            required: false,
+                            label: String::new(),
+                            // PMS-352: keep the inline "+ Create new company"
+                            // affordance for first-time tenants with zero companies;
+                            // distinct from the freeform path, it materializes a real
+                            // `companies` row.
+                            allow_inline_create: true,
+                            onselect: move |(id, name): (String, String)| {
+                                company_id.set(id);
+                                company_name.set(name);
+                            },
+                            onclear: move |_| {
+                                company_id.set(String::new());
+                                company_name.set(String::new());
+                            },
+                        }
+                    }
                 }
 
                 div { class: "flex justify-end space-x-3",
@@ -3489,7 +3546,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                     }
                 },
                 Some(Some(c)) => {
-                    let company_id = c.company_id.to_string();
+                    let company_id = c.company_id.map(|id| id.to_string());
                     let company_name = c.company_name.clone().unwrap_or_default();
                     let email = c.email.clone();
                     let phone = c.phone.clone();
@@ -3565,10 +3622,17 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                             div {
                                                 dt { class: "text-sm text-muted", "Company" }
                                                 dd { class: "mt-1",
-                                                    Link {
-                                                        to: Route::CompanyDetail { id: company_id.clone() },
-                                                        class: "text-accent hover:opacity-90",
-                                                        "{company_name}"
+                                                    // MAPPS-251: link only when an FK-linked CRM
+                                                    // company exists; a freeform company name has
+                                                    // no `companies` row to navigate to.
+                                                    if let Some(cid) = company_id.clone() {
+                                                        Link {
+                                                            to: Route::CompanyDetail { id: cid },
+                                                            class: "text-accent hover:opacity-90",
+                                                            "{company_name}"
+                                                        }
+                                                    } else {
+                                                        span { class: "text-content", "{company_name}" }
                                                     }
                                                 }
                                             }
@@ -3621,7 +3685,9 @@ struct ContactDetail {
     contact_type: String,
     #[serde(default)]
     is_portal_user: bool,
-    company_id: uuid::Uuid,
+    // MAPPS-251: optional FK; `None` for a freeform-company contact.
+    #[serde(default)]
+    company_id: Option<uuid::Uuid>,
     #[serde(default)]
     company_name: Option<String>,
 }
@@ -3775,10 +3841,22 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
 #[cfg(test)]
 mod validation_tests {
     use super::{
-        validate_country_field, validate_phone_field, validate_postal_field,
+        validate_country_field, validate_name_field, validate_phone_field, validate_postal_field,
         validate_timezone_field, validate_website_field,
     };
     use serde_json::Value;
+
+    #[test]
+    fn name_required_and_rejects_control_chars() {
+        // Trims and returns the cleaned name.
+        assert_eq!(validate_name_field("  Acme Co  ").unwrap(), "Acme Co");
+        // Empty / whitespace-only rejected.
+        assert!(validate_name_field("").is_err());
+        assert!(validate_name_field("   ").is_err());
+        // Control characters rejected.
+        assert!(validate_name_field("Acme\tCo").is_err());
+        assert!(validate_name_field("Acme\u{0007}Co").is_err());
+    }
 
     #[test]
     fn website_requires_http_scheme_and_rejects_dangerous() {
