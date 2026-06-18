@@ -155,6 +155,99 @@ pub struct UpdateAppointmentRequest {
 }
 
 // ============================================================================
+// Scheduling templates
+// ============================================================================
+
+/// A reusable, named scheduling shape from
+/// `GET /api/v1/scheduling-templates` (MAPPS-253). Two kinds: `dispatch`
+/// (on-site work, with optional pre/post travel buffers) and `calendar`
+/// (client interactions and status updates). Carries a default duration,
+/// type, travel buffers, and optional defaults so the appointment form can
+/// pre-fill from `template + start_time`. Mirrors the server's
+/// `SchedulingTemplateResponse`; `tenant_id` is omitted from the wire shape
+/// (the row is already tenant-scoped server-side). The buffer / duration
+/// fields are `i32` to match the server.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct SchedulingTemplateResponse {
+    pub id: Uuid,
+    pub name: String,
+    /// `dispatch` | `calendar`.
+    #[serde(default)]
+    pub kind: String,
+    /// `ticket` | `project` | `meeting` | `other` (mirrors the appointment
+    /// type CHECK so the type carries onto the pre-filled appointment).
+    #[serde(default)]
+    pub appointment_type: String,
+    pub duration_minutes: i32,
+    #[serde(default)]
+    pub travel_before_minutes: i32,
+    #[serde(default)]
+    pub travel_after_minutes: i32,
+    #[serde(default)]
+    pub default_title: Option<String>,
+    #[serde(default)]
+    pub default_location: Option<String>,
+    #[serde(default)]
+    pub default_ticket_id: Option<Uuid>,
+    #[serde(default)]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+/// Body for `POST /api/v1/scheduling-templates`. Field names and defaults
+/// follow the server's `CreateSchedulingTemplateRequest`: `appointment_type`
+/// and the travel buffers default server-side when omitted, and the optional
+/// defaults are dropped from the JSON when empty.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct CreateSchedulingTemplateRequest {
+    pub name: String,
+    pub kind: String,
+    pub appointment_type: String,
+    pub duration_minutes: i32,
+    pub travel_before_minutes: i32,
+    pub travel_after_minutes: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_location: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_ticket_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+/// Body for `PUT /api/v1/scheduling-templates/{id}`. Every field is optional;
+/// only the keys present are applied (partial update), matching the server's
+/// `UpdateSchedulingTemplateRequest` (it `COALESCE`s missing fields to the
+/// stored value).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct UpdateSchedulingTemplateRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub appointment_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_minutes: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub travel_before_minutes: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub travel_after_minutes: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_location: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_ticket_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+// ============================================================================
 // User availability
 // ============================================================================
 

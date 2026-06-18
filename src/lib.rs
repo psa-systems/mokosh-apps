@@ -216,6 +216,9 @@ pub enum Route {
     #[route("/dispatch")]
     DispatchBoard {},
 
+    #[route("/scheduling-templates")]
+    SchedulingTemplates {},
+
     // Contracts
     #[route("/contracts")]
     ContractList {},
@@ -626,6 +629,11 @@ fn Calendar() -> Element {
 #[component]
 fn DispatchBoard() -> Element {
     rsx! { calendar::DispatchBoardPage {} }
+}
+
+#[component]
+fn SchedulingTemplates() -> Element {
+    rsx! { calendar::SchedulingTemplatesPage {} }
 }
 
 #[component]
