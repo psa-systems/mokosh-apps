@@ -364,7 +364,9 @@ impl ContactStatus {
 pub struct Contact {
     pub id: Uuid,
     pub tenant_id: Uuid,
-    pub company_id: Uuid,
+    /// MAPPS-251: optional so a freeform-company or bare-person contact can
+    /// exist without an FK to a CRM `companies` row.
+    pub company_id: Option<Uuid>,
     pub first_name: String,
     pub last_name: String,
     pub email: Option<String>,
@@ -397,7 +399,11 @@ impl Contact {
 /// Create contact request
 #[derive(Debug, Clone, Deserialize, Validate)]
 pub struct CreateContactRequest {
-    pub company_id: Uuid,
+    /// MAPPS-251: optional. Supply `company_id` to link an existing CRM
+    /// company OR `company_name` for a freeform typed company, but not both.
+    pub company_id: Option<Uuid>,
+    /// MAPPS-251: freeform company name; creates no `companies` row.
+    pub company_name: Option<String>,
     #[validate(length(min = 1, max = 100))]
     pub first_name: String,
     #[validate(length(min = 1, max = 100))]
@@ -474,7 +480,8 @@ impl From<Contact> for ContactSummary {
 #[derive(Debug, Clone, Serialize)]
 pub struct ContactResponse {
     pub id: Uuid,
-    pub company_id: Uuid,
+    /// MAPPS-251: optional FK; `None` for freeform-company or bare-person contacts.
+    pub company_id: Option<Uuid>,
     pub company_name: Option<String>,
     pub first_name: String,
     pub last_name: String,

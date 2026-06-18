@@ -2810,10 +2810,16 @@ fn ContactRow(props: ContactRowProps) -> Element {
                 }
             }
             TableCell {
-                Link {
-                    to: Route::CompanyDetail { id: props.company_id.clone() },
-                    class: "text-muted hover:text-accent",
-                    "{props.company}"
+                // MAPPS-251: a freeform-only contact carries an empty company_id;
+                // render its company name as plain text (no CompanyDetail link).
+                if !props.company_id.is_empty() {
+                    Link {
+                        to: Route::CompanyDetail { id: props.company_id.clone() },
+                        class: "text-muted hover:text-accent",
+                        "{props.company}"
+                    }
+                } else {
+                    span { class: "text-muted", "{props.company}" }
                 }
             }
             TableCell { "{props.email}" }
@@ -2969,7 +2975,10 @@ pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
                         } else {
                             payload.contact_type.clone()
                         },
-                        company_id: payload.company_id.to_string(),
+                        company_id: payload
+                            .company_id
+                            .map(|id| id.to_string())
+                            .unwrap_or_default(),
                         company_name: payload.company_name.clone().unwrap_or_default(),
                     };
                     let id = id_for_form.clone();
@@ -3003,7 +3012,10 @@ struct ContactEditPayload {
     department: Option<String>,
     #[serde(default)]
     contact_type: String,
-    company_id: uuid::Uuid,
+    // MAPPS-251: optional so a freeform-company contact (company_name only,
+    // no FK) deserializes without a null/absent company_id panicking.
+    #[serde(default)]
+    company_id: Option<uuid::Uuid>,
     #[serde(default)]
     company_name: Option<String>,
 }
@@ -3054,6 +3066,20 @@ fn ContactForm(props: ContactFormProps) -> Element {
     });
     let mut company_id = use_signal(|| initial.company_id.clone());
     let mut company_name = use_signal(|| initial.company_name.clone());
+    // MAPPS-251: a contact's company can be a freeform typed name instead of an
+    // FK-linked CRM company. Open in freeform mode when the loaded contact has a
+    // company_name but no resolvable company_id (a freeform-only contact); else
+    // open in the existing "link a CRM company" picker mode.
+    let initial_freeform = uuid::Uuid::parse_str(initial.company_id.as_str()).is_err()
+        && !initial.company_name.trim().is_empty();
+    let mut freeform_mode = use_signal(|| initial_freeform);
+    let mut freeform_company = use_signal(|| {
+        if initial_freeform {
+            initial.company_name.clone()
+        } else {
+            String::new()
+        }
+    });
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
     // Per-field inline validation errors (MAPPS-177, MAPPS-265).
@@ -3085,11 +3111,15 @@ fn ContactForm(props: ContactFormProps) -> Element {
         phone_err.set(String::new());
         mobile_err.set(String::new());
 
-        let parsed_company = uuid::Uuid::parse_str(company_id.read().as_str()).ok();
-        let Some(company_uuid) = parsed_company else {
-            error.set("Please pick a company first.".to_string());
+        // MAPPS-251: company is now optional and can be either an FK-linked CRM
+        // company (company_id) or a freeform typed name (company_name). Supplying
+        // both is rejected client-side, mirroring the backend 422.
+        let picked_company = uuid::Uuid::parse_str(company_id.read().as_str()).ok();
+        let freeform_name = freeform_company.read().trim().to_string();
+        if picked_company.is_some() && !freeform_name.is_empty() {
+            error.set("Pick an existing company or type a new one, not both.".to_string());
             return;
-        };
+        }
         // Validate phone/mobile inline before submit (MAPPS-177).
         let phone_value = match validate_phone_field(&phone.read(), "Phone") {
             Ok(v) => v,
@@ -3107,8 +3137,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
         };
         is_submitting.set(true);
 
-        let body = serde_json::json!({
-            "company_id": company_uuid,
+        let mut body = serde_json::json!({
             "first_name": first_name.read().trim(),
             "last_name": last_name.read().trim(),
             "email": optional_string(&email.read()),
@@ -3118,6 +3147,13 @@ fn ContactForm(props: ContactFormProps) -> Element {
             "department": optional_string(&department.read()),
             "contact_type": contact_type.read().clone(),
         });
+        // MAPPS-251: send company_id when a CRM company is picked, company_name
+        // when a freeform name is typed, and neither when left blank.
+        if let Some(company_uuid) = picked_company {
+            body["company_id"] = serde_json::json!(company_uuid);
+        } else if !freeform_name.is_empty() {
+            body["company_name"] = serde_json::json!(freeform_name);
+        }
         let mode = mode.clone();
         spawn(async move {
             #[cfg(feature = "web")]
@@ -3258,24 +3294,67 @@ fn ContactForm(props: ContactFormProps) -> Element {
                     }
                 }
 
-                crate::components::CompanyPicker {
-                    value: company_name.read().clone(),
-                    selected_id: picker_selected_id,
-                    required: true,
-                    // PMS-352 AC3: a contact requires a company, so the same
-                    // empty-state dead-end the New Ticket form had applies here.
-                    // Opt into the inline "+ Create new company" affordance so a
-                    // first-time tenant with zero companies can create a contact
-                    // without leaving the form.
-                    allow_inline_create: true,
-                    onselect: move |(id, name): (String, String)| {
-                        company_id.set(id);
-                        company_name.set(name);
-                    },
-                    onclear: move |_| {
-                        company_id.set(String::new());
-                        company_name.set(String::new());
-                    },
+                // MAPPS-251: company is optional and can be entered two ways. The
+                // toggle flips between "link an existing CRM company" (the picker)
+                // and "+ Add Company" (a freeform typed name that creates no
+                // `companies` row). Switching modes clears the other mode's value
+                // so only one company source is ever submitted.
+                div { class: "space-y-2",
+                    div { class: "flex items-center justify-between",
+                        span { class: "block text-sm font-medium text-gray-700 dark:text-gray-300", "Company" }
+                        button {
+                            r#type: "button",
+                            class: "inline-flex items-center text-sm text-blue-600 hover:text-blue-500",
+                            onclick: move |_| {
+                                let next = !*freeform_mode.read();
+                                if next {
+                                    company_id.set(String::new());
+                                    company_name.set(String::new());
+                                } else {
+                                    freeform_company.set(String::new());
+                                }
+                                freeform_mode.set(next);
+                            },
+                            if *freeform_mode.read() {
+                                "Link existing company"
+                            } else {
+                                PlusIcon { size: IconSize::Small, class: "mr-1".to_string() }
+                                "Add Company"
+                            }
+                        }
+                    }
+                    if *freeform_mode.read() {
+                        crate::components::Input {
+                            name: "company_name_freeform",
+                            value: freeform_company.read().clone(),
+                            oninput: move |e: FormEvent| freeform_company.set(e.value()),
+                        }
+                        p { class: "text-xs text-gray-500 dark:text-gray-400",
+                            "Typed company name only. Not linked to a CRM company record."
+                        }
+                    } else {
+                        crate::components::CompanyPicker {
+                            value: company_name.read().clone(),
+                            selected_id: picker_selected_id,
+                            // MAPPS-251: company is no longer mandatory; a contact
+                            // can be saved with no company at all.
+                            required: false,
+                            label: String::new(),
+                            // PMS-352: keep the inline "+ Create new company"
+                            // affordance for first-time tenants with zero companies;
+                            // distinct from the freeform path, it materializes a real
+                            // `companies` row.
+                            allow_inline_create: true,
+                            onselect: move |(id, name): (String, String)| {
+                                company_id.set(id);
+                                company_name.set(name);
+                            },
+                            onclear: move |_| {
+                                company_id.set(String::new());
+                                company_name.set(String::new());
+                            },
+                        }
+                    }
                 }
 
                 div { class: "flex justify-end space-x-3",
@@ -3421,7 +3500,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                     }
                 },
                 Some(Some(c)) => {
-                    let company_id = c.company_id.to_string();
+                    let company_id = c.company_id.map(|id| id.to_string());
                     let company_name = c.company_name.clone().unwrap_or_default();
                     let email = c.email.clone();
                     let phone = c.phone.clone();
@@ -3497,10 +3576,17 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                             div {
                                                 dt { class: "text-sm text-muted", "Company" }
                                                 dd { class: "mt-1",
-                                                    Link {
-                                                        to: Route::CompanyDetail { id: company_id.clone() },
-                                                        class: "text-accent hover:opacity-90",
-                                                        "{company_name}"
+                                                    // MAPPS-251: link only when an FK-linked CRM
+                                                    // company exists; a freeform company name has
+                                                    // no `companies` row to navigate to.
+                                                    if let Some(cid) = company_id.clone() {
+                                                        Link {
+                                                            to: Route::CompanyDetail { id: cid },
+                                                            class: "text-accent hover:opacity-90",
+                                                            "{company_name}"
+                                                        }
+                                                    } else {
+                                                        span { class: "text-content", "{company_name}" }
                                                     }
                                                 }
                                             }
@@ -3553,7 +3639,9 @@ struct ContactDetail {
     contact_type: String,
     #[serde(default)]
     is_portal_user: bool,
-    company_id: uuid::Uuid,
+    // MAPPS-251: optional FK; `None` for a freeform-company contact.
+    #[serde(default)]
+    company_id: Option<uuid::Uuid>,
     #[serde(default)]
     company_name: Option<String>,
 }
