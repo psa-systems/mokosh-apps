@@ -32,13 +32,13 @@ pre-commit: css-build
     let user_name = (^whoami | str trim)
     let target_vol = $"dev-mokosh-apps-target-($user_name)"
     print "\n[pre-commit] cargo fmt --all --check"
-    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/build/target" --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo fmt --all --check
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/cargo-target" --env CARGO_TARGET_DIR=/cargo-target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo fmt --all --check
     print "\n[pre-commit] cargo clippy --all-targets -- -D warnings"
-    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/build/target" --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo clippy --all-targets -- -D warnings
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/cargo-target" --env CARGO_TARGET_DIR=/cargo-target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo clippy --all-targets -- -D warnings
     print "\n[pre-commit] cargo check --target wasm32-unknown-unknown"
-    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/build/target" --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo check --target wasm32-unknown-unknown
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/cargo-target" --env CARGO_TARGET_DIR=/cargo-target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo check --target wasm32-unknown-unknown
     print "\n[pre-commit] cargo test --lib"
-    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/build/target" --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo test --lib
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/cargo-target" --env CARGO_TARGET_DIR=/cargo-target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo test --lib
     print "\n[pre-commit] all checks passed"
 
 # Install JS dependencies
