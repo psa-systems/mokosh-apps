@@ -315,6 +315,17 @@ pub enum Route {
     // nav items and buttons keep working (chosen "keep old + add Settings").
     #[route("/settings")]
     SettingsHome {},
+    // MAPPS-258: per-group landing routes. The index lists these four
+    // groups; each landing lists only its own leaf surfaces. The leaf
+    // routes below stay flat so existing deep links keep resolving.
+    #[route("/settings/group/service-types")]
+    SettingsGroupServiceTypes {},
+    #[route("/settings/group/billing")]
+    SettingsGroupBilling {},
+    #[route("/settings/group/tickets")]
+    SettingsGroupTickets {},
+    #[route("/settings/group/integrations")]
+    SettingsGroupIntegrations {},
     #[route("/settings/work-types")]
     SettingsWorkTypes {},
     #[route("/settings/task-statuses")]
@@ -770,6 +781,27 @@ fn Profile() -> Element {
 #[component]
 fn SettingsHome() -> Element {
     rsx! { settings::SettingsHomePage {} }
+}
+
+// MAPPS-258 per-group landing pages.
+#[component]
+fn SettingsGroupServiceTypes() -> Element {
+    rsx! { settings::ServiceTypesGroupPage {} }
+}
+
+#[component]
+fn SettingsGroupBilling() -> Element {
+    rsx! { settings::BillingGroupPage {} }
+}
+
+#[component]
+fn SettingsGroupTickets() -> Element {
+    rsx! { settings::TicketsGroupPage {} }
+}
+
+#[component]
+fn SettingsGroupIntegrations() -> Element {
+    rsx! { settings::IntegrationsGroupPage {} }
 }
 
 #[component]
