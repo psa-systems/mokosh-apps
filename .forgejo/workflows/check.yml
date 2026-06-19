@@ -33,6 +33,10 @@ jobs:
       - name: Stub generated CSS asset
         run: mkdir -p assets && touch assets/styles.css
 
+      - name: Cap build parallelism
+        # nproc/2 cap: never claim more than half the host (see CI.md "Concurrency cap").
+        run: echo "CARGO_BUILD_JOBS=$(($(nproc) / 2))" >> "$GITHUB_ENV"
+
       - name: Check formatting
         run: cargo fmt --all --check
 
