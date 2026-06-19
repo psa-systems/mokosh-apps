@@ -241,7 +241,10 @@ pub fn InvoiceListPage() -> Element {
         return rsx! { NoFinancePermission { title: "Invoices" } };
     }
 
-    let mut company_filter = use_signal(String::new);
+    // MAPPS-249: seed the company filter from `?company_id=<uuid>` so a context
+    // card's "View All" lands here scoped to that company.
+    let mut company_filter =
+        use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     let mut status_filter = use_signal(String::new);
     let mut page = use_signal(|| 1usize);
 

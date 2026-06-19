@@ -296,9 +296,15 @@ fn fmt_date(s: &Option<String>) -> String {
 pub fn AssetListPage() -> Element {
     let mut search = use_signal(String::new);
 
+    // MAPPS-249: scope to one company when a context card's "View All" passes
+    // `?company_id=<uuid>`.
     let assets_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteAsset>>("/assets")
+        let mut path = String::from("/assets");
+        if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
+            path.push_str(&format!("?company_id={company_id}"));
+        }
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteAsset>>(&path)
             .await
             .ok()
             .map(|p| p.data)

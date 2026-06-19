@@ -417,12 +417,19 @@ pub fn TicketListPage() -> Element {
     // the live backend first, fall back to the seeded demo rows so the
     // page stays demoable when the route isn't deployed yet or the
     // user is signed out.
+    // MAPPS-249: a company context card's "View All" lands here with
+    // `?company_id=<uuid>`. When present, scope the fetch to that company so the
+    // list shows only its tickets and every row stays inside the same company.
     let tickets_resource = use_resource(|| async {
         let token = match crate::hooks::fetch::api::current_access_token() {
             Some(t) => t,
             None => return (Vec::<RemoteTicket>::new(), TicketSource::Demo),
         };
-        match crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteTicket>>("/tickets", &token)
+        let mut path = String::from("/tickets");
+        if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
+            path.push_str(&format!("?company_id={company_id}"));
+        }
+        match crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteTicket>>(&path, &token)
             .await
         {
             Ok(page) => (page.data, TicketSource::Backend),

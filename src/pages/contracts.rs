@@ -102,7 +102,11 @@ struct CompanyOption {
 /// `company_id` / `status` / `contract_type` filters.
 #[component]
 pub fn ContractListPage() -> Element {
-    let mut company_filter = use_signal(String::new);
+    // MAPPS-249: seed the company filter from `?company_id=<uuid>` so a context
+    // card's "View All" lands here scoped to that company (the dropdown also
+    // reflects the selection once its options load).
+    let mut company_filter =
+        use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     let mut status_filter = use_signal(String::new);
     let mut type_filter = use_signal(String::new);
     let mut page = use_signal(|| 1usize);
