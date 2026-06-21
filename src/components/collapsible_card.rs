@@ -53,6 +53,25 @@ pub fn CollapsibleCard(props: CollapsibleCardProps) -> Element {
     // table (padding: false) sits flush while a padded body stays inset.
     let body_class = if props.padding { "px-6 pb-6 pt-4" } else { "" };
 
+    // MAPPS-286: derive a stable id from the title so the toggle button's
+    // `aria-controls` can point at the body region. The id is namespaced
+    // to avoid collisions when the same card appears twice on a page;
+    // assistive tech then ties "this toggle controls that region" without
+    // a separate heading association. Spaces and other non-id-safe chars
+    // are collapsed to dashes.
+    let body_id = format!(
+        "lc-collapsible-{}",
+        props
+            .title
+            .chars()
+            .map(|c| if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            })
+            .collect::<String>()
+    );
+
     rsx! {
         div { class: "{class}",
             div {
@@ -61,6 +80,7 @@ pub fn CollapsibleCard(props: CollapsibleCardProps) -> Element {
                     r#type: "button",
                     class: "flex items-center gap-2 text-left",
                     aria_expanded: if open() { "true" } else { "false" },
+                    aria_controls: "{body_id}",
                     onclick: move |_| {
                         let next = !open();
                         open.set(next);
@@ -83,7 +103,7 @@ pub fn CollapsibleCard(props: CollapsibleCardProps) -> Element {
                 }
             }
             if open() {
-                div { class: "{body_class}",
+                div { id: "{body_id}", class: "{body_class}",
                     {props.children}
                 }
             }
