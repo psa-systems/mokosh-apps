@@ -1260,6 +1260,14 @@ pub fn TicketNewPage() -> Element {
                             selected_id: picker_contact_selected_id,
                             label: "Contact".to_string(),
                             company_filter: contact_company_filter,
+                            // MAPPS-276: opt this picker into the inline
+                            // "+ Create new contact" affordance so the New
+                            // Ticket flow doesn't dead-end when the calling
+                            // user isn't in the company's contacts yet. The
+                            // picker inherits the form's selected company
+                            // via `company_filter`, so the new contact
+                            // lands attached to the right company.
+                            allow_inline_create: true,
                             onselect: move |(id, name): (String, String)| {
                                 contact_id.set(id);
                                 contact_name.set(name);
