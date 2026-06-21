@@ -1051,6 +1051,11 @@ pub fn TicketNewPage() -> Element {
                 .await
                 {
                     Ok(created) => {
+                        // MAPPS-293: confirming success toast.
+                        crate::hooks::toast::push_toast(
+                            crate::components::AlertType::Success,
+                            "Ticket created.",
+                        );
                         navigator.push(Route::TicketDetail {
                             id: created.id.to_string(),
                         });
