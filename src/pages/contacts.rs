@@ -1168,9 +1168,15 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     let asset_count = paginated_total(&assets_resource);
 
     let company_snapshot = company_resource.read_unchecked();
+    // MAPPS-278: while the record is loading, show "Loading..." instead
+    // of the generic entity type ("Company"). The previous fallback
+    // briefly flashed a generic header until the resource resolved,
+    // which read as the wrong company before settling. A loading label
+    // is honest about the state.
     let header_title = match &*company_snapshot {
         Some(Some(c)) => c.name.clone(),
-        _ => "Company".to_string(),
+        None => "Loading...".to_string(),
+        Some(None) => "Company not found".to_string(),
     };
 
     let navigator = use_navigator();
@@ -3832,11 +3838,16 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     });
 
     let snap = contact.read_unchecked();
+    // MAPPS-278: prefer an honest "Loading..." over the generic entity
+    // type while the fetch is in flight; reserve a distinct "Contact not
+    // found" for a confirmed-empty resource so the user does not see a
+    // blank "Contact" header that briefly looked correct.
     let header_title = match &*snap {
         Some(Some(c)) => format!("{} {}", c.first_name, c.last_name)
             .trim()
             .to_string(),
-        _ => "Contact".to_string(),
+        None => "Loading...".to_string(),
+        Some(None) => "Contact not found".to_string(),
     };
 
     let navigator = use_navigator();
