@@ -3417,6 +3417,25 @@ fn ContactForm(props: ContactFormProps) -> Element {
         phone_err.set(String::new());
         mobile_err.set(String::new());
 
+        // MAPPS-281: trim required name fields client-side so a
+        // whitespace-only value cannot satisfy the browser's native
+        // `required` check (which passes any non-empty string, including
+        // "   "). Without this the request reached the server and surfaced
+        // a raw 422 banner with no field-level error. Reject inline first
+        // so the user sees which field failed.
+        let mut hit_blank = false;
+        if first_name.read().trim().is_empty() {
+            first_name_err.set("First name is required.".to_string());
+            hit_blank = true;
+        }
+        if last_name.read().trim().is_empty() {
+            last_name_err.set("Last name is required.".to_string());
+            hit_blank = true;
+        }
+        if hit_blank {
+            return;
+        }
+
         // MAPPS-251: company is now optional and can be either an FK-linked CRM
         // company (company_id) or a freeform typed name (company_name). Supplying
         // both is rejected client-side, mirroring the backend 422.

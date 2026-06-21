@@ -887,7 +887,16 @@ pub fn TicketNewPage() -> Element {
             uuid::Uuid::parse_str(contact_id.read().as_str()).ok();
 
         // Snapshot signals so the spawn doesn't need to read them.
-        let title_v = title.read().clone();
+        // MAPPS-281: trim required Title client-side so a whitespace-only
+        // value doesn't satisfy the browser's native `required` check
+        // (which accepts any non-empty string, including "   ") and
+        // reach the server only to come back as a 422. Reject inline.
+        let title_v = title.read().trim().to_string();
+        if title_v.is_empty() {
+            title_error.set("Title is required.".to_string());
+            is_submitting.set(false);
+            return;
+        }
         let description_v = description.read().clone();
 
         spawn(async move {
