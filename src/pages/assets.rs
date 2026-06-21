@@ -345,10 +345,24 @@ fn warranty_refresh_status(s: &Option<String>) -> WarrantyRefreshStatus {
 #[component]
 pub fn AssetListPage() -> Element {
     let mut search = use_signal(String::new);
+    // MAPPS-303: page-scoped bulk selection (built on MAPPS-290's
+    // `use_bulk_selection`). Drives the per-row checkbox, the
+    // `SelectAllHeader`, and the `BulkActionsBar` "Bulk edit" verb
+    // below; the bar opens a modal whose submit fires N parallel
+    // `PUT /assets/{id}` calls.
+    let mut selection = crate::components::use_bulk_selection();
+    let mut bulk_modal_open = use_signal(|| false);
+    let mut bulk_change_status = use_signal(|| false);
+    let mut bulk_status = use_signal(|| "active".to_string());
+    let mut bulk_change_company = use_signal(|| false);
+    let mut bulk_company_id = use_signal(String::new);
+    let mut bulk_company_name = use_signal(String::new);
+    let mut bulk_submitting = use_signal(|| false);
+    let mut bulk_error = use_signal(String::new);
 
     // MAPPS-249: scope to one company when a context card's "View All" passes
     // `?company_id=<uuid>`.
-    let assets_resource = use_resource(|| async {
+    let mut assets_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let mut path = String::from("/assets");
         if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
@@ -444,6 +458,28 @@ pub fn AssetListPage() -> Element {
                 }
             }
 
+            // MAPPS-303: bulk-edit affordance. Renders only when at least
+            // one asset is selected. The Bulk edit verb opens the modal
+            // below; the user picks which fields to change + new values,
+            // and submit fires N parallel `PUT /assets/{id}` calls.
+            crate::components::BulkActionsBar {
+                selection,
+                label: "asset".to_string(),
+                Button {
+                    variant: ButtonVariant::Primary,
+                    onclick: move |_| {
+                        // Reset per-open form state.
+                        bulk_change_status.set(false);
+                        bulk_change_company.set(false);
+                        bulk_company_id.set(String::new());
+                        bulk_company_name.set(String::new());
+                        bulk_error.set(String::new());
+                        bulk_modal_open.set(true);
+                    },
+                    "Bulk edit"
+                }
+            }
+
             DataTable {
                 total_items: total,
                 current_page: 1,
@@ -452,6 +488,11 @@ pub fn AssetListPage() -> Element {
                 Table {
                     TableHead {
                         TableRow {
+                            // MAPPS-303: select-all checkbox for the page.
+                            crate::components::SelectAllHeader {
+                                selection,
+                                ids: filtered.iter().map(|a| a.id.to_string()).collect::<Vec<_>>(),
+                            }
                             TableHeader { "Asset" }
                             TableHeader { "Type" }
                             TableHeader { "Company" }
@@ -486,6 +527,11 @@ pub fn AssetListPage() -> Element {
                                     let aid = a.id.to_string();
                                     rsx! {
                                         TableRow { key: "{aid}",
+                                            // MAPPS-303: per-row checkbox.
+                                            crate::components::SelectRowCell {
+                                                selection,
+                                                id: aid.clone(),
+                                            }
                                             TableCell {
                                                 Link {
                                                     to: Route::AssetDetail { id: aid.clone() },
@@ -497,6 +543,165 @@ pub fn AssetListPage() -> Element {
                                             TableCell { "{cname}" }
                                             TableCell { class: "font-mono text-sm", "{serial}" }
                                             TableCell { Badge { variant, "{label}" } }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // MAPPS-303: bulk-edit modal. Hidden until the BulkActionsBar
+            // verb opens it. Each field is gated on its own "Change this
+            // field" checkbox so the user can change a subset
+            // (Location-only is the QA's office-move use case). Submit
+            // builds a minimal partial body and fires N parallel PUTs.
+            if bulk_modal_open() {
+                {
+                    let status_opts = vec![
+                        SelectOption::new("active", "Active"),
+                        SelectOption::new("in_stock", "In Stock"),
+                        SelectOption::new("in_repair", "In Repair"),
+                        SelectOption::new("retired", "Retired"),
+                        SelectOption::new("inactive", "Inactive"),
+                    ];
+                    let count = selection.read().len();
+                    let count_label = if count == 1 {
+                        "1 asset".to_string()
+                    } else {
+                        format!("{} assets", count)
+                    };
+                    let company_picker_selected_id = if bulk_company_id.read().is_empty() {
+                        None
+                    } else {
+                        Some(bulk_company_id.read().clone())
+                    };
+                    rsx! {
+                        Modal {
+                            open: true,
+                            title: format!("Bulk edit ({})", count_label),
+                            onclose: move |_| {
+                                if !bulk_submitting() {
+                                    bulk_modal_open.set(false);
+                                }
+                            },
+                            footer: rsx! {
+                                Button {
+                                    variant: ButtonVariant::Secondary,
+                                    onclick: move |_| {
+                                        if !bulk_submitting() {
+                                            bulk_modal_open.set(false);
+                                        }
+                                    },
+                                    "Cancel"
+                                }
+                                Button {
+                                    variant: ButtonVariant::Primary,
+                                    disabled: bulk_submitting(),
+                                    onclick: move |_| {
+                                        // Validate that at least one field is being changed.
+                                        if !bulk_change_status() && !bulk_change_company() {
+                                            bulk_error.set("Pick at least one field to change.".to_string());
+                                            return;
+                                        }
+                                        // Build the partial body.
+                                        let mut body = serde_json::Map::new();
+                                        if bulk_change_status() {
+                                            body.insert("status".into(), serde_json::json!(bulk_status.read().as_str()));
+                                        }
+                                        if bulk_change_company() {
+                                            match uuid::Uuid::parse_str(bulk_company_id.read().as_str()) {
+                                                Ok(cid) => {
+                                                    body.insert("company_id".into(), serde_json::json!(cid));
+                                                }
+                                                Err(_) => {
+                                                    bulk_error.set("Pick a company first.".to_string());
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                        let body = serde_json::Value::Object(body);
+                                        let ids: Vec<String> = selection.read().iter().cloned().collect();
+                                        bulk_submitting.set(true);
+                                        bulk_error.set(String::new());
+                                        spawn(async move {
+                                            #[cfg(feature = "web")]
+                                            {
+                                                use futures_util::future::join_all;
+                                                let futs = ids.iter().map(|id| {
+                                                    let path = format!("/assets/{id}");
+                                                    let body = body.clone();
+                                                    async move {
+                                                        crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await
+                                                    }
+                                                });
+                                                let results = join_all(futs).await;
+                                                let failures = results.iter().filter(|r| r.is_err()).count();
+                                                if failures == 0 {
+                                                    crate::hooks::toast::push_toast(
+                                                        crate::components::AlertType::Success,
+                                                        format!("Updated {} asset(s).", ids.len()),
+                                                    );
+                                                } else {
+                                                    crate::hooks::toast::push_toast(
+                                                        crate::components::AlertType::Error,
+                                                        format!("Updated {} of {}; {} failed.", ids.len() - failures, ids.len(), failures),
+                                                    );
+                                                }
+                                            }
+                                            bulk_submitting.set(false);
+                                            bulk_modal_open.set(false);
+                                            crate::components::clear_selection(&mut selection);
+                                            assets_resource.restart();
+                                        });
+                                    },
+                                    if bulk_submitting() { "Saving…" } else { "Apply to selected" }
+                                }
+                            },
+                            div { class: "space-y-4",
+                                if !bulk_error.read().is_empty() {
+                                    p { class: "text-sm text-red-600 dark:text-red-400", "{bulk_error}" }
+                                }
+                                p { class: "text-sm text-muted",
+                                    "Each field below is changed only when its checkbox is on. Anything left unchecked stays as-is on every selected asset."
+                                }
+                                div { class: "space-y-3",
+                                    crate::components::Checkbox {
+                                        name: "bulk_change_status",
+                                        label: "Change Status",
+                                        checked: bulk_change_status(),
+                                        onchange: move |e: FormEvent| bulk_change_status.set(e.checked()),
+                                    }
+                                    if bulk_change_status() {
+                                        Select {
+                                            name: "bulk_status",
+                                            label: "Status".to_string(),
+                                            options: status_opts.clone(),
+                                            value: bulk_status.read().clone(),
+                                            onchange: move |e: FormEvent| bulk_status.set(e.value()),
+                                        }
+                                    }
+                                }
+                                div { class: "space-y-3",
+                                    crate::components::Checkbox {
+                                        name: "bulk_change_company",
+                                        label: "Change Company",
+                                        checked: bulk_change_company(),
+                                        onchange: move |e: FormEvent| bulk_change_company.set(e.checked()),
+                                    }
+                                    if bulk_change_company() {
+                                        crate::components::CompanyPicker {
+                                            value: bulk_company_name.read().clone(),
+                                            selected_id: company_picker_selected_id,
+                                            onselect: move |(id, name): (String, String)| {
+                                                bulk_company_id.set(id);
+                                                bulk_company_name.set(name);
+                                            },
+                                            onclear: move |_| {
+                                                bulk_company_id.set(String::new());
+                                                bulk_company_name.set(String::new());
+                                            },
                                         }
                                     }
                                 }
