@@ -107,10 +107,14 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
             .map(|p| p.data)
     });
 
-    if let Some(id) = &props.selected_id {
-        let id = id.clone();
+    if let Some(_id) = &props.selected_id {
         let name = props.value.clone();
         let onclear = props.onclear;
+        // MAPPS-273: render only the human-readable name in the
+        // selected-chip state. The previous "secondary line" leaked the
+        // raw company UUID into the UI, which surprised users on the
+        // Contact form ("what is this hex string under Acme Corp?") and
+        // doesn't survive the "no raw UUIDs in user-facing UI" rule.
         return rsx! {
             div { class: "space-y-1",
                 label { class: "block text-sm font-medium text-content",
@@ -123,7 +127,6 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                     class: "flex items-center justify-between border border-line rounded-md px-3 py-2 bg-app",
                     div { class: "min-w-0",
                         p { class: "text-sm font-medium text-content truncate", "{name}" }
-                        p { class: "text-xs text-muted truncate", "{id}" }
                     }
                     button {
                         r#type: "button",

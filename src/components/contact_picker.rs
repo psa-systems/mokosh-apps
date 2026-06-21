@@ -112,11 +112,12 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
     // Chip view: parent supplied a selected_id and the user is not in
     // inline-edit mode. Change swaps to search mode locally without a
     // server round trip.
-    if let Some(id) = &props.selected_id {
+    if let Some(_id) = &props.selected_id {
         if !editing() {
-            let id = id.clone();
             let name = props.value.clone();
             let onclear = props.onclear;
+            // MAPPS-273: drop the raw UUID secondary line. See the
+            // CompanyPicker fix in the same change for context.
             return rsx! {
                 div { class: "space-y-1",
                     label { class: "block text-sm font-medium text-content",
@@ -129,7 +130,6 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                         class: "flex items-center justify-between border border-line rounded-md px-3 py-2 bg-app",
                         div { class: "min-w-0",
                             p { class: "text-sm font-medium text-content truncate", "{name}" }
-                            p { class: "text-xs text-muted truncate", "{id}" }
                         }
                         button {
                             r#type: "button",
