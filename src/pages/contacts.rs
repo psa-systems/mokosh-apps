@@ -920,6 +920,36 @@ fn validate_name_field(raw: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
+/// MAPPS-283: render a stored canonical phone number with readable
+/// separators so contacts and companies don't display as a raw run of
+/// digits. The server stores phone numbers as the trimmed-formatting
+/// output of [`validate_phone_field`] (digits with an optional leading
+/// `+`); this helper reverses that for the read surface.
+///
+/// Rules: a 10-digit US number renders as `(555) 123-4567`; an 11-digit
+/// number starting with `1` renders as `+1 (555) 123-4567`; anything
+/// else (E.164 with a non-US country code, partial entry, legacy
+/// payloads with extensions) passes through unchanged so we never
+/// mangle a non-NANP number into a US shape. Empty input renders as the
+/// empty string so callers can chain `.unwrap_or_default()`.
+pub fn format_phone(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let digits: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
+    match digits.len() {
+        10 => format!("({}) {}-{}", &digits[0..3], &digits[3..6], &digits[6..10]),
+        11 if digits.starts_with('1') => format!(
+            "+1 ({}) {}-{}",
+            &digits[1..4],
+            &digits[4..7],
+            &digits[7..11]
+        ),
+        _ => trimmed.to_string(),
+    }
+}
+
 fn validate_phone_field(raw: &str, label: &str) -> Result<serde_json::Value, String> {
     let normalized: String = raw
         .chars()
@@ -1361,7 +1391,8 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                             if !phone.is_empty() {
                                                 div { class: "flex justify-between",
                                                     dt { class: "text-sm text-muted", "Phone" }
-                                                    dd { class: "text-sm", "{phone}" }
+                                                    // MAPPS-283: render with separators.
+                                                    dd { class: "text-sm", {format_phone(&phone)} }
                                                 }
                                             }
                                         }
@@ -1714,7 +1745,8 @@ fn CompanyContactsCard(
                                         let delete_path = format!("/contacts/contacts/{id}");
                                         let name = format!("{} {}", contact.first_name, contact.last_name).trim().to_string();
                                         let email = contact.email.clone().unwrap_or_default();
-                                        let phone = contact.phone.clone().unwrap_or_default();
+                                        // MAPPS-283: render with separators.
+                                        let phone = format_phone(&contact.phone.clone().unwrap_or_default());
                                         let role = humanize_contact_type(
                                             contact.contact_type.as_deref().unwrap_or_default(),
                                         );
@@ -3228,7 +3260,9 @@ fn ContactRow(props: ContactRowProps) -> Element {
                 }
             }
             TableCell { "{props.email}" }
-            TableCell { "{props.phone}" }
+            // MAPPS-283: route the phone column through `format_phone`
+            // so the cell shows `(555) 123-4567` not `5551234567`.
+            TableCell { {format_phone(&props.phone)} }
             TableCell { "{props.role}" }
         }
     }
@@ -3965,7 +3999,8 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                             if !phone.is_empty() {
                                                 div {
                                                     dt { class: "text-sm text-muted", "Phone" }
-                                                    dd { class: "mt-1", "{phone}" }
+                                                    // MAPPS-283: render with separators.
+                                                    dd { class: "mt-1", {format_phone(&phone)} }
                                                 }
                                             }
                                         }
@@ -3973,7 +4008,8 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                             if !mobile.is_empty() {
                                                 div {
                                                     dt { class: "text-sm text-muted", "Mobile" }
-                                                    dd { class: "mt-1", "{mobile}" }
+                                                    // MAPPS-283: render with separators.
+                                                    dd { class: "mt-1", {format_phone(&mobile)} }
                                                 }
                                             }
                                         }
