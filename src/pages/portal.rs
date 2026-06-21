@@ -539,13 +539,14 @@ struct PortalInvoiceLine {
     total: String,
 }
 
-/// Render an amount string as currency, defaulting blanks to `$0.00`.
+/// Render an amount string as currency. Routes through the shared
+/// `format_money_str` helper (`src/utils/money.rs`) so portal invoice
+/// amounts get the same grouped-thousands + two-decimals format every
+/// other surface uses, instead of the previous `${raw}` concatenation
+/// that produced `$60000.00` on a server payload of `"60000.00"`
+/// (MAPPS-272).
 fn portal_money(raw: &str) -> String {
-    if raw.trim().is_empty() {
-        "$0.00".to_string()
-    } else {
-        format!("${raw}")
-    }
+    crate::utils::money::format_money_str(raw)
 }
 
 #[component]
