@@ -84,6 +84,15 @@ pub fn Input(props: InputProps) -> Element {
                     }
                 }
             }
+            // MAPPS-277: stop attaching the HTML5 `required` attribute, which
+            // surfaces the browser-native "Please fill out this field" tooltip
+            // on submit. Forms now route every required-field check through
+            // their own per-field validators (e.g. `validate_name_field`,
+            // MAPPS-281 trim-and-set inline error), so the cue surfaces as a
+            // styled inline error message under the field instead of the OS
+            // bubble. Keep `aria-required` so assistive tech still announces
+            // the field as required, and keep the visible asterisk in the
+            // label for sighted users.
             input {
                 id: "{props.name}",
                 name: "{props.name}",
@@ -95,7 +104,7 @@ pub fn Input(props: InputProps) -> Element {
                 class: "{class}",
                 placeholder: "{props.placeholder}",
                 value: "{props.value}",
-                required: props.required,
+                aria_required: if props.required { "true" } else { "false" },
                 disabled: props.disabled,
                 "data-testid": props.data_testid.as_deref(),
                 oninput: move |e| props.oninput.call(e),
@@ -225,6 +234,11 @@ pub fn Textarea(props: TextareaProps) -> Element {
                     }
                 }
             }
+            // MAPPS-277: drop HTML5 `required` so the browser-native tooltip
+            // doesn't fire; keep `aria-required` for assistive tech and the
+            // asterisk in the label for sighted users. Forms validate
+            // required textareas (e.g. ticket description) in their submit
+            // handler and surface the error inline via `props.error`.
             textarea {
                 id: "{props.name}",
                 name: "{props.name}",
@@ -232,7 +246,7 @@ pub fn Textarea(props: TextareaProps) -> Element {
                 placeholder: "{props.placeholder}",
                 rows: "{props.rows}",
                 maxlength: props.maxlength,
-                required: props.required,
+                aria_required: if props.required { "true" } else { "false" },
                 disabled: props.disabled,
                 oninput: move |e| props.oninput.call(e),
                 "{props.value}"
@@ -332,7 +346,10 @@ pub fn Select(props: SelectProps) -> Element {
                 id: "{props.name}",
                 name: "{props.name}",
                 class: "{class}",
-                required: props.required,
+                // MAPPS-277: aria-required only; the HTML5 `required` attr
+                // would surface the browser-native tooltip on submit, which
+                // the form's own validation already replaces inline.
+                aria_required: if props.required { "true" } else { "false" },
                 disabled: props.disabled,
                 value: "{props.value}",
                 onchange: move |e| props.onchange.call(e),
