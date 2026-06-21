@@ -379,10 +379,16 @@ fn ContractRow(props: ContractRowProps) -> Element {
 /// New contract page.
 #[component]
 pub fn ContractNewPage() -> Element {
+    // MAPPS-300: pre-fill `company_id` from the URL so the Company detail
+    // "New Contract" CTA lands on a form already scoped to that company.
+    let initial = ContractFormValues {
+        company_id: crate::utils::url::current_query_param("company_id").unwrap_or_default(),
+        ..ContractFormValues::default()
+    };
     rsx! {
         AppLayout { title: "New Contract",
             PageHeader { title: "New Contract", subtitle: "Create a new contract" }
-            ContractForm { mode: ContractFormMode::Create, initial: ContractFormValues::default() }
+            ContractForm { mode: ContractFormMode::Create, initial }
         }
     }
 }

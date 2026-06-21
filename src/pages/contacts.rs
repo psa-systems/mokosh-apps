@@ -2531,11 +2531,23 @@ fn CompanyContractsCard(
     };
     let navigator = use_navigator();
     let view_all_href = format!("/contracts?company_id={}", urlencoding_minimal(&company_id));
+    // MAPPS-300: "New Contract" CTA pre-fills this company on the create form
+    // (Company appears in the create URL as `?company_id=<uuid>` and the
+    // destination form reads it - see `ContractNewPage`).
+    let new_contract_href = format!(
+        "/contracts/new?company_id={}",
+        urlencoding_minimal(&company_id)
+    );
     rsx! {
         CollapsibleCard {
             title: "Contracts",
             count,
             actions: rsx! {
+                a {
+                    href: "{new_contract_href}",
+                    class: "text-sm text-accent hover:opacity-90",
+                    "New Contract"
+                }
                 a {
                     href: "{view_all_href}",
                     class: "text-sm text-accent hover:opacity-90",
@@ -2615,11 +2627,21 @@ fn CompanyProjectsCard(
     };
     let navigator = use_navigator();
     let view_all_href = format!("/projects?company_id={}", urlencoding_minimal(&company_id));
+    // MAPPS-300: "New Project" CTA pre-fills this company on the create form.
+    let new_project_href = format!(
+        "/projects/new?company_id={}",
+        urlencoding_minimal(&company_id)
+    );
     rsx! {
         CollapsibleCard {
             title: "Projects",
             count,
             actions: rsx! {
+                a {
+                    href: "{new_project_href}",
+                    class: "text-sm text-accent hover:opacity-90",
+                    "New Project"
+                }
                 a {
                     href: "{view_all_href}",
                     class: "text-sm text-accent hover:opacity-90",
@@ -2699,11 +2721,21 @@ fn CompanyInvoicesCard(
     };
     let navigator = use_navigator();
     let view_all_href = format!("/invoices?company_id={}", urlencoding_minimal(&company_id));
+    // MAPPS-300: "New Invoice" CTA pre-fills this company on the create form.
+    let new_invoice_href = format!(
+        "/invoices/new?company_id={}",
+        urlencoding_minimal(&company_id)
+    );
     rsx! {
         CollapsibleCard {
             title: "Invoices",
             count,
             actions: rsx! {
+                a {
+                    href: "{new_invoice_href}",
+                    class: "text-sm text-accent hover:opacity-90",
+                    "New Invoice"
+                }
                 a {
                     href: "{view_all_href}",
                     class: "text-sm text-accent hover:opacity-90",
@@ -2784,6 +2816,11 @@ fn CompanyAssetsCard(
     };
     let navigator = use_navigator();
     let view_all_href = format!("/assets?company_id={}", urlencoding_minimal(&company_id));
+    // MAPPS-300: "New Asset" CTA pre-fills this company on the create form.
+    let new_asset_href = format!(
+        "/assets/new?company_id={}",
+        urlencoding_minimal(&company_id)
+    );
     let types_snap = asset_types_resource.read_unchecked();
     // Build an id -> type-name lookup from the (best-effort) type list.
     let type_name = |id: &Option<uuid::Uuid>| -> String {
@@ -2805,6 +2842,11 @@ fn CompanyAssetsCard(
             title: "Assets",
             count,
             actions: rsx! {
+                a {
+                    href: "{new_asset_href}",
+                    class: "text-sm text-accent hover:opacity-90",
+                    "New Asset"
+                }
                 a {
                     href: "{view_all_href}",
                     class: "text-sm text-accent hover:opacity-90",

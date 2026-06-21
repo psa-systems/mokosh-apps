@@ -521,7 +521,10 @@ fn validate_asset_optional(raw: &str, label: &str, max: usize) -> Result<Option<
 pub fn AssetNewPage() -> Element {
     let mut name = use_signal(String::new);
     let mut asset_type = use_signal(String::new);
-    let mut company = use_signal(String::new);
+    // MAPPS-300: pre-fill `company` from the URL so the Company detail
+    // "New Asset" CTA lands on a form already scoped to that company.
+    let mut company =
+        use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     // PMS-352 AC3: `company` holds the selected company UUID; CompanyPicker
     // reports the display name back here so the picker can render the chosen
     // company and a tenant with no companies can create one inline.
