@@ -109,8 +109,21 @@ pub fn Sidebar(props: SidebarProps) -> Element {
         // No brand block - the brand lives in the top bar now. The
         // mobile drawer overlaps the top bar so it gets its own close
         // button at the top.
+        //
+        // MAPPS-285: when the drawer is CLOSED, it is still in the DOM
+        // and rendered off-canvas via `-translate-x-full` for the slide
+        // animation. `lg:hidden` removes it from the accessibility tree
+        // at the lg+ breakpoint (CSS `display: none`), but on smaller
+        // viewports it is still semantically visible - a screen reader
+        // tabs through every link, and the user hears the whole menu a
+        // second time after the (visible) desktop sidebar at the
+        // breakpoint edge. `aria_hidden` ties the AT-visibility to the
+        // `open` state too so the drawer is exposed to AT only while
+        // the user has actually opened it. Same pattern Material UI's
+        // `Drawer` and HeadlessUI's `Dialog.Panel` use.
         aside {
             class: "fixed inset-y-0 left-0 z-50 w-64 bg-surface-2 border-r border-line transform transition-transform duration-300 ease-in-out flex flex-col lg:hidden {mobile_class}",
+            aria_hidden: if props.open { "false" } else { "true" },
             div { class: "flex items-center justify-end h-12 px-2",
                 button {
                     class: "p-2 text-subtle hover:text-content",
