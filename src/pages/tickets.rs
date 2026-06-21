@@ -7,8 +7,8 @@ use serde::Deserialize;
 use crate::components::{
     ticket_status_badge, AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ClockIcon,
     DataTable, IconSize, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select,
-    SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
-    TableRow, Textarea, UserCircleIcon,
+    SelectOption, SortDirection, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
+    TableLoading, TableRow, Textarea, UserCircleIcon,
 };
 use crate::utils::Paginated;
 use crate::Route;
@@ -406,12 +406,48 @@ fn fmt_change_value(v: &Option<serde_json::Value>) -> String {
     }
 }
 
+/// MAPPS-289: sortable columns on the ticket list. Mirrors the
+/// `ContactSortKey` pattern in `contacts.rs`: an enum tracks which
+/// column is active, paired with a `SortDirection`, and the table
+/// reorders client-side over the already-filtered set.
+#[derive(Clone, Copy, PartialEq)]
+enum TicketSortKey {
+    Ticket,
+    Company,
+    Status,
+    Priority,
+    Assigned,
+    Updated,
+}
+
+fn ticket_sort_dir_for(
+    current: &Option<(TicketSortKey, SortDirection)>,
+    key: TicketSortKey,
+) -> Option<SortDirection> {
+    current.and_then(|(k, dir)| if k == key { Some(dir) } else { None })
+}
+
+fn toggle_ticket_sort(
+    current: &mut Signal<Option<(TicketSortKey, SortDirection)>>,
+    key: TicketSortKey,
+) {
+    let next = match *current.read() {
+        Some((k, SortDirection::Ascending)) if k == key => Some((key, SortDirection::Descending)),
+        Some((k, SortDirection::Descending)) if k == key => Some((key, SortDirection::Ascending)),
+        _ => Some((key, SortDirection::Ascending)),
+    };
+    current.set(next);
+}
+
 /// Ticket list page
 #[component]
 pub fn TicketListPage() -> Element {
     let mut search = use_signal(String::new);
     let mut status_filter = use_signal(String::new);
     let mut priority_filter = use_signal(String::new);
+    // MAPPS-289: sortable-column state. Default sort matches the existing
+    // list query (`?sort=-updated_at`) so the first paint is unchanged.
+    let mut sort = use_signal(|| Some((TicketSortKey::Updated, SortDirection::Descending)));
 
     // MAPPS-295: source the status-filter options from the tenant's
     // configured `ticket_statuses` table instead of a hand-rolled slug
@@ -477,7 +513,7 @@ pub fn TicketListPage() -> Element {
         "" => String::new(),
         raw => humanize_priority(raw),
     };
-    let filtered_tickets: Vec<RemoteTicket> = remote_tickets
+    let mut filtered_tickets: Vec<RemoteTicket> = remote_tickets
         .iter()
         .filter(|t| {
             if !search_term.is_empty() {
@@ -504,6 +540,34 @@ pub fn TicketListPage() -> Element {
         })
         .cloned()
         .collect();
+
+    // MAPPS-289: client-side sort over the filtered set. The list query
+    // already asks the server for `?sort=-updated_at`, so the default
+    // sort signal matches that and the first paint is unchanged; a
+    // header click re-orders without an extra round trip.
+    {
+        let snap = *sort.read();
+        if let Some((key, dir)) = snap {
+            filtered_tickets.sort_by(|a, b| {
+                let ord = match key {
+                    TicketSortKey::Ticket => a.ticket_number.cmp(&b.ticket_number),
+                    TicketSortKey::Company => a.company_name.cmp(&b.company_name),
+                    TicketSortKey::Status => a.status.name.cmp(&b.status.name),
+                    TicketSortKey::Priority => a.priority.name.cmp(&b.priority.name),
+                    TicketSortKey::Assigned => a
+                        .assigned_to_name
+                        .as_deref()
+                        .unwrap_or("")
+                        .cmp(b.assigned_to_name.as_deref().unwrap_or("")),
+                    TicketSortKey::Updated => a.updated_at.cmp(&b.updated_at),
+                };
+                match dir {
+                    SortDirection::Ascending => ord,
+                    SortDirection::Descending => ord.reverse(),
+                }
+            });
+        }
+    }
 
     // MAPPS-295: build the Status filter options from the tenant's actual
     // status set. A still-loading or empty resource just shows the "All
@@ -586,12 +650,47 @@ pub fn TicketListPage() -> Element {
                     striped: true,
                     TableHead {
                         TableRow {
-                            TableHeader { sortable: true, "Ticket" }
-                            TableHeader { sortable: true, "Company" }
-                            TableHeader { sortable: true, "Status" }
-                            TableHeader { sortable: true, "Priority" }
-                            TableHeader { sortable: true, "Assigned To" }
-                            TableHeader { sortable: true, "Updated" }
+                            {
+                                let sort_snap = *sort.read();
+                                rsx! {
+                                    TableHeader {
+                                        sortable: true,
+                                        sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Ticket),
+                                        onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Ticket),
+                                        "Ticket"
+                                    }
+                                    TableHeader {
+                                        sortable: true,
+                                        sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Company),
+                                        onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Company),
+                                        "Company"
+                                    }
+                                    TableHeader {
+                                        sortable: true,
+                                        sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Status),
+                                        onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Status),
+                                        "Status"
+                                    }
+                                    TableHeader {
+                                        sortable: true,
+                                        sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Priority),
+                                        onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Priority),
+                                        "Priority"
+                                    }
+                                    TableHeader {
+                                        sortable: true,
+                                        sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Assigned),
+                                        onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Assigned),
+                                        "Assigned To"
+                                    }
+                                    TableHeader {
+                                        sortable: true,
+                                        sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Updated),
+                                        onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Updated),
+                                        "Updated"
+                                    }
+                                }
+                            }
                         }
                     }
                     if is_loading {
