@@ -110,6 +110,8 @@ features = [
     "Event",
     "MediaQueryList",
     "Performance",
+    # MAPPS-292: unsaved-changes guard listens on window's `beforeunload`.
+    "BeforeUnloadEvent",
 ]
 
 [profile.release]
