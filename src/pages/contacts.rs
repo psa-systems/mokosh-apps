@@ -313,12 +313,23 @@ pub fn CompanyListPage() -> Element {
                         TableLoading { columns: 4, rows: 5 }
                     } else if page_rows.is_empty() {
                         if has_filters {
-                            // Filtered to nothing: no CTA (creating won't help);
-                            // guide the user back to the filters.
+                            // Filtered to nothing: MAPPS-291 "Clear filters"
+                            // affordance so the user does not have to find
+                            // every control and reset each one to recover.
                             TableEmpty {
                                 columns: 4,
                                 title: "No companies match your filters".to_string(),
-                                description: "Try clearing or adjusting the filters above.".to_string(),
+                                description: "Adjust the filters above, or clear them to see every company again.".to_string(),
+                                actions: rsx! {
+                                    Button {
+                                        variant: ButtonVariant::Secondary,
+                                        onclick: move |_| {
+                                            search.set(String::new());
+                                            type_filter.set(String::new());
+                                        },
+                                        "Clear filters"
+                                    }
+                                },
                             }
                         } else {
                             TableEmpty {
@@ -3111,12 +3122,23 @@ pub fn ContactListPage() -> Element {
                         TableLoading { columns: 5, rows: 5 }
                     } else if page_rows.is_empty() {
                         if has_filters {
-                            // Filtered to nothing: no CTA (creating won't help);
-                            // guide the user back to the filters.
+                            // MAPPS-291 "Clear filters" affordance on the
+                            // contacts list mirrors the companies list.
                             TableEmpty {
                                 columns: 5,
                                 title: "No contacts match your filters".to_string(),
-                                description: "Try clearing or adjusting the filters above.".to_string(),
+                                description: "Adjust the filters above, or clear them to see every contact again.".to_string(),
+                                actions: rsx! {
+                                    Button {
+                                        variant: ButtonVariant::Secondary,
+                                        onclick: move |_| {
+                                            search.set(String::new());
+                                            contact_type_filter.set(String::new());
+                                            portal_filter.set(String::new());
+                                        },
+                                        "Clear filters"
+                                    }
+                                },
                             }
                         } else {
                             TableEmpty {

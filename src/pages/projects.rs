@@ -591,9 +591,20 @@ pub fn ProjectListPage() -> Element {
                         },
                     }
                 } else {
+                    // MAPPS-291 "Clear filters" affordance on the projects list.
                     crate::components::EmptyState {
                         title: "No projects match the current filters".to_string(),
-                        description: "Try clearing the search or status filter.".to_string(),
+                        description: "Adjust the filters above, or clear them to see every project again.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                onclick: move |_| {
+                                    search.set(String::new());
+                                    status_filter.set(String::new());
+                                },
+                                "Clear filters"
+                            }
+                        },
                     }
                 }
             } else {

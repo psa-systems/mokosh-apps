@@ -387,12 +387,22 @@ pub fn InvoiceListPage() -> Element {
                     if is_loading {
                         TableLoading { columns: 7, rows: 5 }
                     } else if rows.is_empty() && has_filters {
-                        // Filtered to nothing: no CTA (creating won't help);
-                        // guide the user back to the filters.
+                        // MAPPS-291 "Clear filters" affordance on the
+                        // invoices list.
                         TableEmpty {
                             columns: 7,
                             title: "No invoices match your filters".to_string(),
-                            description: "Try clearing or adjusting the filters above.".to_string(),
+                            description: "Adjust the filters above, or clear them to see every invoice again.".to_string(),
+                            actions: rsx! {
+                                Button {
+                                    variant: ButtonVariant::Secondary,
+                                    onclick: move |_| {
+                                        company_filter.set(String::new());
+                                        status_filter.set(String::new());
+                                    },
+                                    "Clear filters"
+                                }
+                            },
                         }
                     } else if rows.is_empty() {
                         TableEmpty {
