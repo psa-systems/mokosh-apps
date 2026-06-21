@@ -959,8 +959,16 @@ struct MonthDayCellProps {
 
 #[component]
 fn MonthDayCell(props: MonthDayCellProps) -> Element {
+    // MAPPS-301: the today highlight was a flat `bg-accent-50`, which is
+    // near-white in Light mode (so today blends into the surrounding
+    // `bg-surface` cells - the QA "very white" report) and jarringly
+    // bright in Dark mode (no dark variant). Use the project's standard
+    // accent-50-light + accent-900/30-dark pair (already used by
+    // `layout.rs::active_nav_class` and the inline-create dropdown rows
+    // in the pickers) plus an inset accent ring so today is unambiguous
+    // at WCAG AA contrast against the neutral cells in both themes.
     let bg_class = if props.is_today {
-        "bg-accent-50"
+        "bg-accent-50 dark:bg-accent-900/30 ring-1 ring-inset ring-accent"
     } else {
         "bg-surface"
     };
