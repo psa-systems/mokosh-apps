@@ -410,6 +410,15 @@ fn read_ticket_prefill_from_url() -> String {
                 if uuid::Uuid::parse_str(&id).is_ok() {
                     return format!("ticket:{id}");
                 }
+                // MAPPS-275: also honour `?project_id=` so the
+                // project-detail "Log Time" affordance can pre-select
+                // that project in the work-item picker. Mirrors the
+                // existing ticket prefill (the picker value is the
+                // `project:<uuid>` / `ticket:<uuid>` discriminator).
+                let pid = params.get("project_id").unwrap_or_default();
+                if uuid::Uuid::parse_str(&pid).is_ok() {
+                    return format!("project:{pid}");
+                }
             }
         }
     }
