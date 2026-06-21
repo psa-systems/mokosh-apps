@@ -387,7 +387,25 @@ pub fn ContractNewPage() -> Element {
     };
     rsx! {
         AppLayout { title: "New Contract",
-            PageHeader { title: "New Contract", subtitle: "Create a new contract" }
+            PageHeader {
+                title: "New Contract",
+                subtitle: "Create a new contract",
+                // MAPPS-294: breadcrumb back to the Contracts list.
+                breadcrumbs: rsx! {
+                    crate::components::Breadcrumbs {
+                        items: vec![
+                            crate::components::BreadcrumbItem {
+                                label: "Contracts".to_string(),
+                                route: Some(Route::ContractList {}),
+                            },
+                            crate::components::BreadcrumbItem {
+                                label: "New Contract".to_string(),
+                                route: None,
+                            },
+                        ],
+                    }
+                },
+            }
             ContractForm { mode: ContractFormMode::Create, initial }
         }
     }

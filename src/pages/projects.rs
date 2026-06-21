@@ -750,6 +750,25 @@ pub fn ProjectNewPage() -> Element {
             PageHeader {
                 title: "New Project",
                 subtitle: "Create a new project",
+                // MAPPS-294: every create form gets a breadcrumb trail back
+                // to its parent list so the user can bail out without
+                // hitting the browser back button (which would otherwise
+                // trigger the MAPPS-292 unsaved-changes guard on a dirty
+                // form for no good reason).
+                breadcrumbs: rsx! {
+                    crate::components::Breadcrumbs {
+                        items: vec![
+                            crate::components::BreadcrumbItem {
+                                label: "Projects".to_string(),
+                                route: Some(Route::ProjectList {}),
+                            },
+                            crate::components::BreadcrumbItem {
+                                label: "New Project".to_string(),
+                                route: None,
+                            },
+                        ],
+                    }
+                },
             }
 
             Card {
