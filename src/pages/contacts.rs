@@ -662,6 +662,9 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             },
         });
         let mode = mode.clone();
+        // MAPPS-293: clone the mode again for the post-success toast so the
+        // outer `mode` is still available in case of an Err branch.
+        let mode_for_toast = mode.clone();
         spawn(async move {
             #[cfg(feature = "web")]
             {
@@ -685,6 +688,13 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                 };
                 match result {
                     Ok(id) => {
+                        // MAPPS-293: confirming success toast. The mode tells
+                        // us whether the user created vs. saved an edit.
+                        let msg = match mode_for_toast {
+                            CompanyFormMode::Create => "Company created.",
+                            CompanyFormMode::Edit { .. } => "Company saved.",
+                        };
+                        crate::hooks::toast::push_toast(crate::components::AlertType::Success, msg);
                         navigator.push(Route::CompanyDetail { id });
                     }
                     Err(err) => {
@@ -3551,6 +3561,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
             body["company_name"] = serde_json::json!(freeform_name);
         }
         let mode = mode.clone();
+        let mode_for_toast = mode.clone();
         spawn(async move {
             #[cfg(feature = "web")]
             {
@@ -3574,6 +3585,12 @@ fn ContactForm(props: ContactFormProps) -> Element {
                 };
                 match result {
                     Ok(id) => {
+                        // MAPPS-293: confirming success toast.
+                        let msg = match mode_for_toast {
+                            ContactFormMode::Create => "Contact created.",
+                            ContactFormMode::Edit { .. } => "Contact saved.",
+                        };
+                        crate::hooks::toast::push_toast(crate::components::AlertType::Success, msg);
                         navigator.push(Route::ContactDetail { id });
                     }
                     Err(err) => {
