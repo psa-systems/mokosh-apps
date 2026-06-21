@@ -413,6 +413,27 @@ pub fn TicketListPage() -> Element {
     let mut status_filter = use_signal(String::new);
     let mut priority_filter = use_signal(String::new);
 
+    // MAPPS-295: source the status-filter options from the tenant's
+    // configured `ticket_statuses` table instead of a hand-rolled slug
+    // list. The list previously hardcoded `new/open/in_progress/pending/
+    // resolved/closed`, while the ticket-detail inline-edit dropdown
+    // already fetches `/tickets/statuses` (PMS-359) - so a tenant whose
+    // workflow includes "Waiting on Client / Waiting on Vendor /
+    // Scheduled" saw those on the detail page but couldn't filter by
+    // them on the list, and the list offered a "Pending" the records
+    // never carried. Source-of-truth is whichever set the server hands
+    // back. Empty fetch (offline / 403) falls back to no options so the
+    // filter just renders the "All Statuses" placeholder, which is
+    // strictly better than fabricating slugs.
+    let status_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketStatus>>("/tickets/statuses")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+
     // Same progressive-enablement pattern as the companies page: try
     // the live backend first, fall back to the seeded demo rows so the
     // page stays demoable when the route isn't deployed yet or the
@@ -446,15 +467,12 @@ pub fn TicketListPage() -> Element {
 
     // Apply search + status/priority filters to the loaded set client-side.
     // The controls previously only updated signals and never narrowed the
-    // list (MAPPS-154); filtering here makes them functional. Comparisons go
-    // through the same humanize helpers the rows use, so the raw server status
-    // ("open", "new", ...) and the option value ("open", "new", ...) normalize
-    // to the same label regardless of casing. An empty selection matches all.
+    // list (MAPPS-154); filtering here makes them functional. Status uses
+    // the tenant's server-side name verbatim (MAPPS-295); priority still
+    // routes through the humanize helper because its options remain the
+    // hardcoded four-level slug set.
     let search_term = search.read().trim().to_lowercase();
-    let status_label_sel = match status_filter.read().as_str() {
-        "" => String::new(),
-        raw => humanize_ticket_status(raw),
-    };
+    let status_name_sel = status_filter.read().clone();
     let priority_label_sel = match priority_filter.read().as_str() {
         "" => String::new(),
         raw => humanize_priority(raw),
@@ -473,8 +491,7 @@ pub fn TicketListPage() -> Element {
                     return false;
                 }
             }
-            if !status_label_sel.is_empty()
-                && humanize_ticket_status(&t.status.name) != status_label_sel
+            if !status_name_sel.is_empty() && !t.status.name.eq_ignore_ascii_case(&status_name_sel)
             {
                 return false;
             }
@@ -488,15 +505,14 @@ pub fn TicketListPage() -> Element {
         .cloned()
         .collect();
 
-    let status_options = vec![
-        SelectOption::new("", "All Statuses"),
-        SelectOption::new("new", "New"),
-        SelectOption::new("open", "Open"),
-        SelectOption::new("in_progress", "In Progress"),
-        SelectOption::new("pending", "Pending"),
-        SelectOption::new("resolved", "Resolved"),
-        SelectOption::new("closed", "Closed"),
-    ];
+    // MAPPS-295: build the Status filter options from the tenant's actual
+    // status set. A still-loading or empty resource just shows the "All
+    // Statuses" placeholder option.
+    let tenant_statuses = status_resource.read_unchecked().clone().unwrap_or_default();
+    let mut status_options = vec![SelectOption::new("", "All Statuses")];
+    for s in tenant_statuses.iter() {
+        status_options.push(SelectOption::new(s.name.clone(), s.name.clone()));
+    }
 
     let priority_options = vec![
         SelectOption::new("", "All Priorities"),
