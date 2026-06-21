@@ -5,9 +5,10 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    ticket_status_badge, AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ClockIcon,
-    DataTable, IconSize, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select,
-    SelectOption, SortDirection, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
+    clear_selection, ticket_status_badge, use_bulk_selection, AppLayout, Badge, BadgeVariant,
+    BulkActionsBar, BulkSelection, Button, ButtonVariant, Card, ClockIcon, DataTable, IconSize,
+    Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectAllHeader, SelectOption,
+    SelectRowCell, SortDirection, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
     TableLoading, TableRow, Textarea, UserCircleIcon,
 };
 use crate::utils::Paginated;
@@ -448,6 +449,11 @@ pub fn TicketListPage() -> Element {
     // MAPPS-289: sortable-column state. Default sort matches the existing
     // list query (`?sort=-updated_at`) so the first paint is unchanged.
     let mut sort = use_signal(|| Some((TicketSortKey::Updated, SortDirection::Descending)));
+    // MAPPS-290: page-scoped bulk selection. The header `SelectAllHeader`
+    // toggles every visible row in/out; per-row `SelectRowCell` toggles
+    // single rows; the `BulkActionsBar` renders the verb buttons when
+    // non-empty and clears itself when a verb fires.
+    let mut selection = use_bulk_selection();
 
     // MAPPS-295: source the status-filter options from the tenant's
     // configured `ticket_statuses` table instead of a hand-rolled slug
@@ -477,7 +483,7 @@ pub fn TicketListPage() -> Element {
     // MAPPS-249: a company context card's "View All" lands here with
     // `?company_id=<uuid>`. When present, scope the fetch to that company so the
     // list shows only its tickets and every row stays inside the same company.
-    let tickets_resource = use_resource(|| async {
+    let mut tickets_resource = use_resource(|| async {
         let token = match crate::hooks::fetch::api::current_access_token() {
             Some(t) => t,
             None => return (Vec::<RemoteTicket>::new(), TicketSource::Demo),
@@ -639,6 +645,49 @@ pub fn TicketListPage() -> Element {
                 }
             }
 
+            // MAPPS-290: bulk actions bar. Renders only when at least one
+            // row is selected. The Delete verb issues parallel DELETE
+            // calls and clears the selection on completion. Adding more
+            // verbs (bulk assign, set priority) follows the same shape.
+            BulkActionsBar {
+                selection,
+                label: "ticket".to_string(),
+                Button {
+                    variant: ButtonVariant::Danger,
+                    onclick: move |_| {
+                        let ids: Vec<String> = selection.read().iter().cloned().collect();
+                        spawn(async move {
+                            #[cfg(feature = "web")]
+                            {
+                                use futures_util::future::join_all;
+                                let futs = ids.iter().map(|id| {
+                                    let path = format!("/tickets/{id}");
+                                    async move {
+                                        crate::hooks::fetch::api::delete_authed(&path).await
+                                    }
+                                });
+                                let results = join_all(futs).await;
+                                let failures = results.iter().filter(|r| r.is_err()).count();
+                                if failures == 0 {
+                                    crate::hooks::toast::push_toast(
+                                        crate::components::AlertType::Success,
+                                        format!("Deleted {} ticket(s).", ids.len()),
+                                    );
+                                } else {
+                                    crate::hooks::toast::push_toast(
+                                        crate::components::AlertType::Error,
+                                        format!("Deleted {} of {}; {} failed.", ids.len() - failures, ids.len(), failures),
+                                    );
+                                }
+                            }
+                            clear_selection(&mut selection);
+                            tickets_resource.restart();
+                        });
+                    },
+                    "Delete selected"
+                }
+            }
+
             // Ticket table
             DataTable {
                 loading: is_loading,
@@ -650,6 +699,11 @@ pub fn TicketListPage() -> Element {
                     striped: true,
                     TableHead {
                         TableRow {
+                            // MAPPS-290: select-all checkbox for the visible page.
+                            SelectAllHeader {
+                                selection,
+                                ids: filtered_tickets.iter().map(|t| t.id.to_string()).collect::<Vec<_>>(),
+                            }
                             {
                                 let sort_snap = *sort.read();
                                 rsx! {
@@ -752,6 +806,11 @@ pub fn TicketListPage() -> Element {
                                         priority: humanize_priority(&ticket.priority.name),
                                         assigned_to: ticket.assigned_to_name.unwrap_or_else(|| "Unassigned".to_string()),
                                         updated: relative_time(ticket.updated_at),
+                                        // MAPPS-290: hand the page-scoped
+                                        // selection signal down so each
+                                        // row's first cell renders a
+                                        // checkbox bound to it.
+                                        selection: Some(selection),
                                     }
                                 }
                             } else {
@@ -824,6 +883,12 @@ struct TicketRowProps {
     priority: String,
     assigned_to: String,
     updated: String,
+    /// MAPPS-290: optional bulk-selection signal. When `Some`, the row
+    /// renders a `SelectRowCell` as its first cell wired to this signal;
+    /// the demo rows pass `None` so the no-backend fallback table still
+    /// fits the same column shape via a hidden first cell.
+    #[props(default)]
+    selection: Option<BulkSelection>,
 }
 
 #[component]
@@ -845,6 +910,16 @@ fn TicketRow(props: TicketRowProps) -> Element {
         TableRow {
             clickable: true,
             onclick: move |_| { navigator.push(Route::TicketDetail { id: id.clone() }); },
+            // MAPPS-290: per-row checkbox in the first column. The cell
+            // stops propagation so toggling the checkbox doesn't also
+            // navigate to the detail page.
+            if let Some(selection) = props.selection {
+                SelectRowCell { selection, id: props.id.clone() }
+            } else {
+                // Demo rows: keep the column shape consistent with the
+                // header by rendering an inert cell.
+                TableCell { class: "w-10", "" }
+            }
             TableCell {
                 div {
                     Link {
