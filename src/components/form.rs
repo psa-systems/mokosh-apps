@@ -315,12 +315,26 @@ pub fn Select(props: SelectProps) -> Element {
                     }
                 }
             }
+            // MAPPS-270: bind the saved value to the `<select>` element
+            // itself (not just per-option `selected` attributes) so the
+            // displayed choice follows the controlled `props.value` after
+            // an external mutation (e.g. the ticket detail inline editors
+            // restart the ticket resource, which re-renders this Select
+            // with a new prop value). Without the element-level `value`
+            // binding the browser keeps the user's last click on screen
+            // even when the underlying state diverges, which read as
+            // "the change failed" on the inline Status / Priority /
+            // Assigned-To editors (the value did persist, the dropdown
+            // just refused to repaint until a manual reload). The
+            // per-option `selected` binding stays for the initial paint
+            // before Dioxus mounts.
             select {
                 id: "{props.name}",
                 name: "{props.name}",
                 class: "{class}",
                 required: props.required,
                 disabled: props.disabled,
+                value: "{props.value}",
                 onchange: move |e| props.onchange.call(e),
                 if !props.placeholder.is_empty() {
                     option { value: "", disabled: true, selected: props.value.is_empty(),
