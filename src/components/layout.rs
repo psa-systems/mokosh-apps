@@ -18,6 +18,32 @@ pub struct AppLayoutProps {
 pub fn AppLayout(props: AppLayoutProps) -> Element {
     let mut sidebar_open = use_signal(|| false);
 
+    // MAPPS-287: keep `document.title` in sync with the page title every
+    // route hands to AppLayout. Without this the tab title was always the
+    // fixed `_mokosh_config` index value ("Mokosh Platform") regardless of
+    // route, which broke browser history, bookmarks, tab identification,
+    // and the title announcement screen readers make on navigation.
+    // Format mirrors Bunyip's pattern: `<page> | Mokosh Platform` when a
+    // page provides a title, plain `Mokosh Platform` otherwise. Runs on
+    // every render so a page that mutates its own `title` prop (e.g. a
+    // detail page swapping "Loading..." for the record name) propagates.
+    {
+        let title = props.title.clone();
+        use_effect(move || {
+            #[cfg(feature = "web")]
+            {
+                if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                    let next = if title.trim().is_empty() {
+                        "Mokosh Platform".to_string()
+                    } else {
+                        format!("{} | Mokosh Platform", title.trim())
+                    };
+                    doc.set_title(&next);
+                }
+            }
+        });
+    }
+
     rsx! {
         // Single full-height viewport: top bar spans the full width
         // (brand + page title + user menu live together), and the
