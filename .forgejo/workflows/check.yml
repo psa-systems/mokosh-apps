@@ -1,6 +1,7 @@
 ---
 
-# Validate code on every push and pull request: clippy, fmt, build, tests.
+# Validate code on every push and pull request by running 'just check'
+# Mirrors the local `just check` + `just test` recipes (which use ./dev/cargo).
 name: Check
 
 on:
@@ -13,12 +14,16 @@ on:
 
 jobs:
   check:
-    name: clippy + fmt + tests
+    name: fmt + clippy + tests
     runs-on: ${{ vars.RUNS_ON_OPENSUSE_BASE_LATEST }}
 
     steps:
       - name: Clone the repository
         uses: https://code.forgejo.org/actions/checkout@v5
+
+      - name: Cap build parallelism
+        # nproc/2 cap: never claim more than half the host (see CI.md "Concurrency cap").
+        run: echo "CARGO_BUILD_JOBS=$(($(nproc) / 2))" >> "$GITHUB_ENV"
 
       - name: Cache Rust build
         uses: https://github.com/Swatinem/rust-cache@v2
@@ -32,10 +37,6 @@ jobs:
       # built by oci-build/Dockerfile for deployment.
       - name: Stub generated CSS asset
         run: mkdir -p assets && touch assets/styles.css
-
-      - name: Cap build parallelism
-        # nproc/2 cap: never claim more than half the host (see CI.md "Concurrency cap").
-        run: echo "CARGO_BUILD_JOBS=$(($(nproc) / 2))" >> "$GITHUB_ENV"
 
       - name: Check formatting
         run: cargo fmt --all --check
