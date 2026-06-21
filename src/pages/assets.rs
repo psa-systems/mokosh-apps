@@ -593,7 +593,25 @@ pub fn AssetNewPage() -> Element {
 
     rsx! {
         AppLayout { title: "New Asset",
-            PageHeader { title: "New Asset", subtitle: "Add a new configuration item" }
+            PageHeader {
+                title: "New Asset",
+                subtitle: "Add a new configuration item",
+                // MAPPS-294: breadcrumb back to the Assets list.
+                breadcrumbs: rsx! {
+                    crate::components::Breadcrumbs {
+                        items: vec![
+                            crate::components::BreadcrumbItem {
+                                label: "Assets".to_string(),
+                                route: Some(Route::AssetList {}),
+                            },
+                            crate::components::BreadcrumbItem {
+                                label: "New Asset".to_string(),
+                                route: None,
+                            },
+                        ],
+                    }
+                },
+            }
 
             Card {
                 form {
