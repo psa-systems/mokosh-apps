@@ -975,7 +975,10 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
 /// path also takes dates and one line item.
 #[component]
 pub fn InvoiceNewPage() -> Element {
-    let mut company_id = use_signal(String::new);
+    // MAPPS-300: pre-fill `company_id` from the URL so the Company detail
+    // "New Invoice" CTA lands on a form already scoped to that company.
+    let mut company_id =
+        use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     let mut company_name = use_signal(String::new);
     let mut invoice_date = use_signal(String::new);
     let mut due_date = use_signal(String::new);

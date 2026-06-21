@@ -679,7 +679,10 @@ pub fn ProjectListPage() -> Element {
 #[component]
 pub fn ProjectNewPage() -> Element {
     let mut name = use_signal(String::new);
-    let mut company = use_signal(String::new);
+    // MAPPS-300: pre-fill `company` from the URL so the Company detail
+    // "New Project" CTA lands on a form already scoped to that company.
+    let mut company =
+        use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     // PMS-367: `company` holds the selected company UUID; CompanyPicker reports
     // the display name back here so the autocomplete renders the chosen company.
     let mut company_name = use_signal(String::new);
