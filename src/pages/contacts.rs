@@ -557,6 +557,35 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let mut postal_err = use_signal(String::new);
     let mut country_err = use_signal(String::new);
 
+    // MAPPS-292: install a `beforeunload` guard while the user has typed
+    // anything into the form. The Company form has roughly ten fields so
+    // a tab close after half-filling it lost everything silently; the
+    // browser now prompts before discarding. The dirty signal compares
+    // every field to its initial value so saving (which navigates away)
+    // does not trigger the prompt because the in-progress submit hits
+    // `is_submitting=true` AFTER the dirty check fires once; we suppress
+    // it then.
+    let initial_for_dirty = initial.clone();
+    let dirty = use_memo(move || {
+        if is_submitting() {
+            return false;
+        }
+        let same_type_default =
+            initial_for_dirty.company_type.is_empty() && *company_type.read() == "client";
+        *name.read() != initial_for_dirty.name
+            || (*company_type.read() != initial_for_dirty.company_type && !same_type_default)
+            || *industry.read() != initial_for_dirty.industry
+            || *website.read() != initial_for_dirty.website
+            || *phone.read() != initial_for_dirty.phone
+            || *line1.read() != initial_for_dirty.address_line1
+            || *line2.read() != initial_for_dirty.address_line2
+            || *city.read() != initial_for_dirty.address_city
+            || *state.read() != initial_for_dirty.address_state
+            || *postal.read() != initial_for_dirty.address_postal_code
+            || *country.read() != initial_for_dirty.address_country
+    });
+    crate::hooks::use_unsaved_guard(dirty.into());
+
     let type_options = vec![
         SelectOption::new("client", "Client"),
         SelectOption::new("prospect", "Prospect"),
