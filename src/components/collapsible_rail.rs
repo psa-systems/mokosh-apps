@@ -43,12 +43,18 @@ pub fn CollapsibleRail(
     };
     rsx! {
         // Wide screens: inline rail, collapses to a thin handle.
+        // MAPPS-286: bind `aria-expanded` to the rail's collapsed state so
+        // assistive tech announces "collapsed" / "expanded" alongside the
+        // existing aria-label. The chevron glyph alone was not announced
+        // (it is a punctuation char, not a recognised symbol), so the
+        // previous toggles told a screen-reader user nothing about state.
         div { class: "hidden lg:block relative",
             if collapsed() {
                 button {
                     class: "h-full px-1 text-subtle hover:text-content",
                     title: "Expand panel",
                     aria_label: "Expand panel",
+                    aria_expanded: "false",
                     onclick: move |_| collapsed.set(false),
                     "{chevron_expand}"
                 }
@@ -59,6 +65,7 @@ pub fn CollapsibleRail(
                             class: "px-1 text-subtle hover:text-content",
                             title: "Collapse panel",
                             aria_label: "Collapse panel",
+                            aria_expanded: "true",
                             onclick: move |_| collapsed.set(true),
                             "{chevron_collapse}"
                         }
@@ -73,6 +80,7 @@ pub fn CollapsibleRail(
                 class: "px-2 py-1 text-muted",
                 title: "Open panel",
                 aria_label: "Open panel",
+                aria_expanded: if is_overlay_open { "true" } else { "false" },
                 onclick: move |_| {
                     if is_overlay_open {
                         open_overlay.set(None);
