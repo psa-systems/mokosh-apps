@@ -278,10 +278,22 @@ pub fn ContractListPage() -> Element {
                         if has_filters {
                             // Filtered to nothing: no CTA (creating won't help);
                             // guide the user back to the filters.
+                            // MAPPS-291: one-click "Clear filters" affordance.
                             TableEmpty {
                                 columns: 6,
                                 title: "No contracts match your filters".to_string(),
-                                description: "Try clearing or adjusting the filters above.".to_string(),
+                                description: "Adjust the filters above, or clear them to see every contract again.".to_string(),
+                                actions: rsx! {
+                                    Button {
+                                        variant: ButtonVariant::Secondary,
+                                        onclick: move |_| {
+                                            company_filter.set(String::new());
+                                            status_filter.set(String::new());
+                                            type_filter.set(String::new());
+                                        },
+                                        "Clear filters"
+                                    }
+                                },
                             }
                         } else {
                             TableEmpty {

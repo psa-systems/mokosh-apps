@@ -617,12 +617,26 @@ pub fn TicketListPage() -> Element {
                                 },
                             }
                         } else {
-                            // Filtered to nothing: no CTA (creating won't help);
-                            // guide the user back to the filters.
+                            // Filtered to nothing: MAPPS-291 adds a one-click
+                            // "Clear filters" affordance so the user does not
+                            // have to find every filter control and reset
+                            // each one to recover. Resets the three signals
+                            // the toolbar above mounts.
                             TableEmpty {
                                 columns: 6,
                                 title: "No tickets match your filters".to_string(),
-                                description: "Try clearing or adjusting the filters above.".to_string(),
+                                description: "Adjust the filters above, or clear them to see every ticket again.".to_string(),
+                                actions: rsx! {
+                                    Button {
+                                        variant: ButtonVariant::Secondary,
+                                        onclick: move |_| {
+                                            search.set(String::new());
+                                            status_filter.set(String::new());
+                                            priority_filter.set(String::new());
+                                        },
+                                        "Clear filters"
+                                    }
+                                },
                             }
                         }
                     } else {
