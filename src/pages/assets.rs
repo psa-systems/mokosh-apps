@@ -117,6 +117,18 @@ struct AuditEntry {
     changes: Option<serde_json::Value>,
 }
 
+/// MAPPS-304: render-side state for the asset Change History panel. Lets
+/// the panel distinguish "still loading", "loaded, no entries", and
+/// "fetch failed" - previously every fetch outcome collapsed into a
+/// silent empty list that rendered "No history yet" even on permission
+/// or network failures.
+#[derive(Clone, Debug)]
+enum AuditPanelState {
+    Loading,
+    Ready(Vec<AuditEntry>),
+    Failed(String),
+}
+
 /// User option for resolving audit actor ids to display names (`/auth/users`).
 #[derive(Clone, Debug, Deserialize)]
 struct UserOpt {
@@ -894,7 +906,18 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         }
     });
     let id_for_audit = props.id.clone();
-    let audit_resource = use_resource(move || {
+    // MAPPS-304: surface the audit-log fetch outcome as `Result` so the
+    // panel can render "Loading…", a real entry list, an empty-list state,
+    // and a permission / network failure distinctly. Before, every failure
+    // (including the 403 `RequireAdmin` gate on `/assets/{id}/audit-log`
+    // that a non-admin role hits) was silently collapsed into the
+    // `unwrap_or_default()` empty branch, which rendered as "No history
+    // yet" - the QA report's "Change history does not work at all". The
+    // sibling PMS-447 single-tenancy admin floor stops most users from
+    // hitting that gate, but this distinguishes the remaining failure
+    // cases (network drop, future role downgrade) from a genuinely-empty
+    // audit log.
+    let audit_resource: Resource<Result<Vec<AuditEntry>, String>> = use_resource(move || {
         let id = id_for_audit.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -902,9 +925,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                 "/assets/{id}/audit-log"
             ))
             .await
-            .ok()
             .map(|p| p.data)
-            .unwrap_or_default()
         }
     });
     // PMS-344: tickets that reference this asset. Server-side filter on
@@ -1026,7 +1047,15 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     let relationships = rel_resource.read_unchecked().clone().unwrap_or_default();
     let config_items = cfg_resource.read_unchecked().clone().unwrap_or_default();
     let credentials = cred_resource.read_unchecked().clone().unwrap_or_default();
-    let audit = audit_resource.read_unchecked().clone().unwrap_or_default();
+    // MAPPS-304: project the audit Resource into a three-way render state:
+    // `Loading` (resource still in flight), `Ready(Vec)` (fetched - may be
+    // empty), `Err(String)` (fetch failed - render a recoverable message,
+    // not a misleading "No history yet").
+    let audit_state: AuditPanelState = match audit_resource.read_unchecked().as_ref() {
+        None => AuditPanelState::Loading,
+        Some(Ok(items)) => AuditPanelState::Ready(items.clone()),
+        Some(Err(e)) => AuditPanelState::Failed(e.clone()),
+    };
     let related_tickets = tickets_resource
         .read_unchecked()
         .clone()
@@ -1049,7 +1078,15 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         _ => false,
     };
     let edited_label = if was_edited {
-        audit.first().map(|e| {
+        // MAPPS-304: read the most recent audit entry through the new
+        // `AuditPanelState`. `Failed` and `Loading` fall through to
+        // `None` so the "Edited by X" label is hidden rather than
+        // wrong - the panel itself shows the real failure.
+        let latest = match &audit_state {
+            AuditPanelState::Ready(items) => items.first(),
+            _ => None,
+        };
+        latest.map(|e| {
             let who = actor_name(&users, &e.performed_by_id);
             let when = fmt_datetime(&e.performed_at);
             if who == "-" {
@@ -1422,9 +1459,28 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 }
 
                                 Card { title: "Change History",
-                                    if audit.is_empty() {
-                                        p { class: "text-sm text-subtle italic", "No history yet." }
-                                    } else {
+                                    match audit_state {
+                                        AuditPanelState::Loading => rsx! {
+                                            p { class: "text-sm text-subtle italic", "Loading…" }
+                                        },
+                                        AuditPanelState::Failed(ref e) => rsx! {
+                                            // MAPPS-304: a real failure (403, network, etc.)
+                                            // no longer rendered as "No history yet". The
+                                            // user knows to retry; admins know the gate
+                                            // applies.
+                                            p {
+                                                class: "text-sm text-red-600 dark:text-red-400",
+                                                "Could not load change history."
+                                            }
+                                            p {
+                                                class: "text-xs text-subtle mt-1",
+                                                "{e}"
+                                            }
+                                        },
+                                        AuditPanelState::Ready(ref audit) if audit.is_empty() => rsx! {
+                                            p { class: "text-sm text-subtle italic", "No history yet." }
+                                        },
+                                        AuditPanelState::Ready(ref audit) => rsx! {
                                         div { class: "space-y-3 text-sm",
                                             for e in audit.iter().take(15) {
                                                 {
@@ -1486,6 +1542,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                 }
                                             }
                                         }
+                                        },
                                     }
                                 }
                             }
