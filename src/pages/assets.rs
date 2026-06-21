@@ -117,6 +117,18 @@ struct AuditEntry {
     changes: Option<serde_json::Value>,
 }
 
+/// MAPPS-304: render-side state for the asset Change History panel. Lets
+/// the panel distinguish "still loading", "loaded, no entries", and
+/// "fetch failed" - previously every fetch outcome collapsed into a
+/// silent empty list that rendered "No history yet" even on permission
+/// or network failures.
+#[derive(Clone, Debug)]
+enum AuditPanelState {
+    Loading,
+    Ready(Vec<AuditEntry>),
+    Failed(String),
+}
+
 /// User option for resolving audit actor ids to display names (`/auth/users`).
 #[derive(Clone, Debug, Deserialize)]
 struct UserOpt {
@@ -291,14 +303,66 @@ fn fmt_date(s: &Option<String>) -> String {
     }
 }
 
+/// MAPPS-305: the four bucket states the asset-detail Warranty row keys
+/// its "Needs refresh" badge on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WarrantyRefreshStatus {
+    /// The warranty date is unset or unparseable.
+    Unknown,
+    /// More than `WARRANTY_REFRESH_THRESHOLD_DAYS` until expiry.
+    Healthy,
+    /// Within `WARRANTY_REFRESH_THRESHOLD_DAYS` of expiry.
+    ExpiringSoon,
+    /// Warranty date is in the past.
+    Expired,
+}
+
+const WARRANTY_REFRESH_THRESHOLD_DAYS: i64 = 30;
+
+/// Compute the refresh-status bucket from a server-formatted (`YYYY-MM-DD`)
+/// warranty date string compared to today (in the user's timezone, via
+/// `user_today`). Pure read-only - the field's not mutated, the cue is
+/// derived at render time, no scheduled job needed.
+fn warranty_refresh_status(s: &Option<String>) -> WarrantyRefreshStatus {
+    let Some(raw) = s else {
+        return WarrantyRefreshStatus::Unknown;
+    };
+    let Ok(date) = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") else {
+        return WarrantyRefreshStatus::Unknown;
+    };
+    let today = crate::utils::datetime::user_today();
+    let days_until = (date - today).num_days();
+    if days_until < 0 {
+        WarrantyRefreshStatus::Expired
+    } else if days_until <= WARRANTY_REFRESH_THRESHOLD_DAYS {
+        WarrantyRefreshStatus::ExpiringSoon
+    } else {
+        WarrantyRefreshStatus::Healthy
+    }
+}
+
 /// Asset list page
 #[component]
 pub fn AssetListPage() -> Element {
     let mut search = use_signal(String::new);
+    // MAPPS-303: page-scoped bulk selection (built on MAPPS-290's
+    // `use_bulk_selection`). Drives the per-row checkbox, the
+    // `SelectAllHeader`, and the `BulkActionsBar` "Bulk edit" verb
+    // below; the bar opens a modal whose submit fires N parallel
+    // `PUT /assets/{id}` calls.
+    let mut selection = crate::components::use_bulk_selection();
+    let mut bulk_modal_open = use_signal(|| false);
+    let mut bulk_change_status = use_signal(|| false);
+    let mut bulk_status = use_signal(|| "active".to_string());
+    let mut bulk_change_company = use_signal(|| false);
+    let mut bulk_company_id = use_signal(String::new);
+    let mut bulk_company_name = use_signal(String::new);
+    let mut bulk_submitting = use_signal(|| false);
+    let mut bulk_error = use_signal(String::new);
 
     // MAPPS-249: scope to one company when a context card's "View All" passes
     // `?company_id=<uuid>`.
-    let assets_resource = use_resource(|| async {
+    let mut assets_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let mut path = String::from("/assets");
         if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
@@ -394,6 +458,28 @@ pub fn AssetListPage() -> Element {
                 }
             }
 
+            // MAPPS-303: bulk-edit affordance. Renders only when at least
+            // one asset is selected. The Bulk edit verb opens the modal
+            // below; the user picks which fields to change + new values,
+            // and submit fires N parallel `PUT /assets/{id}` calls.
+            crate::components::BulkActionsBar {
+                selection,
+                label: "asset".to_string(),
+                Button {
+                    variant: ButtonVariant::Primary,
+                    onclick: move |_| {
+                        // Reset per-open form state.
+                        bulk_change_status.set(false);
+                        bulk_change_company.set(false);
+                        bulk_company_id.set(String::new());
+                        bulk_company_name.set(String::new());
+                        bulk_error.set(String::new());
+                        bulk_modal_open.set(true);
+                    },
+                    "Bulk edit"
+                }
+            }
+
             DataTable {
                 total_items: total,
                 current_page: 1,
@@ -402,6 +488,11 @@ pub fn AssetListPage() -> Element {
                 Table {
                     TableHead {
                         TableRow {
+                            // MAPPS-303: select-all checkbox for the page.
+                            crate::components::SelectAllHeader {
+                                selection,
+                                ids: filtered.iter().map(|a| a.id.to_string()).collect::<Vec<_>>(),
+                            }
                             TableHeader { "Asset" }
                             TableHeader { "Type" }
                             TableHeader { "Company" }
@@ -436,6 +527,11 @@ pub fn AssetListPage() -> Element {
                                     let aid = a.id.to_string();
                                     rsx! {
                                         TableRow { key: "{aid}",
+                                            // MAPPS-303: per-row checkbox.
+                                            crate::components::SelectRowCell {
+                                                selection,
+                                                id: aid.clone(),
+                                            }
                                             TableCell {
                                                 Link {
                                                     to: Route::AssetDetail { id: aid.clone() },
@@ -447,6 +543,165 @@ pub fn AssetListPage() -> Element {
                                             TableCell { "{cname}" }
                                             TableCell { class: "font-mono text-sm", "{serial}" }
                                             TableCell { Badge { variant, "{label}" } }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // MAPPS-303: bulk-edit modal. Hidden until the BulkActionsBar
+            // verb opens it. Each field is gated on its own "Change this
+            // field" checkbox so the user can change a subset
+            // (Location-only is the QA's office-move use case). Submit
+            // builds a minimal partial body and fires N parallel PUTs.
+            if bulk_modal_open() {
+                {
+                    let status_opts = vec![
+                        SelectOption::new("active", "Active"),
+                        SelectOption::new("in_stock", "In Stock"),
+                        SelectOption::new("in_repair", "In Repair"),
+                        SelectOption::new("retired", "Retired"),
+                        SelectOption::new("inactive", "Inactive"),
+                    ];
+                    let count = selection.read().len();
+                    let count_label = if count == 1 {
+                        "1 asset".to_string()
+                    } else {
+                        format!("{} assets", count)
+                    };
+                    let company_picker_selected_id = if bulk_company_id.read().is_empty() {
+                        None
+                    } else {
+                        Some(bulk_company_id.read().clone())
+                    };
+                    rsx! {
+                        Modal {
+                            open: true,
+                            title: format!("Bulk edit ({})", count_label),
+                            onclose: move |_| {
+                                if !bulk_submitting() {
+                                    bulk_modal_open.set(false);
+                                }
+                            },
+                            footer: rsx! {
+                                Button {
+                                    variant: ButtonVariant::Secondary,
+                                    onclick: move |_| {
+                                        if !bulk_submitting() {
+                                            bulk_modal_open.set(false);
+                                        }
+                                    },
+                                    "Cancel"
+                                }
+                                Button {
+                                    variant: ButtonVariant::Primary,
+                                    disabled: bulk_submitting(),
+                                    onclick: move |_| {
+                                        // Validate that at least one field is being changed.
+                                        if !bulk_change_status() && !bulk_change_company() {
+                                            bulk_error.set("Pick at least one field to change.".to_string());
+                                            return;
+                                        }
+                                        // Build the partial body.
+                                        let mut body = serde_json::Map::new();
+                                        if bulk_change_status() {
+                                            body.insert("status".into(), serde_json::json!(bulk_status.read().as_str()));
+                                        }
+                                        if bulk_change_company() {
+                                            match uuid::Uuid::parse_str(bulk_company_id.read().as_str()) {
+                                                Ok(cid) => {
+                                                    body.insert("company_id".into(), serde_json::json!(cid));
+                                                }
+                                                Err(_) => {
+                                                    bulk_error.set("Pick a company first.".to_string());
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                        let body = serde_json::Value::Object(body);
+                                        let ids: Vec<String> = selection.read().iter().cloned().collect();
+                                        bulk_submitting.set(true);
+                                        bulk_error.set(String::new());
+                                        spawn(async move {
+                                            #[cfg(feature = "web")]
+                                            {
+                                                use futures_util::future::join_all;
+                                                let futs = ids.iter().map(|id| {
+                                                    let path = format!("/assets/{id}");
+                                                    let body = body.clone();
+                                                    async move {
+                                                        crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await
+                                                    }
+                                                });
+                                                let results = join_all(futs).await;
+                                                let failures = results.iter().filter(|r| r.is_err()).count();
+                                                if failures == 0 {
+                                                    crate::hooks::toast::push_toast(
+                                                        crate::components::AlertType::Success,
+                                                        format!("Updated {} asset(s).", ids.len()),
+                                                    );
+                                                } else {
+                                                    crate::hooks::toast::push_toast(
+                                                        crate::components::AlertType::Error,
+                                                        format!("Updated {} of {}; {} failed.", ids.len() - failures, ids.len(), failures),
+                                                    );
+                                                }
+                                            }
+                                            bulk_submitting.set(false);
+                                            bulk_modal_open.set(false);
+                                            crate::components::clear_selection(&mut selection);
+                                            assets_resource.restart();
+                                        });
+                                    },
+                                    if bulk_submitting() { "Saving…" } else { "Apply to selected" }
+                                }
+                            },
+                            div { class: "space-y-4",
+                                if !bulk_error.read().is_empty() {
+                                    p { class: "text-sm text-red-600 dark:text-red-400", "{bulk_error}" }
+                                }
+                                p { class: "text-sm text-muted",
+                                    "Each field below is changed only when its checkbox is on. Anything left unchecked stays as-is on every selected asset."
+                                }
+                                div { class: "space-y-3",
+                                    crate::components::Checkbox {
+                                        name: "bulk_change_status",
+                                        label: "Change Status",
+                                        checked: bulk_change_status(),
+                                        onchange: move |e: FormEvent| bulk_change_status.set(e.checked()),
+                                    }
+                                    if bulk_change_status() {
+                                        Select {
+                                            name: "bulk_status",
+                                            label: "Status".to_string(),
+                                            options: status_opts.clone(),
+                                            value: bulk_status.read().clone(),
+                                            onchange: move |e: FormEvent| bulk_status.set(e.value()),
+                                        }
+                                    }
+                                }
+                                div { class: "space-y-3",
+                                    crate::components::Checkbox {
+                                        name: "bulk_change_company",
+                                        label: "Change Company",
+                                        checked: bulk_change_company(),
+                                        onchange: move |e: FormEvent| bulk_change_company.set(e.checked()),
+                                    }
+                                    if bulk_change_company() {
+                                        crate::components::CompanyPicker {
+                                            value: bulk_company_name.read().clone(),
+                                            selected_id: company_picker_selected_id,
+                                            onselect: move |(id, name): (String, String)| {
+                                                bulk_company_id.set(id);
+                                                bulk_company_name.set(name);
+                                            },
+                                            onclear: move |_| {
+                                                bulk_company_id.set(String::new());
+                                                bulk_company_name.set(String::new());
+                                            },
                                         }
                                     }
                                 }
@@ -521,7 +776,10 @@ fn validate_asset_optional(raw: &str, label: &str, max: usize) -> Result<Option<
 pub fn AssetNewPage() -> Element {
     let mut name = use_signal(String::new);
     let mut asset_type = use_signal(String::new);
-    let mut company = use_signal(String::new);
+    // MAPPS-300: pre-fill `company` from the URL so the Company detail
+    // "New Asset" CTA lands on a form already scoped to that company.
+    let mut company =
+        use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     // PMS-352 AC3: `company` holds the selected company UUID; CompanyPicker
     // reports the display name back here so the picker can render the chosen
     // company and a tenant with no companies can create one inline.
@@ -578,7 +836,25 @@ pub fn AssetNewPage() -> Element {
 
     rsx! {
         AppLayout { title: "New Asset",
-            PageHeader { title: "New Asset", subtitle: "Add a new configuration item" }
+            PageHeader {
+                title: "New Asset",
+                subtitle: "Add a new configuration item",
+                // MAPPS-294: breadcrumb back to the Assets list.
+                breadcrumbs: rsx! {
+                    crate::components::Breadcrumbs {
+                        items: vec![
+                            crate::components::BreadcrumbItem {
+                                label: "Assets".to_string(),
+                                route: Some(Route::AssetList {}),
+                            },
+                            crate::components::BreadcrumbItem {
+                                label: "New Asset".to_string(),
+                                route: None,
+                            },
+                        ],
+                    }
+                },
+            }
 
             Card {
                 form {
@@ -891,7 +1167,18 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         }
     });
     let id_for_audit = props.id.clone();
-    let audit_resource = use_resource(move || {
+    // MAPPS-304: surface the audit-log fetch outcome as `Result` so the
+    // panel can render "Loading…", a real entry list, an empty-list state,
+    // and a permission / network failure distinctly. Before, every failure
+    // (including the 403 `RequireAdmin` gate on `/assets/{id}/audit-log`
+    // that a non-admin role hits) was silently collapsed into the
+    // `unwrap_or_default()` empty branch, which rendered as "No history
+    // yet" - the QA report's "Change history does not work at all". The
+    // sibling PMS-447 single-tenancy admin floor stops most users from
+    // hitting that gate, but this distinguishes the remaining failure
+    // cases (network drop, future role downgrade) from a genuinely-empty
+    // audit log.
+    let audit_resource: Resource<Result<Vec<AuditEntry>, String>> = use_resource(move || {
         let id = id_for_audit.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -899,9 +1186,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                 "/assets/{id}/audit-log"
             ))
             .await
-            .ok()
             .map(|p| p.data)
-            .unwrap_or_default()
         }
     });
     // PMS-344: tickets that reference this asset. Server-side filter on
@@ -1023,7 +1308,15 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     let relationships = rel_resource.read_unchecked().clone().unwrap_or_default();
     let config_items = cfg_resource.read_unchecked().clone().unwrap_or_default();
     let credentials = cred_resource.read_unchecked().clone().unwrap_or_default();
-    let audit = audit_resource.read_unchecked().clone().unwrap_or_default();
+    // MAPPS-304: project the audit Resource into a three-way render state:
+    // `Loading` (resource still in flight), `Ready(Vec)` (fetched - may be
+    // empty), `Err(String)` (fetch failed - render a recoverable message,
+    // not a misleading "No history yet").
+    let audit_state: AuditPanelState = match audit_resource.read_unchecked().as_ref() {
+        None => AuditPanelState::Loading,
+        Some(Ok(items)) => AuditPanelState::Ready(items.clone()),
+        Some(Err(e)) => AuditPanelState::Failed(e.clone()),
+    };
     let related_tickets = tickets_resource
         .read_unchecked()
         .clone()
@@ -1046,7 +1339,15 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         _ => false,
     };
     let edited_label = if was_edited {
-        audit.first().map(|e| {
+        // MAPPS-304: read the most recent audit entry through the new
+        // `AuditPanelState`. `Failed` and `Loading` fall through to
+        // `None` so the "Edited by X" label is hidden rather than
+        // wrong - the panel itself shows the real failure.
+        let latest = match &audit_state {
+            AuditPanelState::Ready(items) => items.first(),
+            _ => None,
+        };
+        latest.map(|e| {
             let who = actor_name(&users, &e.performed_by_id);
             let when = fmt_datetime(&e.performed_at);
             if who == "-" {
@@ -1129,6 +1430,14 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     let serial = a.serial_number.clone().unwrap_or_else(dash);
                     let tag = a.asset_tag.clone().unwrap_or_else(dash);
                     let warranty = fmt_date(&a.warranty_expiry);
+                    // MAPPS-305: derive a "Needs refresh" cue from the warranty
+                    // date. Expired (date < today) is "Expired"; within 30 days
+                    // is "Expires soon". Both signal a refresh / replacement
+                    // candidate without an admin having to spreadsheet-sweep
+                    // the asset list manually. Threshold is hardcoded at 30
+                    // days for now; future config-driven threshold is the
+                    // documented next step on the ticket.
+                    let warranty_status = warranty_refresh_status(&a.warranty_expiry);
                     let purchased = fmt_date(&a.purchase_date);
                     // Snapshot used to seed the edit form when opened.
                     let a_edit = a.clone();
@@ -1407,9 +1716,28 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                             span { class: "text-muted", "Status" }
                                             Badge { variant: status_variant, "{status_label}" }
                                         }
-                                        div { class: "flex justify-between",
+                                        div { class: "flex justify-between items-center",
                                             span { class: "text-muted", "Warranty" }
-                                            span { class: "font-medium", "{warranty}" }
+                                            div { class: "flex items-center gap-2",
+                                                span { class: "font-medium", "{warranty}" }
+                                                // MAPPS-305: surface the refresh cue.
+                                                match warranty_status {
+                                                    WarrantyRefreshStatus::Expired => rsx! {
+                                                        Badge {
+                                                            variant: BadgeVariant::Red,
+                                                            "Needs refresh"
+                                                        }
+                                                    },
+                                                    WarrantyRefreshStatus::ExpiringSoon => rsx! {
+                                                        Badge {
+                                                            variant: BadgeVariant::Yellow,
+                                                            "Expires soon"
+                                                        }
+                                                    },
+                                                    WarrantyRefreshStatus::Healthy
+                                                    | WarrantyRefreshStatus::Unknown => rsx! {},
+                                                }
+                                            }
                                         }
                                         div { class: "flex justify-between",
                                             span { class: "text-muted", "Purchased" }
@@ -1419,9 +1747,28 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 }
 
                                 Card { title: "Change History",
-                                    if audit.is_empty() {
-                                        p { class: "text-sm text-subtle italic", "No history yet." }
-                                    } else {
+                                    match audit_state {
+                                        AuditPanelState::Loading => rsx! {
+                                            p { class: "text-sm text-subtle italic", "Loading…" }
+                                        },
+                                        AuditPanelState::Failed(ref e) => rsx! {
+                                            // MAPPS-304: a real failure (403, network, etc.)
+                                            // no longer rendered as "No history yet". The
+                                            // user knows to retry; admins know the gate
+                                            // applies.
+                                            p {
+                                                class: "text-sm text-red-600 dark:text-red-400",
+                                                "Could not load change history."
+                                            }
+                                            p {
+                                                class: "text-xs text-subtle mt-1",
+                                                "{e}"
+                                            }
+                                        },
+                                        AuditPanelState::Ready(ref audit) if audit.is_empty() => rsx! {
+                                            p { class: "text-sm text-subtle italic", "No history yet." }
+                                        },
+                                        AuditPanelState::Ready(ref audit) => rsx! {
                                         div { class: "space-y-3 text-sm",
                                             for e in audit.iter().take(15) {
                                                 {
@@ -1483,6 +1830,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                 }
                                             }
                                         }
+                                        },
                                     }
                                 }
                             }

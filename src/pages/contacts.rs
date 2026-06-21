@@ -313,12 +313,23 @@ pub fn CompanyListPage() -> Element {
                         TableLoading { columns: 4, rows: 5 }
                     } else if page_rows.is_empty() {
                         if has_filters {
-                            // Filtered to nothing: no CTA (creating won't help);
-                            // guide the user back to the filters.
+                            // Filtered to nothing: MAPPS-291 "Clear filters"
+                            // affordance so the user does not have to find
+                            // every control and reset each one to recover.
                             TableEmpty {
                                 columns: 4,
                                 title: "No companies match your filters".to_string(),
-                                description: "Try clearing or adjusting the filters above.".to_string(),
+                                description: "Adjust the filters above, or clear them to see every company again.".to_string(),
+                                actions: rsx! {
+                                    Button {
+                                        variant: ButtonVariant::Secondary,
+                                        onclick: move |_| {
+                                            search.set(String::new());
+                                            type_filter.set(String::new());
+                                        },
+                                        "Clear filters"
+                                    }
+                                },
                             }
                         } else {
                             TableEmpty {
@@ -557,6 +568,35 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let mut postal_err = use_signal(String::new);
     let mut country_err = use_signal(String::new);
 
+    // MAPPS-292: install a `beforeunload` guard while the user has typed
+    // anything into the form. The Company form has roughly ten fields so
+    // a tab close after half-filling it lost everything silently; the
+    // browser now prompts before discarding. The dirty signal compares
+    // every field to its initial value so saving (which navigates away)
+    // does not trigger the prompt because the in-progress submit hits
+    // `is_submitting=true` AFTER the dirty check fires once; we suppress
+    // it then.
+    let initial_for_dirty = initial.clone();
+    let dirty = use_memo(move || {
+        if is_submitting() {
+            return false;
+        }
+        let same_type_default =
+            initial_for_dirty.company_type.is_empty() && *company_type.read() == "client";
+        *name.read() != initial_for_dirty.name
+            || (*company_type.read() != initial_for_dirty.company_type && !same_type_default)
+            || *industry.read() != initial_for_dirty.industry
+            || *website.read() != initial_for_dirty.website
+            || *phone.read() != initial_for_dirty.phone
+            || *line1.read() != initial_for_dirty.address_line1
+            || *line2.read() != initial_for_dirty.address_line2
+            || *city.read() != initial_for_dirty.address_city
+            || *state.read() != initial_for_dirty.address_state
+            || *postal.read() != initial_for_dirty.address_postal_code
+            || *country.read() != initial_for_dirty.address_country
+    });
+    crate::hooks::use_unsaved_guard(dirty.into());
+
     let type_options = vec![
         SelectOption::new("client", "Client"),
         SelectOption::new("prospect", "Prospect"),
@@ -633,6 +673,9 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             },
         });
         let mode = mode.clone();
+        // MAPPS-293: clone the mode again for the post-success toast so the
+        // outer `mode` is still available in case of an Err branch.
+        let mode_for_toast = mode.clone();
         spawn(async move {
             #[cfg(feature = "web")]
             {
@@ -656,6 +699,13 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                 };
                 match result {
                     Ok(id) => {
+                        // MAPPS-293: confirming success toast. The mode tells
+                        // us whether the user created vs. saved an edit.
+                        let msg = match mode_for_toast {
+                            CompanyFormMode::Create => "Company created.",
+                            CompanyFormMode::Edit { .. } => "Company saved.",
+                        };
+                        crate::hooks::toast::push_toast(crate::components::AlertType::Success, msg);
                         navigator.push(Route::CompanyDetail { id });
                     }
                     Err(err) => {
@@ -878,6 +928,36 @@ fn validate_name_field(raw: &str) -> Result<String, String> {
         return Err("Company name must not contain control characters.".to_string());
     }
     Ok(trimmed.to_string())
+}
+
+/// MAPPS-283: render a stored canonical phone number with readable
+/// separators so contacts and companies don't display as a raw run of
+/// digits. The server stores phone numbers as the trimmed-formatting
+/// output of [`validate_phone_field`] (digits with an optional leading
+/// `+`); this helper reverses that for the read surface.
+///
+/// Rules: a 10-digit US number renders as `(555) 123-4567`; an 11-digit
+/// number starting with `1` renders as `+1 (555) 123-4567`; anything
+/// else (E.164 with a non-US country code, partial entry, legacy
+/// payloads with extensions) passes through unchanged so we never
+/// mangle a non-NANP number into a US shape. Empty input renders as the
+/// empty string so callers can chain `.unwrap_or_default()`.
+pub fn format_phone(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let digits: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
+    match digits.len() {
+        10 => format!("({}) {}-{}", &digits[0..3], &digits[3..6], &digits[6..10]),
+        11 if digits.starts_with('1') => format!(
+            "+1 ({}) {}-{}",
+            &digits[1..4],
+            &digits[4..7],
+            &digits[7..11]
+        ),
+        _ => trimmed.to_string(),
+    }
 }
 
 fn validate_phone_field(raw: &str, label: &str) -> Result<serde_json::Value, String> {
@@ -1128,9 +1208,15 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     let asset_count = paginated_total(&assets_resource);
 
     let company_snapshot = company_resource.read_unchecked();
+    // MAPPS-278: while the record is loading, show "Loading..." instead
+    // of the generic entity type ("Company"). The previous fallback
+    // briefly flashed a generic header until the resource resolved,
+    // which read as the wrong company before settling. A loading label
+    // is honest about the state.
     let header_title = match &*company_snapshot {
         Some(Some(c)) => c.name.clone(),
-        _ => "Company".to_string(),
+        None => "Loading...".to_string(),
+        Some(None) => "Company not found".to_string(),
     };
 
     let navigator = use_navigator();
@@ -1315,7 +1401,8 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                             if !phone.is_empty() {
                                                 div { class: "flex justify-between",
                                                     dt { class: "text-sm text-muted", "Phone" }
-                                                    dd { class: "text-sm", "{phone}" }
+                                                    // MAPPS-283: render with separators.
+                                                    dd { class: "text-sm", {format_phone(&phone)} }
                                                 }
                                             }
                                         }
@@ -1668,7 +1755,8 @@ fn CompanyContactsCard(
                                         let delete_path = format!("/contacts/contacts/{id}");
                                         let name = format!("{} {}", contact.first_name, contact.last_name).trim().to_string();
                                         let email = contact.email.clone().unwrap_or_default();
-                                        let phone = contact.phone.clone().unwrap_or_default();
+                                        // MAPPS-283: render with separators.
+                                        let phone = format_phone(&contact.phone.clone().unwrap_or_default());
                                         let role = humanize_contact_type(
                                             contact.contact_type.as_deref().unwrap_or_default(),
                                         );
@@ -2531,11 +2619,23 @@ fn CompanyContractsCard(
     };
     let navigator = use_navigator();
     let view_all_href = format!("/contracts?company_id={}", urlencoding_minimal(&company_id));
+    // MAPPS-300: "New Contract" CTA pre-fills this company on the create form
+    // (Company appears in the create URL as `?company_id=<uuid>` and the
+    // destination form reads it - see `ContractNewPage`).
+    let new_contract_href = format!(
+        "/contracts/new?company_id={}",
+        urlencoding_minimal(&company_id)
+    );
     rsx! {
         CollapsibleCard {
             title: "Contracts",
             count,
             actions: rsx! {
+                a {
+                    href: "{new_contract_href}",
+                    class: "text-sm text-accent hover:opacity-90",
+                    "New Contract"
+                }
                 a {
                     href: "{view_all_href}",
                     class: "text-sm text-accent hover:opacity-90",
@@ -2615,11 +2715,21 @@ fn CompanyProjectsCard(
     };
     let navigator = use_navigator();
     let view_all_href = format!("/projects?company_id={}", urlencoding_minimal(&company_id));
+    // MAPPS-300: "New Project" CTA pre-fills this company on the create form.
+    let new_project_href = format!(
+        "/projects/new?company_id={}",
+        urlencoding_minimal(&company_id)
+    );
     rsx! {
         CollapsibleCard {
             title: "Projects",
             count,
             actions: rsx! {
+                a {
+                    href: "{new_project_href}",
+                    class: "text-sm text-accent hover:opacity-90",
+                    "New Project"
+                }
                 a {
                     href: "{view_all_href}",
                     class: "text-sm text-accent hover:opacity-90",
@@ -2699,11 +2809,21 @@ fn CompanyInvoicesCard(
     };
     let navigator = use_navigator();
     let view_all_href = format!("/invoices?company_id={}", urlencoding_minimal(&company_id));
+    // MAPPS-300: "New Invoice" CTA pre-fills this company on the create form.
+    let new_invoice_href = format!(
+        "/invoices/new?company_id={}",
+        urlencoding_minimal(&company_id)
+    );
     rsx! {
         CollapsibleCard {
             title: "Invoices",
             count,
             actions: rsx! {
+                a {
+                    href: "{new_invoice_href}",
+                    class: "text-sm text-accent hover:opacity-90",
+                    "New Invoice"
+                }
                 a {
                     href: "{view_all_href}",
                     class: "text-sm text-accent hover:opacity-90",
@@ -2784,6 +2904,11 @@ fn CompanyAssetsCard(
     };
     let navigator = use_navigator();
     let view_all_href = format!("/assets?company_id={}", urlencoding_minimal(&company_id));
+    // MAPPS-300: "New Asset" CTA pre-fills this company on the create form.
+    let new_asset_href = format!(
+        "/assets/new?company_id={}",
+        urlencoding_minimal(&company_id)
+    );
     let types_snap = asset_types_resource.read_unchecked();
     // Build an id -> type-name lookup from the (best-effort) type list.
     let type_name = |id: &Option<uuid::Uuid>| -> String {
@@ -2805,6 +2930,11 @@ fn CompanyAssetsCard(
             title: "Assets",
             count,
             actions: rsx! {
+                a {
+                    href: "{new_asset_href}",
+                    class: "text-sm text-accent hover:opacity-90",
+                    "New Asset"
+                }
                 a {
                     href: "{view_all_href}",
                     class: "text-sm text-accent hover:opacity-90",
@@ -3040,12 +3170,23 @@ pub fn ContactListPage() -> Element {
                         TableLoading { columns: 5, rows: 5 }
                     } else if page_rows.is_empty() {
                         if has_filters {
-                            // Filtered to nothing: no CTA (creating won't help);
-                            // guide the user back to the filters.
+                            // MAPPS-291 "Clear filters" affordance on the
+                            // contacts list mirrors the companies list.
                             TableEmpty {
                                 columns: 5,
                                 title: "No contacts match your filters".to_string(),
-                                description: "Try clearing or adjusting the filters above.".to_string(),
+                                description: "Adjust the filters above, or clear them to see every contact again.".to_string(),
+                                actions: rsx! {
+                                    Button {
+                                        variant: ButtonVariant::Secondary,
+                                        onclick: move |_| {
+                                            search.set(String::new());
+                                            contact_type_filter.set(String::new());
+                                            portal_filter.set(String::new());
+                                        },
+                                        "Clear filters"
+                                    }
+                                },
                             }
                         } else {
                             TableEmpty {
@@ -3129,7 +3270,9 @@ fn ContactRow(props: ContactRowProps) -> Element {
                 }
             }
             TableCell { "{props.email}" }
-            TableCell { "{props.phone}" }
+            // MAPPS-283: route the phone column through `format_phone`
+            // so the cell shows `(555) 123-4567` not `5551234567`.
+            TableCell { {format_phone(&props.phone)} }
             TableCell { "{props.role}" }
         }
     }
@@ -3417,6 +3560,25 @@ fn ContactForm(props: ContactFormProps) -> Element {
         phone_err.set(String::new());
         mobile_err.set(String::new());
 
+        // MAPPS-281: trim required name fields client-side so a
+        // whitespace-only value cannot satisfy the browser's native
+        // `required` check (which passes any non-empty string, including
+        // "   "). Without this the request reached the server and surfaced
+        // a raw 422 banner with no field-level error. Reject inline first
+        // so the user sees which field failed.
+        let mut hit_blank = false;
+        if first_name.read().trim().is_empty() {
+            first_name_err.set("First name is required.".to_string());
+            hit_blank = true;
+        }
+        if last_name.read().trim().is_empty() {
+            last_name_err.set("Last name is required.".to_string());
+            hit_blank = true;
+        }
+        if hit_blank {
+            return;
+        }
+
         // MAPPS-251: company is now optional and can be either an FK-linked CRM
         // company (company_id) or a freeform typed name (company_name). Supplying
         // both is rejected client-side, mirroring the backend 422.
@@ -3461,6 +3623,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
             body["company_name"] = serde_json::json!(freeform_name);
         }
         let mode = mode.clone();
+        let mode_for_toast = mode.clone();
         spawn(async move {
             #[cfg(feature = "web")]
             {
@@ -3484,6 +3647,12 @@ fn ContactForm(props: ContactFormProps) -> Element {
                 };
                 match result {
                     Ok(id) => {
+                        // MAPPS-293: confirming success toast.
+                        let msg = match mode_for_toast {
+                            ContactFormMode::Create => "Contact created.",
+                            ContactFormMode::Edit { .. } => "Contact saved.",
+                        };
+                        crate::hooks::toast::push_toast(crate::components::AlertType::Success, msg);
                         navigator.push(Route::ContactDetail { id });
                     }
                     Err(err) => {
@@ -3720,11 +3889,16 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     });
 
     let snap = contact.read_unchecked();
+    // MAPPS-278: prefer an honest "Loading..." over the generic entity
+    // type while the fetch is in flight; reserve a distinct "Contact not
+    // found" for a confirmed-empty resource so the user does not see a
+    // blank "Contact" header that briefly looked correct.
     let header_title = match &*snap {
         Some(Some(c)) => format!("{} {}", c.first_name, c.last_name)
             .trim()
             .to_string(),
-        _ => "Contact".to_string(),
+        None => "Loading...".to_string(),
+        Some(None) => "Contact not found".to_string(),
     };
 
     let navigator = use_navigator();
@@ -3842,7 +4016,8 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                             if !phone.is_empty() {
                                                 div {
                                                     dt { class: "text-sm text-muted", "Phone" }
-                                                    dd { class: "mt-1", "{phone}" }
+                                                    // MAPPS-283: render with separators.
+                                                    dd { class: "mt-1", {format_phone(&phone)} }
                                                 }
                                             }
                                         }
@@ -3850,7 +4025,8 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                             if !mobile.is_empty() {
                                                 div {
                                                     dt { class: "text-sm text-muted", "Mobile" }
-                                                    dd { class: "mt-1", "{mobile}" }
+                                                    // MAPPS-283: render with separators.
+                                                    dd { class: "mt-1", {format_phone(&mobile)} }
                                                 }
                                             }
                                         }

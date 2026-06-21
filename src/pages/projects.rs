@@ -591,9 +591,20 @@ pub fn ProjectListPage() -> Element {
                         },
                     }
                 } else {
+                    // MAPPS-291 "Clear filters" affordance on the projects list.
                     crate::components::EmptyState {
                         title: "No projects match the current filters".to_string(),
-                        description: "Try clearing the search or status filter.".to_string(),
+                        description: "Adjust the filters above, or clear them to see every project again.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                onclick: move |_| {
+                                    search.set(String::new());
+                                    status_filter.set(String::new());
+                                },
+                                "Clear filters"
+                            }
+                        },
                     }
                 }
             } else {
@@ -679,7 +690,10 @@ pub fn ProjectListPage() -> Element {
 #[component]
 pub fn ProjectNewPage() -> Element {
     let mut name = use_signal(String::new);
-    let mut company = use_signal(String::new);
+    // MAPPS-300: pre-fill `company` from the URL so the Company detail
+    // "New Project" CTA lands on a form already scoped to that company.
+    let mut company =
+        use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     // PMS-367: `company` holds the selected company UUID; CompanyPicker reports
     // the display name back here so the autocomplete renders the chosen company.
     let mut company_name = use_signal(String::new);
@@ -747,6 +761,25 @@ pub fn ProjectNewPage() -> Element {
             PageHeader {
                 title: "New Project",
                 subtitle: "Create a new project",
+                // MAPPS-294: every create form gets a breadcrumb trail back
+                // to its parent list so the user can bail out without
+                // hitting the browser back button (which would otherwise
+                // trigger the MAPPS-292 unsaved-changes guard on a dirty
+                // form for no good reason).
+                breadcrumbs: rsx! {
+                    crate::components::Breadcrumbs {
+                        items: vec![
+                            crate::components::BreadcrumbItem {
+                                label: "Projects".to_string(),
+                                route: Some(Route::ProjectList {}),
+                            },
+                            crate::components::BreadcrumbItem {
+                                label: "New Project".to_string(),
+                                route: None,
+                            },
+                        ],
+                    }
+                },
             }
 
             Card {
@@ -760,32 +793,35 @@ pub fn ProjectNewPage() -> Element {
                         hours_err.set(String::new());
                         let company_id = company.read().clone();
                         let desc = description.read().clone();
-                        // Per-field client validation mirrors the server rules (MAPPS-176).
-                        let project_name = match validate_project_name(&name.read()) {
-                            Ok(n) => n,
-                            Err(msg) => {
-                                name_err.set(msg);
-                                return;
-                            }
-                        };
-                        let amount = match validate_budget(&budget_amount.read(), "Budget amount") {
-                            Ok(v) => v,
-                            Err(msg) => {
-                                amount_err.set(msg);
-                                return;
-                            }
-                        };
-                        // Budget hours is a duration: accept decimal or H:MM
-                        // (PMS-340), reusing the Log Time parser. Blank leaves
-                        // it unset; out-of-range or malformed values error inline
-                        // with distinct messages (MAPPS-212).
-                        let hours: Option<f64> = match validate_budget_hours(&budget_hours.read()) {
-                            Ok(h) => h,
-                            Err(msg) => {
-                                hours_err.set(msg);
-                                return;
-                            }
-                        };
+                        // MAPPS-284: collect every client-validation failure on
+                        // the same submit instead of early-returning on the
+                        // first one. The user previously had to fix one error,
+                        // resubmit, then discover the next; now the form
+                        // reports every offending field at once. Per-field
+                        // signals still drive the inline error rendering and
+                        // the styled red border.
+                        let project_name_res = validate_project_name(&name.read());
+                        let amount_res = validate_budget(&budget_amount.read(), "Budget amount");
+                        let hours_res = validate_budget_hours(&budget_hours.read());
+                        let mut hit_blank = false;
+                        if let Err(ref msg) = project_name_res {
+                            name_err.set(msg.clone());
+                            hit_blank = true;
+                        }
+                        if let Err(ref msg) = amount_res {
+                            amount_err.set(msg.clone());
+                            hit_blank = true;
+                        }
+                        if let Err(ref msg) = hours_res {
+                            hours_err.set(msg.clone());
+                            hit_blank = true;
+                        }
+                        if hit_blank {
+                            return;
+                        }
+                        let project_name = project_name_res.unwrap();
+                        let amount = amount_res.unwrap();
+                        let hours: Option<f64> = hours_res.unwrap();
                         is_submitting.set(true);
                         // PMS-361: snapshot the new fields so the spawn
                         // doesn't reach back into the signal layer. Status

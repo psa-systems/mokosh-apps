@@ -3,6 +3,7 @@
 //! This module contains reusable Dioxus components used throughout the application.
 
 mod asset_picker;
+mod bulk_actions;
 mod button;
 mod card;
 mod collapsible_card;
@@ -24,6 +25,7 @@ mod theme_picker;
 mod update_banner;
 
 pub use asset_picker::*;
+pub use bulk_actions::*;
 pub use button::*;
 pub use card::*;
 pub use collapsible_card::*;

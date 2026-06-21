@@ -410,6 +410,15 @@ fn read_ticket_prefill_from_url() -> String {
                 if uuid::Uuid::parse_str(&id).is_ok() {
                     return format!("ticket:{id}");
                 }
+                // MAPPS-275: also honour `?project_id=` so the
+                // project-detail "Log Time" affordance can pre-select
+                // that project in the work-item picker. Mirrors the
+                // existing ticket prefill (the picker value is the
+                // `project:<uuid>` / `ticket:<uuid>` discriminator).
+                let pid = params.get("project_id").unwrap_or_default();
+                if uuid::Uuid::parse_str(&pid).is_ok() {
+                    return format!("project:{pid}");
+                }
             }
         }
     }
@@ -552,7 +561,12 @@ pub fn TimeEntryNewPage() -> Element {
     let own_company_id: Option<uuid::Uuid> =
         auth.read().user.as_ref().and_then(|u| u.own_company_id);
 
-    let mut work_item_options = vec![SelectOption::new("", "Select a work item")];
+    // MAPPS-274: the Select component already renders its own disabled
+    // placeholder option from the `placeholder: "Select work item"` prop
+    // below, so seeding a second `("", "Select a work item")` row here
+    // produced two near-identical empty entries in the dropdown. Start
+    // empty and let the Select's placeholder do that job.
+    let mut work_item_options: Vec<SelectOption> = Vec::new();
     // MAPPS-243: a deliberate General (no ticket or project) overhead entry,
     // modeled like the required Work Type field. Offered only when the tenant
     // has an own-company to attribute it to; otherwise the option is disabled

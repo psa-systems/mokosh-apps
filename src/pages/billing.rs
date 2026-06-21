@@ -387,12 +387,22 @@ pub fn InvoiceListPage() -> Element {
                     if is_loading {
                         TableLoading { columns: 7, rows: 5 }
                     } else if rows.is_empty() && has_filters {
-                        // Filtered to nothing: no CTA (creating won't help);
-                        // guide the user back to the filters.
+                        // MAPPS-291 "Clear filters" affordance on the
+                        // invoices list.
                         TableEmpty {
                             columns: 7,
                             title: "No invoices match your filters".to_string(),
-                            description: "Try clearing or adjusting the filters above.".to_string(),
+                            description: "Adjust the filters above, or clear them to see every invoice again.".to_string(),
+                            actions: rsx! {
+                                Button {
+                                    variant: ButtonVariant::Secondary,
+                                    onclick: move |_| {
+                                        company_filter.set(String::new());
+                                        status_filter.set(String::new());
+                                    },
+                                    "Clear filters"
+                                }
+                            },
                         }
                     } else if rows.is_empty() {
                         TableEmpty {
@@ -975,7 +985,10 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
 /// path also takes dates and one line item.
 #[component]
 pub fn InvoiceNewPage() -> Element {
-    let mut company_id = use_signal(String::new);
+    // MAPPS-300: pre-fill `company_id` from the URL so the Company detail
+    // "New Invoice" CTA lands on a form already scoped to that company.
+    let mut company_id =
+        use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     let mut company_name = use_signal(String::new);
     let mut invoice_date = use_signal(String::new);
     let mut due_date = use_signal(String::new);
