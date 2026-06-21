@@ -94,9 +94,8 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
     // Chip view: parent supplied a selected_id AND the user is not
     // currently in inline-edit mode. Change toggles `editing` so the
     // search input mounts on the next render with no server round trip.
-    if let Some(id) = &props.selected_id {
+    if let Some(_id) = &props.selected_id {
         if !editing() {
-            let id = id.clone();
             let name = props.value.clone();
             let onclear = props.onclear;
             // PMS-344 follow-up (layout): skip the picker's own label
@@ -122,11 +121,11 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                         // w-full + min-w-0 so the chip fills its parent
                         // (the DetailItem `dd` cell when used inline)
                         // instead of escaping rightward, and the long
-                        // name / uuid truncate cleanly inside.
+                        // name truncates cleanly inside. MAPPS-273:
+                        // dropped the raw UUID secondary line.
                         class: "flex items-center justify-between border border-line rounded-md px-3 py-2 bg-app w-full min-w-0",
                         div { class: "min-w-0 flex-1 text-left",
                             p { class: "text-sm font-medium text-content truncate", "{name}" }
-                            p { class: "text-xs text-muted truncate", "{id}" }
                         }
                         div { class: "flex items-center gap-1 shrink-0 ml-2",
                             button {
