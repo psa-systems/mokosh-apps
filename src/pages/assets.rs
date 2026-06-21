@@ -303,6 +303,44 @@ fn fmt_date(s: &Option<String>) -> String {
     }
 }
 
+/// MAPPS-305: the four bucket states the asset-detail Warranty row keys
+/// its "Needs refresh" badge on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WarrantyRefreshStatus {
+    /// The warranty date is unset or unparseable.
+    Unknown,
+    /// More than `WARRANTY_REFRESH_THRESHOLD_DAYS` until expiry.
+    Healthy,
+    /// Within `WARRANTY_REFRESH_THRESHOLD_DAYS` of expiry.
+    ExpiringSoon,
+    /// Warranty date is in the past.
+    Expired,
+}
+
+const WARRANTY_REFRESH_THRESHOLD_DAYS: i64 = 30;
+
+/// Compute the refresh-status bucket from a server-formatted (`YYYY-MM-DD`)
+/// warranty date string compared to today (in the user's timezone, via
+/// `user_today`). Pure read-only - the field's not mutated, the cue is
+/// derived at render time, no scheduled job needed.
+fn warranty_refresh_status(s: &Option<String>) -> WarrantyRefreshStatus {
+    let Some(raw) = s else {
+        return WarrantyRefreshStatus::Unknown;
+    };
+    let Ok(date) = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") else {
+        return WarrantyRefreshStatus::Unknown;
+    };
+    let today = crate::utils::datetime::user_today();
+    let days_until = (date - today).num_days();
+    if days_until < 0 {
+        WarrantyRefreshStatus::Expired
+    } else if days_until <= WARRANTY_REFRESH_THRESHOLD_DAYS {
+        WarrantyRefreshStatus::ExpiringSoon
+    } else {
+        WarrantyRefreshStatus::Healthy
+    }
+}
+
 /// Asset list page
 #[component]
 pub fn AssetListPage() -> Element {
@@ -1187,6 +1225,14 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     let serial = a.serial_number.clone().unwrap_or_else(dash);
                     let tag = a.asset_tag.clone().unwrap_or_else(dash);
                     let warranty = fmt_date(&a.warranty_expiry);
+                    // MAPPS-305: derive a "Needs refresh" cue from the warranty
+                    // date. Expired (date < today) is "Expired"; within 30 days
+                    // is "Expires soon". Both signal a refresh / replacement
+                    // candidate without an admin having to spreadsheet-sweep
+                    // the asset list manually. Threshold is hardcoded at 30
+                    // days for now; future config-driven threshold is the
+                    // documented next step on the ticket.
+                    let warranty_status = warranty_refresh_status(&a.warranty_expiry);
                     let purchased = fmt_date(&a.purchase_date);
                     // Snapshot used to seed the edit form when opened.
                     let a_edit = a.clone();
@@ -1465,9 +1511,28 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                             span { class: "text-muted", "Status" }
                                             Badge { variant: status_variant, "{status_label}" }
                                         }
-                                        div { class: "flex justify-between",
+                                        div { class: "flex justify-between items-center",
                                             span { class: "text-muted", "Warranty" }
-                                            span { class: "font-medium", "{warranty}" }
+                                            div { class: "flex items-center gap-2",
+                                                span { class: "font-medium", "{warranty}" }
+                                                // MAPPS-305: surface the refresh cue.
+                                                match warranty_status {
+                                                    WarrantyRefreshStatus::Expired => rsx! {
+                                                        Badge {
+                                                            variant: BadgeVariant::Red,
+                                                            "Needs refresh"
+                                                        }
+                                                    },
+                                                    WarrantyRefreshStatus::ExpiringSoon => rsx! {
+                                                        Badge {
+                                                            variant: BadgeVariant::Yellow,
+                                                            "Expires soon"
+                                                        }
+                                                    },
+                                                    WarrantyRefreshStatus::Healthy
+                                                    | WarrantyRefreshStatus::Unknown => rsx! {},
+                                                }
+                                            }
                                         }
                                         div { class: "flex justify-between",
                                             span { class: "text-muted", "Purchased" }
