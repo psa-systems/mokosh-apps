@@ -37,6 +37,29 @@ struct RemoteAsset {
     warranty_expiry: Option<String>,
     #[serde(default)]
     purchase_date: Option<String>,
+    // PMS-454: CMDB expansion fields. Each `#[serde(default)]` so an
+    // older server that doesn't ship the column still deserialises
+    // (the server-side migration adds them as nullable). The bare
+    // `assigned_user_id` UUID is kept on the wire shape but the UI
+    // only reads `assigned_user_name`; `#[allow(dead_code)]` documents
+    // it as preserved-for-roundtripping rather than dropped.
+    #[serde(default)]
+    #[allow(dead_code)]
+    assigned_user_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    assigned_user_name: Option<String>,
+    #[serde(default)]
+    ip_address: Option<String>,
+    #[serde(default)]
+    hostname: Option<String>,
+    #[serde(default)]
+    mac_address: Option<String>,
+    #[serde(default)]
+    installed_date: Option<String>,
+    #[serde(default)]
+    department: Option<String>,
+    #[serde(default)]
+    in_transit_ticket_id: Option<uuid::Uuid>,
     #[serde(default)]
     created_at: Option<String>,
     #[serde(default)]
@@ -1497,6 +1520,69 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                         div {
                                             dt { class: "text-sm text-muted", "Asset Tag" }
                                             dd { class: "mt-1 font-mono text-sm", "{tag}" }
+                                        }
+                                        // PMS-454: CMDB expansion fields. Each
+                                        // renders only when populated so an
+                                        // older asset that pre-dates the
+                                        // migration does not show a row of
+                                        // empty "-" placeholders.
+                                        if let Some(name) = a.assigned_user_name.clone().filter(|s| !s.trim().is_empty()) {
+                                            div {
+                                                dt { class: "text-sm text-muted", "Assigned to" }
+                                                dd { class: "mt-1", "{name}" }
+                                            }
+                                        }
+                                        if let Some(host) = a.hostname.clone().filter(|s| !s.trim().is_empty()) {
+                                            div {
+                                                dt { class: "text-sm text-muted", "Hostname" }
+                                                dd { class: "mt-1 font-mono text-sm", "{host}" }
+                                            }
+                                        }
+                                        if let Some(ip) = a.ip_address.clone().filter(|s| !s.trim().is_empty()) {
+                                            div {
+                                                dt { class: "text-sm text-muted", "IP address" }
+                                                dd { class: "mt-1 font-mono text-sm", "{ip}" }
+                                            }
+                                        }
+                                        if let Some(mac) = a.mac_address.clone().filter(|s| !s.trim().is_empty()) {
+                                            div {
+                                                dt { class: "text-sm text-muted", "MAC address" }
+                                                dd { class: "mt-1 font-mono text-sm", "{mac}" }
+                                            }
+                                        }
+                                        if let Some(dept) = a.department.clone().filter(|s| !s.trim().is_empty()) {
+                                            div {
+                                                dt { class: "text-sm text-muted", "Department" }
+                                                dd { class: "mt-1", "{dept}" }
+                                            }
+                                        }
+                                        if let Some(installed) = a.installed_date.as_ref().filter(|s| !s.trim().is_empty()) {
+                                            {
+                                                let installed_label = fmt_date(&Some(installed.clone()));
+                                                rsx! {
+                                                    div {
+                                                        dt { class: "text-sm text-muted", "Installed" }
+                                                        dd { class: "mt-1", "{installed_label}" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if let Some(ticket_id) = a.in_transit_ticket_id {
+                                            {
+                                                let tid = ticket_id.to_string();
+                                                rsx! {
+                                                    div {
+                                                        dt { class: "text-sm text-muted", "In-transit ticket" }
+                                                        dd { class: "mt-1",
+                                                            Link {
+                                                                to: Route::TicketDetail { id: tid.clone() },
+                                                                class: "text-accent hover:opacity-90 font-mono text-sm",
+                                                                "{tid}"
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
