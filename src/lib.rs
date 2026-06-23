@@ -147,6 +147,10 @@ pub enum Route {
       #[route("/dashboard")]
       Dashboard {},
 
+      // PMS-453: per-user saved dashboards (Phase 1: management surface).
+      #[route("/dashboards")]
+      SavedDashboards {},
+
     // Tickets
     #[route("/tickets")]
     TicketList {},
@@ -544,6 +548,11 @@ fn SignupComplete(token: String) -> Element {
 #[component]
 fn Dashboard() -> Element {
     rsx! { dashboard::DashboardPage {} }
+}
+
+#[component]
+fn SavedDashboards() -> Element {
+    rsx! { dashboards::SavedDashboardsPage {} }
 }
 
 #[component]

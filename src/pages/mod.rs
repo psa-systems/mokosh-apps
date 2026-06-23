@@ -19,6 +19,7 @@ pub mod calendar;
 pub mod contacts;
 pub mod contracts;
 pub mod dashboard;
+pub mod dashboards;
 pub mod home;
 pub mod knowledge_base;
 pub mod not_found;
