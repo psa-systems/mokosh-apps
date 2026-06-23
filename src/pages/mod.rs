@@ -12,6 +12,7 @@ pub mod admin;
 pub mod assets;
 pub mod audit_log;
 pub mod auth_callback;
+pub mod big_view;
 pub mod billing;
 pub mod button_showcase;
 pub mod calendar;
