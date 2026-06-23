@@ -300,6 +300,36 @@ pub mod api {
         }
     }
 
+    /// PATCH request with auth token. The first caller is the saved
+    /// dashboards module (PMS-453), which surfaces partial-update
+    /// semantics (toggle `is_default`, edit just the name); a PUT
+    /// helper would have invited callers to send the whole row and
+    /// blow away unset fields, which is the wrong shape for that
+    /// surface.
+    #[cfg(feature = "web")]
+    pub async fn patch_with_auth<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+        token: &str,
+    ) -> Result<T, String> {
+        let url = format!("{}{}", api_base(), path);
+
+        let response = Request::patch(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {}", token))
+            .json(body)
+            .map_err(|e| e.to_string())?
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if response.ok() {
+            response.json::<T>().await.map_err(|e| e.to_string())
+        } else {
+            Err(status_error(response).await)
+        }
+    }
+
     /// Delete request with auth token
     #[cfg(feature = "web")]
     pub async fn delete_with_auth(path: &str, token: &str) -> Result<(), String> {
@@ -381,6 +411,15 @@ pub mod api {
     pub async fn delete_authed(path: &str) -> Result<(), String> {
         let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
         delete_with_auth(path, &t).await
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn patch_authed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, String> {
+        let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
+        patch_with_auth(path, body, &t).await
     }
 
     /// Auto-authed POST for empty-body endpoints (see
