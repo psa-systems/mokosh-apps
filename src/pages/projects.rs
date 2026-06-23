@@ -1902,7 +1902,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 value: "{pe_description}",
                                 oninput: move |e: FormEvent| pe_description.set(e.value()),
                             }
-                            div { class: "grid grid-cols-2 gap-4",
+                            div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                 Select {
                                     name: "pe-status",
                                     label: "Status",
@@ -1918,7 +1918,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     onchange: move |e: FormEvent| pe_manager.set(e.value()),
                                 }
                             }
-                            div { class: "grid grid-cols-2 gap-4",
+                            div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                 crate::components::DateField {
                                     name: "pe-start",
                                     label: "Start Date",
@@ -1932,7 +1932,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     oninput: move |e: FormEvent| pe_due.set(e.value()),
                                 }
                             }
-                            div { class: "grid grid-cols-2 gap-4",
+                            div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                 Input {
                                     name: "pe-budget-amount",
                                     label: "Budget Amount",
@@ -2390,7 +2390,7 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                     value: "{te_description}",
                     oninput: move |e: FormEvent| te_description.set(e.value()),
                 }
-                div { class: "grid grid-cols-2 gap-4",
+                div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                     Select {
                         name: "te-status",
                         label: "Status",
@@ -2406,7 +2406,7 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                         onchange: move |e: FormEvent| te_priority.set(e.value()),
                     }
                 }
-                div { class: "grid grid-cols-2 gap-4",
+                div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                     Select {
                         name: "te-assignee",
                         label: "Assignee",

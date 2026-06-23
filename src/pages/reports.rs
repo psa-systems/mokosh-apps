@@ -692,7 +692,7 @@ fn CustomReportBuilder() -> Element {
 
                             // Optional date range
                             if cur.has_date_range {
-                                div { class: "grid grid-cols-2 gap-3",
+                                div { class: "grid grid-cols-1 sm:grid-cols-2 gap-3",
                                     // MAPPS-204: shared DateField so the report
                                     // range filters match every other date input.
                                     crate::components::DateField {

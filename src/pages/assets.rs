@@ -1473,7 +1473,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     if let Some(marker) = edited_marker {
                                         p { class: "text-xs text-subtle italic mb-3", "{marker}" }
                                     }
-                                    dl { class: "grid grid-cols-2 gap-4",
+                                    dl { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                         div {
                                             dt { class: "text-sm text-muted", "Type" }
                                             dd { class: "mt-1", "{tname}" }
@@ -1963,7 +1963,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 value: "{e_name}",
                                 oninput: move |e: FormEvent| e_name.set(e.value()),
                             }
-                            div { class: "grid grid-cols-2 gap-4",
+                            div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                 Select {
                                     name: "edit-type",
                                     label: "Type",
@@ -1986,7 +1986,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 value: "{e_tag}",
                                 oninput: move |e: FormEvent| e_tag.set(e.value()),
                             }
-                            div { class: "grid grid-cols-2 gap-4",
+                            div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                 Input {
                                     name: "edit-manufacturer",
                                     label: "Manufacturer",
@@ -2009,7 +2009,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 value: "{e_serial}",
                                 oninput: move |e: FormEvent| e_serial.set(e.value()),
                             }
-                            div { class: "grid grid-cols-2 gap-4",
+                            div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                 crate::components::DateField {
                                     name: "edit-purchase",
                                     label: "Purchase Date",
@@ -2205,7 +2205,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 value: "{nc_type}",
                                 oninput: move |e: FormEvent| nc_type.set(e.value()),
                             }
-                            div { class: "grid grid-cols-2 gap-4",
+                            div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                 Input {
                                     name: "cred-username",
                                     label: "Username",

@@ -631,7 +631,7 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                                 Badge { variant: status_variant, "{status_label}" }
                             }
 
-                            div { class: "grid grid-cols-2 gap-6 mb-6",
+                            div { class: "grid grid-cols-1 sm:grid-cols-2 gap-6 mb-6",
                                 div {
                                     h3 { class: "text-xs font-medium text-muted uppercase mb-1", "Bill To" }
                                     p { class: "font-medium", "{company_name}" }
