@@ -1530,7 +1530,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                         div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
                             div { class: "lg:col-span-2 space-y-6",
                                 Card { title: "Contract Details",
-                                    dl { class: "grid grid-cols-2 gap-4",
+                                    dl { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                         div {
                                             dt { class: "text-sm text-muted", "Contract Type" }
                                             dd { class: "mt-1 font-medium", "{type_label}" }
