@@ -331,11 +331,72 @@ fn AuditLogContent() -> Element {
         || !from_text.is_empty()
         || !to_text.is_empty();
 
+    // PMS-455: build the export URL with the same filter envelope the
+    // list resource uses, so what the user sees in the table is what
+    // gets downloaded. Browser handles the actual download via a real
+    // anchor target so we get the `Content-Disposition` filename
+    // verbatim and the Authorization header isn't an issue (the
+    // session cookie carries through on same-origin navigations).
+    let export_href = {
+        let mut q = Vec::<String>::new();
+        if !entity_text.is_empty() {
+            q.push(format!(
+                "entity_type={}",
+                crate::utils::url::urlencoding_minimal(&entity_text)
+            ));
+        }
+        if !action_text.is_empty() {
+            q.push(format!(
+                "action={}",
+                crate::utils::url::urlencoding_minimal(&action_text)
+            ));
+        }
+        if !user_text.is_empty() {
+            q.push(format!(
+                "user_id={}",
+                crate::utils::url::urlencoding_minimal(&user_text)
+            ));
+        }
+        if !from_text.is_empty() {
+            q.push(format!(
+                "from={}",
+                crate::utils::url::urlencoding_minimal(&from_text)
+            ));
+        }
+        if !to_text.is_empty() {
+            q.push(format!(
+                "to={}",
+                crate::utils::url::urlencoding_minimal(&to_text)
+            ));
+        }
+        let qstr = if q.is_empty() {
+            String::new()
+        } else {
+            format!("?{}", q.join("&"))
+        };
+        // `api_base()` returns the API origin + `/api/v1`; the route
+        // prefix matches the list endpoint above.
+        let base = crate::hooks::fetch::api::api_base();
+        format!("{base}/audit-log/export.csv{qstr}")
+    };
+
     rsx! {
         AppLayout { title: "Audit Log",
             PageHeader {
                 title: "Audit Log",
                 subtitle: "Review who changed what, and when",
+                // PMS-455: download CSV of the currently-filtered set.
+                actions: rsx! {
+                    a {
+                        href: "{export_href}",
+                        // `download` attr nudges the browser to use
+                        // the Content-Disposition filename ("audit-log.csv")
+                        // rather than navigating into the response.
+                        "download": "audit-log.csv",
+                        class: "inline-flex items-center px-4 py-2 text-sm font-medium rounded-md border border-line hover:bg-surface-2 text-content",
+                        "Download CSV"
+                    }
+                },
             }
 
             // Filters
