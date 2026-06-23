@@ -121,6 +121,31 @@ struct RemoteTicketPriority {
     is_default: bool,
 }
 
+/// MAPPS-296: minimal shape of a row from `GET /tickets/types` /
+/// `GET /tickets/categories`. Both endpoints share the `(id, name)`
+/// projection the New Ticket form needs; serde drops every other
+/// field. Created at the top so the new lookups in `TicketNewPage`
+/// resolve.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteTicketLookup {
+    id: uuid::Uuid,
+    #[serde(default)]
+    name: String,
+}
+
+/// MAPPS-296: minimal user-row shape for the New Ticket assignee
+/// dropdown. The server's user list lives at `/auth/users`. `full_name`
+/// is the precomputed `first last` projection; we fall back to `email`
+/// when it is empty.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteUserLookup {
+    id: uuid::Uuid,
+    #[serde(default)]
+    full_name: String,
+    #[serde(default)]
+    email: String,
+}
+
 /// A ticket note (`GET /tickets/:id/notes`), rendered as an Activity item.
 #[derive(Clone, Debug, Deserialize)]
 struct RemoteNote {
@@ -1010,11 +1035,87 @@ pub fn TicketNewPage() -> Element {
     // its "selected chip" state without an extra fetch.
     let mut asset_id = use_signal(String::new);
     let mut asset_name = use_signal(String::new);
+    // MAPPS-296: capture every common field at create time instead of
+    // forcing the user to follow up with an edit. Type and Category are
+    // tenant-scoped lookups (`/tickets/types` and `/tickets/categories`),
+    // Assignee comes from `/auth/users` (already used by the calendar /
+    // dispatch surfaces), and the Due Date stamps `scheduled_end` so
+    // SLA / dispatch view it on creation.
+    let mut type_id = use_signal(String::new);
+    let mut category_id = use_signal(String::new);
+    let mut assigned_to_id = use_signal(String::new);
+    let mut due_date = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
     // Per-field server validation message routed next to the Title input
     // (MAPPS-210). Cleared on each submit and on edit.
     let mut title_error = use_signal(String::new);
+
+    // MAPPS-296: tenant lookups for Type + Category + Assignee. Each
+    // hits its own endpoint and falls back to an empty list on a 403 /
+    // network drop so the form mounts even when the lookups are
+    // unavailable; the matching signal stays empty and the server
+    // applies its defaults.
+    let types_resource = use_resource(|| async move {
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketLookup>>(
+            "/tickets/types?per_page=100",
+        )
+        .await
+        .ok()
+        .map(|p| p.data)
+        .unwrap_or_default()
+    });
+    let categories_resource = use_resource(|| async move {
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketLookup>>(
+            "/tickets/categories?per_page=100",
+        )
+        .await
+        .ok()
+        .map(|p| p.data)
+        .unwrap_or_default()
+    });
+    let users_resource = use_resource(|| async move {
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteUserLookup>>(
+            "/auth/users?per_page=100",
+        )
+        .await
+        .ok()
+        .map(|p| p.data)
+        .unwrap_or_default()
+    });
+
+    let type_options: Vec<SelectOption> = {
+        let mut opts = vec![SelectOption::new("", "(none)")];
+        if let Some(rows) = types_resource.read().as_ref() {
+            for r in rows.iter() {
+                opts.push(SelectOption::new(r.id.to_string(), r.name.clone()));
+            }
+        }
+        opts
+    };
+    let category_options: Vec<SelectOption> = {
+        let mut opts = vec![SelectOption::new("", "(none)")];
+        if let Some(rows) = categories_resource.read().as_ref() {
+            for r in rows.iter() {
+                opts.push(SelectOption::new(r.id.to_string(), r.name.clone()));
+            }
+        }
+        opts
+    };
+    let assignee_options: Vec<SelectOption> = {
+        let mut opts = vec![SelectOption::new("", "Unassigned")];
+        if let Some(rows) = users_resource.read().as_ref() {
+            for u in rows.iter() {
+                let name = if u.full_name.trim().is_empty() {
+                    u.email.clone()
+                } else {
+                    u.full_name.clone()
+                };
+                opts.push(SelectOption::new(u.id.to_string(), name));
+            }
+        }
+        opts
+    };
 
     // Fetch the tenant's ticket priorities on mount. The Paginated envelope
     // matches the server's PaginatedResponse wire shape; meta is ignored
@@ -1090,6 +1191,26 @@ pub fn TicketNewPage() -> Element {
         let contact_uuid: Option<uuid::Uuid> =
             uuid::Uuid::parse_str(contact_id.read().as_str()).ok();
 
+        // MAPPS-296: optional type / category / assignee. Each empty
+        // signal sends `null` so the server falls back to its default
+        // (no enforced type / category / assignee).
+        let type_uuid: Option<uuid::Uuid> = uuid::Uuid::parse_str(type_id.read().as_str()).ok();
+        let category_uuid: Option<uuid::Uuid> =
+            uuid::Uuid::parse_str(category_id.read().as_str()).ok();
+        let assignee_uuid: Option<uuid::Uuid> =
+            uuid::Uuid::parse_str(assigned_to_id.read().as_str()).ok();
+        // MAPPS-296: Due Date stamps `scheduled_end` (the server-side
+        // SLA / dispatch consume the same field). The date input only
+        // emits `YYYY-MM-DD`, so we land it at 23:59 UTC on the chosen
+        // day - "due by end of day" is the intuitive read for "Due
+        // Date" on a ticket.
+        let due_value = due_date.read().clone();
+        let scheduled_end: Option<String> = if due_value.trim().is_empty() {
+            None
+        } else {
+            Some(format!("{}T23:59:00Z", due_value.trim()))
+        };
+
         // Snapshot signals so the spawn doesn't need to read them.
         // MAPPS-281: trim required Title client-side so a whitespace-only
         // value doesn't satisfy the browser's native `required` check
@@ -1113,6 +1234,14 @@ pub fn TicketNewPage() -> Element {
                     "contact_id": contact_uuid,
                     "priority_id": priority_uuid,
                     "asset_id": asset_uuid,
+                    // MAPPS-296: new fields. The server ignores `null`
+                    // and uses its own defaults; this captures every
+                    // field a dispatcher needs at creation instead of
+                    // forcing a follow-up edit.
+                    "type_id": type_uuid,
+                    "category_id": category_uuid,
+                    "assigned_to_id": assignee_uuid,
+                    "scheduled_end": scheduled_end,
                 });
 
                 #[derive(serde::Deserialize)]
@@ -1322,6 +1451,45 @@ pub fn TicketNewPage() -> Element {
                                     },
                                 }
                             }
+                        }
+                    }
+
+                    // MAPPS-296: richer create form. Type + Category +
+                    // Assignee + Due Date so the dispatcher captures
+                    // everything a service-desk ticket needs at
+                    // creation, instead of opening the new ticket and
+                    // immediately editing in four more fields.
+                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                        Select {
+                            name: "type",
+                            label: "Type",
+                            options: type_options,
+                            value: type_id.read().clone(),
+                            onchange: move |e: FormEvent| type_id.set(e.value()),
+                        }
+                        Select {
+                            name: "category",
+                            label: "Category",
+                            options: category_options,
+                            value: category_id.read().clone(),
+                            onchange: move |e: FormEvent| category_id.set(e.value()),
+                        }
+                    }
+
+                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                        Select {
+                            name: "assigned_to",
+                            label: "Assigned To",
+                            options: assignee_options,
+                            value: assigned_to_id.read().clone(),
+                            onchange: move |e: FormEvent| assigned_to_id.set(e.value()),
+                        }
+                        crate::components::DateField {
+                            name: "due_date",
+                            label: "Due Date".to_string(),
+                            value: due_date.read().clone(),
+                            help: "Stamps the ticket's scheduled-end so SLA + dispatch view it on creation.".to_string(),
+                            oninput: move |e: FormEvent| due_date.set(e.value()),
                         }
                     }
 
