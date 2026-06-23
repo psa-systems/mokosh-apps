@@ -102,6 +102,28 @@ struct CompanyOption {
 /// `company_id` / `status` / `contract_type` filters.
 #[component]
 pub fn ContractListPage() -> Element {
+    // MAPPS-271: gate the page on `can_manage_billing` before mounting
+    // any of the fetchers. The server's `list_contracts` route is
+    // `RequireFinance`-gated so a non-finance role hits a 403, and the
+    // generic fetch-failed banner that follows reads as a transient
+    // error ("Could not load contracts. Refresh the page to retry.")
+    // when the cause is actually a permanent permission boundary.
+    // Render the same `PermissionRequired` empty state the Invoices /
+    // Payments pages have always used, so every billing-gated list
+    // looks consistent. Most users hit this branch only as a
+    // theoretical fallback now that PMS-447 floor-promotes Bunyip
+    // subscribers to tenant Admin (Admin already passes
+    // `can_manage_billing()`); the standardised UI still matters for a
+    // future role downgrade or a tenant-internal grant change.
+    if !use_can_manage_billing() {
+        return rsx! {
+            crate::components::PermissionRequired {
+                title: "Contracts".to_string(),
+                body: "Contracts are restricted to administrator and finance roles. Ask an administrator to grant you access.".to_string(),
+            }
+        };
+    }
+
     // MAPPS-249: seed the company filter from `?company_id=<uuid>` so a context
     // card's "View All" lands here scoped to that company (the dropdown also
     // reflects the selection once its options load).
@@ -2262,6 +2284,20 @@ pub fn RateCardListPage(
     open_create: bool,
 ) -> Element {
     let can_edit = use_can_manage_billing();
+    // MAPPS-271: same posture as ContractListPage above. `list_rate_cards`
+    // on the server is `RequireFinance`-gated, so a non-finance role
+    // hit the generic "Could not load rate cards. Refresh the page to
+    // retry." banner that read as transient when it was actually a
+    // permission boundary. Render the shared `PermissionRequired`
+    // empty state instead.
+    if !can_edit {
+        return rsx! {
+            crate::components::PermissionRequired {
+                title: "Rate Cards".to_string(),
+                body: "Rate cards are restricted to administrator and finance roles. Ask an administrator to grant you access.".to_string(),
+            }
+        };
+    }
     let navigator = use_navigator();
     let mut page = use_signal(|| 1usize);
     let mut editing = use_signal(move || {
