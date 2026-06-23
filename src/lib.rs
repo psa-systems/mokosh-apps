@@ -219,6 +219,20 @@ pub enum Route {
     #[route("/scheduling-templates")]
     SchedulingTemplates {},
 
+    // MAPPS-302: NOC "Big View" routes. Kiosk-friendly variants of the
+    // tickets queue, the dispatch board, and the calendar - no sidebar
+    // or top bar, larger typography, auto-refresh tick. Operators
+    // bookmark these on a wall-mounted screen via the `?refresh=` and
+    // `?status=` / `?priority=` query params.
+    #[route("/big/tickets")]
+    BigTickets {},
+
+    #[route("/big/dispatch")]
+    BigDispatch {},
+
+    #[route("/big/calendar")]
+    BigCalendar {},
+
     // Contracts
     #[route("/contracts")]
     ContractList {},
@@ -645,6 +659,22 @@ fn DispatchBoard() -> Element {
 #[component]
 fn SchedulingTemplates() -> Element {
     rsx! { calendar::SchedulingTemplatesPage {} }
+}
+
+// MAPPS-302: NOC "Big View" route handlers.
+#[component]
+fn BigTickets() -> Element {
+    rsx! { big_view::BigTicketsPage {} }
+}
+
+#[component]
+fn BigDispatch() -> Element {
+    rsx! { big_view::BigDispatchPage {} }
+}
+
+#[component]
+fn BigCalendar() -> Element {
+    rsx! { big_view::BigCalendarPage {} }
 }
 
 #[component]
