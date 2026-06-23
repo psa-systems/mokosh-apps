@@ -2,6 +2,7 @@
 
 use dioxus::prelude::*;
 
+use super::global_search::GlobalSearch;
 use super::icons::*;
 use super::theme_picker::ThemePickerButton;
 use crate::Route;
@@ -561,10 +562,18 @@ pub fn TopBar(props: TopBarProps) -> Element {
                 }
             }
 
-            // Page title
-            div { class: "flex-1 px-4 sm:px-6 lg:px-8 min-w-0",
-                h1 { class: "text-xl font-semibold text-content truncate",
+            // Page title + global search. Title gets a fixed slot on
+            // lg+ so the search box doesn't push it around; on smaller
+            // viewports the title takes the row and search hides.
+            div { class: "flex-1 px-4 sm:px-6 lg:px-8 min-w-0 flex items-center gap-4",
+                h1 { class: "text-xl font-semibold text-content truncate shrink-0",
                     "{props.title}"
+                }
+                // MAPPS-298: top-bar global search. Mounted at lg+ so
+                // the search field has room next to the page title;
+                // narrow viewports keep just the title.
+                div { class: "hidden lg:flex flex-1 max-w-md",
+                    GlobalSearch {}
                 }
             }
 
