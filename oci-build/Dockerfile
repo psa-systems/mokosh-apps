@@ -18,6 +18,29 @@ ARG CARGO_BUILD_JOBS=2
 ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 RUN echo "build parallelism: CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} (host nproc=$(nproc))"
 
+# Pre-stage wasm-opt so `dx build --release` does not download it from
+# a GitHub release every build. The runtime download failed in CI
+# with "connection reset" during the wasm-opt install: every build
+# was one GitHub-availability flake away from a red badge.
+#
+# dx 0.7.3's `wasm_opt::get_binary_path` (packages/cli/src/wasm_opt.rs)
+# checks for an already-installed binary at
+# `<DX_HOME>/binaryen/bin/wasm-opt` BEFORE touching the network, so
+# placing the Debian-packaged binary there short-circuits the
+# install. `DX_HOME` is read by `workspace::dioxus_data_dir` and
+# overrides the OS-default data dir; pinning it to a stable path
+# here means the symlink keeps working regardless of which user the
+# build container runs as. Not using `NO_DOWNLOADS=1` because that
+# also blocks dx's wasm-bindgen-cli + esbuild fetches, which still
+# need to succeed (wasm-bindgen-cli is version-pinned per dx
+# release and is not packaged in trixie).
+ENV DX_HOME=/opt/dx-cache
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends binaryen \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir --parents "${DX_HOME}/binaryen/bin" \
+    && ln --symbolic /usr/bin/wasm-opt "${DX_HOME}/binaryen/bin/wasm-opt"
+
 # --- Dependency caching (no source) ---
 COPY Cargo.toml Cargo.lock ./
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
