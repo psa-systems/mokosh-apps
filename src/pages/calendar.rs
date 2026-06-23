@@ -2014,6 +2014,13 @@ pub fn DispatchBoardPage() -> Element {
     let today_real = user_today();
     let mut active_day = use_signal(|| today_real);
     let mut form_state = use_signal(|| None::<Option<AppointmentResponse>>);
+    // MAPPS-280: Day / Week / Month view-mode toggle. Day stays the
+    // per-technician swimlane (the rich existing render); Week and
+    // Month re-use the calendar's WeekGrid / MonthGrid against the
+    // dispatch appointments so a dispatcher can plan a week without
+    // navigating away. The data range expands with the view so the
+    // grid has every appointment in scope.
+    let mut view = use_signal(|| CalendarView::Day);
 
     let users_resource = use_users_resource();
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
@@ -2022,15 +2029,33 @@ pub fn DispatchBoardPage() -> Element {
 
     let mut dispatch_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        // Read the `active_day` signal INSIDE the resource closure so the
-        // resource subscribes to it and refetches when the next/previous/
-        // Today controls change the date. Computing the range outside the
-        // closure (from a value-captured `DateTime`) advanced the header
-        // but never re-ran the fetch, so the board stayed on the first
-        // day it loaded (MAPPS-153).
+        // Read the `active_day` + `view` signals INSIDE the resource closure
+        // so the resource subscribes to them and refetches when the
+        // next/previous/Today/view controls change the range. Computing
+        // outside the closure (from a value-captured `DateTime`) advanced
+        // the header but never re-ran the fetch (MAPPS-153 fix).
         let day = active_day();
-        let from_utc = local_date_start_utc(day);
-        let to_utc = local_date_start_utc(day + Duration::days(1));
+        let view = *view.read();
+        let (from_date, to_date) = match view {
+            CalendarView::Day => (day, day + Duration::days(1)),
+            CalendarView::Week => {
+                let monday = day - Duration::days(day.weekday().num_days_from_monday() as i64);
+                (monday, monday + Duration::days(7))
+            }
+            CalendarView::Month => {
+                let first = day.with_day(1).unwrap_or(day);
+                let next_month = if first.month() == 12 {
+                    chrono::NaiveDate::from_ymd_opt(first.year() + 1, 1, 1)
+                        .unwrap_or(first + Duration::days(31))
+                } else {
+                    chrono::NaiveDate::from_ymd_opt(first.year(), first.month() + 1, 1)
+                        .unwrap_or(first + Duration::days(31))
+                };
+                (first, next_month)
+            }
+        };
+        let from_utc = local_date_start_utc(from_date);
+        let to_utc = local_date_start_utc(to_date);
         #[cfg(feature = "web")]
         {
             // Emit the UTC offset as `Z`, not `+00:00`. A literal `+` in
@@ -2065,7 +2090,20 @@ pub fn DispatchBoardPage() -> Element {
         _ => None,
     };
 
-    let title = day.format("%A, %B %-d, %Y").to_string();
+    // MAPPS-280: title reflects the active view's range.
+    let title = match *view.read() {
+        CalendarView::Day => day.format("%A, %B %-d, %Y").to_string(),
+        CalendarView::Week => {
+            let monday = day - Duration::days(day.weekday().num_days_from_monday() as i64);
+            let sunday = monday + Duration::days(6);
+            format!(
+                "{} - {}",
+                monday.format("%b %-d"),
+                sunday.format("%b %-d, %Y")
+            )
+        }
+        CalendarView::Month => day.format("%B %Y").to_string(),
+    };
 
     rsx! {
         AppLayout { title: "Dispatch Board",
@@ -2095,25 +2133,67 @@ pub fn DispatchBoardPage() -> Element {
                         button {
                             r#type: "button",
                             class: "p-2 hover:bg-surface-2 rounded",
-                            title: "Previous day",
-                            aria_label: "Previous day",
-                            onclick: move |_| active_day.set(active_day() - Duration::days(1)),
+                            title: "Previous",
+                            aria_label: "Previous",
+                            onclick: move |_| {
+                                let v = *view.read();
+                                let step = match v {
+                                    CalendarView::Day => Duration::days(1),
+                                    CalendarView::Week => Duration::days(7),
+                                    CalendarView::Month => Duration::days(28),
+                                };
+                                active_day.set(active_day() - step);
+                            },
                             ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
                         }
                         h2 { class: "text-lg font-semibold text-content", "{title}" }
                         button {
                             r#type: "button",
                             class: "p-2 hover:bg-surface-2 rounded",
-                            title: "Next day",
-                            aria_label: "Next day",
-                            onclick: move |_| active_day.set(active_day() + Duration::days(1)),
+                            title: "Next",
+                            aria_label: "Next",
+                            onclick: move |_| {
+                                let v = *view.read();
+                                let step = match v {
+                                    CalendarView::Day => Duration::days(1),
+                                    CalendarView::Week => Duration::days(7),
+                                    CalendarView::Month => Duration::days(28),
+                                };
+                                active_day.set(active_day() + step);
+                            },
                             ChevronRightIcon { class: "h-5 w-5".to_string() }
                         }
                     }
-                    Button {
-                        variant: ButtonVariant::Secondary,
-                        onclick: move |_| active_day.set(today_real),
-                        "Today"
+                    div { class: "flex space-x-2",
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            onclick: move |_| active_day.set(today_real),
+                            "Today"
+                        }
+                        // MAPPS-280: Day / Week / Month view toggle.
+                        // Day = per-technician swimlane (existing rich
+                        // render). Week / Month re-use the calendar
+                        // grids over the dispatch appointments so a
+                        // dispatcher can plan a week without leaving
+                        // the surface; per-technician week swimlanes
+                        // are tracked as a follow-up under this ticket.
+                        div { class: "flex border border-line rounded-md overflow-hidden",
+                            ViewToggleButton {
+                                label: "Day",
+                                active: view() == CalendarView::Day,
+                                onclick: move |_| view.set(CalendarView::Day),
+                            }
+                            ViewToggleButton {
+                                label: "Week",
+                                active: view() == CalendarView::Week,
+                                onclick: move |_| view.set(CalendarView::Week),
+                            }
+                            ViewToggleButton {
+                                label: "Month",
+                                active: view() == CalendarView::Month,
+                                onclick: move |_| view.set(CalendarView::Month),
+                            }
+                        }
                     }
                 }
 
@@ -2127,11 +2207,31 @@ pub fn DispatchBoardPage() -> Element {
                     if is_loading {
                         div { class: "py-12 text-center text-sm text-muted", "Loading dispatch board..." }
                     } else if let Some(d) = dispatch.as_ref() {
-                        DispatchTimeline {
-                            day,
-                            dispatch: d.clone(),
-                            users: users.clone(),
-                            onpick: move |a| form_state.set(Some(Some(a))),
+                        match view() {
+                            CalendarView::Day => rsx! {
+                                DispatchTimeline {
+                                    day,
+                                    dispatch: d.clone(),
+                                    users: users.clone(),
+                                    onpick: move |a| form_state.set(Some(Some(a))),
+                                }
+                            },
+                            CalendarView::Week => rsx! {
+                                WeekGrid {
+                                    active_date: day,
+                                    today: today_real,
+                                    appointments: d.appointments.clone(),
+                                    onpick: move |a| form_state.set(Some(Some(a))),
+                                }
+                            },
+                            CalendarView::Month => rsx! {
+                                MonthGrid {
+                                    active_date: day,
+                                    today: today_real,
+                                    appointments: d.appointments.clone(),
+                                    onpick: move |a| form_state.set(Some(Some(a))),
+                                }
+                            },
                         }
                     }
                 }
