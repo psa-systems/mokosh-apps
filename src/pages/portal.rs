@@ -433,6 +433,191 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
                                 }
                             }
                         }
+
+                        // PMS-480: comments thread + reply form. The
+                        // server filters internal / resolution /
+                        // time_entry notes server-side (only `public`
+                        // reaches the portal endpoint), so the SPA
+                        // does not have to filter again.
+                        PortalTicketComments { ticket_id: props.id.clone() }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// PMS-480: portal comments surface ----------------------------------------
+
+/// One public note as the portal endpoint returns it. The shape
+/// mirrors the server's `TicketNoteResponse` projection but stays
+/// permissive (every field `#[serde(default)]`) so a thinner payload
+/// still decodes.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalNote {
+    id: uuid::Uuid,
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    created_by_name: Option<String>,
+    /// PMS-468 / PMS-449 phase 2: when populated, the note was
+    /// authored by a portal contact. The portal UI uses
+    /// `is_some()` to render "You" vs "Agent" attribution without
+    /// the lossy name-equality heuristic the spec described.
+    #[serde(default)]
+    created_by_contact_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    created_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct PortalTicketCommentsProps {
+    ticket_id: String,
+}
+
+#[component]
+fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
+    let id_for_fetch = props.ticket_id.clone();
+    let id_for_post = props.ticket_id.clone();
+
+    // Empty input + submit state. Resource refetches when `version`
+    // is bumped (set after a successful POST so the new comment
+    // shows without a page reload).
+    let mut draft = use_signal(String::new);
+    let mut submitting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+    let mut version = use_signal(|| 0u32);
+
+    let mut notes_resource = use_resource(use_reactive!(|id_for_fetch| async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _v = version.read();
+        crate::hooks::fetch::api::get_authed::<crate::utils::Paginated<PortalNote>>(&format!(
+            "/portal/tickets/{id_for_fetch}/notes?page=1&per_page=200"
+        ))
+        .await
+        .map(|p| p.data)
+        .ok()
+    }));
+
+    // `Some(None)` = fetch failed; `Some(Some(rows))` = fetched, possibly empty.
+    let snap = notes_resource.read_unchecked();
+    let rows: Vec<PortalNote> = match &*snap {
+        Some(Some(rows)) => rows.clone(),
+        _ => Vec::new(),
+    };
+    let loading = snap.is_none();
+    let fetch_failed = matches!(*snap, Some(None));
+
+    let handle_submit = move |_| {
+        if *submitting.read() {
+            return;
+        }
+        let content_v = draft.read().trim().to_string();
+        if content_v.is_empty() {
+            error.set("Reply cannot be empty.".to_string());
+            return;
+        }
+        submitting.set(true);
+        error.set(String::new());
+        let id = id_for_post.clone();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let body = serde_json::json!({ "content": content_v });
+                match crate::hooks::fetch::api::post_authed_typed::<PortalNote, _>(
+                    &format!("/portal/tickets/{id}/notes"),
+                    &body,
+                )
+                .await
+                {
+                    Ok(_) => {
+                        draft.set(String::new());
+                        version += 1;
+                        notes_resource.restart();
+                    }
+                    Err(e) => error.set(format!("Could not send reply: {e}")),
+                }
+            }
+            submitting.set(false);
+        });
+    };
+
+    rsx! {
+        Card { class: "mt-6",
+            h2 { class: "text-lg font-semibold text-content mb-4", "Conversation" }
+
+            if loading {
+                p { class: "text-sm text-muted", "Loading comments..." }
+            } else if fetch_failed {
+                p { class: "text-sm text-red-600 dark:text-red-300", "Could not load comments." }
+            } else if rows.is_empty() {
+                p { class: "text-sm text-muted mb-4",
+                    "No comments yet. Send the first reply below."
+                }
+            } else {
+                ul { class: "space-y-4 mb-6",
+                    for note in rows.iter().cloned() {
+                        {
+                            let key = note.id.to_string();
+                            let is_customer = note.created_by_contact_id.is_some();
+                            let author = note
+                                .created_by_name
+                                .clone()
+                                .filter(|s| !s.trim().is_empty())
+                                .unwrap_or_else(|| {
+                                    if is_customer { "You".to_string() } else { "Agent".to_string() }
+                                });
+                            let when = note
+                                .created_at
+                                .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
+                                .unwrap_or_default();
+                            let (badge, label) = if is_customer {
+                                (BadgeVariant::Blue, "Customer")
+                            } else {
+                                (BadgeVariant::Gray, "Agent")
+                            };
+                            rsx! {
+                                li { key: "{key}", class: "rounded-md border border-line bg-surface-2 p-4",
+                                    div { class: "flex items-center justify-between mb-2 gap-2",
+                                        div { class: "flex items-center gap-2",
+                                            span { class: "font-medium text-content text-sm", "{author}" }
+                                            Badge { variant: badge, "{label}" }
+                                        }
+                                        if !when.is_empty() {
+                                            span { class: "text-xs text-subtle", "{when}" }
+                                        }
+                                    }
+                                    p { class: "text-sm text-content whitespace-pre-wrap",
+                                        "{note.content}"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Send-reply form. Submit button is disabled while the
+            // POST is in flight to prevent the customer from double-
+            // submitting the same comment.
+            div { class: "border-t border-line pt-4",
+                h3 { class: "text-sm font-medium text-content mb-2", "Send Reply" }
+                if !error().is_empty() {
+                    p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "{error}" }
+                }
+                textarea {
+                    class: "w-full rounded-md border border-line bg-surface text-content p-2 text-sm focus:border-accent focus:ring-accent",
+                    rows: 4,
+                    placeholder: "Type your message...",
+                    value: "{draft}",
+                    oninput: move |e: FormEvent| draft.set(e.value()),
+                }
+                div { class: "mt-3 flex justify-end",
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        disabled: *submitting.read(),
+                        onclick: handle_submit,
+                        if *submitting.read() { "Sending..." } else { "Send Reply" }
                     }
                 }
             }
