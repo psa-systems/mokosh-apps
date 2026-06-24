@@ -1586,6 +1586,11 @@ struct AssetTypeRow {
     icon: Option<String>,
     #[serde(default)]
     is_active: bool,
+    /// PMS-476: ITIL CI class tag (hardware / software / service /
+    /// network / document / location, or a tenant-coined value).
+    /// Optional so types created before PMS-456 still deserialise.
+    #[serde(default)]
+    itil_category: Option<String>,
 }
 
 #[component]
@@ -1710,6 +1715,8 @@ struct AssetTypeFormState {
     name: String,
     icon: String,
     is_active: bool,
+    /// PMS-476: free-text ITIL category. Empty = unset on the wire.
+    itil_category: String,
 }
 
 impl AssetTypeFormState {
@@ -1719,6 +1726,7 @@ impl AssetTypeFormState {
             name: String::new(),
             icon: String::new(),
             is_active: true,
+            itil_category: String::new(),
         }
     }
 
@@ -1728,6 +1736,7 @@ impl AssetTypeFormState {
             name: r.name.clone(),
             icon: r.icon.clone().unwrap_or_default(),
             is_active: r.is_active,
+            itil_category: r.itil_category.clone().unwrap_or_default(),
         }
     }
 }
@@ -1747,6 +1756,7 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
     let mut name = use_signal(|| initial.name.clone());
     let mut icon = use_signal(|| initial.icon.clone());
     let mut is_active = use_signal(|| initial.is_active);
+    let mut itil_category = use_signal(|| initial.itil_category.clone());
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -1766,13 +1776,18 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
         saving.set(true);
         error.set(String::new());
         let icon_val = icon.read().trim().to_string();
+        let itil_val = itil_category.read().trim().to_string();
         // `parent_type_id` is always sent null: this v1 editor manages
         // flat (top-level) asset types only. Nested types are a follow-up.
+        // PMS-476: `itil_category` is free-text so the tenant can coin
+        // a new value; the help text on the input surfaces the
+        // standard ITIL classes as suggestions.
         let body = serde_json::json!({
             "name": name.read().trim(),
             "icon": opt_str(&icon_val),
             "parent_type_id": serde_json::Value::Null,
             "is_active": *is_active.read(),
+            "itil_category": opt_str(&itil_val),
         });
         let id = save_id.clone();
         spawn(async move {
@@ -1833,6 +1848,18 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
                 placeholder: "Optional icon name",
                 value: icon.read().clone(),
                 oninput: move |e: FormEvent| icon.set(e.value()),
+            }
+            // PMS-476: ITIL CI class. Free-text so a tenant can
+            // coin a new value; the help text shows the standard
+            // classes from the v3 service-asset-and-configuration
+            // mgmt taxonomy as suggestions.
+            crate::components::Input {
+                name: "asset_type_itil_category",
+                label: "ITIL category",
+                placeholder: "e.g. hardware",
+                help: "Standard: hardware, software, service, network, document, location. Leave blank for unclassified.".to_string(),
+                value: itil_category.read().clone(),
+                oninput: move |e: FormEvent| itil_category.set(e.value()),
             }
             crate::components::Checkbox {
                 name: "asset_type_active",
