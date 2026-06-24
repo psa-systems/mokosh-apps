@@ -1283,11 +1283,11 @@ pub fn TicketNewPage() -> Element {
                 // a UUID, but a hand-edited URL could still slip
                 // through) and folded into the body as Null when
                 // absent so the server uses its default.
-                let kb_article_uuid: serde_json::Value =
-                    match uuid::Uuid::parse_str(&kb_article_id) {
-                        Ok(u) => serde_json::Value::String(u.to_string()),
-                        Err(_) => serde_json::Value::Null,
-                    };
+                let kb_article_uuid: serde_json::Value = match uuid::Uuid::parse_str(&kb_article_id)
+                {
+                    Ok(u) => serde_json::Value::String(u.to_string()),
+                    Err(_) => serde_json::Value::Null,
+                };
                 let body = serde_json::json!({
                     "title": title_v,
                     "description": if description_v.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(description_v) },
