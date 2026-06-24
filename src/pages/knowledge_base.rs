@@ -1136,6 +1136,32 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                         }
                                         Badge { variant: status_variant, "{status_label}" }
                                         Badge { variant: vis_variant, "{vis_label}" }
+                                        // PMS-482: "Open ticket about this
+                                        // article". Navigates to the ticket-
+                                        // new form with the article id +
+                                        // title + URL on the query string;
+                                        // the form pre-fills its title /
+                                        // description and stamps
+                                        // `source_kb_article_id` on the
+                                        // create body. Plain `<a>` so the
+                                        // query string survives intact and
+                                        // the user can right-click to open
+                                        // in a new tab.
+                                        {
+                                            let qs = format!(
+                                                "from_kb_article={}&from_kb_title={}&from_kb_url={}",
+                                                props.id,
+                                                crate::utils::url::urlencoding_minimal(&article.title),
+                                                crate::utils::url::urlencoding_minimal(&format!("/kb/articles/{}", props.id)),
+                                            );
+                                            rsx! {
+                                                a {
+                                                    href: "/tickets/new?{qs}",
+                                                    class: "inline-flex items-center px-3 py-2 text-sm font-medium rounded-md border border-line hover:bg-surface-2 text-content",
+                                                    "Open ticket about this article"
+                                                }
+                                            }
+                                        }
                                         Link { to: Route::KBArticleEdit { id: props.id.clone() },
                                             Button { variant: ButtonVariant::Secondary, "Edit" }
                                         }
