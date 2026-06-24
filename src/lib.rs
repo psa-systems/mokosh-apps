@@ -175,6 +175,13 @@ pub enum Route {
     #[route("/timesheets/approvals")]
     TimesheetApprovals {},
 
+    // PMS-481: "My approvals" queue across every approval target
+    // (ticket / time_entry / change_request / quote). The signed-in
+    // user sees pending rows where they are the named approver or
+    // hold the assigned role; approve / reject inline.
+    #[route("/approvals")]
+    Approvals {},
+
     // Projects
     #[route("/projects")]
     ProjectList {},
@@ -593,6 +600,11 @@ fn Timesheets() -> Element {
 #[component]
 fn TimesheetApprovals() -> Element {
     rsx! { time::TimesheetApprovalsPage {} }
+}
+
+#[component]
+fn Approvals() -> Element {
+    rsx! { approvals::ApprovalsPage {} }
 }
 
 #[component]

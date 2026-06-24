@@ -9,6 +9,7 @@
 //! the hub.
 
 pub mod admin;
+pub mod approvals;
 pub mod assets;
 pub mod audit_log;
 pub mod auth_callback;
