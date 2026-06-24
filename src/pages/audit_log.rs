@@ -380,19 +380,30 @@ fn AuditLogContent() -> Element {
         format!("{base}/audit-log/export.csv{qstr}")
     };
 
+    // PMS-474: dated filename so an admin who downloads CSVs from
+    // several days running gets distinct files rather than the
+    // browser appending `(1)`, `(2)`, ... to identical names.
+    // Computed at render time (not memoised) so an operator who
+    // leaves the page open across midnight still gets today's date
+    // on the next click.
+    let export_filename = format!("audit-log-{}.csv", chrono::Utc::now().format("%Y-%m-%d"));
+
     rsx! {
         AppLayout { title: "Audit Log",
             PageHeader {
                 title: "Audit Log",
                 subtitle: "Review who changed what, and when",
-                // PMS-455: download CSV of the currently-filtered set.
+                // PMS-455 / PMS-474: download CSV of the currently-
+                // filtered set. The `href` is a plain anchor (not a
+                // JS-driven button) so the same-origin auth cookie
+                // travels with the navigation. The `download` attr
+                // forces a dated filename ("audit-log-YYYY-MM-DD.csv")
+                // regardless of the server's Content-Disposition so
+                // an admin gets distinct files across runs.
                 actions: rsx! {
                     a {
                         href: "{export_href}",
-                        // `download` attr nudges the browser to use
-                        // the Content-Disposition filename ("audit-log.csv")
-                        // rather than navigating into the response.
-                        "download": "audit-log.csv",
+                        "download": "{export_filename}",
                         class: "inline-flex items-center px-4 py-2 text-sm font-medium rounded-md border border-line hover:bg-surface-2 text-content",
                         "Download CSV"
                     }
