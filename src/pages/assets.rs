@@ -1279,6 +1279,17 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     // PMS-476: ITIL CI lifecycle stage. Free-text so a tenant can
     // coin a stage; placeholder + help text surface the standard set.
     let mut e_itil_stage = use_signal(String::new);
+    // PMS-473: CMDB expansion fields. Every one is optional on the
+    // wire so an empty signal means "do not change"; the body
+    // serialiser converts the empty string to a JSON null which the
+    // server `COALESCE`s on the UPDATE.
+    let mut e_assigned_user = use_signal(String::new);
+    let mut e_ip = use_signal(String::new);
+    let mut e_hostname = use_signal(String::new);
+    let mut e_mac = use_signal(String::new);
+    let mut e_installed = use_signal(String::new);
+    let mut e_department = use_signal(String::new);
+    let mut e_in_transit = use_signal(String::new);
     let mut e_submitting = use_signal(|| false);
     let mut e_error = use_signal(String::new);
     let id_for_save = props.id.clone();
@@ -1484,6 +1495,24 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                         e_warranty.set(a_edit.warranty_expiry.clone().unwrap_or_default());
                         e_purchase.set(a_edit.purchase_date.clone().unwrap_or_default());
                         e_itil_stage.set(a_edit.itil_lifecycle_stage.clone().unwrap_or_default());
+                        // PMS-473: seed the CMDB expansion fields.
+                        e_assigned_user.set(
+                            a_edit
+                                .assigned_user_id
+                                .map(|u| u.to_string())
+                                .unwrap_or_default(),
+                        );
+                        e_ip.set(a_edit.ip_address.clone().unwrap_or_default());
+                        e_hostname.set(a_edit.hostname.clone().unwrap_or_default());
+                        e_mac.set(a_edit.mac_address.clone().unwrap_or_default());
+                        e_installed.set(a_edit.installed_date.clone().unwrap_or_default());
+                        e_department.set(a_edit.department.clone().unwrap_or_default());
+                        e_in_transit.set(
+                            a_edit
+                                .in_transit_ticket_id
+                                .map(|t| t.to_string())
+                                .unwrap_or_default(),
+                        );
                         e_error.set(String::new());
                         editing.set(true);
                     };
@@ -2027,6 +2056,31 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                             "itil_lifecycle_stage".into(),
                             serde_json::json!(opt_str(&e_itil_stage())),
                         );
+                        // PMS-473: CMDB expansion fields. UUID-shaped
+                        // fields parse to JSON null when the signal
+                        // is empty so the server clears the column;
+                        // a malformed UUID is sent verbatim so the
+                        // server validator surfaces the 422 instead
+                        // of the client silently swallowing it.
+                        body.insert(
+                            "assigned_user_id".into(),
+                            serde_json::json!(opt_str(&e_assigned_user())),
+                        );
+                        body.insert("ip_address".into(), serde_json::json!(opt_str(&e_ip())));
+                        body.insert("hostname".into(), serde_json::json!(opt_str(&e_hostname())));
+                        body.insert("mac_address".into(), serde_json::json!(opt_str(&e_mac())));
+                        body.insert(
+                            "installed_date".into(),
+                            serde_json::json!(opt_str(&e_installed())),
+                        );
+                        body.insert(
+                            "department".into(),
+                            serde_json::json!(opt_str(&e_department())),
+                        );
+                        body.insert(
+                            "in_transit_ticket_id".into(),
+                            serde_json::json!(opt_str(&e_in_transit())),
+                        );
                         let body = serde_json::Value::Object(body);
                         match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
                             &format!("/assets/{save_id}"),
@@ -2147,6 +2201,86 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 help: "Standard: planned, in_service, retired. Leave blank for unknown.".to_string(),
                                 value: "{e_itil_stage}",
                                 oninput: move |e: FormEvent| e_itil_stage.set(e.value()),
+                            }
+                            // PMS-473: CMDB expansion fields. The
+                            // assigned-user picker is a Select built
+                            // from the already-cached `users_resource`
+                            // so an inline edit doesn't fire a fresh
+                            // /auth/users fetch. Other fields are
+                            // text / date inputs because the values
+                            // are free-form network identifiers.
+                            {
+                                let mut user_opts = vec![SelectOption::new("", "(unassigned)")];
+                                for u in users.iter() {
+                                    let label = if u.full_name.trim().is_empty() {
+                                        u.id.to_string()
+                                    } else {
+                                        u.full_name.clone()
+                                    };
+                                    user_opts.push(SelectOption::new(u.id.to_string(), label));
+                                }
+                                rsx! {
+                                    Select {
+                                        name: "edit-assigned-user",
+                                        label: "Assigned user",
+                                        options: user_opts,
+                                        value: "{e_assigned_user}",
+                                        onchange: move |e: FormEvent| e_assigned_user.set(e.value()),
+                                    }
+                                }
+                            }
+                            div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
+                                Input {
+                                    name: "edit-hostname",
+                                    label: "Hostname",
+                                    placeholder: "host.example.com",
+                                    value: "{e_hostname}",
+                                    oninput: move |e: FormEvent| e_hostname.set(e.value()),
+                                }
+                                Input {
+                                    name: "edit-ip",
+                                    label: "IP address",
+                                    placeholder: "10.0.0.1 or fe80::1",
+                                    help: "IPv4 or IPv6. Server validates the format.".to_string(),
+                                    value: "{e_ip}",
+                                    oninput: move |e: FormEvent| e_ip.set(e.value()),
+                                }
+                            }
+                            div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
+                                Input {
+                                    name: "edit-mac",
+                                    label: "MAC address",
+                                    placeholder: "aa:bb:cc:dd:ee:ff",
+                                    value: "{e_mac}",
+                                    oninput: move |e: FormEvent| e_mac.set(e.value()),
+                                }
+                                crate::components::DateField {
+                                    name: "edit-installed",
+                                    label: "Installed date",
+                                    value: "{e_installed}",
+                                    oninput: move |e: FormEvent| e_installed.set(e.value()),
+                                }
+                            }
+                            Input {
+                                name: "edit-department",
+                                label: "Department",
+                                placeholder: "e.g. Sales",
+                                value: "{e_department}",
+                                oninput: move |e: FormEvent| e_department.set(e.value()),
+                            }
+                            // In-transit ticket reference: free-text
+                            // UUID input. A picker over /tickets is
+                            // the natural follow-up but the dispatcher
+                            // already has the ticket id when they set
+                            // status=in_transit, so a paste works in
+                            // v1. The server validates the FK.
+                            Input {
+                                name: "edit-in-transit-ticket",
+                                label: "In-transit ticket id",
+                                placeholder: "UUID of the dispatch ticket",
+                                help: "Optional. Sets the ticket the asset is currently being moved against.".to_string(),
+                                value: "{e_in_transit}",
+                                oninput: move |e: FormEvent| e_in_transit.set(e.value()),
                             }
                         }
                     }
