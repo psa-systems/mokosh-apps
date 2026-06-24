@@ -1002,15 +1002,62 @@ fn read_company_prefill_from_url() -> CompanyPrefill {
     CompanyPrefill::default()
 }
 
+/// PMS-482: KB-article prefill captured off the URL when the
+/// ticket-new page is reached via "Open ticket about this article"
+/// from a KB article. Only the `id` is needed for the create body's
+/// `source_kb_article_id`; `title` + `url` are folded into the
+/// title and description signals so the user lands on a pre-filled
+/// form they can immediately edit and submit.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct KbArticlePrefill {
+    id: String,
+    title: String,
+    url: String,
+}
+
+fn read_kb_prefill_from_url() -> KbArticlePrefill {
+    #[cfg(feature = "web")]
+    {
+        if let Some(search) = web_sys::window().and_then(|w| w.location().search().ok()) {
+            if let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) {
+                let id = params.get("from_kb_article").unwrap_or_default();
+                let title = params.get("from_kb_title").unwrap_or_default();
+                let url = params.get("from_kb_url").unwrap_or_default();
+                if uuid::Uuid::parse_str(&id).is_ok() {
+                    return KbArticlePrefill { id, title, url };
+                }
+            }
+        }
+    }
+    KbArticlePrefill::default()
+}
+
 /// New ticket page
 #[component]
 pub fn TicketNewPage() -> Element {
     // MAPPS-207: seed the company from the URL when linked from a company.
     let prefill = use_signal(read_company_prefill_from_url);
     let prefill = prefill.read().clone();
+    // PMS-482: seed title + description from the source KB article when
+    // the user clicked "Open ticket about this article". The article id
+    // rides into the create body as `source_kb_article_id`.
+    let kb_prefill = use_signal(read_kb_prefill_from_url);
+    let kb_prefill = kb_prefill.read().clone();
+    let kb_article_id_for_body = kb_prefill.id.clone();
 
-    let mut title = use_signal(String::new);
-    let mut description = use_signal(String::new);
+    let initial_title = kb_prefill.title.clone();
+    let initial_description = if kb_prefill.title.is_empty() {
+        String::new()
+    } else {
+        let link = if kb_prefill.url.is_empty() {
+            String::new()
+        } else {
+            format!("\nLink: {}", kb_prefill.url)
+        };
+        format!("Article: {}{}", kb_prefill.title, link)
+    };
+    let mut title = use_signal(|| initial_title);
+    let mut description = use_signal(|| initial_description);
     // The company field holds a real company UUID (string) plus its human
     // name, both fed by the CompanyPicker. The old hardcoded "1"/"2"/"3"
     // Select submitted non-UUID ids that fell back to the nil UUID, so the
@@ -1223,10 +1270,24 @@ pub fn TicketNewPage() -> Element {
             return;
         }
         let description_v = description.read().clone();
+        // PMS-482: clone the captured KB id into a per-call binding so
+        // the FnMut submit handler can be called more than once.
+        let kb_article_id = kb_article_id_for_body.clone();
 
         spawn(async move {
             #[cfg(feature = "web")]
             {
+                // PMS-482: stamp `source_kb_article_id` when the
+                // page was reached from a KB article. Parsed
+                // defensively (the prefill already validated it as
+                // a UUID, but a hand-edited URL could still slip
+                // through) and folded into the body as Null when
+                // absent so the server uses its default.
+                let kb_article_uuid: serde_json::Value =
+                    match uuid::Uuid::parse_str(&kb_article_id) {
+                        Ok(u) => serde_json::Value::String(u.to_string()),
+                        Err(_) => serde_json::Value::Null,
+                    };
                 let body = serde_json::json!({
                     "title": title_v,
                     "description": if description_v.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(description_v) },
@@ -1242,6 +1303,8 @@ pub fn TicketNewPage() -> Element {
                     "category_id": category_uuid,
                     "assigned_to_id": assignee_uuid,
                     "scheduled_end": scheduled_end,
+                    // PMS-482: KB-article provenance.
+                    "source_kb_article_id": kb_article_uuid,
                 });
 
                 #[derive(serde::Deserialize)]
