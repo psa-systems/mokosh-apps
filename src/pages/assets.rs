@@ -60,6 +60,11 @@ struct RemoteAsset {
     department: Option<String>,
     #[serde(default)]
     in_transit_ticket_id: Option<uuid::Uuid>,
+    // PMS-476 / PMS-456: per-CI lifecycle position (planned /
+    // in_service / retired, or a tenant-coined value). Free-text so
+    // a tenant can coin a stage; `None` renders as "Unknown".
+    #[serde(default)]
+    itil_lifecycle_stage: Option<String>,
     #[serde(default)]
     created_at: Option<String>,
     #[serde(default)]
@@ -1271,6 +1276,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     let mut e_serial = use_signal(String::new);
     let mut e_warranty = use_signal(String::new);
     let mut e_purchase = use_signal(String::new);
+    // PMS-476: ITIL CI lifecycle stage. Free-text so a tenant can
+    // coin a stage; placeholder + help text surface the standard set.
+    let mut e_itil_stage = use_signal(String::new);
     let mut e_submitting = use_signal(|| false);
     let mut e_error = use_signal(String::new);
     let id_for_save = props.id.clone();
@@ -1475,6 +1483,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                         e_serial.set(a_edit.serial_number.clone().unwrap_or_default());
                         e_warranty.set(a_edit.warranty_expiry.clone().unwrap_or_default());
                         e_purchase.set(a_edit.purchase_date.clone().unwrap_or_default());
+                        e_itil_stage.set(a_edit.itil_lifecycle_stage.clone().unwrap_or_default());
                         e_error.set(String::new());
                         editing.set(true);
                     };
@@ -1802,6 +1811,17 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                             span { class: "text-muted", "Status" }
                                             Badge { variant: status_variant, "{status_label}" }
                                         }
+                                        // PMS-476: ITIL CI lifecycle
+                                        // stage. Shown only when
+                                        // populated so an asset that
+                                        // pre-dates the column stays
+                                        // visually clean.
+                                        if let Some(stage) = a.itil_lifecycle_stage.clone().filter(|s| !s.trim().is_empty()) {
+                                            div { class: "flex justify-between items-center",
+                                                span { class: "text-muted", "Lifecycle" }
+                                                Badge { variant: BadgeVariant::Gray, "{stage}" }
+                                            }
+                                        }
                                         div { class: "flex justify-between items-center",
                                             span { class: "text-muted", "Warranty" }
                                             div { class: "flex items-center gap-2",
@@ -1999,6 +2019,14 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                             "purchase_date".into(),
                             serde_json::json!(opt_str(&e_purchase())),
                         );
+                        // PMS-476: ITIL CI lifecycle stage. Free-text
+                        // so a tenant can coin a stage; the server
+                        // takes it verbatim and renders it on the
+                        // detail page beside Status.
+                        body.insert(
+                            "itil_lifecycle_stage".into(),
+                            serde_json::json!(opt_str(&e_itil_stage())),
+                        );
                         let body = serde_json::Value::Object(body);
                         match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
                             &format!("/assets/{save_id}"),
@@ -2108,6 +2136,17 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     value: "{e_warranty}",
                                     oninput: move |e: FormEvent| e_warranty.set(e.value()),
                                 }
+                            }
+                            // PMS-476: ITIL CI lifecycle stage. Free
+                            // text so a tenant can coin a stage; the
+                            // help line suggests the standard set.
+                            Input {
+                                name: "edit-itil-stage",
+                                label: "ITIL lifecycle stage",
+                                placeholder: "e.g. in_service",
+                                help: "Standard: planned, in_service, retired. Leave blank for unknown.".to_string(),
+                                value: "{e_itil_stage}",
+                                oninput: move |e: FormEvent| e_itil_stage.set(e.value()),
                             }
                         }
                     }
