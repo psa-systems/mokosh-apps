@@ -390,6 +390,13 @@ pub struct Toast {
     pub toast_type: AlertType,
     pub message: String,
     pub title: Option<String>,
+    /// MAPPS-312: auto-dismiss timeout in milliseconds. `None` keeps
+    /// the toast sticky until the user clicks the dismiss button -
+    /// the right behaviour for Warning / Error toasts where the user
+    /// must see the failure even if they tabbed away. Success / Info
+    /// toasts default to ~5s so the stack does not pile up across a
+    /// normal session.
+    pub auto_dismiss_ms: Option<u32>,
 }
 
 /// Toast container props
@@ -409,19 +416,61 @@ pub fn ToastContainer(props: ToastContainerProps) -> Element {
     rsx! {
         div { class: "fixed z-50 {position_class} space-y-2 w-80",
             for toast in props.toasts.iter() {
-                div { key: "{toast.id}",
-                    class: "transform transition-all duration-300 ease-in-out",
-                    Alert {
-                        alert_type: toast.toast_type,
-                        title: toast.title.clone().unwrap_or_default(),
-                        message: toast.message.clone(),
-                        dismissible: true,
-                        ondismiss: {
-                            let id = toast.id.clone();
-                            move |_| props.ondismiss.call(id.clone())
-                        },
-                    }
+                ToastRow {
+                    key: "{toast.id}",
+                    toast: toast.clone(),
+                    ondismiss: props.ondismiss,
                 }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct ToastRowProps {
+    toast: Toast,
+    ondismiss: EventHandler<String>,
+}
+
+/// MAPPS-312: one toast row, owning a per-toast auto-dismiss timer.
+/// Splitting the row into its own component is what lets `use_effect`
+/// scope to a single id - a `use_effect` in `ToastContainer` would
+/// fire once per toast list change and either spawn duplicates or
+/// schedule against the wrong id.
+#[component]
+fn ToastRow(props: ToastRowProps) -> Element {
+    let id = props.toast.id.clone();
+    let dismiss = props.ondismiss;
+    let auto_dismiss_ms = props.toast.auto_dismiss_ms;
+    // Per-id timer effect. Runs on first mount with this key (the
+    // parent `for` iterates with `key: "{toast.id}"` so a fresh push
+    // mounts a fresh component) and fires the dismiss after the
+    // configured ms. `None` skips scheduling entirely - the toast
+    // stays sticky until the user clicks X.
+    use_effect(move || {
+        let id = id.clone();
+        if let Some(ms) = auto_dismiss_ms {
+            #[cfg(feature = "web")]
+            {
+                dioxus::prelude::spawn(async move {
+                    gloo_timers::future::TimeoutFuture::new(ms).await;
+                    dismiss.call(id);
+                });
+            }
+            #[cfg(not(feature = "web"))]
+            let _ = (ms, id, dismiss);
+        }
+    });
+    let dismiss_id = props.toast.id.clone();
+    rsx! {
+        div {
+            class: "transform transition-all duration-300 ease-in-out",
+            Alert {
+                alert_type: props.toast.toast_type,
+                title: props.toast.title.clone().unwrap_or_default(),
+                message: props.toast.message.clone(),
+                dismissible: true,
+                ondismiss: move |_| dismiss.call(dismiss_id.clone()),
             }
         }
     }
