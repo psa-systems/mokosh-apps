@@ -4,6 +4,7 @@ pub mod datetime;
 pub mod duration;
 pub mod envelope;
 pub mod error;
+pub mod form_guard;
 pub mod markdown;
 pub mod money;
 pub mod pagination;
@@ -15,6 +16,7 @@ pub mod version;
 // Re-exports
 pub use envelope::{Paginated, PaginatedMeta};
 pub use error::{AppError, AppResult};
+pub use form_guard::FormGuard;
 pub use pagination::{PaginatedResponse, PaginationParams};
 pub use validation::{validate, Rule};
 pub use version::{BUILD_DATE, GIT_HASH, VERSION};
