@@ -151,6 +151,10 @@ pub enum Route {
       #[route("/dashboards")]
       SavedDashboards {},
 
+      // PMS-472: view surface for one saved dashboard.
+      #[route("/dashboards/:id/view")]
+      SavedDashboardView { id: String },
+
     // Tickets
     #[route("/tickets")]
     TicketList {},
@@ -547,12 +551,17 @@ fn SignupComplete(token: String) -> Element {
 
 #[component]
 fn Dashboard() -> Element {
-    rsx! { dashboard::DashboardPage {} }
+    rsx! { dashboards_view::DefaultDashboardPage {} }
 }
 
 #[component]
 fn SavedDashboards() -> Element {
     rsx! { dashboards::SavedDashboardsPage {} }
+}
+
+#[component]
+fn SavedDashboardView(id: String) -> Element {
+    rsx! { dashboards_view::SavedDashboardViewPage { id } }
 }
 
 #[component]

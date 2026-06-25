@@ -17,6 +17,7 @@ use crate::components::{
     AlertType, AppLayout, Button, ButtonVariant, Card, Modal, PageHeader, Table, TableBody,
     TableCell, TableHead, TableHeader, TableRow,
 };
+use crate::Route;
 
 #[derive(Clone, Debug, Deserialize)]
 struct SavedDashboard {
@@ -185,6 +186,13 @@ pub fn SavedDashboardsPage() -> Element {
                                             TableCell { "{updated}" }
                                             TableCell { class: "text-right".to_string(),
                                                 div { class: "inline-flex gap-2",
+                                                    Link {
+                                                        to: Route::SavedDashboardView { id: id.to_string() },
+                                                        Button {
+                                                            variant: ButtonVariant::Secondary,
+                                                            "View"
+                                                        }
+                                                    }
                                                     if !row_default {
                                                         Button {
                                                             variant: ButtonVariant::Secondary,
