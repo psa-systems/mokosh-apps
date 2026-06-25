@@ -479,6 +479,15 @@ pub fn TicketListPage() -> Element {
     // single rows; the `BulkActionsBar` renders the verb buttons when
     // non-empty and clears itself when a verb fires.
     let mut selection = use_bulk_selection();
+    // MAPPS-310: confirm-before-delete for the bulk delete action.
+    // `None` = no dialog open; `Some(snapshot)` = dialog open against
+    // the snapshotted selection (we freeze the id list at click time
+    // so a user un-checking a row mid-dialog doesn't smuggle past the
+    // confirmation prompt). Other destructive surfaces in the app
+    // (Companies / Contracts / Assets detail) gate on `ConfirmDialog`;
+    // the bulk path bypassed it before this fix.
+    let mut bulk_delete_confirm = use_signal::<Option<Vec<String>>>(|| None);
+    let mut bulk_delete_running = use_signal(|| false);
 
     // MAPPS-295: source the status-filter options from the tenant's
     // configured `ticket_statuses` table instead of a hand-rolled slug
@@ -679,37 +688,82 @@ pub fn TicketListPage() -> Element {
                 label: "ticket".to_string(),
                 Button {
                     variant: ButtonVariant::Danger,
+                    disabled: bulk_delete_running(),
                     onclick: move |_| {
+                        // MAPPS-310: stash the snapshot + open the
+                        // confirmation dialog. The actual delete fanout
+                        // runs from the dialog's confirm handler so an
+                        // accidental click is recoverable.
                         let ids: Vec<String> = selection.read().iter().cloned().collect();
-                        spawn(async move {
-                            #[cfg(feature = "web")]
-                            {
-                                use futures_util::future::join_all;
-                                let futs = ids.iter().map(|id| {
-                                    let path = format!("/tickets/{id}");
-                                    async move {
-                                        crate::hooks::fetch::api::delete_authed(&path).await
-                                    }
-                                });
-                                let results = join_all(futs).await;
-                                let failures = results.iter().filter(|r| r.is_err()).count();
-                                if failures == 0 {
-                                    crate::hooks::toast::push_toast(
-                                        crate::components::AlertType::Success,
-                                        format!("Deleted {} ticket(s).", ids.len()),
-                                    );
-                                } else {
-                                    crate::hooks::toast::push_toast(
-                                        crate::components::AlertType::Error,
-                                        format!("Deleted {} of {}; {} failed.", ids.len() - failures, ids.len(), failures),
-                                    );
-                                }
-                            }
-                            clear_selection(&mut selection);
-                            tickets_resource.restart();
-                        });
+                        if !ids.is_empty() {
+                            bulk_delete_confirm.set(Some(ids));
+                        }
                     },
                     "Delete selected"
+                }
+            }
+
+            // MAPPS-310: confirmation dialog for the bulk delete. The
+            // pending-id list lives in `bulk_delete_confirm`; the
+            // onconfirm handler runs the same join_all delete fanout
+            // the inline onclick used before this fix, then clears
+            // the selection and restarts the resource.
+            {
+                let pending = bulk_delete_confirm.read().clone();
+                let pending_count = pending.as_ref().map(|v| v.len()).unwrap_or(0);
+                let dialog_message = format!(
+                    "Delete {pending_count} selected ticket(s)? Notes, attachments, and time entries on these tickets are also removed. This cannot be undone."
+                );
+                let confirm_text = format!("Delete {pending_count} ticket(s)");
+                rsx! {
+                    crate::components::ConfirmDialog {
+                        open: pending.is_some(),
+                        title: "Delete selected tickets".to_string(),
+                        message: dialog_message,
+                        confirm_text,
+                        cancel_text: "Cancel".to_string(),
+                        destructive: true,
+                        loading: bulk_delete_running(),
+                        onconfirm: move |_| {
+                            let Some(ids) = bulk_delete_confirm.read().clone() else { return };
+                            if ids.is_empty() || bulk_delete_running() { return; }
+                            bulk_delete_running.set(true);
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    use futures_util::future::join_all;
+                                    let futs = ids.iter().map(|id| {
+                                        let path = format!("/tickets/{id}");
+                                        async move {
+                                            crate::hooks::fetch::api::delete_authed(&path).await
+                                        }
+                                    });
+                                    let results = join_all(futs).await;
+                                    let failures = results.iter().filter(|r| r.is_err()).count();
+                                    if failures == 0 {
+                                        crate::hooks::toast::push_toast(
+                                            crate::components::AlertType::Success,
+                                            format!("Deleted {} ticket(s).", ids.len()),
+                                        );
+                                    } else {
+                                        crate::hooks::toast::push_toast(
+                                            crate::components::AlertType::Error,
+                                            format!("Deleted {} of {}; {} failed.", ids.len() - failures, ids.len(), failures),
+                                        );
+                                    }
+                                }
+                                clear_selection(&mut selection);
+                                tickets_resource.restart();
+                                bulk_delete_confirm.set(None);
+                                bulk_delete_running.set(false);
+                            });
+                        },
+                        oncancel: move |_| {
+                            if !bulk_delete_running() {
+                                bulk_delete_confirm.set(None);
+                            }
+                        },
+                    }
                 }
             }
 
