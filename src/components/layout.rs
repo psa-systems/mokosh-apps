@@ -586,6 +586,11 @@ pub fn TopBar(props: TopBarProps) -> Element {
                 // server `notifications` module (MAPPS-132).
                 NotificationBell {}
 
+                // PMS-486: pending-approvals chip. Polls
+                // `/approvals/pending` and renders a count badge that
+                // links to the standalone /approvals queue.
+                ApprovalsBadge {}
+
                 // User menu (P3-26 avatar dropdown)
                 UserMenu {}
             }
@@ -828,6 +833,36 @@ fn NotificationBell() -> Element {
                     }
                 }
             }
+        }
+    }
+}
+
+/// PMS-486: top-bar pending-approvals chip. Polls `/approvals/pending`
+/// on mount + on every active-org switch (cheap on the server thanks
+/// to the PMS-451 partial indexes on `(approver_user_id) WHERE state =
+/// 'pending'` etc.). The badge collapses to nothing when there is no
+/// pending decision so the chrome stays clean for non-approvers.
+#[component]
+fn ApprovalsBadge() -> Element {
+    let inbox = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Vec<serde_json::Value>>("/approvals/pending")
+            .await
+            .ok()
+            .unwrap_or_default()
+    });
+    let count = inbox.read_unchecked().clone().unwrap_or_default().len();
+    if count == 0 {
+        return rsx! { span {} };
+    }
+    rsx! {
+        Link {
+            to: Route::Approvals {},
+            class: "inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200 hover:opacity-90",
+            aria_label: "{count} pending approvals",
+            title: "Pending approvals",
+            "Approvals "
+            span { class: "font-bold", "{count}" }
         }
     }
 }

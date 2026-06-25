@@ -5,11 +5,11 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    clear_selection, ticket_status_badge, use_bulk_selection, AppLayout, Badge, BadgeVariant,
-    BulkActionsBar, BulkSelection, Button, ButtonVariant, Card, ClockIcon, DataTable, IconSize,
-    Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectAllHeader, SelectOption,
-    SelectRowCell, SortDirection, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
-    TableLoading, TableRow, Textarea, UserCircleIcon,
+    clear_selection, ticket_status_badge, use_bulk_selection, AlertType, AppLayout, Badge,
+    BadgeVariant, BulkActionsBar, BulkSelection, Button, ButtonVariant, Card, ClockIcon, DataTable,
+    IconSize, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectAllHeader,
+    SelectOption, SelectRowCell, SortDirection, Table, TableBody, TableCell, TableEmpty, TableHead,
+    TableHeader, TableLoading, TableRow, Textarea, UserCircleIcon,
 };
 use crate::utils::Paginated;
 use crate::Route;
@@ -1905,6 +1905,12 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         }
                     }
 
+                    // PMS-486: ticket-detail Approvals section. Self-contained
+                    // component owns its own fetch, modal state, and refresh
+                    // cycle; rendered above the activity timeline so the
+                    // open approval requests are immediately visible.
+                    ApprovalsSection { ticket_id: props.id.clone() }
+
                     // Activity timeline (real ticket notes; there is no audit
                     // feed yet, so status / assignment events do not appear).
                     Card { title: "Activity",
@@ -2598,6 +2604,285 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                             "{props.time}"
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// PMS-486: Approvals section on the ticket-detail page.
+// ============================================================================
+
+#[derive(Clone, Debug, Deserialize)]
+struct TicketApprovalRow {
+    id: uuid::Uuid,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    requested_by_name: Option<String>,
+    #[serde(default)]
+    approver_user_name: Option<String>,
+    #[serde(default)]
+    approver_role: Option<String>,
+    #[serde(default)]
+    decision: Option<String>,
+    #[serde(default)]
+    decision_notes: Option<String>,
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(default)]
+    requested_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    decided_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct UserPickerRow {
+    id: uuid::Uuid,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    email: String,
+}
+
+#[derive(Props, Clone, PartialEq)]
+pub struct ApprovalsSectionProps {
+    pub ticket_id: String,
+}
+
+#[component]
+pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
+    let mut version = use_signal(|| 0u32);
+    let mut show_request = use_signal(|| false);
+    let mut approver_user_id = use_signal(String::new);
+    let mut approver_role = use_signal(String::new);
+    let mut request_notes = use_signal(String::new);
+    let mut request_submitting = use_signal(|| false);
+    let mut request_error = use_signal(String::new);
+
+    let id_for_list = props.ticket_id.clone();
+    let approvals_resource = use_resource(move || {
+        let id = id_for_list.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _v = version.read();
+            crate::hooks::fetch::api::get_authed::<Vec<TicketApprovalRow>>(&format!(
+                "/tickets/{id}/approvals"
+            ))
+            .await
+            .ok()
+        }
+    });
+    let users_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<UserPickerRow>>("/auth/users")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+
+    let snap = approvals_resource.read_unchecked();
+    let rows: Vec<TicketApprovalRow> = match &*snap {
+        Some(Some(rows)) => rows.clone(),
+        _ => Vec::new(),
+    };
+    let loading = snap.is_none();
+    let fetch_failed = matches!(*snap, Some(None));
+    let users = users_resource.read_unchecked().clone().unwrap_or_default();
+
+    let ticket_for_submit = props.ticket_id.clone();
+    let on_submit = move |_| {
+        let user_id = approver_user_id.read().trim().to_string();
+        let role = approver_role.read().trim().to_string();
+        let notes = request_notes.read().trim().to_string();
+        if user_id.is_empty() && role.is_empty() {
+            request_error.set("Pick an approver or enter a role.".to_string());
+            return;
+        }
+        if !user_id.is_empty() && !role.is_empty() {
+            request_error.set("Pick either an approver or a role, not both.".to_string());
+            return;
+        }
+        let ticket = ticket_for_submit.clone();
+        request_submitting.set(true);
+        request_error.set(String::new());
+        spawn(async move {
+            let mut body = serde_json::Map::new();
+            if !user_id.is_empty() {
+                if let Ok(u) = uuid::Uuid::parse_str(&user_id) {
+                    body.insert(
+                        "approver_user_id".to_string(),
+                        serde_json::Value::String(u.to_string()),
+                    );
+                }
+            }
+            if !role.is_empty() {
+                body.insert("approver_role".to_string(), serde_json::Value::String(role));
+            }
+            if !notes.is_empty() {
+                body.insert("notes".to_string(), serde_json::Value::String(notes));
+            }
+            let json = serde_json::Value::Object(body);
+            match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
+                &format!("/tickets/{ticket}/approvals"),
+                &json,
+            )
+            .await
+            {
+                Ok(_) => {
+                    crate::hooks::toast::push_toast(AlertType::Success, "Approval requested");
+                    show_request.set(false);
+                    approver_user_id.set(String::new());
+                    approver_role.set(String::new());
+                    request_notes.set(String::new());
+                    version += 1;
+                }
+                Err(e) => {
+                    request_error.set(format!("Could not create approval: {e}"));
+                }
+            }
+            request_submitting.set(false);
+        });
+    };
+
+    let mut user_options: Vec<SelectOption> = users
+        .iter()
+        .map(|u| {
+            let label = if u.name.trim().is_empty() {
+                u.email.clone()
+            } else {
+                u.name.clone()
+            };
+            SelectOption::new(u.id.to_string(), label)
+        })
+        .collect();
+    user_options.insert(0, SelectOption::new("", "- Pick approver -"));
+
+    rsx! {
+        Card { title: "Approvals",
+            div { class: "flex justify-end mb-3",
+                Button {
+                    variant: ButtonVariant::Primary,
+                    onclick: move |_| show_request.set(true),
+                    "Request approval"
+                }
+            }
+            if loading {
+                p { class: "text-sm text-subtle italic", "Loading approvals..." }
+            } else if fetch_failed {
+                p { class: "text-sm text-red-600 dark:text-red-300", "Could not load approvals for this ticket." }
+            } else if rows.is_empty() {
+                p { class: "text-sm text-subtle italic", "No approvals requested on this ticket yet." }
+            } else {
+                ul { class: "space-y-3",
+                    for row in rows.iter().cloned() {
+                        {
+                            let key = row.id.to_string();
+                            let state_variant = match row.state.as_str() {
+                                "approved" => BadgeVariant::Green,
+                                "rejected" => BadgeVariant::Red,
+                                _ => BadgeVariant::Yellow,
+                            };
+                            let approver_label = match (row.approver_user_name.clone(), row.approver_role.clone()) {
+                                (Some(n), _) if !n.trim().is_empty() => format!("To: {n}"),
+                                (_, Some(r)) if !r.trim().is_empty() => format!("Role: {r}"),
+                                _ => "(unassigned)".to_string(),
+                            };
+                            let requester = row.requested_by_name.clone().unwrap_or_default();
+                            let when = row
+                                .requested_at
+                                .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
+                                .unwrap_or_default();
+                            let decided = row
+                                .decided_at
+                                .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
+                                .unwrap_or_default();
+                            let notes = row.notes.clone().unwrap_or_default();
+                            let decision = row.decision.clone().unwrap_or_default();
+                            let decision_notes = row.decision_notes.clone().unwrap_or_default();
+                            rsx! {
+                                li { key: "{key}", class: "rounded border border-line p-3",
+                                    div { class: "flex items-center gap-2 flex-wrap",
+                                        Badge { variant: state_variant, "{row.state}" }
+                                        span { class: "text-sm text-content", "{approver_label}" }
+                                    }
+                                    if !requester.is_empty() {
+                                        p { class: "text-xs text-subtle mt-1", "Requested by {requester}" }
+                                    }
+                                    if !when.is_empty() {
+                                        p { class: "text-xs text-subtle", "Requested {when}" }
+                                    }
+                                    if !notes.is_empty() {
+                                        p { class: "text-sm text-muted mt-2 whitespace-pre-wrap", "{notes}" }
+                                    }
+                                    if !decision.is_empty() {
+                                        p { class: "text-xs text-subtle mt-2",
+                                            "Decision: " strong { "{decision}" }
+                                            if !decided.is_empty() { " on {decided}" }
+                                        }
+                                    }
+                                    if !decision_notes.is_empty() {
+                                        p { class: "text-sm text-muted mt-1 whitespace-pre-wrap italic",
+                                            "{decision_notes}"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Modal {
+            open: *show_request.read(),
+            title: "Request approval",
+            size: crate::components::ModalSize::Medium,
+            onclose: move |_| show_request.set(false),
+            footer: rsx! {
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| show_request.set(false),
+                    "Cancel"
+                }
+                Button {
+                    variant: ButtonVariant::Primary,
+                    loading: *request_submitting.read(),
+                    onclick: on_submit,
+                    "Request"
+                }
+            },
+            div { class: "space-y-4",
+                if !request_error().is_empty() {
+                    div { class: "rounded-md bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 px-3 py-2 text-sm text-red-700 dark:text-red-300",
+                        "{request_error}"
+                    }
+                }
+                p { class: "text-xs text-subtle",
+                    "Pick a specific approver OR enter a role. The server requires exactly one."
+                }
+                Select {
+                    name: "approver_user_id",
+                    label: "Approver",
+                    options: user_options,
+                    value: approver_user_id.read().clone(),
+                    onchange: move |e: FormEvent| approver_user_id.set(e.value()),
+                }
+                crate::components::Input {
+                    name: "approver_role",
+                    label: "Approver role (optional)",
+                    value: "{approver_role}",
+                    placeholder: "e.g. manager, finance",
+                    oninput: move |e: FormEvent| approver_role.set(e.value()),
+                }
+                Textarea {
+                    name: "request_notes",
+                    label: "Notes (optional)",
+                    rows: 3,
+                    value: "{request_notes}",
+                    oninput: move |e: FormEvent| request_notes.set(e.value()),
                 }
             }
         }
