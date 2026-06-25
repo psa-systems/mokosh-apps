@@ -14,6 +14,7 @@ use crate::components::{
 };
 use crate::hooks::auth::use_auth;
 use crate::modules::auth::UserRole;
+use crate::utils::{FormGuard, Rule};
 
 /// Subset of mokosh-server's `InvitationResponse` rendered here.
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -51,6 +52,10 @@ pub fn TeamPage() -> Element {
     let mut role = use_signal(|| "technician".to_string());
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // PMS-518: per-field inline error slot for the email field, fed by the
+    // FormGuard in handle_invite. The form-level `error` banner is kept for the
+    // server send failure, which has no single field to attach to.
+    let mut email_error = use_signal(String::new);
 
     // Pending invitations for the active tenant. Re-fetches on tenant switch.
     let mut invites = use_resource(|| async move {
@@ -87,8 +92,12 @@ pub fn TeamPage() -> Element {
     let handle_invite = move |e: FormEvent| {
         e.prevent_default();
         let email_v = email.read().trim().to_string();
-        if email_v.is_empty() {
-            error.set("Enter an email address.".to_string());
+
+        // PMS-518: validate the required Email through the shared FormGuard so
+        // the failure surfaces in the field's own inline slot and is focused.
+        let mut guard = FormGuard::new();
+        email_error.set(guard.field("email", &email_v, "Email", &[Rule::Required, Rule::Email]));
+        if guard.blocked() {
             return;
         }
         let role_v = role.read().clone();
@@ -169,8 +178,13 @@ pub fn TeamPage() -> Element {
                             r#type: "email".to_string(),
                             placeholder: "person@example.com",
                             required: true,
+                            rules: vec![Rule::Required, Rule::Email],
+                            error: email_error.read().clone(),
                             value: email.read().clone(),
-                            oninput: move |e: FormEvent| email.set(e.value()),
+                            oninput: move |e: FormEvent| {
+                                email_error.set(String::new());
+                                email.set(e.value());
+                            },
                         }
                         if ROLE_ASSIGNMENT_ENABLED {
                             Select {

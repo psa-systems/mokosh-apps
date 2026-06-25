@@ -1675,6 +1675,10 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let mut show_note_modal = use_signal(|| false);
     let mut note_type = use_signal(|| "internal".to_string());
     let mut note_content = use_signal(String::new);
+    // PMS-518: inline error for the now-enforced required note Content,
+    // surfaced in the textarea's own slot by the FormGuard in the Add Note
+    // modal's submit handler.
+    let mut note_content_error = use_signal(String::new);
     let mut note_submitting = use_signal(|| false);
     let mut note_error = use_signal(String::new);
     let ticket_id_for_note = props.id.clone();
@@ -1770,6 +1774,11 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let mut editing_desc = use_signal(|| false);
     let mut e_title = use_signal(String::new);
     let mut e_desc = use_signal(String::new);
+    // PMS-518: per-field inline errors for the Edit Ticket modal's required
+    // Title + Description, surfaced in each field's own slot by the FormGuard
+    // in `on_save`.
+    let mut e_title_error = use_signal(String::new);
+    let mut e_desc_error = use_signal(String::new);
     let mut e_submitting = use_signal(|| false);
     let mut e_error = use_signal(String::new);
     let id_for_save = props.id.clone();
@@ -2539,12 +2548,25 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     if e_submitting() {
                         return;
                     }
-                    // MAPPS-188: title is required (server validates
-                    // length >= 1). Bail with an inline message instead of
-                    // PUTting a blank title that the server would reject.
+                    e_error.set(String::new());
+                    // PMS-518: validate the required Title + Description through
+                    // the shared FormGuard so both failures surface inline at
+                    // once and the first invalid field is focused. The ids match
+                    // each field component's `name` prop. MAPPS-188: Title is
+                    // still trimmed (the server validates length >= 1) so a
+                    // whitespace-only value never reaches the PUT.
+                    let mut guard = FormGuard::new();
                     let title_v = e_title().trim().to_string();
-                    if title_v.is_empty() {
-                        e_error.set("Title cannot be empty.".to_string());
+                    e_title_error
+                        .set(guard.field("edit-title", &title_v, "Title", &[Rule::Required]));
+                    let desc_v = e_desc().trim().to_string();
+                    e_desc_error.set(guard.field(
+                        "edit-description",
+                        &desc_v,
+                        "Description",
+                        &[Rule::Required],
+                    ));
+                    if guard.blocked() {
                         return;
                     }
                     let save_id = save_id.clone();
@@ -2603,15 +2625,26 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                 name: "edit-title",
                                 label: "Title",
                                 required: true,
+                                rules: vec![Rule::Required],
+                                error: e_title_error.read().clone(),
                                 value: "{e_title}",
-                                oninput: move |e: FormEvent| e_title.set(e.value()),
+                                oninput: move |e: FormEvent| {
+                                    e_title_error.set(String::new());
+                                    e_title.set(e.value());
+                                },
                             }
                             Textarea {
                                 name: "edit-description",
                                 label: "Description",
                                 rows: 8,
+                                required: true,
+                                rules: vec![Rule::Required],
+                                error: e_desc_error.read().clone(),
                                 value: "{e_desc}",
-                                oninput: move |e: FormEvent| e_desc.set(e.value()),
+                                oninput: move |e: FormEvent| {
+                                    e_desc_error.set(String::new());
+                                    e_desc.set(e.value());
+                                },
                             }
                         }
                     }
@@ -2635,18 +2668,28 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         loading: *note_submitting.read(),
                         onclick: move |_| {
                             note_error.set(String::new());
+                            // PMS-518: validate the required Content through the
+                            // shared FormGuard before submitting so the failure
+                            // lands in the textarea's own inline slot and the
+                            // field is focused. Runs before `note_submitting` is
+                            // set, so the bail path leaves it untouched.
+                            let mut guard = FormGuard::new();
+                            let content_v = note_content.read().clone();
+                            note_content_error.set(guard.field(
+                                "content",
+                                content_v.trim(),
+                                "Content",
+                                &[Rule::Required],
+                            ));
+                            if guard.blocked() {
+                                return;
+                            }
                             note_submitting.set(true);
                             let id = ticket_id_for_note.clone();
                             let type_v = note_type.read().clone();
-                            let content_v = note_content.read().clone();
                             spawn(async move {
                                 #[cfg(feature = "web")]
                                 {
-                                    if content_v.trim().is_empty() {
-                                        note_error.set("Note content cannot be empty.".to_string());
-                                        note_submitting.set(false);
-                                        return;
-                                    }
                                     let body = serde_json::json!({
                                         "note_type": type_v,
                                         "content": content_v,
@@ -2694,8 +2737,14 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         label: "Content",
                         placeholder: "Enter your note...",
                         rows: 4,
+                        required: true,
+                        rules: vec![Rule::Required],
+                        error: note_content_error.read().clone(),
                         value: note_content.read().clone(),
-                        oninput: move |e: FormEvent| note_content.set(e.value()),
+                        oninput: move |e: FormEvent| {
+                            note_content_error.set(String::new());
+                            note_content.set(e.value());
+                        },
                     }
                 }
             }
@@ -2874,12 +2923,21 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
         let user_id = approver_user_id.read().trim().to_string();
         let role = approver_role.read().trim().to_string();
         let notes = request_notes.read().trim().to_string();
+        // PMS-518: the approver is an XOR rule (exactly one of a specific user
+        // OR a role). Neither side owns an inline error slot, so a violation
+        // goes to the form-level banner; `note_invalid` blocks the submit and
+        // focuses the approver picker. Runs before `request_submitting` is set,
+        // so the bail path leaves it untouched.
+        let mut guard = FormGuard::new();
         if user_id.is_empty() && role.is_empty() {
             request_error.set("Pick an approver or enter a role.".to_string());
-            return;
+            guard.note_invalid(Some("approver_user_id"));
         }
         if !user_id.is_empty() && !role.is_empty() {
             request_error.set("Pick either an approver or a role, not both.".to_string());
+            guard.note_invalid(Some("approver_user_id"));
+        }
+        if guard.blocked() {
             return;
         }
         let ticket = ticket_for_submit.clone();
