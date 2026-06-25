@@ -26,7 +26,7 @@ use crate::components::{
     SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
     TableRow,
 };
-use crate::utils::Paginated;
+use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
 /// Rows per page for the paginated billing list views.
@@ -1009,6 +1009,9 @@ pub fn InvoiceNewPage() -> Element {
     let mut due_date_error = use_signal(String::new);
     let mut quantity_error = use_signal(String::new);
     let mut unit_price_error = use_signal(String::new);
+    // PMS-518: per-field slots for the fields that previously shared the banner.
+    let mut invoice_date_error = use_signal(String::new);
+    let mut line_description_error = use_signal(String::new);
 
     let tax_rates_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -1043,62 +1046,74 @@ pub fn InvoiceNewPage() -> Element {
             return;
         }
         error.set(String::new());
-        due_date_error.set(String::new());
-        quantity_error.set(String::new());
-        unit_price_error.set(String::new());
 
-        let Some(company_uuid) = uuid::Uuid::parse_str(company_id.read().trim()).ok() else {
+        // PMS-518: validate every required field through the shared FormGuard so
+        // all failures surface at once (each in its own inline slot) and the first
+        // invalid field is focused, instead of the previous first-failure-returns
+        // chain that masked every field after the first.
+        let mut guard = FormGuard::new();
+
+        // The CompanyPicker has no inline slot, so its failure goes to the
+        // form-level banner; `note_invalid` still blocks the submit.
+        let company_uuid = uuid::Uuid::parse_str(company_id.read().trim()).ok();
+        if company_uuid.is_none() {
             error.set("A valid company ID (UUID) is required.".to_string());
-            return;
-        };
+            guard.note_invalid(None);
+        }
+
         let inv_date = invoice_date.read().trim().to_string();
         let due = due_date.read().trim().to_string();
-        if inv_date.is_empty() || due.is_empty() {
-            error.set("Invoice date and due date are required.".to_string());
-            return;
-        }
-        // Dates come from the native date picker as ISO `YYYY-MM-DD`, so a
-        // lexicographic compare is a correct date order check.
-        if due < inv_date {
+        invoice_date_error.set(guard.field(
+            "invoice_date",
+            &inv_date,
+            "Invoice date",
+            &[Rule::Required],
+        ));
+        due_date_error.set(guard.field("due_date", &due, "Due date", &[Rule::Required]));
+        // Cross-field order check, only meaningful once both dates are present.
+        // Dates come from the native picker as ISO `YYYY-MM-DD`, so a lexicographic
+        // compare is a correct order check. Overrides the per-field slot set above.
+        if !inv_date.is_empty() && !due.is_empty() && due < inv_date {
             due_date_error.set("Due date must be on or after the invoice date.".to_string());
-            return;
+            guard.note_invalid(Some("due_date"));
         }
+
         let description = line_description.read().trim().to_string();
-        if description.is_empty() {
-            error.set("A line item description is required.".to_string());
-            return;
-        }
+        line_description_error.set(guard.field(
+            "line_description",
+            &description,
+            "Description",
+            &[Rule::Required],
+        ));
+
+        // Quantity / unit price: required, numeric, non-negative. Rule::Number
+        // gives the canonical "must not be negative." / "must be a number."
+        // messages; Required catches the blank case (Number skips blank).
         let quantity = line_quantity.read().trim().to_string();
         let unit_price = line_unit_price.read().trim().to_string();
-        if quantity.is_empty() || unit_price.is_empty() {
-            error.set("Line item quantity and unit price are required.".to_string());
+        let money_rules = [
+            Rule::Required,
+            Rule::Number {
+                min: Some(0.0),
+                max: None,
+                max_decimals: None,
+            },
+        ];
+        quantity_error.set(guard.field("line_quantity", &quantity, "Quantity", &money_rules));
+        unit_price_error.set(guard.field(
+            "line_unit_price",
+            &unit_price,
+            "Unit price",
+            &money_rules,
+        ));
+
+        if guard.blocked() {
             return;
         }
-        // Reject negatives (and non-numeric input) at the field. The native
-        // `min="0"` already blocks this, but validate here too so the message
-        // is explicit and the bad value never reaches the 422 path.
-        match quantity.parse::<f64>() {
-            Ok(q) if q >= 0.0 => {}
-            Ok(_) => {
-                quantity_error.set("Quantity cannot be negative.".to_string());
-                return;
-            }
-            Err(_) => {
-                quantity_error.set("Enter a valid quantity.".to_string());
-                return;
-            }
-        }
-        match unit_price.parse::<f64>() {
-            Ok(p) if p >= 0.0 => {}
-            Ok(_) => {
-                unit_price_error.set("Unit price cannot be negative.".to_string());
-                return;
-            }
-            Err(_) => {
-                unit_price_error.set("Enter a valid unit price.".to_string());
-                return;
-            }
-        }
+        // Past the guard: company is present.
+        let Some(company_uuid) = company_uuid else {
+            return;
+        };
 
         is_submitting.set(true);
         // Effective tax: a manual override if present, else the rate-computed
@@ -1254,13 +1269,19 @@ pub fn InvoiceNewPage() -> Element {
                             name: "invoice_date",
                             label: "Invoice Date",
                             required: true,
+                            rules: vec![Rule::Required],
+                            error: invoice_date_error.read().clone(),
                             value: invoice_date.read().clone(),
-                            oninput: move |e: FormEvent| invoice_date.set(e.value()),
+                            oninput: move |e: FormEvent| {
+                                invoice_date_error.set(String::new());
+                                invoice_date.set(e.value());
+                            },
                         }
                         crate::components::DateField {
                             name: "due_date",
                             label: "Due Date",
                             required: true,
+                            rules: vec![Rule::Required],
                             value: due_date.read().clone(),
                             error: due_date_error.read().clone(),
                             oninput: move |e: FormEvent| {
@@ -1286,9 +1307,14 @@ pub fn InvoiceNewPage() -> Element {
                                 label: "Description",
                                 required: true,
                                 maxlength: 1000,
+                                rules: vec![Rule::Required],
+                                error: line_description_error.read().clone(),
                                 placeholder: "What was delivered",
                                 value: line_description.read().clone(),
-                                oninput: move |e: FormEvent| line_description.set(e.value()),
+                                oninput: move |e: FormEvent| {
+                                    line_description_error.set(String::new());
+                                    line_description.set(e.value());
+                                },
                             }
                             crate::components::Input {
                                 name: "line_quantity",
@@ -1297,6 +1323,10 @@ pub fn InvoiceNewPage() -> Element {
                                 required: true,
                                 step: "0.01",
                                 min: "0",
+                                rules: vec![
+                                    Rule::Required,
+                                    Rule::Number { min: Some(0.0), max: None, max_decimals: None },
+                                ],
                                 placeholder: "Qty",
                                 value: line_quantity.read().clone(),
                                 error: quantity_error.read().clone(),
@@ -1312,6 +1342,10 @@ pub fn InvoiceNewPage() -> Element {
                                 required: true,
                                 step: "0.01",
                                 min: "0",
+                                rules: vec![
+                                    Rule::Required,
+                                    Rule::Number { min: Some(0.0), max: None, max_decimals: None },
+                                ],
                                 placeholder: "0.00",
                                 value: line_unit_price.read().clone(),
                                 error: unit_price_error.read().clone(),
