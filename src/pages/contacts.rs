@@ -12,7 +12,7 @@ use crate::components::{
 use crate::modules::contacts::Address;
 use crate::utils::money::format_money_str;
 use crate::utils::url::{safe_href, urlencoding_minimal};
-use crate::utils::Paginated;
+use crate::utils::{FormGuard, Paginated};
 use crate::Route;
 
 /// Rows per page for the client-side paginated list views (F3).
@@ -625,6 +625,9 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             Ok(v) => v,
             Err(msg) => {
                 name_err.set(msg);
+                let mut guard = FormGuard::new();
+                guard.note_invalid(Some("name"));
+                guard.blocked();
                 return;
             }
         };
@@ -632,6 +635,9 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             Ok(v) => v,
             Err(msg) => {
                 website_err.set(msg);
+                let mut guard = FormGuard::new();
+                guard.note_invalid(Some("website"));
+                guard.blocked();
                 return;
             }
         };
@@ -639,6 +645,9 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             Ok(v) => v,
             Err(msg) => {
                 phone_err.set(msg);
+                let mut guard = FormGuard::new();
+                guard.note_invalid(Some("phone"));
+                guard.blocked();
                 return;
             }
         };
@@ -646,6 +655,9 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             Ok(v) => v,
             Err(msg) => {
                 postal_err.set(msg);
+                let mut guard = FormGuard::new();
+                guard.note_invalid(Some("address_postal_code"));
+                guard.blocked();
                 return;
             }
         };
@@ -653,6 +665,9 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             Ok(v) => v,
             Err(msg) => {
                 country_err.set(msg);
+                let mut guard = FormGuard::new();
+                guard.note_invalid(Some("address_country"));
+                guard.blocked();
                 return;
             }
         };
@@ -2185,12 +2200,18 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
         country_err.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Site name is required.".to_string());
+            let mut guard = FormGuard::new();
+            guard.note_invalid(Some("site_name"));
+            guard.blocked();
             return;
         }
         let phone_value = match validate_phone_field(&phone.read(), "Phone") {
             Ok(v) => v,
             Err(msg) => {
                 phone_err.set(msg);
+                let mut guard = FormGuard::new();
+                guard.note_invalid(Some("site_phone"));
+                guard.blocked();
                 return;
             }
         };
@@ -2198,6 +2219,9 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
             Ok(v) => v,
             Err(msg) => {
                 tz_err.set(msg);
+                let mut guard = FormGuard::new();
+                guard.note_invalid(Some("site_timezone"));
+                guard.blocked();
                 return;
             }
         };
@@ -2205,6 +2229,9 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
             Ok(v) => v,
             Err(msg) => {
                 postal_err.set(msg);
+                let mut guard = FormGuard::new();
+                guard.note_invalid(Some("site_postal"));
+                guard.blocked();
                 return;
             }
         };
@@ -2212,6 +2239,9 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
             Ok(v) => v,
             Err(msg) => {
                 country_err.set(msg);
+                let mut guard = FormGuard::new();
+                guard.note_invalid(Some("site_country"));
+                guard.blocked();
                 return;
             }
         };
@@ -3587,6 +3617,15 @@ fn ContactForm(props: ContactFormProps) -> Element {
             hit_blank = true;
         }
         if hit_blank {
+            // Focus the first blank name field in on-screen order.
+            let first = if first_name.read().trim().is_empty() {
+                "first_name"
+            } else {
+                "last_name"
+            };
+            let mut guard = FormGuard::new();
+            guard.note_invalid(Some(first));
+            guard.blocked();
             return;
         }
 
@@ -3597,6 +3636,9 @@ fn ContactForm(props: ContactFormProps) -> Element {
         let freeform_name = freeform_company.read().trim().to_string();
         if picked_company.is_some() && !freeform_name.is_empty() {
             error.set("Pick an existing company or type a new one, not both.".to_string());
+            let mut guard = FormGuard::new();
+            guard.note_invalid(Some("company_name_freeform"));
+            guard.blocked();
             return;
         }
         // Validate phone/mobile inline before submit (MAPPS-177).
@@ -3604,6 +3646,9 @@ fn ContactForm(props: ContactFormProps) -> Element {
             Ok(v) => v,
             Err(msg) => {
                 phone_err.set(msg);
+                let mut guard = FormGuard::new();
+                guard.note_invalid(Some("phone"));
+                guard.blocked();
                 return;
             }
         };
@@ -3611,6 +3656,9 @@ fn ContactForm(props: ContactFormProps) -> Element {
             Ok(v) => v,
             Err(msg) => {
                 mobile_err.set(msg);
+                let mut guard = FormGuard::new();
+                guard.note_invalid(Some("mobile"));
+                guard.blocked();
                 return;
             }
         };

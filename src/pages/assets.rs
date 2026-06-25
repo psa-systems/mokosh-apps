@@ -10,7 +10,7 @@ use crate::components::{
     IconSize, Input, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectOption,
     Table, TableBody, TableCell, TableHead, TableHeader, TableRow, Textarea, TrashIcon,
 };
-use crate::utils::Paginated;
+use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
 /// An asset (`GET /api/v1/assets`).
@@ -971,29 +971,32 @@ pub fn AssetNewPage() -> Element {
                         manufacturer_err.set(String::new());
                         model_err.set(String::new());
 
-                        // Collect every field error before returning (MAPPS-216)
-                        // so the user sees all problems at once, each attached
-                        // to its own field, rather than the form aborting on
-                        // the first failure.
-                        let mut ok = true;
+                        // PMS-518: validate every required field through the
+                        // shared FormGuard so all failures surface at once (each
+                        // in its own inline slot) and the first invalid field is
+                        // focused. Keeps the bespoke validators that also return
+                        // the trimmed/typed value used to build the body.
+                        let mut guard = FormGuard::new();
 
                         let asset_name = match validate_asset_name(&name.read()) {
                             Ok(v) => v,
                             Err(msg) => {
                                 name_error.set(msg);
-                                ok = false;
+                                guard.note_invalid(Some("name"));
                                 String::new()
                             }
                         };
                         let type_id = asset_type.read().clone();
                         if type_id.is_empty() {
                             type_err.set("Please pick an asset type.".to_string());
-                            ok = false;
+                            guard.note_invalid(Some("type"));
                         }
                         let company_id = company.read().clone();
                         if company_id.is_empty() {
                             company_err.set("Please pick a company.".to_string());
-                            ok = false;
+                            // CompanyPicker has no focusable field id, so block
+                            // without a focus target.
+                            guard.note_invalid(None);
                         }
                         let serial_v = match validate_asset_optional(
                             &serial.read(),
@@ -1003,7 +1006,7 @@ pub fn AssetNewPage() -> Element {
                             Ok(v) => v,
                             Err(msg) => {
                                 serial_err.set(msg);
-                                ok = false;
+                                guard.note_invalid(Some("serial"));
                                 None
                             }
                         };
@@ -1015,7 +1018,7 @@ pub fn AssetNewPage() -> Element {
                             Ok(v) => v,
                             Err(msg) => {
                                 manufacturer_err.set(msg);
-                                ok = false;
+                                guard.note_invalid(Some("manufacturer"));
                                 None
                             }
                         };
@@ -1027,13 +1030,13 @@ pub fn AssetNewPage() -> Element {
                             Ok(v) => v,
                             Err(msg) => {
                                 model_err.set(msg);
-                                ok = false;
+                                guard.note_invalid(Some("model"));
                                 None
                             }
                         };
                         let warranty_v = warranty.read().clone();
 
-                        if !ok {
+                        if guard.blocked() {
                             return;
                         }
 
@@ -1393,6 +1396,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     let mut nc_notes = use_signal(String::new);
     let mut nc_submitting = use_signal(|| false);
     let mut nc_name_err = use_signal(String::new);
+    let mut nc_type_err = use_signal(String::new);
+    let mut nc_username_err = use_signal(String::new);
+    let mut nc_password_err = use_signal(String::new);
     let mut nc_error = use_signal(String::new);
     let id_for_cred_add = props.id.clone();
 
@@ -2078,6 +2084,10 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                             Ok(v) => v,
                             Err(msg) => {
                                 e_error.set(msg);
+                                // PMS-518: focus the Name field on the bail.
+                                let mut guard = FormGuard::new();
+                                guard.note_invalid(Some("edit-name"));
+                                guard.blocked();
                                 return;
                             }
                         };
@@ -2448,30 +2458,46 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                         return;
                     }
                     nc_name_err.set(String::new());
+                    nc_type_err.set(String::new());
+                    nc_username_err.set(String::new());
+                    nc_password_err.set(String::new());
                     nc_error.set(String::new());
-                    // Validate the way the create form does: a required, capped
-                    // Name and required type/username/password before the POST,
-                    // with inline messages rather than an opaque server 422.
+                    // PMS-518: validate every required field through the shared
+                    // FormGuard so all failures surface at once (each in its own
+                    // inline slot) and the first invalid field is focused. Name
+                    // keeps its bespoke validator (length cap + the trimmed value
+                    // used in the body); the guard adds its first-invalid focus.
+                    let mut guard = FormGuard::new();
                     let name = match validate_cred_name(&nc_name()) {
                         Ok(v) => v,
                         Err(msg) => {
                             nc_name_err.set(msg);
-                            return;
+                            guard.note_invalid(Some("cred-name"));
+                            String::new()
                         }
                     };
                     let credential_type = nc_type().trim().to_string();
-                    if credential_type.is_empty() {
-                        nc_error.set("Please enter a credential type.".to_string());
-                        return;
-                    }
+                    nc_type_err.set(guard.field(
+                        "cred-type",
+                        &credential_type,
+                        "Type",
+                        &[Rule::Required],
+                    ));
                     let username = nc_username();
-                    if username.trim().is_empty() {
-                        nc_error.set("Please enter a username.".to_string());
-                        return;
-                    }
+                    nc_username_err.set(guard.field(
+                        "cred-username",
+                        &username,
+                        "Username",
+                        &[Rule::Required],
+                    ));
                     let password = nc_password();
-                    if password.is_empty() {
-                        nc_error.set("Please enter a password.".to_string());
+                    nc_password_err.set(guard.field(
+                        "cred-password",
+                        &password,
+                        "Password",
+                        &[Rule::Required],
+                    ));
+                    if guard.blocked() {
                         return;
                     }
                     let url = opt_str(&nc_url());
@@ -2563,24 +2589,39 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 label: "Type",
                                 required: true,
                                 placeholder: "e.g. domain, ssh, rdp",
+                                rules: vec![Rule::Required],
+                                error: nc_type_err(),
                                 value: "{nc_type}",
-                                oninput: move |e: FormEvent| nc_type.set(e.value()),
+                                oninput: move |e: FormEvent| {
+                                    nc_type_err.set(String::new());
+                                    nc_type.set(e.value());
+                                },
                             }
                             div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                 Input {
                                     name: "cred-username",
                                     label: "Username",
                                     required: true,
+                                    rules: vec![Rule::Required],
+                                    error: nc_username_err(),
                                     value: "{nc_username}",
-                                    oninput: move |e: FormEvent| nc_username.set(e.value()),
+                                    oninput: move |e: FormEvent| {
+                                        nc_username_err.set(String::new());
+                                        nc_username.set(e.value());
+                                    },
                                 }
                                 Input {
                                     name: "cred-password",
                                     label: "Password",
                                     r#type: "password",
                                     required: true,
+                                    rules: vec![Rule::Required],
+                                    error: nc_password_err(),
                                     value: "{nc_password}",
-                                    oninput: move |e: FormEvent| nc_password.set(e.value()),
+                                    oninput: move |e: FormEvent| {
+                                        nc_password_err.set(String::new());
+                                        nc_password.set(e.value());
+                                    },
                                 }
                             }
                             Input {
