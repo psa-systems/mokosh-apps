@@ -56,7 +56,13 @@ pub fn AuthGuard() -> Element {
         // Hitting `/login` directly or hitting a protected route both lead
         // through bunyip's /oauth2/authorize on this origin.
         let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
-        let _ = crate::modules::oidc::start_login(&cfg, "");
+        // Carry the route the user actually asked for through the OIDC
+        // round-trip so a cold-loaded / bookmarked deep link lands back on
+        // it instead of `/dashboard` (MAPPS-323). The interactive `Login`
+        // component passes its own `/dashboard` default; this guard is the
+        // path that fires for protected deep links.
+        let return_to = crate::modules::oidc::current_return_to();
+        let _ = crate::modules::oidc::start_login(&cfg, return_to);
         return rsx! {
             div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
                 "Signing you in..."

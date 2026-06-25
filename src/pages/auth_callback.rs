@@ -111,23 +111,22 @@ pub fn AuthCallbackPage() -> Element {
                     a.error = None;
                     a.tokens = Some(tokens);
                 }
-                // Land back on the originally requested page. Same-
-                // origin paths (starting with `/`, not `//`) take the
-                // router path so the in-memory `AuthContext` set
-                // above survives the transition: a hard reload here
-                // would tear the signal down between the write and
-                // the next render, and although the sessionStorage
-                // save above would let `rehydrate_from_storage`
-                // recover, it's cleaner to keep the same component
-                // tree alive. Anything cross-origin falls back to a
-                // hard navigation (the sessionStorage save still
-                // covers any subsequent reload). The Dioxus router
-                // only knows `Route` variants, so an internal path
-                // beyond `/dashboard` collapses to `Dashboard` for
-                // the moment; expand as new post-login return-to
-                // targets are introduced.
-                let internal_path = return_to.starts_with('/') && !return_to.starts_with("//");
-                if return_to.is_empty() || return_to == "/" || internal_path {
+                // Land back on the originally requested page (MAPPS-323).
+                //
+                // No specific target (`""` / `"/"`): go to the dashboard via
+                // a router push so the in-memory `AuthContext` written above
+                // survives - a hard reload would tear the signal down between
+                // the write and the next render.
+                //
+                // A concrete same-origin deep link (e.g. `/tickets/new`):
+                // the Dioxus router only knows `Route` variants and cannot
+                // navigate to an arbitrary path string, so restore it with a
+                // hard nav. The token bundle was saved to sessionStorage
+                // above, so `rehydrate_from_storage` re-authes the rebooted
+                // tree on the next boot - no re-login loop. A protocol-
+                // relative `//host` is rejected (off-origin redirect guard).
+                let safe_internal = return_to.starts_with('/') && !return_to.starts_with("//");
+                if return_to.is_empty() || return_to == "/" || !safe_internal {
                     navigator.push(Route::Dashboard {});
                 } else if let Some(win) = web_sys::window() {
                     let _ = win.location().set_href(&return_to);

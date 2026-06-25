@@ -111,6 +111,32 @@ fn current_search() -> String {
         .unwrap_or_default()
 }
 
+/// The route the browser is currently on (`pathname` + the preserved
+/// original query), suitable as `start_login`'s `return_to` so a
+/// cold-loaded / bookmarked deep link survives the authorize round-trip
+/// instead of collapsing to `/dashboard` (MAPPS-323).
+///
+/// Uses [`current_search`] rather than the live `location.search` because
+/// the Dioxus router strips the query during init; the snapshot taken in
+/// `main()` is the only reliable copy. Returns `""` (which the callback
+/// treats as "no specific target" -> dashboard) for the auth-plumbing
+/// routes that must never be a return target, and off-wasm where there is
+/// no window.
+pub fn current_return_to() -> String {
+    let Some(win) = web_sys::window() else {
+        return String::new();
+    };
+    let path = win.location().pathname().unwrap_or_default();
+    if path.is_empty()
+        || path == "/"
+        || path.starts_with("/login")
+        || path.starts_with("/auth/callback")
+    {
+        return String::new();
+    }
+    format!("{path}{}", current_search())
+}
+
 /// Handle the callback URL. Reads `code` + `state` from the snapshot
 /// taken at startup (see [`snapshot_initial_search`]), verifies state
 /// against the pending flow, exchanges the code at the token endpoint,

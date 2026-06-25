@@ -28,7 +28,7 @@ pub mod tokens;
 
 pub use config::OidcConfig;
 pub use flow::{
-    complete_login, issuer_get_authed, issuer_post_authed, refresh_tokens, revoke_refresh_token,
-    snapshot_initial_search, start_login, FlowError,
+    complete_login, current_return_to, issuer_get_authed, issuer_post_authed, refresh_tokens,
+    revoke_refresh_token, snapshot_initial_search, start_login, FlowError,
 };
 pub use tokens::{IdTokenClaims, Tokens};
