@@ -111,6 +111,26 @@ fn current_search() -> String {
         .unwrap_or_default()
 }
 
+/// True for routes that must never be a post-login `return_to` target:
+/// the auth plumbing itself (round-tripping back through `/login` or
+/// `/auth/callback` would loop) and the bare root.
+fn is_auth_plumbing(path: &str) -> bool {
+    path.is_empty()
+        || path == "/"
+        || path.starts_with("/login")
+        || path.starts_with("/auth/callback")
+}
+
+/// Pure core of [`current_return_to`]: build the `return_to` from a
+/// `pathname` + query string, or `""` for routes that must not be a
+/// target. Split out so the filtering is unit-testable without a window.
+fn sanitize_return_to(path: &str, search: &str) -> String {
+    if is_auth_plumbing(path) {
+        return String::new();
+    }
+    format!("{path}{search}")
+}
+
 /// The route the browser is currently on (`pathname` + the preserved
 /// original query), suitable as `start_login`'s `return_to` so a
 /// cold-loaded / bookmarked deep link survives the authorize round-trip
@@ -127,14 +147,38 @@ pub fn current_return_to() -> String {
         return String::new();
     };
     let path = win.location().pathname().unwrap_or_default();
-    if path.is_empty()
-        || path == "/"
-        || path.starts_with("/login")
-        || path.starts_with("/auth/callback")
-    {
-        return String::new();
+    sanitize_return_to(&path, &current_search())
+}
+
+/// What `/auth/callback` should do with a `return_to` after a successful
+/// token exchange.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReturnTarget {
+    /// No specific page (`""` / `/` / `/dashboard`), an unsafe target
+    /// (protocol-relative or cross-origin), or an auth-plumbing route:
+    /// soft router-push to the dashboard, keeping the in-memory session.
+    Dashboard,
+    /// A concrete same-origin deep link: hard-nav to restore the exact
+    /// path. The token bundle saved to sessionStorage lets the rebooted
+    /// tree re-auth, so there is no re-login loop.
+    Restore,
+}
+
+/// Decide how the callback restores a `return_to`. Only a same-origin
+/// absolute path (single leading `/`, not `//host`) that is not the
+/// dashboard / auth-plumbing is restored with a hard nav; everything else
+/// (empty, root, dashboard, protocol-relative, cross-origin, scheme)
+/// soft-routes to the dashboard. Keeping `/dashboard` on the soft path
+/// avoids a redundant full-page reload on the interactive `/login` flow
+/// (which passes `return_to = "/dashboard"`), since the callback is
+/// already a fresh boot.
+pub fn classify_return_to(return_to: &str) -> ReturnTarget {
+    let same_origin_path = return_to.starts_with('/') && !return_to.starts_with("//");
+    if !same_origin_path || return_to == "/dashboard" || is_auth_plumbing(return_to) {
+        ReturnTarget::Dashboard
+    } else {
+        ReturnTarget::Restore
     }
-    format!("{path}{}", current_search())
 }
 
 /// Handle the callback URL. Reads `code` + `state` from the snapshot
@@ -430,4 +474,58 @@ fn urlencode(s: &str) -> String {
     let encoded = js_sys::encode_uri_component(s);
     let s: String = encoded.into();
     s.replace("%20", "+")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_return_to, sanitize_return_to, ReturnTarget};
+
+    #[test]
+    fn sanitize_keeps_concrete_paths_with_query() {
+        assert_eq!(sanitize_return_to("/tickets/new", ""), "/tickets/new");
+        assert_eq!(
+            sanitize_return_to("/tickets/new", "?company_id=abc"),
+            "/tickets/new?company_id=abc"
+        );
+        assert_eq!(sanitize_return_to("/contacts/new", ""), "/contacts/new");
+    }
+
+    #[test]
+    fn sanitize_drops_auth_plumbing_and_root() {
+        for p in ["", "/", "/login", "/login/2fa", "/auth/callback"] {
+            assert_eq!(sanitize_return_to(p, "?code=x"), "", "path {p:?}");
+        }
+    }
+
+    #[test]
+    fn classify_restores_concrete_deep_links() {
+        assert_eq!(classify_return_to("/tickets/new"), ReturnTarget::Restore);
+        assert_eq!(
+            classify_return_to("/tickets/new?company_id=abc"),
+            ReturnTarget::Restore
+        );
+        assert_eq!(classify_return_to("/contacts/new"), ReturnTarget::Restore);
+    }
+
+    #[test]
+    fn classify_sends_dashboard_and_empty_to_soft_push() {
+        // `/dashboard` must stay soft: the interactive `/login` flow passes
+        // it, and a hard nav would add a redundant reload (regression guard).
+        for p in ["", "/", "/dashboard"] {
+            assert_eq!(classify_return_to(p), ReturnTarget::Dashboard, "path {p:?}");
+        }
+    }
+
+    #[test]
+    fn classify_rejects_offorigin_and_plumbing() {
+        for p in [
+            "//evil.example",         // protocol-relative
+            "https://evil.example/x", // cross-origin
+            "javascript:alert(1)",    // scheme injection
+            "/login",                 // would loop
+            "/auth/callback?code=x",  // would loop
+        ] {
+            assert_eq!(classify_return_to(p), ReturnTarget::Dashboard, "path {p:?}");
+        }
+    }
 }

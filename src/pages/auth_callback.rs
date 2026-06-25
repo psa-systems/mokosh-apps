@@ -112,26 +112,33 @@ pub fn AuthCallbackPage() -> Element {
                     a.tokens = Some(tokens);
                 }
                 // Land back on the originally requested page (MAPPS-323).
+                // `classify_return_to` (unit-tested) decides:
                 //
-                // No specific target (`""` / `"/"`): go to the dashboard via
-                // a router push so the in-memory `AuthContext` written above
-                // survives - a hard reload would tear the signal down between
-                // the write and the next render.
+                // - Dashboard: no specific target (`""` / `/` / `/dashboard`,
+                //   the interactive-login default), an off-origin / scheme
+                //   target, or an auth-plumbing route. Soft router push so the
+                //   in-memory `AuthContext` written above survives - a hard
+                //   reload would tear the signal down between the write and the
+                //   next render, and `/dashboard` does not warrant a redundant
+                //   full-page reload (the callback is already a fresh boot).
                 //
-                // A concrete same-origin deep link (e.g. `/tickets/new`):
-                // the Dioxus router only knows `Route` variants and cannot
-                // navigate to an arbitrary path string, so restore it with a
-                // hard nav. The token bundle was saved to sessionStorage
-                // above, so `rehydrate_from_storage` re-authes the rebooted
-                // tree on the next boot - no re-login loop. A protocol-
-                // relative `//host` is rejected (off-origin redirect guard).
-                let safe_internal = return_to.starts_with('/') && !return_to.starts_with("//");
-                if return_to.is_empty() || return_to == "/" || !safe_internal {
-                    navigator.push(Route::Dashboard {});
-                } else if let Some(win) = web_sys::window() {
-                    let _ = win.location().set_href(&return_to);
-                } else {
-                    navigator.push(Route::Dashboard {});
+                // - Restore: a concrete same-origin deep link (e.g.
+                //   `/tickets/new`). The Dioxus router cannot navigate to an
+                //   arbitrary path string, so restore it with a hard nav. The
+                //   token bundle was saved to sessionStorage above, so
+                //   `rehydrate_from_storage` re-authes the rebooted tree - no
+                //   re-login loop.
+                match crate::modules::oidc::classify_return_to(&return_to) {
+                    crate::modules::oidc::ReturnTarget::Restore => {
+                        if let Some(win) = web_sys::window() {
+                            let _ = win.location().set_href(&return_to);
+                        } else {
+                            navigator.push(Route::Dashboard {});
+                        }
+                    }
+                    crate::modules::oidc::ReturnTarget::Dashboard => {
+                        navigator.push(Route::Dashboard {});
+                    }
                 }
             }
             Err(e) => error_msg.set(Some(e.to_string())),
