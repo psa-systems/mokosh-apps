@@ -49,6 +49,12 @@ if ! {
     emit_field oidc_issuer "${MOKOSH_OIDC_ISSUER:-}"
     emit_field oidc_client_id "${MOKOSH_OIDC_CLIENT_ID:-}"
     emit_field hub_base_url "${MOKOSH_HUB_BASE_URL:-}"
+    # BUNYIP-142: requested scope string for /oauth2/authorize. Default
+    # compile-time value is "openid email offline_access"; operators
+    # opting in to bunyip's profile/phone claim emission set this to
+    # e.g. "openid email offline_access profile" without rebuilding the
+    # SPA image.
+    emit_field oidc_scopes "${MOKOSH_OIDC_SCOPES:-}"
     # build_sha is the git revision the WASM bundle was built from.
     # Baked into the image at build time via Dockerfile's GIT_SHA build
     # arg. The SPA polls `_mokosh_config.js` and reloads when this

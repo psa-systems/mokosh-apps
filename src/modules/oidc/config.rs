@@ -96,6 +96,11 @@ impl OidcConfig {
         let injected_issuer = crate::modules::runtime_config::get("oidc_issuer");
         let injected_client_id = crate::modules::runtime_config::get("oidc_client_id");
         let injected_hub = crate::modules::runtime_config::get("hub_base_url");
+        // BUNYIP-142: per-deployment scope override. Lets c-01 / nc-01
+        // opt in to bunyip's `profile` scope (so the JIT path receives
+        // given_name + family_name claims) without rebuilding the SPA
+        // image. Absent the override the compile-time default applies.
+        let injected_scopes = crate::modules::runtime_config::get("oidc_scopes");
 
         let host_rest = web_sys::window()
             .and_then(|w| w.location().host().ok())
@@ -117,6 +122,10 @@ impl OidcConfig {
             cfg.hub_base_url = Box::leak(hub.into_boxed_str());
         } else if let Some(rest) = host_rest.as_deref() {
             cfg.hub_base_url = Box::leak(format!("https://{rest}").into_boxed_str());
+        }
+
+        if let Some(scopes) = injected_scopes {
+            cfg.scopes = Box::leak(scopes.into_boxed_str());
         }
 
         cfg
