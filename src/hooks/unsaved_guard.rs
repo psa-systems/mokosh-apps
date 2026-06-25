@@ -53,7 +53,16 @@ pub fn use_unsaved_guard(dirty: ReadSignal<bool>) {
         };
         let cb: BeforeUnloadClosure =
             Closure::wrap(Box::new(move |e: web_sys::BeforeUnloadEvent| {
-                if *dirty.read() {
+                // MAPPS-299: the `beforeunload` listener stays installed
+                // until wasm is replaced, which can outlive the signal
+                // it captures (e.g. a sibling crash tears the
+                // component tree down before the listener fires).
+                // `Signal::read` panics on a dropped signal
+                // (`ValueDroppedError`), which would then surface as a
+                // secondary panic during teardown. Read via `try_read`
+                // and treat a dropped signal as "not dirty" (no prompt).
+                let is_dirty = dirty.try_read().map(|r| *r).unwrap_or(false);
+                if is_dirty {
                     // Modern browsers ignore the message string but
                     // still show the prompt when `returnValue` is set
                     // to anything non-empty. The empty default skips
