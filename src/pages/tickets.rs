@@ -1270,11 +1270,33 @@ pub fn TicketNewPage() -> Element {
         error.set(String::new());
         title_error.set(String::new());
 
-        // The CompanyPicker only ever reports real company UUIDs, but a
-        // user can submit before picking one. Validate up front and bail
-        // with a visible message instead of POSTing the nil UUID.
-        let Ok(company_uuid) = uuid::Uuid::parse_str(company_id.read().as_str()) else {
+        // PMS-514: validate every required field up front and report all
+        // failures together, so a missing company no longer masks a missing
+        // title (and vice versa). Set each field's error slot, then bail once
+        // below if either is invalid - before the POST.
+        //
+        // MAPPS-281: trim Title client-side so a whitespace-only value does
+        // not satisfy the browser's native `required` check (which accepts
+        // any non-empty string, including "   ") and reach the server only to
+        // come back as a 422.
+        let title_v = title.read().trim().to_string();
+        let title_empty = title_v.is_empty();
+        if title_empty {
+            title_error.set("Title is required.".to_string());
+        }
+
+        // The CompanyPicker only ever reports real company UUIDs, but a user
+        // can submit before picking one.
+        let company_uuid = uuid::Uuid::parse_str(company_id.read().as_str()).ok();
+        if company_uuid.is_none() {
             error.set("Please pick a company first.".to_string());
+        }
+
+        // Bail only after both required checks ran; their slots are already
+        // set above, so both render. No POST while any required field is
+        // invalid. `filter` keeps the company UUID only when the title is also
+        // present, so the let-else fires if EITHER field failed.
+        let Some(company_uuid) = company_uuid.filter(|_| !title_empty) else {
             is_submitting.set(false);
             return;
         };
@@ -1312,17 +1334,8 @@ pub fn TicketNewPage() -> Element {
             Some(format!("{}T23:59:00Z", due_value.trim()))
         };
 
-        // Snapshot signals so the spawn doesn't need to read them.
-        // MAPPS-281: trim required Title client-side so a whitespace-only
-        // value doesn't satisfy the browser's native `required` check
-        // (which accepts any non-empty string, including "   ") and
-        // reach the server only to come back as a 422. Reject inline.
-        let title_v = title.read().trim().to_string();
-        if title_v.is_empty() {
-            title_error.set("Title is required.".to_string());
-            is_submitting.set(false);
-            return;
-        }
+        // Snapshot remaining signals so the spawn doesn't need to read them.
+        // Title is already validated and captured above (PMS-514).
         let description_v = description.read().clone();
         // PMS-482: clone the captured KB id into a per-call binding so
         // the FnMut submit handler can be called more than once.
