@@ -26,7 +26,7 @@ use crate::modules::contracts::{
     UpsertRateCardRequest,
 };
 use crate::utils::url::urlencoding_minimal;
-use crate::utils::Paginated;
+use crate::utils::{FormGuard, Paginated};
 use crate::Route;
 
 /// Rows per page for the contract list (mirrors `contacts.rs` PER_PAGE).
@@ -917,6 +917,27 @@ fn ContractForm(props: ContractFormProps) -> Element {
         }
 
         if !ok {
+            // PMS-518: the validation above already collects every field error at
+            // once (MAPPS-211); add focus-first-invalid via FormGuard. The
+            // per-field err signals were set in field order, so focus the first
+            // non-empty one (each id matches the field's `name`/DOM id). Line-item
+            // row errors have no single focusable id, so they fall back to no
+            // focus (still blocked) when no top-level field is also invalid.
+            let first_invalid = [
+                ("name", !name_err.read().is_empty()),
+                ("company", !company_err.read().is_empty()),
+                ("billing_amount", !billing_err.read().is_empty()),
+                ("start_date", !start_err.read().is_empty()),
+                ("end_date", !end_err.read().is_empty()),
+                ("contract_number", !number_err.read().is_empty()),
+                ("notes", !notes_err.read().is_empty()),
+            ]
+            .into_iter()
+            .find(|(_, bad)| *bad)
+            .map(|(id, _)| id);
+            let mut guard = FormGuard::new();
+            guard.note_invalid(first_invalid);
+            guard.blocked();
             return;
         }
 
