@@ -28,7 +28,8 @@ use crate::components::{
 };
 use crate::modules::kb::{
     CreateKbArticleRequest, CreateKbCategoryRequest, KbArticle, KbArticleFeedback,
-    KbArticleVersion, KbCategory, UpdateKbArticleRequest, UpdateKbCategoryRequest,
+    KbArticleVersion, KbCategory, TopTicketDrivingArticle, UpdateKbArticleRequest,
+    UpdateKbCategoryRequest,
 };
 use crate::utils::url::urlencoding_minimal;
 use crate::utils::Paginated;
@@ -284,6 +285,20 @@ pub fn KBHomePage() -> Element {
             .ok()
     });
 
+    // PMS-485: top ticket-driving articles widget. Server endpoint
+    // defaults to a 90-day window; we ask for the top 10 to fit the
+    // landing-page card.
+    let top_driving_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let token = crate::hooks::fetch::api::current_access_token()?;
+        crate::hooks::fetch::api::get_with_auth::<Vec<TopTicketDrivingArticle>>(
+            "/kb/top-ticket-driving-articles?limit=10",
+            &token,
+        )
+        .await
+        .ok()
+    });
+
     let categories_snapshot = categories_resource.read_unchecked();
     let categories_loading = categories_snapshot.is_none();
     let categories: Vec<KbCategory> = match &*categories_snapshot {
@@ -296,6 +311,13 @@ pub fn KBHomePage() -> Element {
     let recent_failed = matches!(*recent_snapshot, Some(None));
     let recent: Vec<KbArticle> = match &*recent_snapshot {
         Some(Some(resp)) => resp.data.clone(),
+        _ => Vec::new(),
+    };
+
+    let top_driving_snapshot = top_driving_resource.read_unchecked();
+    let top_driving_loading = top_driving_snapshot.is_none();
+    let top_driving: Vec<TopTicketDrivingArticle> = match &*top_driving_snapshot {
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
 
@@ -374,6 +396,37 @@ pub fn KBHomePage() -> Element {
                                 delete_error.set(String::new());
                                 deleting_category.set(Some(c));
                             },
+                        }
+                    }
+                }
+            }
+
+            // PMS-485: Top ticket-driving articles widget. Reads
+            // tickets joined to kb_articles on `source_kb_article_id`
+            // (stamped on ticket create by PMS-482), grouped + ordered
+            // by count over the trailing 90 days.
+            Card { title: "Top ticket-driving articles",
+                if top_driving_loading {
+                    div { class: "space-y-2",
+                        for _ in 0..3 {
+                            div { class: "h-8 bg-surface-2 rounded animate-pulse" }
+                        }
+                    }
+                } else if top_driving.is_empty() {
+                    div { class: "py-6 text-center text-sm text-muted",
+                        "No ticket-driving articles yet. Use 'Open ticket about this article' on a KB page to start tracking."
+                    }
+                } else {
+                    ul { class: "divide-y divide-border",
+                        for row in top_driving.iter().cloned() {
+                            li { class: "py-2 flex items-center justify-between gap-3",
+                                Link {
+                                    to: Route::KBArticleDetail { id: row.id.to_string() },
+                                    class: "text-accent hover:underline truncate",
+                                    "{row.title}"
+                                }
+                                Badge { variant: BadgeVariant::Gray, "{row.ticket_count}" }
+                            }
                         }
                     }
                 }
