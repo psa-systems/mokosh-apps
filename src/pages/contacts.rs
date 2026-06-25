@@ -1121,10 +1121,17 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         let id = company_id_for_sites.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            // MAPPS-247: cap the preview fetch (was uncapped) for the same
-            // reason as contacts above; `meta.total` carries the full count.
+            // MAPPS-316: fetch every site for the company. The 5-row
+            // preview cap from MAPPS-247 combined with the 3-row
+            // render cap below hid sites past the third one with no
+            // "View all" link to escape to (unlike Contacts /
+            // Tickets / Contracts on the same page). Sites per
+            // company are small in practice (typical 1-20), so
+            // dropping the cap to a high ceiling is the right
+            // shape: every site renders inline, no separate list
+            // page needed.
             crate::hooks::fetch::api::get_authed::<PaginatedSites>(&format!(
-                "/contacts/companies/{id}/sites?per_page=5"
+                "/contacts/companies/{id}/sites?per_page=200"
             ))
             .await
             .ok()
@@ -1986,8 +1993,12 @@ fn CompanySitesCard(
                         TableEmpty { columns: 4, message: "No sites for this company yet.".to_string() }
                     },
                     Some(Some(page)) => {
-                        // MAPPS-249: cap the preview at three rows.
-                        let rows: Vec<_> = page.data.iter().take(3).cloned().collect();
+                        // MAPPS-316: render every site the fetch
+                        // returned. Sites per company are small;
+                        // the previous `.take(3)` capped the user
+                        // out of seeing the rest because Sites has
+                        // no "View all" escape link.
+                        let rows: Vec<_> = page.data.clone();
                         let company_id = company_id.clone();
                         rsx! {
                             TableBody {
