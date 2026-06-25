@@ -32,7 +32,7 @@ use crate::modules::kb::{
     UpdateKbCategoryRequest,
 };
 use crate::utils::url::urlencoding_minimal;
-use crate::utils::Paginated;
+use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
 /// Rows per page for the article list (mirrors contacts `PER_PAGE`).
@@ -1555,6 +1555,9 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     let mut tags = use_signal(|| initial.tags.clone());
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // PMS-518: per-field inline error slots, fed by the FormGuard on submit.
+    let mut title_error = use_signal(String::new);
+    let mut content_error = use_signal(String::new);
 
     // Category dropdown options, fetched live.
     let categories_resource = use_resource(move || async move {
@@ -1598,18 +1601,21 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
 
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
-        let title_val = title.read().trim().to_string();
-        if title_val.is_empty() {
-            error.set("Title is required.".to_string());
-            return;
-        }
-        let content_val = content.read().to_string();
-        if content_val.trim().is_empty() {
-            error.set("Body is required.".to_string());
-            return;
-        }
-        is_submitting.set(true);
         error.set(String::new());
+
+        // PMS-518: validate both required fields through the shared FormGuard so
+        // a missing Title no longer masks a missing Body; each surfaces in its own
+        // inline slot and the first invalid field is focused.
+        let mut guard = FormGuard::new();
+        let title_val = title.read().trim().to_string();
+        title_error.set(guard.field("title", &title_val, "Title", &[Rule::Required]));
+        let content_val = content.read().to_string();
+        content_error.set(guard.field("content", content_val.trim(), "Body", &[Rule::Required]));
+        if guard.blocked() {
+            return;
+        }
+
+        is_submitting.set(true);
 
         // Slug: normalize through `slugify` so the stored value is always
         // URL-safe (lowercase, hyphen-separated, no spaces/`<>`/punctuation),
@@ -1709,8 +1715,11 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     placeholder: "How to ...",
                     required: true,
                     maxlength: TITLE_MAX as i64,
+                    rules: vec![Rule::Required],
+                    error: title_error.read().clone(),
                     value: title.read().clone(),
                     oninput: move |e: FormEvent| {
+                        title_error.set(String::new());
                         title.set(e.value());
                         if let Some(s) = next_slug(&e.value(), slug_touched()) {
                             slug.set(s);
@@ -1786,8 +1795,13 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                                 rows: 16,
                                 required: true,
                                 maxlength: BODY_MAX as i64,
+                                rules: vec![Rule::Required],
+                                error: content_error.read().clone(),
                                 value: content.read().clone(),
-                                oninput: move |e: FormEvent| content.set(e.value()),
+                                oninput: move |e: FormEvent| {
+                                    content_error.set(String::new());
+                                    content.set(e.value());
+                                },
                             }
                         },
                         BodyTab::Preview => rsx! {
@@ -1890,6 +1904,8 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
     let mut slug_touched = use_signal(|| is_edit);
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // PMS-518: inline error slot for the required Name, fed by the FormGuard.
+    let mut name_error = use_signal(String::new);
 
     // Parent dropdown: "None" plus every other category. The category being
     // edited is excluded so it cannot be made its own parent.
@@ -1917,13 +1933,18 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
     let on_saved = props.on_saved;
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
+        error.set(String::new());
+
+        // PMS-518: required Name validated through the shared FormGuard (inline
+        // slot + focus), for consistency with the other migrated forms.
+        let mut guard = FormGuard::new();
         let name_val = name.read().trim().to_string();
-        if name_val.is_empty() {
-            error.set("Name is required.".to_string());
+        name_error.set(guard.field("name", &name_val, "Name", &[Rule::Required]));
+        if guard.blocked() {
             return;
         }
+
         is_submitting.set(true);
-        error.set(String::new());
 
         // Slug normalized through `slugify`, derived from the name when blank.
         let slug_raw = slug.read().trim().to_string();
@@ -2032,8 +2053,11 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
                     label: "Name",
                     placeholder: "e.g. Networking",
                     required: true,
+                    rules: vec![Rule::Required],
+                    error: name_error.read().clone(),
                     value: name.read().clone(),
                     oninput: move |e: FormEvent| {
+                        name_error.set(String::new());
                         name.set(e.value());
                         if let Some(s) = next_slug(&e.value(), slug_touched()) {
                             slug.set(s);
