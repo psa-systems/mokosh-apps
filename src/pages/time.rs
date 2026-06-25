@@ -1,6 +1,6 @@
 //! Time tracking pages
 
-use chrono::{Datelike, Duration, NaiveDate, Utc, Weekday};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc, Weekday};
 use dioxus::prelude::*;
 use serde::Deserialize;
 
@@ -1443,10 +1443,15 @@ pub fn TimesheetsPage() -> Element {
 /// A week summary row from `GET /timesheets` (no `user_id` filter aggregates
 /// every user). The badge-only `RemoteTimesheet` above drops everything but
 /// the status; the approvals queue needs the user, totals and entry count to
-/// render and act on a row.
+/// render and act on a row. PMS-506 adds `week_start` (now that the page
+/// can span a multi-week range) and the rolled decision audit (so a
+/// history row labels who approved/rejected and when, plus the rejection
+/// reason).
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct ApprovalSummary {
     user_id: uuid::Uuid,
+    #[serde(default)]
+    week_start: Option<NaiveDate>,
     #[serde(default)]
     total_minutes: i64,
     #[serde(default)]
@@ -1455,6 +1460,12 @@ struct ApprovalSummary {
     entry_count: i64,
     #[serde(default)]
     approval_status: String,
+    #[serde(default)]
+    decided_by_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    decided_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    rejection_reason: Option<String>,
 }
 
 /// A user for resolving a summary's `user_id` to a name on the queue
@@ -1504,13 +1515,23 @@ pub fn TimesheetApprovalsPage() -> Element {
     let mut action_err = use_signal(String::new);
     // Per-row approve in flight (so only the pressed row shows a spinner).
     let mut approving = use_signal::<Option<uuid::Uuid>>(|| None);
-    // Reject modal: the (user_id, display name) of the row being rejected,
-    // plus the required reason and an in-flight flag.
-    let mut reject_target = use_signal::<Option<(uuid::Uuid, String)>>(|| None);
+    // Reject modal: the (user_id, week_start, display name) of the row being
+    // rejected, plus the required reason and an in-flight flag. PMS-506:
+    // the (uid, week) pair is the natural key now that the queue can span
+    // multiple weeks in range mode.
+    let mut reject_target = use_signal::<Option<(uuid::Uuid, NaiveDate, String)>>(|| None);
     let mut reject_reason = use_signal(String::new);
     let mut is_rejecting = use_signal(|| false);
 
-    // Every user's summary for the selected week. No `user_id` filter, so the
+    // PMS-506: status filter (default `pending` so the action queue stays
+    // first-visit) + range mode toggle. `Range` mode swaps the single-week
+    // selector for a from/to date pair (default = last 12 weeks).
+    let mut status_filter = use_signal(|| "pending".to_string());
+    let mut range_mode = use_signal(|| false);
+    let mut range_from = use_signal(|| monday_of_week(today) - Duration::weeks(11));
+    let mut range_to = use_signal(|| monday_of_week(today));
+
+    // Every user's summary for the selected scope. No `user_id` filter, so the
     // server aggregates tenant-wide. Lower roles would get a 403, so skip the
     // fetch for them entirely (the gate below renders a notice instead).
     let summaries_resource = use_resource(move || async move {
@@ -1523,8 +1544,20 @@ pub fn TimesheetApprovalsPage() -> Element {
         if !can {
             return None;
         }
-        let start = week_start();
-        let path = format!("/timesheets?week={start}");
+        // PMS-506: build the query off the active mode. Range mode sends
+        // ?from=&to= so the server scans the full span in one call;
+        // single-week stays on ?week=. Status is always sent (the server
+        // treats `all` the same as missing, so the SPA may default to
+        // `pending` without changing the legacy contract).
+        let status = status_filter.read().clone();
+        let path = if *range_mode.read() {
+            let from = range_from();
+            let to = range_to();
+            format!("/timesheets?from={from}&to={to}&status={status}&per_page=200")
+        } else {
+            let start = week_start();
+            format!("/timesheets?week={start}&status={status}&per_page=200")
+        };
         crate::hooks::fetch::api::get_authed::<Paginated<ApprovalSummary>>(&path)
             .await
             .ok()
@@ -1551,10 +1584,10 @@ pub fn TimesheetApprovalsPage() -> Element {
 
     if !can_manage {
         return rsx! {
-            AppLayout { title: "Timesheet Approvals",
+            AppLayout { title: "Timesheet Approvals & History",
                 PageHeader {
-                    title: "Timesheet Approvals",
-                    subtitle: "Review and approve submitted timesheets",
+                    title: "Timesheet Approvals & History",
+                    subtitle: "Review submitted timesheets and audit past decisions",
                 }
                 Card {
                     p { class: "text-sm text-muted",
@@ -1592,27 +1625,37 @@ pub fn TimesheetApprovalsPage() -> Element {
             .unwrap_or_else(|| format!("User {}", short_id(uid)))
     };
 
-    // A "submitted, awaiting approval" week is `pending` with entries. The
-    // summary rolls per-entry approval_status up to pending when not all
-    // entries are approved/rejected; an empty week never appears here.
-    let pending: Vec<ApprovalSummary> = summaries
+    // PMS-506: server already filters by `status`, so the SPA renders
+    // whatever it received. The legacy `pending && entries > 0` guard
+    // stays applied only when the status filter is `pending` so an empty
+    // never-submitted week does not pollute the action queue.
+    let active_status = status_filter.read().clone();
+    let rows: Vec<ApprovalSummary> = summaries
         .iter()
-        .filter(|s| s.approval_status == "pending" && s.entry_count > 0)
+        .filter(|s| {
+            if active_status == "pending" {
+                s.approval_status == "pending" && s.entry_count > 0
+            } else {
+                true
+            }
+        })
         .cloned()
         .collect();
-    let pending_count = pending.len();
+    let rows_count = rows.len();
+    let in_range_mode = *range_mode.read();
+    let header_badge_label = format!("{rows_count} matching");
 
     let approving_id = *approving.read();
     let msg = action_msg.read().clone();
     let err = action_err.read().clone();
 
     rsx! {
-        AppLayout { title: "Timesheet Approvals",
+        AppLayout { title: "Timesheet Approvals & History",
             PageHeader {
-                title: "Timesheet Approvals",
-                subtitle: "Review and approve submitted timesheets",
+                title: "Timesheet Approvals & History",
+                subtitle: "Review submitted timesheets and audit past decisions",
                 actions: rsx! {
-                    Badge { variant: BadgeVariant::Yellow, "{pending_count} awaiting approval" }
+                    Badge { variant: BadgeVariant::Gray, "{header_badge_label}" }
                 },
             }
 
@@ -1627,7 +1670,79 @@ pub fn TimesheetApprovalsPage() -> Element {
                 }
             }
 
-            // Week selector (mirrors the employee timesheet page).
+            // PMS-506: status filter + range-mode toggle. The status
+            // Select defaults to `pending` so the action queue stays the
+            // first-visit surface; admins flip to `approved` / `all` to
+            // see history. The range checkbox swaps the single-week
+            // selector for a from/to date pair pre-seeded to the last
+            // 12 weeks.
+            Card { class: "mb-4",
+                div { class: "flex flex-wrap items-end gap-4",
+                    div { class: "min-w-[180px]",
+                        Select {
+                            name: "ts_status",
+                            label: "Status",
+                            options: vec![
+                                SelectOption::new("pending", "Pending (action queue)"),
+                                SelectOption::new("approved", "Approved"),
+                                SelectOption::new("rejected", "Rejected"),
+                                SelectOption::new("all", "All"),
+                            ],
+                            value: status_filter.read().clone(),
+                            onchange: move |e: FormEvent| {
+                                action_msg.set(String::new());
+                                action_err.set(String::new());
+                                status_filter.set(e.value());
+                            },
+                        }
+                    }
+                    div { class: "pt-6",
+                        Checkbox {
+                            name: "ts_range_mode",
+                            label: "Range mode",
+                            checked: in_range_mode,
+                            help: "Span multiple weeks. Server caps the scan at 26 weeks.",
+                            onchange: move |e: FormEvent| {
+                                action_msg.set(String::new());
+                                action_err.set(String::new());
+                                range_mode.set(e.checked());
+                            },
+                        }
+                    }
+                    if in_range_mode {
+                        div { class: "min-w-[160px]",
+                            crate::components::Input {
+                                name: "ts_from",
+                                label: "From",
+                                r#type: "date".to_string(),
+                                value: range_from().format("%Y-%m-%d").to_string(),
+                                oninput: move |e: FormEvent| {
+                                    if let Ok(d) = NaiveDate::parse_from_str(&e.value(), "%Y-%m-%d") {
+                                        range_from.set(monday_of_week(d));
+                                    }
+                                },
+                            }
+                        }
+                        div { class: "min-w-[160px]",
+                            crate::components::Input {
+                                name: "ts_to",
+                                label: "To",
+                                r#type: "date".to_string(),
+                                value: range_to().format("%Y-%m-%d").to_string(),
+                                oninput: move |e: FormEvent| {
+                                    if let Ok(d) = NaiveDate::parse_from_str(&e.value(), "%Y-%m-%d") {
+                                        range_to.set(monday_of_week(d));
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Single-week selector. Hidden in range mode (the from/to
+            // date inputs above take its place).
+            if !in_range_mode {
             Card { class: "mb-6",
                 div { class: "flex items-center justify-between",
                     button {
@@ -1671,19 +1786,22 @@ pub fn TimesheetApprovalsPage() -> Element {
                     }
                 }
             }
+            } // PMS-506: end `if !in_range_mode` single-week selector.
 
             DataTable {
-                total_items: pending_count,
+                total_items: rows_count,
                 current_page: 1,
-                per_page: if pending_count == 0 { 25 } else { pending_count },
-                columns: 5,
+                per_page: if rows_count == 0 { 25 } else { rows_count },
+                columns: 7,
                 Table {
                     TableHead {
                         TableRow {
                             TableHeader { "Employee" }
+                            TableHeader { "Week" }
+                            TableHeader { "Status" }
                             TableHeader { "Total" }
                             TableHeader { "Billable" }
-                            TableHeader { "Entries" }
+                            TableHeader { "Decision" }
                             TableHeader { "" }
                         }
                     }
@@ -1698,65 +1816,103 @@ pub fn TimesheetApprovalsPage() -> Element {
                                     "Could not load timesheets. The time-tracking service may be unavailable."
                                 }
                             }
-                        } else if pending.is_empty() {
+                        } else if rows.is_empty() {
                             TableRow {
                                 TableCell { class: "text-subtle italic",
-                                    "No timesheets awaiting approval for this week."
+                                    if active_status == "pending" {
+                                        "No timesheets awaiting approval for this scope."
+                                    } else {
+                                        "No timesheets match the current filter."
+                                    }
                                 }
                             }
                         } else {
-                            for s in pending.iter() {
+                            for s in rows.iter() {
                                 {
                                     let uid = s.user_id;
+                                    let row_week = s.week_start.unwrap_or(start);
                                     let name = name_of(uid);
                                     let name_for_reject = name.clone();
                                     let total = fmt_hours(s.total_minutes);
                                     let billable = fmt_hours(s.billable_minutes);
-                                    let entries = s.entry_count;
                                     let row_busy = approving_id == Some(uid) || is_rejecting();
+                                    let row_pending = s.approval_status == "pending";
+                                    let (status_variant, status_label) = match s.approval_status.as_str() {
+                                        "approved" => (BadgeVariant::Green, "Approved"),
+                                        "rejected" => (BadgeVariant::Red, "Rejected"),
+                                        "pending" => (BadgeVariant::Yellow, "Pending"),
+                                        _ => (BadgeVariant::Gray, "-"),
+                                    };
+                                    let week_label_row = row_week.format("%b %-d, %Y").to_string();
+                                    let decided_at_label = s
+                                        .decided_at
+                                        .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
+                                        .unwrap_or_default();
+                                    let decided_by_label = s
+                                        .decided_by_id
+                                        .map(name_of)
+                                        .unwrap_or_default();
+                                    let rejection = s.rejection_reason.clone().unwrap_or_default();
+                                    let row_key = format!("{uid}-{row_week}");
                                     rsx! {
-                                        TableRow { key: "{uid}",
+                                        TableRow { key: "{row_key}",
                                             TableCell { class: "font-medium text-content", "{name}" }
+                                            TableCell { class: "text-muted", "{week_label_row}" }
+                                            TableCell { Badge { variant: status_variant, "{status_label}" } }
                                             TableCell { "{total}" }
                                             TableCell { class: "text-green-600", "{billable}" }
-                                            TableCell { "{entries}" }
-                                            TableCell {
-                                                div { class: "flex justify-end gap-2",
-                                                    Button {
-                                                        variant: ButtonVariant::Secondary,
-                                                        disabled: row_busy,
-                                                        onclick: move |_| {
-                                                            action_msg.set(String::new());
-                                                            action_err.set(String::new());
-                                                            reject_reason.set(String::new());
-                                                            reject_target.set(Some((uid, name_for_reject.clone())));
-                                                        },
-                                                        "Reject"
+                                            TableCell { class: "text-xs text-muted",
+                                                if row_pending {
+                                                    "-"
+                                                } else {
+                                                    if !decided_by_label.is_empty() {
+                                                        div { "by {decided_by_label}" }
                                                     }
-                                                    Button {
-                                                        variant: ButtonVariant::Primary,
-                                                        loading: approving_id == Some(uid),
-                                                        disabled: row_busy,
-                                                        onclick: move |_| {
-                                                            action_msg.set(String::new());
-                                                            action_err.set(String::new());
-                                                            approving.set(Some(uid));
-                                                            let start = week_start();
-                                                            let mut sr = summaries_resource;
-                                                            spawn(async move {
-                                                                #[cfg(feature = "web")]
-                                                                {
-                                                                    let path = format!("/timesheets/{uid}/{start}/approve");
-                                                                    match crate::hooks::fetch::api::post_authed::<
-                                                                        serde_json::Value,
-                                                                        _,
-                                                                    >(&path, &serde_json::json!({}))
-                                                                        .await
+                                                    if !decided_at_label.is_empty() {
+                                                        div { "{decided_at_label}" }
+                                                    }
+                                                    if !rejection.is_empty() {
+                                                        div { class: "italic mt-1", "\"{rejection}\"" }
+                                                    }
+                                                }
+                                            }
+                                            TableCell {
+                                                if row_pending {
+                                                    div { class: "flex justify-end gap-2",
+                                                        Button {
+                                                            variant: ButtonVariant::Secondary,
+                                                            disabled: row_busy,
+                                                            onclick: move |_| {
+                                                                action_msg.set(String::new());
+                                                                action_err.set(String::new());
+                                                                reject_reason.set(String::new());
+                                                                reject_target.set(Some((uid, row_week, name_for_reject.clone())));
+                                                            },
+                                                            "Reject"
+                                                        }
+                                                        Button {
+                                                            variant: ButtonVariant::Primary,
+                                                            loading: approving_id == Some(uid),
+                                                            disabled: row_busy,
+                                                            onclick: move |_| {
+                                                                action_msg.set(String::new());
+                                                                action_err.set(String::new());
+                                                                approving.set(Some(uid));
+                                                                let mut sr = summaries_resource;
+                                                                spawn(async move {
+                                                                    #[cfg(feature = "web")]
                                                                     {
-                                                                        Ok(_) => {
-                                                                            action_msg.set("Timesheet approved.".to_string());
-                                                                            sr.restart();
-                                                                        }
+                                                                        let path = format!("/timesheets/{uid}/{row_week}/approve");
+                                                                        match crate::hooks::fetch::api::post_authed::<
+                                                                            serde_json::Value,
+                                                                            _,
+                                                                        >(&path, &serde_json::json!({}))
+                                                                            .await
+                                                                        {
+                                                                            Ok(_) => {
+                                                                                action_msg.set("Timesheet approved.".to_string());
+                                                                                sr.restart();
+                                                                            }
                                                                         Err(e) => {
                                                                             action_err
                                                                                 .set(format!("Could not approve timesheet: {e}"));
@@ -1778,6 +1934,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                     }
                 }
             }
+            } // PMS-506: close DataTable
 
             // Reject reason modal (MAPPS-189: in-app modal, not window.prompt).
             {
@@ -1785,12 +1942,12 @@ pub fn TimesheetApprovalsPage() -> Element {
                 let open = target.is_some();
                 let reject_name = target
                     .as_ref()
-                    .map(|(_, n)| n.clone())
+                    .map(|(_, _, n)| n.clone())
                     .unwrap_or_default();
                 let rejecting = is_rejecting();
                 let reason_empty = reject_reason.read().trim().is_empty();
                 let do_reject = move |_| {
-                    let Some((uid, _)) = reject_target.read().clone() else {
+                    let Some((uid, week, _)) = reject_target.read().clone() else {
                         return;
                     };
                     let reason = reject_reason.read().trim().to_string();
@@ -1798,12 +1955,11 @@ pub fn TimesheetApprovalsPage() -> Element {
                         return;
                     }
                     is_rejecting.set(true);
-                    let start = week_start();
                     let mut sr = summaries_resource;
                     spawn(async move {
                         #[cfg(feature = "web")]
                         {
-                            let path = format!("/timesheets/{uid}/{start}/reject");
+                            let path = format!("/timesheets/{uid}/{week}/reject");
                             match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
                                 &path,
                                 &serde_json::json!({ "reason": reason }),
