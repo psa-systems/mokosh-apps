@@ -1400,8 +1400,26 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
     // increments, otherwise drop into the Custom path with an explicit End.
     const PRESETS: [i64; 6] = [15, 30, 45, 60, 90, 120];
     let seed_is_preset = PRESETS.contains(&seed_duration);
-    let mut start_value = use_signal(|| utc_to_datetime_local_value(init_start));
-    let mut end_value = use_signal(|| utc_to_datetime_local_value(init_end));
+    // MAPPS-299: compute the timezone-dependent seed strings BEFORE the
+    // `use_signal` calls. The conversion routines reach into
+    // `user_timezone()` which calls `try_use_context::<Signal<AuthContext>>()`
+    // - itself a hook. Running them inside a `use_signal` initialiser
+    // therefore violates the rules of hooks ("hook list already
+    // borrowed; using a hook inside a hook") and panics on first
+    // mount in the Calendar parent (Dispatch happens to dodge the
+    // same crash because its mount path runs the modal's hook setup
+    // when the auth context is in a different borrow state). Hoisting
+    // the timezone reads above the `use_signal` calls keeps every
+    // initialiser pure.
+    let init_start_local = utc_to_datetime_local_value(init_start);
+    let init_end_local = utc_to_datetime_local_value(init_end);
+    let init_start_date = utc_to_date_value(init_start);
+    let init_end_date = {
+        let inclusive_end = (init_end - Duration::days(1)).max(init_start);
+        utc_to_date_value(inclusive_end)
+    };
+    let mut start_value = use_signal(|| init_start_local.clone());
+    let mut end_value = use_signal(|| init_end_local.clone());
     let mut duration_minutes = use_signal(|| seed_duration);
     // Which entry the duration `Select` shows: a preset string or the
     // `DURATION_CUSTOM` sentinel.
@@ -1413,13 +1431,10 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
         }
     });
     let mut all_day = use_signal(|| init_all_day);
-    let mut start_date_value = use_signal(|| utc_to_date_value(init_start));
+    let mut start_date_value = use_signal(|| init_start_date.clone());
     // All-day End date is inclusive in the UI: the persisted End is local
     // 00:00 of the day AFTER this date, so a single-day span reads as one day.
-    let mut end_date_value = use_signal(|| {
-        let inclusive_end = (init_end - Duration::days(1)).max(init_start);
-        utc_to_date_value(inclusive_end)
-    });
+    let mut end_date_value = use_signal(|| init_end_date.clone());
     let mut assignee = use_signal(|| init_assignee);
     let mut recurrence = use_signal(|| init_recurrence);
     let mut recurrence_error = use_signal(String::new);
