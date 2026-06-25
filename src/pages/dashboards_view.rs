@@ -1,29 +1,38 @@
-//! PMS-472: read-only view surface for a saved dashboard.
+//! PMS-472 + PMS-487: view + edit surfaces for saved dashboards.
 //!
-//! Consumes the JSONB `layout` blob that PMS-453 persists and renders
-//! widgets into CSS-grid cells at the encoded coordinates. The catalog
-//! ships placeholder bodies so the layout pipeline is exercisable end
-//! to end. PMS-487 swaps the placeholder bodies for real data fetches
-//! and adds the editor mode.
+//! PMS-472 introduced the read-only render pipeline: layout JSONB ->
+//! typed `DashboardLayout` -> CSS-grid placement of widget cards.
+//!
+//! PMS-487 layers the editor (toggle, per-widget grid-coord inputs,
+//! add-from-catalog, save round-trip through `PATCH /dashboards/{id}`)
+//! and replaces the placeholder bodies with real data fetches against
+//! existing PSA endpoints. The editor uses number inputs rather than
+//! drag-and-drop to avoid a heavy dnd dependency for the v1; PMS-487
+//! AC explicitly accepts this shape.
 
+use chrono::{Datelike, Duration, Utc, Weekday};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::components::{AppLayout, Card, PageHeader};
+use crate::components::{
+    AlertType, AppLayout, Button, ButtonVariant, Card, PageHeader, Table, TableBody, TableCell,
+    TableHead, TableHeader, TableRow,
+};
+use crate::utils::Paginated;
 
 /// Layout JSONB shape the SPA owns. The server stores `layout` as an
 /// opaque `serde_json::Value`; this struct is the canonical schema the
 /// view + editor surfaces deserialise from. Unknown widget keys render
 /// as an "Unknown widget" placeholder so a forward-compatible server
 /// row never blank-screens the page.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 pub struct DashboardLayout {
     #[serde(default)]
     pub widgets: Vec<WidgetSpec>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct WidgetSpec {
     pub widget_key: String,
     #[serde(default = "default_grid_one")]
@@ -54,8 +63,13 @@ struct SavedDashboardRow {
     layout: serde_json::Value,
 }
 
-/// Catalog of supported widget keys. The view surface renders a
-/// placeholder per key; PMS-487 hooks each to a real fetch.
+#[derive(Clone, Debug, Default, Serialize)]
+struct UpdateLayoutBody {
+    layout: serde_json::Value,
+}
+
+/// Catalog of supported widget keys. Used by both the renderer and
+/// the editor's add-widget panel.
 pub struct WidgetCatalogEntry {
     pub key: &'static str,
     pub title: &'static str,
@@ -66,7 +80,7 @@ pub const WIDGET_CATALOG: &[WidgetCatalogEntry] = &[
     WidgetCatalogEntry {
         key: "tickets_by_status",
         title: "Tickets by status",
-        placeholder: "Counts of open tickets grouped by status.",
+        placeholder: "Open tickets grouped by priority bucket.",
     },
     WidgetCatalogEntry {
         key: "time_this_week",
@@ -81,12 +95,12 @@ pub const WIDGET_CATALOG: &[WidgetCatalogEntry] = &[
     WidgetCatalogEntry {
         key: "open_invoices",
         title: "Open invoices",
-        placeholder: "Invoices outstanding by client.",
+        placeholder: "Invoices in sent / overdue state.",
     },
     WidgetCatalogEntry {
         key: "recent_audit_log",
         title: "Recent audit log",
-        placeholder: "Last 10 audit events in the tenant.",
+        placeholder: "Last 5 audit events in the tenant.",
     },
 ];
 
@@ -94,14 +108,16 @@ pub fn catalog_lookup(key: &str) -> Option<&'static WidgetCatalogEntry> {
     WIDGET_CATALOG.iter().find(|w| w.key == key)
 }
 
-/// View one saved dashboard by id.
+/// View one saved dashboard by id. Toggles into the editor inline.
 #[component]
 pub fn SavedDashboardViewPage(id: String) -> Element {
+    let version = use_signal(|| 0u32);
     let id_for_fetch = id.clone();
     let row_resource = use_resource(move || {
         let id = id_for_fetch.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _ = version.read();
             crate::hooks::fetch::api::get_authed::<SavedDashboardRow>(&format!("/dashboards/{id}"))
                 .await
                 .ok()
@@ -112,7 +128,7 @@ pub fn SavedDashboardViewPage(id: String) -> Element {
     rsx! {
         AppLayout {
             match row {
-                Some(d) => render_dashboard(d),
+                Some(d) => render_with_editor(d, version),
                 None => rsx! {
                     PageHeader {
                         title: "Dashboard".to_string(),
@@ -140,50 +156,279 @@ pub fn DefaultDashboardPage() -> Element {
 
     match pinned {
         Some(d) => rsx! {
-            AppLayout { {render_dashboard(d)} }
+            AppLayout { {render_read_only(d)} }
         },
         None => rsx! { crate::pages::dashboard::DashboardPage {} },
     }
 }
 
-fn render_dashboard(d: SavedDashboardRow) -> Element {
+fn render_read_only(d: SavedDashboardRow) -> Element {
     let layout: DashboardLayout = serde_json::from_value(d.layout.clone()).unwrap_or_default();
-    let name = d.name;
+    rsx! {
+        PageHeader {
+            title: d.name,
+            subtitle: "Saved dashboard".to_string(),
+        }
+        {render_grid(&layout)}
+    }
+}
+
+fn render_with_editor(d: SavedDashboardRow, mut version: Signal<u32>) -> Element {
+    let initial: DashboardLayout = serde_json::from_value(d.layout.clone()).unwrap_or_default();
+    let mut editing = use_signal(|| false);
+    let mut draft = use_signal(|| initial.clone());
+    let mut dirty = use_signal(|| false);
+    let dashboard_id = d.id;
+    let name = d.name.clone();
+
+    let on_save = move |_| {
+        let layout = draft.read().clone();
+        spawn(async move {
+            let body = UpdateLayoutBody {
+                layout: serde_json::to_value(&layout).unwrap_or(serde_json::json!({})),
+            };
+            match crate::hooks::fetch::api::patch_authed::<SavedDashboardRow, _>(
+                &format!("/dashboards/{dashboard_id}"),
+                &body,
+            )
+            .await
+            {
+                Ok(_) => {
+                    crate::hooks::toast::push_toast(AlertType::Success, "Layout saved");
+                    editing.set(false);
+                    dirty.set(false);
+                    version += 1;
+                }
+                Err(e) => {
+                    crate::hooks::toast::push_toast(AlertType::Error, format!("Save failed: {e}"));
+                }
+            }
+        });
+    };
+
+    let on_cancel = move |_| {
+        draft.set(initial.clone());
+        dirty.set(false);
+        editing.set(false);
+    };
+
+    let on_edit = move |_| editing.set(true);
+
+    let mut on_add_widget = move |key: &'static str| {
+        let next_row = draft
+            .read()
+            .widgets
+            .iter()
+            .map(|w| w.grid_row)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        draft.write().widgets.push(WidgetSpec {
+            widget_key: key.to_string(),
+            grid_col: 1,
+            grid_row: next_row,
+            grid_col_span: 6,
+            grid_row_span: 1,
+            filter_scope: None,
+        });
+        dirty.set(true);
+    };
+
+    let actions = if *editing.read() {
+        rsx! {
+            div { class: "inline-flex gap-2",
+                Button { variant: ButtonVariant::Secondary, onclick: on_cancel, "Cancel" }
+                Button { variant: ButtonVariant::Primary, onclick: on_save, "Save layout" }
+            }
+        }
+    } else {
+        rsx! {
+            Button { variant: ButtonVariant::Secondary, onclick: on_edit, "Edit layout" }
+        }
+    };
 
     rsx! {
         PageHeader {
             title: name,
             subtitle: "Saved dashboard".to_string(),
+            actions: actions,
         }
-        if layout.widgets.is_empty() {
-            div { class: "p-6 text-center text-muted",
-                "This dashboard has no widgets yet. Open the editor to add some."
+        if *editing.read() {
+            Card { title: "Add widget".to_string(),
+                div { class: "flex flex-wrap gap-2",
+                    for entry in WIDGET_CATALOG.iter() {
+                        {
+                            let key = entry.key;
+                            rsx! {
+                                Button {
+                                    variant: ButtonVariant::Secondary,
+                                    onclick: move |_| on_add_widget(key),
+                                    "+ {entry.title}"
+                                }
+                            }
+                        }
+                    }
+                }
             }
+            {render_editor_grid(draft, dirty)}
         } else {
-            div { class: "grid grid-cols-12 gap-4",
-                for w in layout.widgets.iter() {
-                    {render_widget(w)}
+            {render_grid(&draft.read())}
+        }
+    }
+}
+
+fn render_grid(layout: &DashboardLayout) -> Element {
+    if layout.widgets.is_empty() {
+        return rsx! {
+            div { class: "p-6 text-center text-muted",
+                "This dashboard has no widgets yet. Click 'Edit layout' to add some."
+            }
+        };
+    }
+    rsx! {
+        div { class: "grid grid-cols-12 gap-4",
+            for (idx, w) in layout.widgets.iter().enumerate() {
+                {render_widget_cell(w, idx)}
+            }
+        }
+    }
+}
+
+fn render_editor_grid(draft: Signal<DashboardLayout>, dirty: Signal<bool>) -> Element {
+    let widgets = draft.read().widgets.clone();
+    if widgets.is_empty() {
+        return rsx! {
+            div { class: "p-6 text-center text-muted mt-4",
+                "Empty layout. Add a widget from the catalog above."
+            }
+        };
+    }
+    rsx! {
+        div { class: "grid grid-cols-12 gap-4 mt-4",
+            for (idx, w) in widgets.iter().enumerate() {
+                {render_widget_editor_cell(w.clone(), idx, draft, dirty)}
+            }
+        }
+    }
+}
+
+fn render_widget_cell(w: &WidgetSpec, idx: usize) -> Element {
+    let entry = catalog_lookup(&w.widget_key);
+    let title = entry.map(|e| e.title).unwrap_or("Unknown widget");
+    let style = grid_style(w);
+    let key = format!("w-{idx}-{}", w.widget_key);
+    rsx! {
+        div { key: "{key}", style: "{style}",
+            Card { title: title.to_string(),
+                {render_widget_body(&w.widget_key)}
+            }
+        }
+    }
+}
+
+fn render_widget_editor_cell(
+    w: WidgetSpec,
+    idx: usize,
+    mut draft: Signal<DashboardLayout>,
+    mut dirty: Signal<bool>,
+) -> Element {
+    let entry = catalog_lookup(&w.widget_key);
+    let title = entry.map(|e| e.title).unwrap_or("Unknown widget");
+    let style = grid_style(&w);
+    let key = format!("e-{idx}-{}", w.widget_key);
+
+    let on_remove = move |_| {
+        draft.write().widgets.remove(idx);
+        dirty.set(true);
+    };
+
+    rsx! {
+        div { key: "{key}", style: "{style}",
+            Card { title: title.to_string(),
+                div { class: "grid grid-cols-2 gap-2 text-sm",
+                    label { class: "flex items-center gap-2",
+                        span { class: "w-16 text-muted", "Col" }
+                        input {
+                            r#type: "number", min: "1", max: "12",
+                            class: "input input-bordered w-full",
+                            value: "{w.grid_col}",
+                            oninput: move |e| {
+                                if let Ok(v) = e.value().parse::<u32>() {
+                                    if let Some(s) = draft.write().widgets.get_mut(idx) {
+                                        s.grid_col = v.max(1);
+                                    }
+                                    dirty.set(true);
+                                }
+                            },
+                        }
+                    }
+                    label { class: "flex items-center gap-2",
+                        span { class: "w-16 text-muted", "Row" }
+                        input {
+                            r#type: "number", min: "1",
+                            class: "input input-bordered w-full",
+                            value: "{w.grid_row}",
+                            oninput: move |e| {
+                                if let Ok(v) = e.value().parse::<u32>() {
+                                    if let Some(s) = draft.write().widgets.get_mut(idx) {
+                                        s.grid_row = v.max(1);
+                                    }
+                                    dirty.set(true);
+                                }
+                            },
+                        }
+                    }
+                    label { class: "flex items-center gap-2",
+                        span { class: "w-16 text-muted", "W" }
+                        input {
+                            r#type: "number", min: "1", max: "12",
+                            class: "input input-bordered w-full",
+                            value: "{w.grid_col_span}",
+                            oninput: move |e| {
+                                if let Ok(v) = e.value().parse::<u32>() {
+                                    if let Some(s) = draft.write().widgets.get_mut(idx) {
+                                        s.grid_col_span = v.clamp(1, 12);
+                                    }
+                                    dirty.set(true);
+                                }
+                            },
+                        }
+                    }
+                    label { class: "flex items-center gap-2",
+                        span { class: "w-16 text-muted", "H" }
+                        input {
+                            r#type: "number", min: "1",
+                            class: "input input-bordered w-full",
+                            value: "{w.grid_row_span}",
+                            oninput: move |e| {
+                                if let Ok(v) = e.value().parse::<u32>() {
+                                    if let Some(s) = draft.write().widgets.get_mut(idx) {
+                                        s.grid_row_span = v.max(1);
+                                    }
+                                    dirty.set(true);
+                                }
+                            },
+                        }
+                    }
+                }
+                div { class: "flex justify-end mt-3",
+                    Button { variant: ButtonVariant::Danger, onclick: on_remove, "Remove" }
                 }
             }
         }
     }
 }
 
-fn render_widget(w: &WidgetSpec) -> Element {
-    let entry = catalog_lookup(&w.widget_key);
-    let title = entry.map(|e| e.title).unwrap_or("Unknown widget");
-    let placeholder = entry
-        .map(|e| e.placeholder)
-        .unwrap_or("This widget key is not in the catalog.");
-    let style = grid_style(w);
-    let key = format!("{}-{}-{}", w.widget_key, w.grid_col, w.grid_row);
-
-    rsx! {
-        div { key: "{key}", style: "{style}",
-            Card { title: title.to_string(),
-                p { class: "text-sm text-muted", "{placeholder}" }
-            }
-        }
+fn render_widget_body(key: &str) -> Element {
+    match key {
+        "tickets_by_status" => rsx! { WidgetTicketsByStatus {} },
+        "time_this_week" => rsx! { WidgetTimeThisWeek {} },
+        "sla_at_risk" => rsx! { WidgetSlaAtRisk {} },
+        "open_invoices" => rsx! { WidgetOpenInvoices {} },
+        "recent_audit_log" => rsx! { WidgetRecentAuditLog {} },
+        _ => rsx! {
+            p { class: "text-sm text-muted italic", "Unknown widget key." }
+        },
     }
 }
 
@@ -193,4 +438,199 @@ fn grid_style(w: &WidgetSpec) -> String {
     let col_span = w.grid_col_span.clamp(1, 12);
     let row_span = w.grid_row_span.max(1);
     format!("grid-column: {col_start} / span {col_span}; grid-row: {row_start} / span {row_span};")
+}
+
+// ---------------------------------------------------------------------------
+// Per-widget components. Each hits one tiny existing endpoint; loading and
+// error states render plainly. Real data is the AC for PMS-487.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct DashboardReportLite {
+    #[serde(default)]
+    open_by_priority: Vec<ReportBucket>,
+    #[serde(default)]
+    sla_warnings: i64,
+    #[serde(default)]
+    sla_breached: i64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ReportBucket {
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    count: i64,
+}
+
+#[component]
+fn WidgetTicketsByStatus() -> Element {
+    let report = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<DashboardReportLite>("/reports/dashboard")
+            .await
+            .ok()
+            .unwrap_or_default()
+    });
+    let r = report.read_unchecked().clone().unwrap_or_default();
+    if r.open_by_priority.is_empty() {
+        return rsx! { p { class: "text-sm text-muted italic", "No open tickets." } };
+    }
+    rsx! {
+        ul { class: "text-sm space-y-1",
+            for b in r.open_by_priority.iter() {
+                li { class: "flex justify-between",
+                    span { class: "text-muted", "{b.label}" }
+                    span { class: "font-medium", "{b.count}" }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct TimeEntryLite {
+    date: chrono::NaiveDate,
+    #[serde(default)]
+    duration_minutes: i64,
+}
+
+#[component]
+fn WidgetTimeThisWeek() -> Element {
+    let entries = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<TimeEntryLite>>("/time-entries")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+    let rows = entries.read_unchecked().clone().unwrap_or_default();
+    let week_start = monday_of_week(Utc::now().date_naive());
+    let minutes: i64 = rows
+        .iter()
+        .filter(|e| e.date >= week_start)
+        .map(|e| e.duration_minutes)
+        .sum();
+    let hours = format!("{:.1}", minutes as f64 / 60.0);
+    rsx! {
+        div { class: "text-3xl font-semibold text-content", "{hours} h" }
+        p { class: "text-xs text-muted mt-1", "Logged since Monday." }
+    }
+}
+
+#[component]
+fn WidgetSlaAtRisk() -> Element {
+    let report = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<DashboardReportLite>("/reports/dashboard")
+            .await
+            .ok()
+            .unwrap_or_default()
+    });
+    let r = report.read_unchecked().clone().unwrap_or_default();
+    rsx! {
+        div { class: "flex justify-between text-sm",
+            span { class: "text-yellow-700", "At risk" }
+            span { class: "font-medium", "{r.sla_warnings}" }
+        }
+        div { class: "flex justify-between text-sm mt-1",
+            span { class: "text-red-700", "Breached" }
+            span { class: "font-medium", "{r.sla_breached}" }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct InvoiceLite {
+    #[serde(default)]
+    total: Option<rust_decimal::Decimal>,
+}
+
+#[component]
+fn WidgetOpenInvoices() -> Element {
+    let invoices = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<InvoiceLite>>(
+            "/invoices?status=sent&per_page=50",
+        )
+        .await
+        .ok()
+        .map(|p| p.data)
+        .unwrap_or_default()
+    });
+    let rows = invoices.read_unchecked().clone().unwrap_or_default();
+    let total: rust_decimal::Decimal = rows
+        .iter()
+        .filter_map(|i| i.total)
+        .sum::<rust_decimal::Decimal>();
+    rsx! {
+        div { class: "text-3xl font-semibold text-content", "{rows.len()}" }
+        p { class: "text-xs text-muted mt-1", "Outstanding invoices, total {total}." }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct AuditEntryLite {
+    #[serde(default)]
+    action: String,
+    #[serde(default)]
+    entity_type: String,
+    occurred_at: chrono::DateTime<Utc>,
+}
+
+#[component]
+fn WidgetRecentAuditLog() -> Element {
+    let entries = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<AuditEntryLite>>(
+            "/audit-log?page=1&per_page=5",
+        )
+        .await
+        .ok()
+        .map(|p| p.data)
+        .unwrap_or_default()
+    });
+    let rows = entries.read_unchecked().clone().unwrap_or_default();
+    if rows.is_empty() {
+        return rsx! { p { class: "text-sm text-muted italic", "No audit events yet." } };
+    }
+    rsx! {
+        Table {
+            TableHead {
+                TableRow {
+                    TableHeader { "When" }
+                    TableHeader { "Action" }
+                    TableHeader { "Entity" }
+                }
+            }
+            TableBody {
+                for e in rows.iter() {
+                    {
+                        let when = e.occurred_at.format("%m/%d %H:%M").to_string();
+                        rsx! {
+                            TableRow {
+                                TableCell { class: "text-muted", "{when}" }
+                                TableCell { "{e.action}" }
+                                TableCell { "{e.entity_type}" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn monday_of_week(date: chrono::NaiveDate) -> chrono::NaiveDate {
+    let offset = match date.weekday() {
+        Weekday::Mon => 0,
+        Weekday::Tue => 1,
+        Weekday::Wed => 2,
+        Weekday::Thu => 3,
+        Weekday::Fri => 4,
+        Weekday::Sat => 5,
+        Weekday::Sun => 6,
+    };
+    date - Duration::days(offset)
 }
