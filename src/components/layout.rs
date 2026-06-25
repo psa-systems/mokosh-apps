@@ -618,7 +618,10 @@ fn UserMenu() -> Element {
     //     actually navigates instead of resolving the URL against
     //     this SPA's Route enum.
     let hub_account_settings = cfg.hub_url("/settings");
-    let hub_dashboard = cfg.hub_url("/dashboard");
+    // MAPPS-324: the "Apps" launcher link to the bunyip hub dashboard is
+    // hidden for now (multi-app switching isn't a flow we want to surface
+    // yet). Restore by reinstating this binding and the `a` block below.
+    // let hub_dashboard = cfg.hub_url("/dashboard");
     // RP-initiated logout via bunyip-api's `OptionalUser`-backed
     // endpoint. bunyip-api's `GET /v1/auth/logout?url=<absolute>`
     // clears the .a8n.systems-scoped cookies via Set-Cookie, then
@@ -685,7 +688,7 @@ fn UserMenu() -> Element {
                         onclick: move |_| open.set(false),
                         "Profile"
                     }
-                    // Account Settings + Apps live on the bunyip hub;
+                    // Account Settings lives on the bunyip hub;
                     // cross-origin top-level <a> so the browser
                     // navigates instead of resolving against this
                     // SPA's Route enum.
@@ -694,11 +697,8 @@ fn UserMenu() -> Element {
                         href: "{hub_account_settings}",
                         "Account Settings"
                     }
-                    a {
-                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
-                        href: "{hub_dashboard}",
-                        "Apps"
-                    }
+                    // MAPPS-324: "Apps" launcher link removed (hidden for
+                    // now); see the commented `hub_dashboard` binding above.
                     // System Status is a mokosh-side route (build
                     // versions + live API/dependency health), so route
                     // internally with `Link` (PMS-237).
