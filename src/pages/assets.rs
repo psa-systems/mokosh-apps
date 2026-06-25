@@ -1369,6 +1369,12 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     let mut e_in_transit = use_signal(String::new);
     let mut e_submitting = use_signal(|| false);
     let mut e_error = use_signal(String::new);
+    // PMS-518: per-field inline error slots so the edit modal reports every
+    // validation failure at once (matching the New Asset form).
+    let mut e_name_err = use_signal(String::new);
+    let mut e_serial_err = use_signal(String::new);
+    let mut e_manufacturer_err = use_signal(String::new);
+    let mut e_model_err = use_signal(String::new);
     let id_for_save = props.id.clone();
 
     // MAPPS-158: detail-page Delete, wired to the existing
@@ -2077,40 +2083,44 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     let save_id = save_id.clone();
                     spawn(async move {
                         // Mirror the create-form validation (MAPPS-238/216):
-                        // reject a blank or over-long name and over-long
-                        // optional fields before the PUT, with an inline
-                        // message, instead of posting them to the server.
-                        let asset_name = match validate_asset_name(&e_name()) {
-                            Ok(v) => v,
-                            Err(msg) => {
-                                e_error.set(msg);
-                                // PMS-518: focus the Name field on the bail.
-                                let mut guard = FormGuard::new();
-                                guard.note_invalid(Some("edit-name"));
-                                guard.blocked();
-                                return;
-                            }
-                        };
+                        // reject a blank or over-long name and over-long optional
+                        // fields before the PUT. PMS-518: validate all of them and
+                        // report every failure at once in its own inline slot, then
+                        // focus the first invalid field.
+                        e_name_err.set(String::new());
+                        e_serial_err.set(String::new());
+                        e_manufacturer_err.set(String::new());
+                        e_model_err.set(String::new());
+                        let mut guard = FormGuard::new();
+                        let name_res = validate_asset_name(&e_name());
+                        if let Err(msg) = &name_res {
+                            e_name_err.set(msg.clone());
+                            guard.note_invalid(Some("edit-name"));
+                        }
                         if let Err(msg) =
                             validate_asset_optional(&e_serial(), "Serial number", ASSET_SERIAL_MAX)
                         {
-                            e_error.set(msg);
-                            return;
+                            e_serial_err.set(msg);
+                            guard.note_invalid(Some("edit-serial"));
                         }
                         if let Err(msg) = validate_asset_optional(
                             &e_manufacturer(),
                             "Manufacturer",
                             ASSET_MANUFACTURER_MAX,
                         ) {
-                            e_error.set(msg);
-                            return;
+                            e_manufacturer_err.set(msg);
+                            guard.note_invalid(Some("edit-manufacturer"));
                         }
                         if let Err(msg) =
                             validate_asset_optional(&e_model(), "Model", ASSET_MODEL_MAX)
                         {
-                            e_error.set(msg);
+                            e_model_err.set(msg);
+                            guard.note_invalid(Some("edit-model"));
+                        }
+                        if guard.blocked() {
                             return;
                         }
+                        let asset_name = name_res.expect("name validated above");
                         e_submitting.set(true);
                         e_error.set(String::new());
                         let mut body = serde_json::Map::new();
@@ -2240,8 +2250,13 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 label: "Name",
                                 required: true,
                                 maxlength: ASSET_NAME_MAX as i64,
+                                rules: vec![Rule::Required],
+                                error: e_name_err(),
                                 value: "{e_name}",
-                                oninput: move |e: FormEvent| e_name.set(e.value()),
+                                oninput: move |e: FormEvent| {
+                                    e_name_err.set(String::new());
+                                    e_name.set(e.value());
+                                },
                             }
                             div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                 Select {
@@ -2271,23 +2286,35 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     name: "edit-manufacturer",
                                     label: "Manufacturer",
                                     maxlength: ASSET_MANUFACTURER_MAX as i64,
+                                    error: e_manufacturer_err(),
                                     value: "{e_manufacturer}",
-                                    oninput: move |e: FormEvent| e_manufacturer.set(e.value()),
+                                    oninput: move |e: FormEvent| {
+                                        e_manufacturer_err.set(String::new());
+                                        e_manufacturer.set(e.value());
+                                    },
                                 }
                                 Input {
                                     name: "edit-model",
                                     label: "Model",
                                     maxlength: ASSET_MODEL_MAX as i64,
+                                    error: e_model_err(),
                                     value: "{e_model}",
-                                    oninput: move |e: FormEvent| e_model.set(e.value()),
+                                    oninput: move |e: FormEvent| {
+                                        e_model_err.set(String::new());
+                                        e_model.set(e.value());
+                                    },
                                 }
                             }
                             Input {
                                 name: "edit-serial",
                                 label: "Serial Number",
                                 maxlength: ASSET_SERIAL_MAX as i64,
+                                error: e_serial_err(),
                                 value: "{e_serial}",
-                                oninput: move |e: FormEvent| e_serial.set(e.value()),
+                                oninput: move |e: FormEvent| {
+                                    e_serial_err.set(String::new());
+                                    e_serial.set(e.value());
+                                },
                             }
                             div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                 crate::components::DateField {
