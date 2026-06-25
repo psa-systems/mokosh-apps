@@ -8,7 +8,7 @@ use crate::components::{
     OverflowActions, PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectOption, Table,
     TableBody, TableCell, TableHead, TableHeader, TableRow, Textarea,
 };
-use crate::utils::Paginated;
+use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
 /// A project (`GET /api/v1/projects`). Money/hours are decoded with a
@@ -822,6 +822,19 @@ pub fn ProjectNewPage() -> Element {
                             hit_blank = true;
                         }
                         if hit_blank {
+                            // PMS-518: the per-field validators above already
+                            // populated every inline slot; the shared guard only
+                            // adds focus-first, landing on the first invalid field
+                            // in field order (Name, then Budget Amount, then Hours).
+                            let mut guard = FormGuard::new();
+                            guard.note_invalid(Some(if project_name_res.is_err() {
+                                "name"
+                            } else if amount_res.is_err() {
+                                "budget_amount"
+                            } else {
+                                "budget_hours"
+                            }));
+                            guard.blocked();
                             return;
                         }
                         let project_name = project_name_res.unwrap();
@@ -1181,6 +1194,9 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
     let mut t_assignee = use_signal(String::new);
     let mut t_submitting = use_signal(|| false);
     let mut t_error = use_signal(String::new);
+    // Per-field inline validation slots for the Add Task modal (PMS-518).
+    let mut t_title_err = use_signal(String::new);
+    let mut t_status_err = use_signal(String::new);
 
     let mut status_options = vec![SelectOption::new("", "Select a status")];
     status_options.extend(
@@ -1623,20 +1639,29 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                         loading: *t_submitting.read(),
                         onclick: move |_| {
                             t_error.set(String::new());
+                            // PMS-518: validate Title + Status through the shared
+                            // guard so both surface at once in their own inline
+                            // slots and the first invalid is focused, instead of
+                            // the old single top-of-modal banner that showed only
+                            // the first failure.
+                            let mut guard = FormGuard::new();
                             let title = t_title.read().trim().to_string();
+                            t_title_err
+                                .set(guard.field("task_title", &title, "Title", &[Rule::Required]));
                             let status_id = t_status.read().clone();
+                            t_status_err.set(guard.field(
+                                "task_status",
+                                &status_id,
+                                "Status",
+                                &[Rule::Required],
+                            ));
+                            if guard.blocked() {
+                                return;
+                            }
                             let priority = t_priority.read().clone();
                             let est_raw = t_estimated.read().trim().to_string();
                             let due = t_due.read().clone();
                             let assignee = t_assignee.read().clone();
-                            if title.is_empty() {
-                                t_error.set("Task title is required.".to_string());
-                                return;
-                            }
-                            if status_id.is_empty() {
-                                t_error.set("Please pick a status.".to_string());
-                                return;
-                            }
                             // Reject a partial/invalid due date (PMS-317).
                             if let Err(e) = validate_opt_date(&due, "Due date") {
                                 t_error.set(e);
@@ -1716,15 +1741,26 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                         label: "Title",
                         placeholder: "Task title",
                         required: true,
+                        rules: vec![Rule::Required],
+                        error: t_title_err.read().clone(),
                         value: t_title.read().clone(),
-                        oninput: move |e: FormEvent| t_title.set(e.value()),
+                        oninput: move |e: FormEvent| {
+                            t_title_err.set(String::new());
+                            t_title.set(e.value());
+                        },
                     }
                     Select {
                         name: "task_status",
                         label: "Status",
+                        required: true,
                         options: status_options,
+                        rules: vec![Rule::Required],
+                        error: t_status_err.read().clone(),
                         value: t_status.read().clone(),
-                        onchange: move |e: FormEvent| t_status.set(e.value()),
+                        onchange: move |e: FormEvent| {
+                            t_status_err.set(String::new());
+                            t_status.set(e.value());
+                        },
                     }
                     Select {
                         name: "task_priority",
@@ -1776,30 +1812,44 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                     pe_amount_err.set(String::new());
                     pe_hours_err.set(String::new());
                     // Per-field client validation mirrors the server rules (MAPPS-176).
-                    let project_name = match validate_project_name(&pe_name()) {
-                        Ok(n) => n,
-                        Err(msg) => {
-                            pe_name_err.set(msg);
-                            return;
-                        }
-                    };
-                    let amount = match validate_budget(&pe_budget_amount(), "Budget amount") {
-                        Ok(v) => v,
-                        Err(msg) => {
-                            pe_amount_err.set(msg);
-                            return;
-                        }
-                    };
+                    // PMS-518: accumulate every failure (each into its own inline
+                    // slot) instead of returning on the first, then add focus-first
+                    // via the shared guard. The bespoke validators stay - they
+                    // parse-and-return the values the request body needs.
+                    let name_res = validate_project_name(&pe_name());
+                    let amount_res = validate_budget(&pe_budget_amount(), "Budget amount");
                     // Budget hours: accept decimal or H:MM (PMS-340). Blank
                     // leaves it unset; out-of-range or malformed values error
                     // inline with distinct messages (MAPPS-212).
-                    let hours: Option<f64> = match validate_budget_hours(&pe_budget_hours()) {
-                        Ok(h) => h,
-                        Err(msg) => {
-                            pe_hours_err.set(msg);
-                            return;
-                        }
-                    };
+                    let hours_res = validate_budget_hours(&pe_budget_hours());
+                    let mut hit = false;
+                    if let Err(ref msg) = name_res {
+                        pe_name_err.set(msg.clone());
+                        hit = true;
+                    }
+                    if let Err(ref msg) = amount_res {
+                        pe_amount_err.set(msg.clone());
+                        hit = true;
+                    }
+                    if let Err(ref msg) = hours_res {
+                        pe_hours_err.set(msg.clone());
+                        hit = true;
+                    }
+                    if hit {
+                        let mut guard = FormGuard::new();
+                        guard.note_invalid(Some(if name_res.is_err() {
+                            "pe-name"
+                        } else if amount_res.is_err() {
+                            "pe-budget-amount"
+                        } else {
+                            "pe-budget-hours"
+                        }));
+                        guard.blocked();
+                        return;
+                    }
+                    let project_name = name_res.unwrap();
+                    let amount = amount_res.unwrap();
+                    let hours: Option<f64> = hours_res.unwrap();
                     let save_id = save_id.clone();
                     spawn(async move {
                         pe_submitting.set(true);
@@ -2198,6 +2248,8 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
     let mut te_due = use_signal(|| task.due_date.clone().unwrap_or_default());
     let mut te_submitting = use_signal(|| false);
     let mut te_error = use_signal(String::new);
+    // Per-field inline validation slot for Title (PMS-518).
+    let mut te_title_err = use_signal(String::new);
 
     let history_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -2246,8 +2298,12 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
         if te_submitting() {
             return;
         }
-        if te_title().trim().is_empty() {
-            te_error.set("Task title is required.".to_string());
+        // PMS-518: Title through the shared guard so its failure shows in the
+        // field's own inline slot (and focuses) instead of the top-of-modal banner.
+        let mut guard = FormGuard::new();
+        let title_v = te_title().trim().to_string();
+        te_title_err.set(guard.field("te-title", &title_v, "Title", &[Rule::Required]));
+        if guard.blocked() {
             return;
         }
         // Reject a partial/invalid due date (PMS-317) before submit.
@@ -2385,8 +2441,13 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                     name: "te-title",
                     label: "Title",
                     required: true,
+                    rules: vec![Rule::Required],
+                    error: te_title_err.read().clone(),
                     value: "{te_title}",
-                    oninput: move |e: FormEvent| te_title.set(e.value()),
+                    oninput: move |e: FormEvent| {
+                        te_title_err.set(String::new());
+                        te_title.set(e.value());
+                    },
                 }
                 Textarea {
                     name: "te-description",

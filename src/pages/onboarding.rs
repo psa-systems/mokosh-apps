@@ -22,6 +22,7 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{Button, ButtonVariant, Input};
+use crate::utils::{FormGuard, Rule};
 use crate::Route;
 
 /// What `PUT /api/v1/auth/me` accepts. Only the two required fields are
@@ -58,6 +59,11 @@ pub fn Onboarding() -> Element {
     let mut last_name = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // PMS-518: per-field inline error slots, fed by the FormGuard in
+    // handle_submit. The form-level `error` banner is kept for the server
+    // save failure, which has no single field to attach to.
+    let mut first_name_error = use_signal(String::new);
+    let mut last_name_error = use_signal(String::new);
 
     // Defence in depth: if a user with `profile_completed = true`
     // hits /onboarding/profile directly (bookmark, refresh, manual
@@ -80,8 +86,14 @@ pub fn Onboarding() -> Element {
         }
         let first = first_name.read().trim().to_string();
         let last = last_name.read().trim().to_string();
-        if first.is_empty() || last.is_empty() {
-            error.set("First and last name are required.".to_string());
+
+        // PMS-518: validate each required field through the shared FormGuard so
+        // both "you forgot to fill X" failures surface at once (each in its own
+        // inline slot) and the first invalid field is focused.
+        let mut guard = FormGuard::new();
+        first_name_error.set(guard.field("first_name", &first, "First name", &[Rule::Required]));
+        last_name_error.set(guard.field("last_name", &last, "Last name", &[Rule::Required]));
+        if guard.blocked() {
             return;
         }
         saving.set(true);
@@ -151,8 +163,13 @@ pub fn Onboarding() -> Element {
                             label: "First name",
                             value: first_name(),
                             required: true,
+                            rules: vec![Rule::Required],
+                            error: first_name_error(),
                             disabled: saving(),
-                            oninput: move |e: FormEvent| first_name.set(e.value()),
+                            oninput: move |e: FormEvent| {
+                                first_name_error.set(String::new());
+                                first_name.set(e.value());
+                            },
                         }
 
                         Input {
@@ -160,8 +177,13 @@ pub fn Onboarding() -> Element {
                             label: "Last name",
                             value: last_name(),
                             required: true,
+                            rules: vec![Rule::Required],
+                            error: last_name_error(),
                             disabled: saving(),
-                            oninput: move |e: FormEvent| last_name.set(e.value()),
+                            oninput: move |e: FormEvent| {
+                                last_name_error.set(String::new());
+                                last_name.set(e.value());
+                            },
                         }
 
                         if !error().is_empty() {

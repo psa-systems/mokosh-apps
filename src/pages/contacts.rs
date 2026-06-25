@@ -12,7 +12,7 @@ use crate::components::{
 use crate::modules::contacts::Address;
 use crate::utils::money::format_money_str;
 use crate::utils::url::{safe_href, urlencoding_minimal};
-use crate::utils::Paginated;
+use crate::utils::{FormGuard, Paginated};
 use crate::Route;
 
 /// Rows per page for the client-side paginated list views (F3).
@@ -618,44 +618,46 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         phone_err.set(String::new());
         postal_err.set(String::new());
         country_err.set(String::new());
-        // Validate the formatted/structured fields inline before submit (MAPPS-177, MAPPS-213).
-        // Company name is required, so check it first and bail before touching
-        // the optional fields (MAPPS-246).
-        let name_value = match validate_name_field(&name.read()) {
-            Ok(v) => v,
-            Err(msg) => {
-                name_err.set(msg);
-                return;
-            }
-        };
-        let website_value = match validate_website_field(&website.read()) {
-            Ok(v) => v,
-            Err(msg) => {
-                website_err.set(msg);
-                return;
-            }
-        };
-        let phone_value = match validate_phone_field(&phone.read(), "Phone") {
-            Ok(v) => v,
-            Err(msg) => {
-                phone_err.set(msg);
-                return;
-            }
-        };
-        let postal_value = match validate_postal_field(&postal.read()) {
-            Ok(v) => v,
-            Err(msg) => {
-                postal_err.set(msg);
-                return;
-            }
-        };
-        let country_value = match validate_country_field(&country.read()) {
-            Ok(v) => v,
-            Err(msg) => {
-                country_err.set(msg);
-                return;
-            }
-        };
+        // PMS-518: validate the formatted/structured fields inline before submit
+        // (MAPPS-177, MAPPS-213) and report ALL failures at once, each in its own
+        // inline slot, then focus the first invalid field. The bespoke validators
+        // parse-and-return the typed values the body uses, so they are kept; the
+        // results are carried past the single bail and unwrapped once validation
+        // passes.
+        let mut guard = FormGuard::new();
+        let name_res = validate_name_field(&name.read());
+        if let Err(msg) = &name_res {
+            name_err.set(msg.clone());
+            guard.note_invalid(Some("name"));
+        }
+        let website_res = validate_website_field(&website.read());
+        if let Err(msg) = &website_res {
+            website_err.set(msg.clone());
+            guard.note_invalid(Some("website"));
+        }
+        let phone_res = validate_phone_field(&phone.read(), "Phone");
+        if let Err(msg) = &phone_res {
+            phone_err.set(msg.clone());
+            guard.note_invalid(Some("phone"));
+        }
+        let postal_res = validate_postal_field(&postal.read());
+        if let Err(msg) = &postal_res {
+            postal_err.set(msg.clone());
+            guard.note_invalid(Some("address_postal_code"));
+        }
+        let country_res = validate_country_field(&country.read());
+        if let Err(msg) = &country_res {
+            country_err.set(msg.clone());
+            guard.note_invalid(Some("address_country"));
+        }
+        if guard.blocked() {
+            return;
+        }
+        let name_value = name_res.expect("name validated above");
+        let website_value = website_res.expect("website validated above");
+        let phone_value = phone_res.expect("phone validated above");
+        let postal_value = postal_res.expect("postal validated above");
+        let country_value = country_res.expect("country validated above");
         is_submitting.set(true);
         let body = serde_json::json!({
             "name": name_value,
@@ -1121,10 +1123,17 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         let id = company_id_for_sites.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            // MAPPS-247: cap the preview fetch (was uncapped) for the same
-            // reason as contacts above; `meta.total` carries the full count.
+            // MAPPS-316: fetch every site for the company. The 5-row
+            // preview cap from MAPPS-247 combined with the 3-row
+            // render cap below hid sites past the third one with no
+            // "View all" link to escape to (unlike Contacts /
+            // Tickets / Contracts on the same page). Sites per
+            // company are small in practice (typical 1-20), so
+            // dropping the cap to a high ceiling is the right
+            // shape: every site renders inline, no separate list
+            // page needed.
             crate::hooks::fetch::api::get_authed::<PaginatedSites>(&format!(
-                "/contacts/companies/{id}/sites?per_page=5"
+                "/contacts/companies/{id}/sites?per_page=200"
             ))
             .await
             .ok()
@@ -1986,8 +1995,12 @@ fn CompanySitesCard(
                         TableEmpty { columns: 4, message: "No sites for this company yet.".to_string() }
                     },
                     Some(Some(page)) => {
-                        // MAPPS-249: cap the preview at three rows.
-                        let rows: Vec<_> = page.data.iter().take(3).cloned().collect();
+                        // MAPPS-316: render every site the fetch
+                        // returned. Sites per company are small;
+                        // the previous `.take(3)` capped the user
+                        // out of seeing the rest because Sites has
+                        // no "View all" escape link.
+                        let rows: Vec<_> = page.data.clone();
                         let company_id = company_id.clone();
                         rsx! {
                             TableBody {
@@ -2172,38 +2185,43 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
         tz_err.set(String::new());
         postal_err.set(String::new());
         country_err.set(String::new());
+        // PMS-518: validate all fields and report every failure at once, then
+        // focus the first invalid (in on-screen order). Name has no inline slot,
+        // so it stays on the banner; the rest use their per-field slots. The
+        // bespoke validators that parse-and-return are kept and unwrapped past
+        // the single bail.
+        let mut guard = FormGuard::new();
         if name.read().trim().is_empty() {
             error.set("Site name is required.".to_string());
+            guard.note_invalid(Some("site_name"));
+        }
+        let phone_res = validate_phone_field(&phone.read(), "Phone");
+        if let Err(msg) = &phone_res {
+            phone_err.set(msg.clone());
+            guard.note_invalid(Some("site_phone"));
+        }
+        let tz_res = validate_timezone_field(&timezone.read());
+        if let Err(msg) = &tz_res {
+            tz_err.set(msg.clone());
+            guard.note_invalid(Some("site_timezone"));
+        }
+        let postal_res = validate_postal_field(&postal.read());
+        if let Err(msg) = &postal_res {
+            postal_err.set(msg.clone());
+            guard.note_invalid(Some("site_postal"));
+        }
+        let country_res = validate_country_field(&country.read());
+        if let Err(msg) = &country_res {
+            country_err.set(msg.clone());
+            guard.note_invalid(Some("site_country"));
+        }
+        if guard.blocked() {
             return;
         }
-        let phone_value = match validate_phone_field(&phone.read(), "Phone") {
-            Ok(v) => v,
-            Err(msg) => {
-                phone_err.set(msg);
-                return;
-            }
-        };
-        let tz_value = match validate_timezone_field(&timezone.read()) {
-            Ok(v) => v,
-            Err(msg) => {
-                tz_err.set(msg);
-                return;
-            }
-        };
-        let postal_value = match validate_postal_field(&postal.read()) {
-            Ok(v) => v,
-            Err(msg) => {
-                postal_err.set(msg);
-                return;
-            }
-        };
-        let country_value = match validate_country_field(&country.read()) {
-            Ok(v) => v,
-            Err(msg) => {
-                country_err.set(msg);
-                return;
-            }
-        };
+        let phone_value = phone_res.expect("phone validated above");
+        let tz_value = tz_res.expect("timezone validated above");
+        let postal_value = postal_res.expect("postal validated above");
+        let country_value = country_res.expect("country validated above");
         saving.set(true);
         let body = serde_json::json!({
             "company_id": save_state.company_id,
@@ -3571,43 +3589,51 @@ fn ContactForm(props: ContactFormProps) -> Element {
         // "   "). Without this the request reached the server and surfaced
         // a raw 422 banner with no field-level error. Reject inline first
         // so the user sees which field failed.
-        let mut hit_blank = false;
+        // PMS-518: validate every field and report all failures at once, then
+        // focus the first invalid field (in on-screen order). note_invalid keeps
+        // the first id it is given, so the calls below run in field order.
+        let mut guard = FormGuard::new();
+
+        // MAPPS-281: trim required names so a whitespace-only value cannot satisfy
+        // the browser's native `required` (which passes any non-empty string).
         if first_name.read().trim().is_empty() {
             first_name_err.set("First name is required.".to_string());
-            hit_blank = true;
+            guard.note_invalid(Some("first_name"));
         }
         if last_name.read().trim().is_empty() {
             last_name_err.set("Last name is required.".to_string());
-            hit_blank = true;
-        }
-        if hit_blank {
-            return;
+            guard.note_invalid(Some("last_name"));
         }
 
-        // MAPPS-251: company is now optional and can be either an FK-linked CRM
-        // company (company_id) or a freeform typed name (company_name). Supplying
-        // both is rejected client-side, mirroring the backend 422.
+        // MAPPS-251: company is optional - an FK-linked CRM company (company_id)
+        // OR a freeform typed name (company_name), not both. The XOR error has no
+        // inline slot, so it goes to the banner; note_invalid blocks and ties
+        // focus to the freeform input.
         let picked_company = uuid::Uuid::parse_str(company_id.read().as_str()).ok();
         let freeform_name = freeform_company.read().trim().to_string();
         if picked_company.is_some() && !freeform_name.is_empty() {
             error.set("Pick an existing company or type a new one, not both.".to_string());
+            guard.note_invalid(Some("company_name_freeform"));
+        }
+
+        // Validate phone/mobile inline before submit (MAPPS-177). The bespoke
+        // validator parses-and-returns the value the body uses.
+        let phone_res = validate_phone_field(&phone.read(), "Phone");
+        if let Err(msg) = &phone_res {
+            phone_err.set(msg.clone());
+            guard.note_invalid(Some("phone"));
+        }
+        let mobile_res = validate_phone_field(&mobile.read(), "Mobile");
+        if let Err(msg) = &mobile_res {
+            mobile_err.set(msg.clone());
+            guard.note_invalid(Some("mobile"));
+        }
+
+        if guard.blocked() {
             return;
         }
-        // Validate phone/mobile inline before submit (MAPPS-177).
-        let phone_value = match validate_phone_field(&phone.read(), "Phone") {
-            Ok(v) => v,
-            Err(msg) => {
-                phone_err.set(msg);
-                return;
-            }
-        };
-        let mobile_value = match validate_phone_field(&mobile.read(), "Mobile") {
-            Ok(v) => v,
-            Err(msg) => {
-                mobile_err.set(msg);
-                return;
-            }
-        };
+        let phone_value = phone_res.expect("phone validated above");
+        let mobile_value = mobile_res.expect("mobile validated above");
         is_submitting.set(true);
 
         let mut body = serde_json::json!({

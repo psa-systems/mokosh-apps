@@ -9,7 +9,7 @@ use crate::components::{
     DataTable, IconSize, Modal, PageHeader, PlusIcon, Select, SelectOption, Table, TableBody,
     TableCell, TableHead, TableHeader, TableRow,
 };
-use crate::utils::Paginated;
+use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
 /// A time entry (`GET /api/v1/time-entries`). The work-item names (ticket
@@ -439,6 +439,13 @@ pub fn TimeEntryNewPage() -> Element {
     let mut is_billable = use_signal(|| true);
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // PMS-518: per-field inline error slots, fed by the FormGuard in the submit
+    // handler. The form-level `error` banner is kept for the cross-field /
+    // resolution / daily-cap messages that have no single field to attach to.
+    let mut work_item_error = use_signal(String::new);
+    let mut work_type_error = use_signal(String::new);
+    let mut hours_error = use_signal(String::new);
+    let mut description_error = use_signal(String::new);
 
     // Work items come from two sources: tickets (supply ticket_id +
     // company_id) and projects (supply project_id + their company_id). The
@@ -628,30 +635,50 @@ pub fn TimeEntryNewPage() -> Element {
                         let wi = work_item.read().clone();
                         let wtid = work_type.read().clone();
                         let hrs = hours.read().clone();
-                        let desc = description.read().clone();
+                        let desc = description.read().trim().to_string();
                         let billable = *is_billable.read();
 
-                        if wtid.is_empty() {
-                            error.set("Please pick a work type.".to_string());
+                        // PMS-518: validate every required field through the shared
+                        // FormGuard so all "you forgot to fill X" failures surface at
+                        // once (each in its own inline slot) and the first is focused.
+                        // Description is now enforced (it carried the asterisk but was
+                        // never validated). The cross-field resolution and per-day cap
+                        // errors below have no single field, so they stay on the
+                        // form-level banner.
+                        let mut guard = FormGuard::new();
+                        work_item_error
+                            .set(guard.field("work_item", &wi, "Work item", &[Rule::Required]));
+                        work_type_error
+                            .set(guard.field("work_type", &wtid, "Work type", &[Rule::Required]));
+                        description_error
+                            .set(guard.field("description", &desc, "Description", &[Rule::Required]));
+
+                        // The Hours field is free-text (it accepts H:MM as well as
+                        // decimal), so it keeps its custom parse: 0 < t <= 24h (the
+                        // hard single-entry bound, MAPPS-244 AC6). It reports through
+                        // the guard so it joins the same up-front pass.
+                        let duration_minutes =
+                            match crate::utils::duration::parse_input_to_minutes(&hrs) {
+                                Some(m) if m > 0 && m <= MAX_SINGLE_ENTRY_MINUTES => {
+                                    hours_error.set(String::new());
+                                    Some(m)
+                                }
+                                _ => {
+                                    hours_error.set(
+                                        "Enter time as hours (2.5) or H:MM (1:30), greater than 0 and at most 24h."
+                                            .to_string(),
+                                    );
+                                    guard.note_invalid(Some("hours"));
+                                    None
+                                }
+                            };
+
+                        if guard.blocked() {
                             return;
                         }
-                        // The Hours field is free-text (it accepts H:MM as
-                        // well as decimal), so the submit path owns all
-                        // validation: parse either shape into whole minutes
-                        // and require 0 < t <= 24h.
-                        let duration_minutes = match crate::utils::duration::parse_input_to_minutes(
-                            &hrs,
-                        ) {
-                            // Hard upper bound on a single entry stays at 24h
-                            // regardless of the per-day cap (MAPPS-244 AC6).
-                            Some(m) if m > 0 && m <= MAX_SINGLE_ENTRY_MINUTES => m,
-                            _ => {
-                                error.set(
-                                    "Enter time as hours (2.5) or H:MM (1:30), greater than 0 and at most 24h."
-                                        .to_string(),
-                                );
-                                return;
-                            }
+                        // Past the guard: Hours parsed to a valid duration.
+                        let Some(duration_minutes) = duration_minutes else {
+                            return;
                         };
                         // MAPPS-244: pre-flight per-day cap check. Once today's
                         // existing total is known, block (before the network
@@ -804,8 +831,11 @@ pub fn TimeEntryNewPage() -> Element {
                             value: work_item.read().clone(),
                             placeholder: "Select work item",
                             required: true,
+                            rules: vec![Rule::Required],
+                            error: work_item_error.read().clone(),
                             help: work_item_help.to_string(),
                             onchange: move |e: FormEvent| {
+                                work_item_error.set(String::new());
                                 work_item.set(e.value());
                                 // Reset the task when the work item changes so a
                                 // stale task from a previous project isn't kept.
@@ -819,7 +849,12 @@ pub fn TimeEntryNewPage() -> Element {
                             value: work_type.read().clone(),
                             placeholder: "Select work type",
                             required: true,
-                            onchange: move |e: FormEvent| work_type.set(e.value()),
+                            rules: vec![Rule::Required],
+                            error: work_type_error.read().clone(),
+                            onchange: move |e: FormEvent| {
+                                work_type_error.set(String::new());
+                                work_type.set(e.value());
+                            },
                         }
                     }
 
@@ -838,13 +873,19 @@ pub fn TimeEntryNewPage() -> Element {
                         label: "Hours",
                         // Free-text so H:MM (e.g. "0:30") can be typed; a
                         // type="number" input blocks the colon. PMS-314.
-                        // Validation lives in the submit handler.
+                        // Validation lives in the submit handler (free-text
+                        // parse, not a simple `rules` rule), surfaced inline
+                        // via `hours_error` (PMS-518).
                         r#type: "text",
                         placeholder: "2, 2.5, or 1:30",
                         help: "Decimal hours or H:MM.",
                         required: true,
+                        error: hours_error.read().clone(),
                         value: hours.read().clone(),
-                        oninput: move |e: FormEvent| hours.set(e.value()),
+                        oninput: move |e: FormEvent| {
+                            hours_error.set(String::new());
+                            hours.set(e.value());
+                        },
                     }
 
                     crate::components::Textarea {
@@ -853,8 +894,13 @@ pub fn TimeEntryNewPage() -> Element {
                         placeholder: "What did you work on?",
                         rows: 3,
                         required: true,
+                        rules: vec![Rule::Required],
+                        error: description_error.read().clone(),
                         value: description.read().clone(),
-                        oninput: move |e: FormEvent| description.set(e.value()),
+                        oninput: move |e: FormEvent| {
+                            description_error.set(String::new());
+                            description.set(e.value());
+                        },
                     }
 
                     crate::components::Checkbox {
@@ -2099,6 +2145,12 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // PMS-518: per-field inline error slots fed by the FormGuard in
+    // handle_save. The form-level `error` banner is kept for the server
+    // save/delete failures, which have no single field to attach to.
+    let mut work_type_error = use_signal(String::new);
+    let mut hours_error = use_signal(String::new);
+    let mut date_error = use_signal(String::new);
 
     let wi_label = work_item_label(&entry);
 
@@ -2106,28 +2158,44 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        error.set(String::new());
         let wtid = work_type.read().trim().to_string();
-        if wtid.is_empty() {
-            error.set("Please pick a work type.".to_string());
-            return;
-        }
-        let duration_minutes = match crate::utils::duration::parse_input_to_minutes(&hours.read()) {
-            Some(m) if m > 0 && m <= 24 * 60 => m,
+        let d = date.read().trim().to_string();
+        let hrs = hours.read().clone();
+
+        // PMS-518: validate every required field through the shared FormGuard
+        // so all "you forgot to fill X" failures surface at once (each in its
+        // own inline slot) and the first invalid field is focused.
+        let mut guard = FormGuard::new();
+        work_type_error.set(guard.field("edit_work_type", &wtid, "Work type", &[Rule::Required]));
+        date_error.set(guard.field("edit_date", &d, "Date", &[Rule::Required]));
+
+        // Hours is free-text (it accepts H:MM as well as decimal), so it keeps
+        // its custom parse: 0 < t <= 24h. It reports through the guard so it
+        // joins the same up-front pass, surfaced inline via `hours_error`.
+        let duration_minutes = match crate::utils::duration::parse_input_to_minutes(&hrs) {
+            Some(m) if m > 0 && m <= 24 * 60 => {
+                hours_error.set(String::new());
+                Some(m)
+            }
             _ => {
-                error.set(
+                hours_error.set(
                     "Enter time as hours (2.5) or H:MM (1:30), greater than 0 and at most 24h."
                         .to_string(),
                 );
-                return;
+                guard.note_invalid(Some("edit_hours"));
+                None
             }
         };
-        let d = date.read().trim().to_string();
-        if d.is_empty() {
-            error.set("Please pick a date.".to_string());
+
+        if guard.blocked() {
             return;
         }
+        // Past the guard: Hours parsed to a valid duration.
+        let Some(duration_minutes) = duration_minutes else {
+            return;
+        };
         saving.set(true);
-        error.set(String::new());
         let desc = description.read().clone();
         let billable = *is_billable.read();
         spawn(async move {
@@ -2231,27 +2299,43 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
                     options: work_type_options,
                     value: work_type.read().clone(),
                     required: true,
-                    onchange: move |e: FormEvent| work_type.set(e.value()),
+                    rules: vec![Rule::Required],
+                    error: work_type_error.read().clone(),
+                    onchange: move |e: FormEvent| {
+                        work_type_error.set(String::new());
+                        work_type.set(e.value());
+                    },
                 }
                 crate::components::Input {
                     name: "edit_hours",
                     label: "Hours",
                     // Free-text so H:MM (e.g. "0:30") can be typed; a
                     // type="number" input blocks the colon. PMS-314.
-                    // The save handler enforces 0 < t <= 24h.
+                    // Validation lives in the save handler (free-text parse,
+                    // not a simple `rules` rule), surfaced inline via
+                    // `hours_error` (PMS-518). Enforces 0 < t <= 24h.
                     r#type: "text",
                     placeholder: "2, 2.5, or 1:30",
                     help: "Decimal hours or H:MM.",
                     required: true,
+                    error: hours_error.read().clone(),
                     value: hours.read().clone(),
-                    oninput: move |e: FormEvent| hours.set(e.value()),
+                    oninput: move |e: FormEvent| {
+                        hours_error.set(String::new());
+                        hours.set(e.value());
+                    },
                 }
                 crate::components::DateField {
                     name: "edit_date",
                     label: "Date",
                     required: true,
+                    rules: vec![Rule::Required],
+                    error: date_error.read().clone(),
                     value: date.read().clone(),
-                    oninput: move |e: FormEvent| date.set(e.value()),
+                    oninput: move |e: FormEvent| {
+                        date_error.set(String::new());
+                        date.set(e.value());
+                    },
                 }
                 crate::components::Textarea {
                     name: "edit_description",

@@ -10,7 +10,7 @@ use crate::components::{
     IconSize, Input, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectOption,
     Table, TableBody, TableCell, TableHead, TableHeader, TableRow, Textarea, TrashIcon,
 };
-use crate::utils::Paginated;
+use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
 /// An asset (`GET /api/v1/assets`).
@@ -976,29 +976,32 @@ pub fn AssetNewPage() -> Element {
                         manufacturer_err.set(String::new());
                         model_err.set(String::new());
 
-                        // Collect every field error before returning (MAPPS-216)
-                        // so the user sees all problems at once, each attached
-                        // to its own field, rather than the form aborting on
-                        // the first failure.
-                        let mut ok = true;
+                        // PMS-518: validate every required field through the
+                        // shared FormGuard so all failures surface at once (each
+                        // in its own inline slot) and the first invalid field is
+                        // focused. Keeps the bespoke validators that also return
+                        // the trimmed/typed value used to build the body.
+                        let mut guard = FormGuard::new();
 
                         let asset_name = match validate_asset_name(&name.read()) {
                             Ok(v) => v,
                             Err(msg) => {
                                 name_error.set(msg);
-                                ok = false;
+                                guard.note_invalid(Some("name"));
                                 String::new()
                             }
                         };
                         let type_id = asset_type.read().clone();
                         if type_id.is_empty() {
                             type_err.set("Please pick an asset type.".to_string());
-                            ok = false;
+                            guard.note_invalid(Some("type"));
                         }
                         let company_id = company.read().clone();
                         if company_id.is_empty() {
                             company_err.set("Please pick a company.".to_string());
-                            ok = false;
+                            // CompanyPicker has no focusable field id, so block
+                            // without a focus target.
+                            guard.note_invalid(None);
                         }
                         let serial_v = match validate_asset_optional(
                             &serial.read(),
@@ -1008,7 +1011,7 @@ pub fn AssetNewPage() -> Element {
                             Ok(v) => v,
                             Err(msg) => {
                                 serial_err.set(msg);
-                                ok = false;
+                                guard.note_invalid(Some("serial"));
                                 None
                             }
                         };
@@ -1020,7 +1023,7 @@ pub fn AssetNewPage() -> Element {
                             Ok(v) => v,
                             Err(msg) => {
                                 manufacturer_err.set(msg);
-                                ok = false;
+                                guard.note_invalid(Some("manufacturer"));
                                 None
                             }
                         };
@@ -1032,13 +1035,13 @@ pub fn AssetNewPage() -> Element {
                             Ok(v) => v,
                             Err(msg) => {
                                 model_err.set(msg);
-                                ok = false;
+                                guard.note_invalid(Some("model"));
                                 None
                             }
                         };
                         let warranty_v = warranty.read().clone();
 
-                        if !ok {
+                        if guard.blocked() {
                             return;
                         }
 
@@ -1371,6 +1374,12 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     let mut e_in_transit = use_signal(String::new);
     let mut e_submitting = use_signal(|| false);
     let mut e_error = use_signal(String::new);
+    // PMS-518: per-field inline error slots so the edit modal reports every
+    // validation failure at once (matching the New Asset form).
+    let mut e_name_err = use_signal(String::new);
+    let mut e_serial_err = use_signal(String::new);
+    let mut e_manufacturer_err = use_signal(String::new);
+    let mut e_model_err = use_signal(String::new);
     let id_for_save = props.id.clone();
 
     // MAPPS-158: detail-page Delete, wired to the existing
@@ -1398,6 +1407,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     let mut nc_notes = use_signal(String::new);
     let mut nc_submitting = use_signal(|| false);
     let mut nc_name_err = use_signal(String::new);
+    let mut nc_type_err = use_signal(String::new);
+    let mut nc_username_err = use_signal(String::new);
+    let mut nc_password_err = use_signal(String::new);
     let mut nc_error = use_signal(String::new);
     let id_for_cred_add = props.id.clone();
 
@@ -2076,36 +2088,44 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     let save_id = save_id.clone();
                     spawn(async move {
                         // Mirror the create-form validation (MAPPS-238/216):
-                        // reject a blank or over-long name and over-long
-                        // optional fields before the PUT, with an inline
-                        // message, instead of posting them to the server.
-                        let asset_name = match validate_asset_name(&e_name()) {
-                            Ok(v) => v,
-                            Err(msg) => {
-                                e_error.set(msg);
-                                return;
-                            }
-                        };
+                        // reject a blank or over-long name and over-long optional
+                        // fields before the PUT. PMS-518: validate all of them and
+                        // report every failure at once in its own inline slot, then
+                        // focus the first invalid field.
+                        e_name_err.set(String::new());
+                        e_serial_err.set(String::new());
+                        e_manufacturer_err.set(String::new());
+                        e_model_err.set(String::new());
+                        let mut guard = FormGuard::new();
+                        let name_res = validate_asset_name(&e_name());
+                        if let Err(msg) = &name_res {
+                            e_name_err.set(msg.clone());
+                            guard.note_invalid(Some("edit-name"));
+                        }
                         if let Err(msg) =
                             validate_asset_optional(&e_serial(), "Serial number", ASSET_SERIAL_MAX)
                         {
-                            e_error.set(msg);
-                            return;
+                            e_serial_err.set(msg);
+                            guard.note_invalid(Some("edit-serial"));
                         }
                         if let Err(msg) = validate_asset_optional(
                             &e_manufacturer(),
                             "Manufacturer",
                             ASSET_MANUFACTURER_MAX,
                         ) {
-                            e_error.set(msg);
-                            return;
+                            e_manufacturer_err.set(msg);
+                            guard.note_invalid(Some("edit-manufacturer"));
                         }
                         if let Err(msg) =
                             validate_asset_optional(&e_model(), "Model", ASSET_MODEL_MAX)
                         {
-                            e_error.set(msg);
+                            e_model_err.set(msg);
+                            guard.note_invalid(Some("edit-model"));
+                        }
+                        if guard.blocked() {
                             return;
                         }
+                        let asset_name = name_res.expect("name validated above");
                         e_submitting.set(true);
                         e_error.set(String::new());
                         let mut body = serde_json::Map::new();
@@ -2235,8 +2255,13 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 label: "Name",
                                 required: true,
                                 maxlength: ASSET_NAME_MAX as i64,
+                                rules: vec![Rule::Required],
+                                error: e_name_err(),
                                 value: "{e_name}",
-                                oninput: move |e: FormEvent| e_name.set(e.value()),
+                                oninput: move |e: FormEvent| {
+                                    e_name_err.set(String::new());
+                                    e_name.set(e.value());
+                                },
                             }
                             div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                 Select {
@@ -2266,23 +2291,35 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     name: "edit-manufacturer",
                                     label: "Manufacturer",
                                     maxlength: ASSET_MANUFACTURER_MAX as i64,
+                                    error: e_manufacturer_err(),
                                     value: "{e_manufacturer}",
-                                    oninput: move |e: FormEvent| e_manufacturer.set(e.value()),
+                                    oninput: move |e: FormEvent| {
+                                        e_manufacturer_err.set(String::new());
+                                        e_manufacturer.set(e.value());
+                                    },
                                 }
                                 Input {
                                     name: "edit-model",
                                     label: "Model",
                                     maxlength: ASSET_MODEL_MAX as i64,
+                                    error: e_model_err(),
                                     value: "{e_model}",
-                                    oninput: move |e: FormEvent| e_model.set(e.value()),
+                                    oninput: move |e: FormEvent| {
+                                        e_model_err.set(String::new());
+                                        e_model.set(e.value());
+                                    },
                                 }
                             }
                             Input {
                                 name: "edit-serial",
                                 label: "Serial Number",
                                 maxlength: ASSET_SERIAL_MAX as i64,
+                                error: e_serial_err(),
                                 value: "{e_serial}",
-                                oninput: move |e: FormEvent| e_serial.set(e.value()),
+                                oninput: move |e: FormEvent| {
+                                    e_serial_err.set(String::new());
+                                    e_serial.set(e.value());
+                                },
                             }
                             div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                 crate::components::DateField {
@@ -2453,30 +2490,46 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                         return;
                     }
                     nc_name_err.set(String::new());
+                    nc_type_err.set(String::new());
+                    nc_username_err.set(String::new());
+                    nc_password_err.set(String::new());
                     nc_error.set(String::new());
-                    // Validate the way the create form does: a required, capped
-                    // Name and required type/username/password before the POST,
-                    // with inline messages rather than an opaque server 422.
+                    // PMS-518: validate every required field through the shared
+                    // FormGuard so all failures surface at once (each in its own
+                    // inline slot) and the first invalid field is focused. Name
+                    // keeps its bespoke validator (length cap + the trimmed value
+                    // used in the body); the guard adds its first-invalid focus.
+                    let mut guard = FormGuard::new();
                     let name = match validate_cred_name(&nc_name()) {
                         Ok(v) => v,
                         Err(msg) => {
                             nc_name_err.set(msg);
-                            return;
+                            guard.note_invalid(Some("cred-name"));
+                            String::new()
                         }
                     };
                     let credential_type = nc_type().trim().to_string();
-                    if credential_type.is_empty() {
-                        nc_error.set("Please enter a credential type.".to_string());
-                        return;
-                    }
+                    nc_type_err.set(guard.field(
+                        "cred-type",
+                        &credential_type,
+                        "Type",
+                        &[Rule::Required],
+                    ));
                     let username = nc_username();
-                    if username.trim().is_empty() {
-                        nc_error.set("Please enter a username.".to_string());
-                        return;
-                    }
+                    nc_username_err.set(guard.field(
+                        "cred-username",
+                        &username,
+                        "Username",
+                        &[Rule::Required],
+                    ));
                     let password = nc_password();
-                    if password.is_empty() {
-                        nc_error.set("Please enter a password.".to_string());
+                    nc_password_err.set(guard.field(
+                        "cred-password",
+                        &password,
+                        "Password",
+                        &[Rule::Required],
+                    ));
+                    if guard.blocked() {
                         return;
                     }
                     let url = opt_str(&nc_url());
@@ -2568,24 +2621,39 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 label: "Type",
                                 required: true,
                                 placeholder: "e.g. domain, ssh, rdp",
+                                rules: vec![Rule::Required],
+                                error: nc_type_err(),
                                 value: "{nc_type}",
-                                oninput: move |e: FormEvent| nc_type.set(e.value()),
+                                oninput: move |e: FormEvent| {
+                                    nc_type_err.set(String::new());
+                                    nc_type.set(e.value());
+                                },
                             }
                             div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                 Input {
                                     name: "cred-username",
                                     label: "Username",
                                     required: true,
+                                    rules: vec![Rule::Required],
+                                    error: nc_username_err(),
                                     value: "{nc_username}",
-                                    oninput: move |e: FormEvent| nc_username.set(e.value()),
+                                    oninput: move |e: FormEvent| {
+                                        nc_username_err.set(String::new());
+                                        nc_username.set(e.value());
+                                    },
                                 }
                                 Input {
                                     name: "cred-password",
                                     label: "Password",
                                     r#type: "password",
                                     required: true,
+                                    rules: vec![Rule::Required],
+                                    error: nc_password_err(),
                                     value: "{nc_password}",
-                                    oninput: move |e: FormEvent| nc_password.set(e.value()),
+                                    oninput: move |e: FormEvent| {
+                                        nc_password_err.set(String::new());
+                                        nc_password.set(e.value());
+                                    },
                                 }
                             }
                             Input {
