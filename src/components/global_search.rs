@@ -117,6 +117,10 @@ pub fn GlobalSearch() -> Element {
                 Input {
                     name: "global_search",
                     label: "".to_string(),
+                    // MAPPS-314: visually-hidden label via aria-label;
+                    // a placeholder alone leaves screen-reader users
+                    // with nothing once typing begins.
+                    aria_label: "Search tickets, contacts, companies, assets, projects".to_string(),
                     placeholder: "Search tickets, contacts, companies...",
                     value: query.read().clone(),
                     class: "pl-9".to_string(),

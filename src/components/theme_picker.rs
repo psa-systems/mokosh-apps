@@ -29,6 +29,13 @@ pub fn ThemePickerButton() -> Element {
             class: "p-2 rounded-full text-gray-400 hover:text-white hover:bg-gray-700",
             aria_label: "Theme and appearance",
             title: "Appearance",
+            // MAPPS-314: announce the dialog-opener semantics. Without
+            // these the button presents as a plain toggle and
+            // assistive tech can't tell whether the picker is open
+            // (`aria-expanded`) or that activating it opens a dialog
+            // (`aria-haspopup`).
+            aria_expanded: if open() { "true" } else { "false" },
+            aria_haspopup: "dialog",
             onclick: move |_| open.set(true),
             SwatchIcon {}
         }

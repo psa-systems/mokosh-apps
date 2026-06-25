@@ -59,6 +59,12 @@ pub struct InputProps {
     /// Stable selector for browser-automation tests (PMC-111).
     #[props(default)]
     data_testid: Option<String>,
+    /// MAPPS-314: optional `aria-label` for visually-unlabeled inputs
+    /// (e.g. `GlobalSearch` which renders a placeholder + magnifier
+    /// only). Skipped when empty so the existing per-field visible
+    /// `<label for>` keeps doing the work for the common case.
+    #[props(default)]
+    aria_label: String,
 }
 
 /// Text input component
@@ -105,6 +111,7 @@ pub fn Input(props: InputProps) -> Element {
                 placeholder: "{props.placeholder}",
                 value: "{props.value}",
                 aria_required: if props.required { "true" } else { "false" },
+                aria_label: if props.aria_label.is_empty() { None } else { Some(props.aria_label.clone()) },
                 disabled: props.disabled,
                 "data-testid": props.data_testid.as_deref(),
                 oninput: move |e| props.oninput.call(e),
