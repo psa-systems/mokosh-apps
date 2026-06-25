@@ -3,7 +3,9 @@
 use dioxus::prelude::*;
 use serde::Deserialize;
 
-use crate::components::{AppLayout, Card, ChartIcon, IconSize, PageHeader};
+use crate::components::{
+    AppLayout, BarChart, BarChartDatum, Card, ChartIcon, IconSize, PageHeader,
+};
 use crate::utils::money::format_money_str;
 use crate::Route;
 
@@ -378,14 +380,45 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
                 }
 
                 if !view.breakdown.is_empty() {
-                    Card { title: "{view.breakdown_title}", class: "mt-6",
-                        div { class: "overflow-x-auto",
-                            table { class: "min-w-full divide-y divide-line",
-                                tbody { class: "bg-surface divide-y divide-line",
-                                    for (k , v) in view.breakdown.iter() {
-                                        tr {
-                                            td { class: "px-6 py-3 text-sm text-content", "{k}" }
-                                            td { class: "px-6 py-3 text-sm text-right font-medium", "{v}" }
+                    // MAPPS-297: render a chart alongside the table
+                    // whenever the breakdown values parse as numbers.
+                    // Currency strings (`$1,234.56`) and bare integers
+                    // both parse via `parse_chartable_value`; rows that
+                    // do not parse are dropped from the chart but kept
+                    // in the table so nothing is lost.
+                    {
+                        let chart_data = chart_data_from_breakdown(&view.breakdown);
+                        if !chart_data.is_empty() {
+                            rsx! {
+                                Card { title: "{view.breakdown_title}", class: "mt-6",
+                                    BarChart { data: chart_data, one_decimal: false }
+                                    div { class: "mt-4 overflow-x-auto",
+                                        table { class: "min-w-full divide-y divide-line",
+                                            tbody { class: "bg-surface divide-y divide-line",
+                                                for (k , v) in view.breakdown.iter() {
+                                                    tr {
+                                                        td { class: "px-6 py-3 text-sm text-content", "{k}" }
+                                                        td { class: "px-6 py-3 text-sm text-right font-medium", "{v}" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            rsx! {
+                                Card { title: "{view.breakdown_title}", class: "mt-6",
+                                    div { class: "overflow-x-auto",
+                                        table { class: "min-w-full divide-y divide-line",
+                                            tbody { class: "bg-surface divide-y divide-line",
+                                                for (k , v) in view.breakdown.iter() {
+                                                    tr {
+                                                        td { class: "px-6 py-3 text-sm text-content", "{k}" }
+                                                        td { class: "px-6 py-3 text-sm text-right font-medium", "{v}" }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -393,9 +426,60 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
                         }
                     }
                 }
+
+                // MAPPS-297: every report ships at least one chart.
+                // When the breakdown is empty (Time / others) but the
+                // summary card has numeric metrics, render those as a
+                // bar chart so the AC holds for every report type.
+                if view.breakdown.is_empty() {
+                    {
+                        let summary_chart = chart_data_from_breakdown(&view.summary);
+                        if !summary_chart.is_empty() {
+                            rsx! {
+                                Card { title: "Summary chart".to_string(), class: "mt-6",
+                                    BarChart { data: summary_chart, one_decimal: true }
+                                }
+                            }
+                        } else {
+                            rsx! {}
+                        }
+                    }
+                }
             }
         }
     }
+}
+
+/// Try to parse a breakdown value into a number for the chart.
+/// Accepts plain ints (`42`), decimals (`12.5`), currency
+/// (`$1,234.56`, `1,234.56 USD`), and percentages (`87%`). Returns
+/// `None` for free-form strings so the chart silently drops rows that
+/// don't parse rather than crashing on them.
+fn parse_chartable_value(raw: &str) -> Option<f64> {
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| !matches!(c, '$' | ',' | '%' | ' '))
+        .collect();
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let numeric: String = trimmed
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+        .collect();
+    numeric.parse::<f64>().ok()
+}
+
+fn chart_data_from_breakdown(rows: &[(String, String)]) -> Vec<BarChartDatum> {
+    rows.iter()
+        .filter_map(|(label, value)| {
+            parse_chartable_value(value).map(|v| BarChartDatum {
+                label: label.clone(),
+                value: v,
+            })
+        })
+        .collect()
 }
 
 /// Fetch the backend report a `report_type` maps to and normalise it into a
