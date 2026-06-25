@@ -37,6 +37,26 @@ projects, value-prefixed `ticket:` / `project:`) with no shared autocomplete
 component yet; converting it needs a new combined picker. The open-ticket list is
 usually modest, so this is deferred rather than blocking - see PMS-367 AC4.
 
+## Required-field validation
+
+Submit handlers validate **every** required field before bailing, and report each
+failure in its own slot, so one missing field never masks another (PMS-514).
+
+- Each required field gets its own inline error slot where it has one (e.g. the
+  Title input's `error:` prop); cross-field / picker errors with no inline slot
+  fall back to the form-level `error` signal at the top of the form.
+- On submit: clear all slots, evaluate every required field and set each failed
+  field's slot, then bail **once** (`is_submitting.set(false); return;`) if any
+  failed - never short-circuit on the first failure. POST only after all pass.
+- Do not trust the browser's native `required`: it accepts whitespace-only input,
+  so trim and check client-side (MAPPS-281). The server stays the backstop - a
+  server `field_message("<field>")` still routes to that field's inline slot.
+
+Concretely, the new-ticket form evaluates Title and Company together and sets both
+slots before returning, so submitting with both empty surfaces both errors. The
+broader effort to make `required` actually enforce across every form, and to unify
+the validation system, is the PMS-515 epic.
+
 ## Modal vs full page
 
 The choice is **structural**, not stylistic:
