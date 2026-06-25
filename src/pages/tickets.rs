@@ -643,6 +643,15 @@ pub fn TicketListPage() -> Element {
                 },
             }
 
+            // MAPPS-321: surface the active company scope when the user
+            // arrived via a "View all" link from CompanyDetail. The
+            // fetch above already narrows the list to ?company_id=;
+            // without this chip the user has no signal that the list
+            // is already scoped (the header reads a plain "Tickets").
+            crate::components::ContextFilterBanner {
+                scope: crate::components::ContextFilterScope::Tickets,
+            }
+
             // Filters
             Card { class: "mb-6",
                 div { class: "flex flex-col sm:flex-row gap-4",

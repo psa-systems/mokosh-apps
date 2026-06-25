@@ -476,6 +476,11 @@ pub fn AssetListPage() -> Element {
                 },
             }
 
+            // MAPPS-321: scope indicator (see ticket for the rationale).
+            crate::components::ContextFilterBanner {
+                scope: crate::components::ContextFilterScope::Assets,
+            }
+
             Card { class: "mb-6",
                 SearchInput {
                     value: search.read().clone(),
