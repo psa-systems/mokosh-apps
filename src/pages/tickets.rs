@@ -1742,6 +1742,16 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let mut e_error = use_signal(String::new);
     let id_for_save = props.id.clone();
 
+    // MAPPS-313: delete-ticket affordance on the detail page. The
+    // existing list bulk-delete (MAPPS-310) and the detail-page
+    // Delete here use the same `ConfirmDialog` shape; success
+    // toasts and navigates back to the list.
+    let mut confirming_ticket_delete = use_signal(|| false);
+    let mut deleting_ticket = use_signal(|| false);
+    let mut delete_ticket_error = use_signal(String::new);
+    let delete_nav = use_navigator();
+    let id_for_delete = props.id.clone();
+
     // MAPPS-198: keep the failure state distinct from the in-flight one.
     // Each resource yields `Option<Option<T>>`: `None` while in flight,
     // `Some(None)` on a failed fetch (e.g. a 404 for a missing/deleted/
@@ -1859,7 +1869,88 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                             "Log Time"
                         }
                     }
+                    // MAPPS-313: per-ticket Delete affordance, matching
+                    // the pattern on Company / Contract / Asset detail.
+                    Button {
+                        variant: ButtonVariant::Danger,
+                        disabled: deleting_ticket(),
+                        onclick: move |_| {
+                            delete_ticket_error.set(String::new());
+                            confirming_ticket_delete.set(true);
+                        },
+                        "Delete"
+                    }
                 },
+            }
+            // MAPPS-313: confirm-before-delete for the ticket. Success
+            // toasts, navigates back to the list. Failure surfaces the
+            // server message inline in the dialog so the user can
+            // retry without losing their place.
+            {
+                let ticket_label = ticket
+                    .as_ref()
+                    .map(|t| {
+                        if t.ticket_number.trim().is_empty() {
+                            t.title.clone()
+                        } else {
+                            format!("{} - {}", t.ticket_number, t.title)
+                        }
+                    })
+                    .unwrap_or_else(|| "this ticket".to_string());
+                let id_for_confirm = id_for_delete.clone();
+                rsx! {
+                    crate::components::ConfirmDialog {
+                        open: confirming_ticket_delete(),
+                        title: "Delete ticket".to_string(),
+                        message: {
+                            let mut msg = format!(
+                                "Delete {ticket_label}? Notes, attachments, and time entries on this ticket are also removed. This cannot be undone."
+                            );
+                            if !delete_ticket_error.read().is_empty() {
+                                msg.push_str(&format!("\n\n{}", delete_ticket_error.read()));
+                            }
+                            msg
+                        },
+                        confirm_text: "Delete ticket".to_string(),
+                        cancel_text: "Cancel".to_string(),
+                        destructive: true,
+                        loading: deleting_ticket(),
+                        oncancel: move |_| {
+                            if !deleting_ticket() {
+                                confirming_ticket_delete.set(false);
+                                delete_ticket_error.set(String::new());
+                            }
+                        },
+                        onconfirm: move |_| {
+                            if deleting_ticket() { return; }
+                            deleting_ticket.set(true);
+                            delete_ticket_error.set(String::new());
+                            let id = id_for_confirm.clone();
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    let path = format!("/tickets/{id}");
+                                    match crate::hooks::fetch::api::delete_authed(&path).await {
+                                        Ok(()) => {
+                                            crate::hooks::toast::push_toast(
+                                                crate::components::AlertType::Success,
+                                                "Ticket deleted.",
+                                            );
+                                            confirming_ticket_delete.set(false);
+                                            delete_nav.push(Route::TicketList {});
+                                        }
+                                        Err(err) => {
+                                            delete_ticket_error.set(format!("Could not delete ticket: {err}"));
+                                        }
+                                    }
+                                }
+                                #[cfg(not(feature = "web"))]
+                                let _ = &id;
+                                deleting_ticket.set(false);
+                            });
+                        },
+                    }
+                }
             }
 
             div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",

@@ -387,6 +387,12 @@ pub fn AssetListPage() -> Element {
     let mut bulk_company_name = use_signal(String::new);
     let mut bulk_submitting = use_signal(|| false);
     let mut bulk_error = use_signal(String::new);
+    // MAPPS-313: bulk-delete confirmation state for the assets list.
+    // Mirrors the Tickets bulk-delete pattern from MAPPS-310: snapshot
+    // the selection at click time so a mid-dialog uncheck cannot
+    // smuggle a row past the prompt.
+    let mut bulk_delete_confirm = use_signal::<Option<Vec<String>>>(|| None);
+    let mut bulk_delete_running = use_signal(|| false);
 
     // MAPPS-249: scope to one company when a context card's "View All" passes
     // `?company_id=<uuid>`.
@@ -486,10 +492,8 @@ pub fn AssetListPage() -> Element {
                 }
             }
 
-            // MAPPS-303: bulk-edit affordance. Renders only when at least
-            // one asset is selected. The Bulk edit verb opens the modal
-            // below; the user picks which fields to change + new values,
-            // and submit fires N parallel `PUT /assets/{id}` calls.
+            // MAPPS-303 + MAPPS-313: bulk-edit + bulk-delete affordances.
+            // Both render only when at least one asset is selected.
             crate::components::BulkActionsBar {
                 selection,
                 label: "asset".to_string(),
@@ -505,6 +509,76 @@ pub fn AssetListPage() -> Element {
                         bulk_modal_open.set(true);
                     },
                     "Bulk edit"
+                }
+                Button {
+                    variant: ButtonVariant::Danger,
+                    disabled: bulk_delete_running(),
+                    onclick: move |_| {
+                        let ids: Vec<String> = selection.read().iter().cloned().collect();
+                        if !ids.is_empty() {
+                            bulk_delete_confirm.set(Some(ids));
+                        }
+                    },
+                    "Delete selected"
+                }
+            }
+            // MAPPS-313: confirmation dialog for the bulk delete.
+            {
+                let pending = bulk_delete_confirm.read().clone();
+                let pending_count = pending.as_ref().map(|v| v.len()).unwrap_or(0);
+                let dialog_message = format!(
+                    "Delete {pending_count} selected asset(s)? Credentials, configuration items, and relationships on these assets are also removed. This cannot be undone."
+                );
+                let confirm_text = format!("Delete {pending_count} asset(s)");
+                rsx! {
+                    crate::components::ConfirmDialog {
+                        open: pending.is_some(),
+                        title: "Delete selected assets".to_string(),
+                        message: dialog_message,
+                        confirm_text,
+                        cancel_text: "Cancel".to_string(),
+                        destructive: true,
+                        loading: bulk_delete_running(),
+                        onconfirm: move |_| {
+                            let Some(ids) = bulk_delete_confirm.read().clone() else { return };
+                            if ids.is_empty() || bulk_delete_running() { return; }
+                            bulk_delete_running.set(true);
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    use futures_util::future::join_all;
+                                    let futs = ids.iter().map(|id| {
+                                        let path = format!("/assets/{id}");
+                                        async move {
+                                            crate::hooks::fetch::api::delete_authed(&path).await
+                                        }
+                                    });
+                                    let results = join_all(futs).await;
+                                    let failures = results.iter().filter(|r| r.is_err()).count();
+                                    if failures == 0 {
+                                        crate::hooks::toast::push_toast(
+                                            crate::components::AlertType::Success,
+                                            format!("Deleted {} asset(s).", ids.len()),
+                                        );
+                                    } else {
+                                        crate::hooks::toast::push_toast(
+                                            crate::components::AlertType::Error,
+                                            format!("Deleted {} of {}; {} failed.", ids.len() - failures, ids.len(), failures),
+                                        );
+                                    }
+                                }
+                                crate::components::clear_selection(&mut selection);
+                                assets_resource.restart();
+                                bulk_delete_confirm.set(None);
+                                bulk_delete_running.set(false);
+                            });
+                        },
+                        oncancel: move |_| {
+                            if !bulk_delete_running() {
+                                bulk_delete_confirm.set(None);
+                            }
+                        },
+                    }
                 }
             }
 
