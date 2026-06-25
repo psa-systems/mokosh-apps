@@ -263,6 +263,7 @@ end-to-end.
 | `/settings/notifications` | NotificationSettingsPage | `pages/settings.rs:331-335` | partial (5 email-template dead links) |
 | `/settings/integrations` | IntegrationSettingsPage | `pages/settings.rs` | partial (Connect / Configure all dead) |
 | `/settings/billing` | BillingSettingsPage | `pages/settings.rs` | partial (Manage Subscription dead) |
+| `/admin/team` | TeamPage | `pages/team.rs` | working (invite + revoke wired; PMS-247). Role picker hidden behind `ROLE_ASSIGNMENT_ENABLED=false` until full RBAC lands - invites go out as Technician (PMS-513) |
 | `/admin/tenants` | TenantManagementPage | `pages/admin.rs` | partial (dead row clicks) |
 | `/portal` | PortalHomePage | `pages/portal.rs` | working |
 | `/portal/tickets` | PortalTicketListPage | `pages/portal.rs` | partial (rows fully inert - no inner Link either) |

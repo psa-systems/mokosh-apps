@@ -29,6 +29,16 @@ struct PaginatedInvitations {
     data: Vec<RemoteInvitation>,
 }
 
+/// Whether the invite form exposes a role picker.
+///
+/// Role-based access is only partially implemented (admin vs non-admin plus a
+/// finance/billing carve-out); the other roles in the picker have no complete
+/// permission semantics yet, so assigning them is misleading and risks granting
+/// unexpected access once full RBAC lands. While this is `false` the picker is
+/// hidden and every invite goes out as the lowest-privilege role (Technician).
+/// Flip to `true` to restore role assignment once RBAC is complete. See PMS-513.
+const ROLE_ASSIGNMENT_ENABLED: bool = false;
+
 #[component]
 pub fn TeamPage() -> Element {
     let auth = use_auth();
@@ -58,14 +68,21 @@ pub fn TeamPage() -> Element {
         }
     });
 
-    let role_options = vec![
-        SelectOption::new("technician", "Technician"),
-        SelectOption::new("manager", "Manager"),
-        SelectOption::new("admin", "Admin"),
-        SelectOption::new("dispatcher", "Dispatcher"),
-        SelectOption::new("sales", "Sales"),
-        SelectOption::new("finance", "Finance"),
-    ];
+    // Built only when role assignment is enabled; the picker keeps its full
+    // taxonomy for the day RBAC lands. While disabled this is empty and the
+    // Select below is not rendered, so `role` keeps its "technician" default.
+    let role_options = if ROLE_ASSIGNMENT_ENABLED {
+        vec![
+            SelectOption::new("technician", "Technician"),
+            SelectOption::new("manager", "Manager"),
+            SelectOption::new("admin", "Admin"),
+            SelectOption::new("dispatcher", "Dispatcher"),
+            SelectOption::new("sales", "Sales"),
+            SelectOption::new("finance", "Finance"),
+        ]
+    } else {
+        Vec::new()
+    };
 
     let handle_invite = move |e: FormEvent| {
         e.prevent_default();
@@ -144,7 +161,8 @@ pub fn TeamPage() -> Element {
                             "{error.read()}"
                         }
                     }
-                    div { class: "grid grid-cols-1 gap-4 sm:grid-cols-3 sm:items-end",
+                    div {
+                        class: if ROLE_ASSIGNMENT_ENABLED { "grid grid-cols-1 gap-4 sm:grid-cols-3 sm:items-end" } else { "grid grid-cols-1 gap-4 sm:grid-cols-2 sm:items-end" },
                         Input {
                             name: "email",
                             label: "Email",
@@ -154,12 +172,14 @@ pub fn TeamPage() -> Element {
                             value: email.read().clone(),
                             oninput: move |e: FormEvent| email.set(e.value()),
                         }
-                        Select {
-                            name: "role",
-                            label: "Role",
-                            options: role_options,
-                            value: role.read().clone(),
-                            onchange: move |e: FormEvent| role.set(e.value()),
+                        if ROLE_ASSIGNMENT_ENABLED {
+                            Select {
+                                name: "role",
+                                label: "Role",
+                                options: role_options,
+                                value: role.read().clone(),
+                                onchange: move |e: FormEvent| role.set(e.value()),
+                            }
                         }
                         Button {
                             variant: ButtonVariant::Primary,
