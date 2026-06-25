@@ -11,7 +11,7 @@ use crate::components::{
     SelectOption, SelectRowCell, SortDirection, Table, TableBody, TableCell, TableEmpty, TableHead,
     TableHeader, TableLoading, TableRow, Textarea, UserCircleIcon,
 };
-use crate::utils::Paginated;
+use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
 /// Subset of mokosh-server's `TicketResponse` we render in the list. The
@@ -1151,6 +1151,8 @@ pub fn TicketNewPage() -> Element {
     // Per-field server validation message routed next to the Title input
     // (MAPPS-210). Cleared on each submit and on edit.
     let mut title_error = use_signal(String::new);
+    // PMS-518: per-field error for the now-enforced required Description.
+    let mut description_error = use_signal(String::new);
 
     // MAPPS-296: tenant lookups for Type + Category + Assignee. Each
     // hits its own endpoint and falls back to an empty list on a 403 /
@@ -1268,35 +1270,47 @@ pub fn TicketNewPage() -> Element {
         e.prevent_default();
         is_submitting.set(true);
         error.set(String::new());
-        title_error.set(String::new());
 
-        // PMS-514: validate every required field up front and report all
-        // failures together, so a missing company no longer masks a missing
-        // title (and vice versa). Set each field's error slot, then bail once
-        // below if either is invalid - before the POST.
+        // PMS-518: validate every required field through the shared FormGuard,
+        // so all failures surface at once (each in its own inline slot) and the
+        // first invalid field is focused. Generalises the PMS-514 fix; each
+        // `field` call also clears a stale message when the value now passes.
         //
-        // MAPPS-281: trim Title client-side so a whitespace-only value does
-        // not satisfy the browser's native `required` check (which accepts
-        // any non-empty string, including "   ") and reach the server only to
-        // come back as a 422.
-        let title_v = title.read().trim().to_string();
-        let title_empty = title_v.is_empty();
-        if title_empty {
-            title_error.set("Title is required.".to_string());
-        }
+        // MAPPS-281: Title/Description are trimmed so a whitespace-only value
+        // does not satisfy the (inert) native `required` and reach the server.
+        let mut guard = FormGuard::new();
 
-        // The CompanyPicker only ever reports real company UUIDs, but a user
-        // can submit before picking one.
+        let title_v = title.read().trim().to_string();
+        title_error.set(guard.field("title", &title_v, "Title", &[Rule::Required]));
+
+        // PMS-518: Description is now enforced (it carried the asterisk but was
+        // never validated). The server accepts an empty body, so this is a
+        // purely client-side rule, applied here and on blur via the field's
+        // `rules`.
+        let description_v = description.read().trim().to_string();
+        description_error.set(guard.field(
+            "description",
+            &description_v,
+            "Description",
+            &[Rule::Required],
+        ));
+
+        // The CompanyPicker only ever reports real company UUIDs, but a user can
+        // submit before picking one. It has no inline error slot, so its failure
+        // goes to the form-level banner; `note_invalid` still blocks the submit.
         let company_uuid = uuid::Uuid::parse_str(company_id.read().as_str()).ok();
         if company_uuid.is_none() {
             error.set("Please pick a company first.".to_string());
+            guard.note_invalid(None);
         }
 
-        // Bail only after both required checks ran; their slots are already
-        // set above, so both render. No POST while any required field is
-        // invalid. `filter` keeps the company UUID only when the title is also
-        // present, so the let-else fires if EITHER field failed.
-        let Some(company_uuid) = company_uuid.filter(|_| !title_empty) else {
+        if guard.blocked() {
+            is_submitting.set(false);
+            return;
+        }
+        // Past the guard: every required field is valid, so the company UUID is
+        // present (re-bound here without an unwrap/expect).
+        let Some(company_uuid) = company_uuid else {
             is_submitting.set(false);
             return;
         };
@@ -1334,9 +1348,8 @@ pub fn TicketNewPage() -> Element {
             Some(format!("{}T23:59:00Z", due_value.trim()))
         };
 
-        // Snapshot remaining signals so the spawn doesn't need to read them.
-        // Title is already validated and captured above (PMS-514).
-        let description_v = description.read().clone();
+        // Title + Description are already validated and captured (trimmed)
+        // above; send the trimmed Description (now a required, non-empty value).
         // PMS-482: clone the captured KB id into a per-call binding so
         // the FnMut submit handler can be called more than once.
         let kb_article_id = kb_article_id_for_body.clone();
@@ -1476,6 +1489,7 @@ pub fn TicketNewPage() -> Element {
                             // Server caps the title at 500 chars; mirror it
                             // client-side as a UX nicety (MAPPS-210).
                             maxlength: 500,
+                            rules: vec![Rule::Required],
                             error: title_error.read().clone(),
                             value: title.read().clone(),
                             oninput: move |e: FormEvent| {
@@ -1544,8 +1558,13 @@ pub fn TicketNewPage() -> Element {
                         placeholder: "Provide detailed information about the issue...",
                         rows: 6,
                         required: true,
+                        rules: vec![Rule::Required],
+                        error: description_error.read().clone(),
                         value: description.read().clone(),
-                        oninput: move |e: FormEvent| description.set(e.value()),
+                        oninput: move |e: FormEvent| {
+                            description_error.set(String::new());
+                            description.set(e.value());
+                        },
                     }
 
                     div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
