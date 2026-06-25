@@ -1084,6 +1084,15 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         _ => Vec::new(),
     };
 
+    // MAPPS-309: delete-article state. `confirming_delete` drives the
+    // ConfirmDialog; `delete_busy` mirrors the in-flight DELETE so the
+    // dialog locks until the request returns. On success we navigate
+    // back to the KB landing page (the article id is about to 404).
+    let mut confirming_delete = use_signal(|| false);
+    let mut delete_busy = use_signal(|| false);
+    let mut delete_error = use_signal(String::new);
+    let nav_after_delete = use_navigator();
+
     // Reading-view UI state, persisted per user via the prefs store.
     let left_collapsed = use_signal(|| crate::utils::prefs::get_bool("kb_left_rail", false));
     let right_collapsed = use_signal(|| crate::utils::prefs::get_bool("kb_right_rail", false));
@@ -1126,8 +1135,70 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         _ => "Article".to_string(),
     };
 
+    let title_for_dialog = match &*article_snapshot {
+        Some(Some(a)) => a.title.clone(),
+        _ => String::new(),
+    };
+    let id_for_delete = props.id.clone();
+
     rsx! {
         AppLayout { title: "{header_title}",
+            // MAPPS-309: confirm-before-delete dialog for the article.
+            // Rendered at the AppLayout root so it overlays every
+            // match arm of the article snapshot.
+            crate::components::ConfirmDialog {
+                open: confirming_delete(),
+                title: "Delete article".to_string(),
+                message: {
+                    let mut msg = if title_for_dialog.is_empty() {
+                        "Delete this article? This cannot be undone.".to_string()
+                    } else {
+                        format!("Delete \"{title_for_dialog}\"? This cannot be undone.")
+                    };
+                    if !delete_error.read().is_empty() {
+                        msg.push_str(&format!("\n\n{}", delete_error.read()));
+                    }
+                    msg
+                },
+                confirm_text: "Delete".to_string(),
+                cancel_text: "Cancel".to_string(),
+                destructive: true,
+                loading: delete_busy(),
+                oncancel: move |_| {
+                    if !delete_busy() {
+                        confirming_delete.set(false);
+                        delete_error.set(String::new());
+                    }
+                },
+                onconfirm: move |_| {
+                    if delete_busy() { return; }
+                    delete_busy.set(true);
+                    delete_error.set(String::new());
+                    let id = id_for_delete.clone();
+                    spawn(async move {
+                        #[cfg(feature = "web")]
+                        {
+                            let path = format!("/kb/articles/{id}");
+                            match crate::hooks::fetch::api::delete_authed(&path).await {
+                                Ok(()) => {
+                                    crate::hooks::toast::push_toast(
+                                        crate::components::AlertType::Success,
+                                        "Article deleted.",
+                                    );
+                                    confirming_delete.set(false);
+                                    nav_after_delete.push(Route::KBHome {});
+                                }
+                                Err(err) => {
+                                    delete_error.set(format!("Could not delete article: {err}"));
+                                }
+                            }
+                        }
+                        #[cfg(not(feature = "web"))]
+                        let _ = &id;
+                        delete_busy.set(false);
+                    });
+                },
+            }
             match &*article_snapshot {
                 None => rsx! {
                     // PMS-353
@@ -1217,6 +1288,19 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                         }
                                         Link { to: Route::KBArticleEdit { id: props.id.clone() },
                                             Button { variant: ButtonVariant::Secondary, "Edit" }
+                                        }
+                                        // MAPPS-309: delete affordance. Gated by
+                                        // `ConfirmDialog` rendered at the page
+                                        // root; success navigates back to the KB
+                                        // landing.
+                                        Button {
+                                            variant: ButtonVariant::Danger,
+                                            disabled: delete_busy(),
+                                            onclick: move |_| {
+                                                delete_error.set(String::new());
+                                                confirming_delete.set(true);
+                                            },
+                                            "Delete"
                                         }
                                         DensityToggle { comfortable }
                                     }
