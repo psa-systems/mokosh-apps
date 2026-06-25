@@ -82,6 +82,10 @@ pub struct TableRowProps {
     /// Stable selector for browser-automation tests (PMC-111).
     #[props(default)]
     data_testid: Option<String>,
+    /// MAPPS-249: extra classes on the `tr` (e.g. `group` so per-row hover
+    /// affordances can reveal themselves via `group-hover`).
+    #[props(default)]
+    class: String,
 }
 
 #[component]
@@ -90,11 +94,12 @@ pub fn TableRow(props: TableRowProps) -> Element {
     // dense, non-clickable tables are easier to scan. Clickable rows add the
     // pointer cursor on top. `transition-colors` softens the change; on touch
     // devices (no hover) this is simply inert.
-    let class = if props.clickable {
+    let base_class = if props.clickable {
         "hover:bg-surface-2 cursor-pointer transition-colors"
     } else {
         "hover:bg-surface-2 transition-colors"
     };
+    let class = format!("{} {}", base_class, props.class);
 
     rsx! {
         tr {

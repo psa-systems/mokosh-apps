@@ -26,7 +26,7 @@ use crate::components::{
     SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
     TableRow,
 };
-use crate::utils::Paginated;
+use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
 /// Rows per page for the paginated billing list views.
@@ -241,7 +241,10 @@ pub fn InvoiceListPage() -> Element {
         return rsx! { NoFinancePermission { title: "Invoices" } };
     }
 
-    let mut company_filter = use_signal(String::new);
+    // MAPPS-249: seed the company filter from `?company_id=<uuid>` so a context
+    // card's "View All" lands here scoped to that company.
+    let mut company_filter =
+        use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     let mut status_filter = use_signal(String::new);
     let mut page = use_signal(|| 1usize);
 
@@ -384,12 +387,22 @@ pub fn InvoiceListPage() -> Element {
                     if is_loading {
                         TableLoading { columns: 7, rows: 5 }
                     } else if rows.is_empty() && has_filters {
-                        // Filtered to nothing: no CTA (creating won't help);
-                        // guide the user back to the filters.
+                        // MAPPS-291 "Clear filters" affordance on the
+                        // invoices list.
                         TableEmpty {
                             columns: 7,
                             title: "No invoices match your filters".to_string(),
-                            description: "Try clearing or adjusting the filters above.".to_string(),
+                            description: "Adjust the filters above, or clear them to see every invoice again.".to_string(),
+                            actions: rsx! {
+                                Button {
+                                    variant: ButtonVariant::Secondary,
+                                    onclick: move |_| {
+                                        company_filter.set(String::new());
+                                        status_filter.set(String::new());
+                                    },
+                                    "Clear filters"
+                                }
+                            },
                         }
                     } else if rows.is_empty() {
                         TableEmpty {
@@ -972,7 +985,10 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
 /// path also takes dates and one line item.
 #[component]
 pub fn InvoiceNewPage() -> Element {
-    let mut company_id = use_signal(String::new);
+    // MAPPS-300: pre-fill `company_id` from the URL so the Company detail
+    // "New Invoice" CTA lands on a form already scoped to that company.
+    let mut company_id =
+        use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     let mut company_name = use_signal(String::new);
     let mut invoice_date = use_signal(String::new);
     let mut due_date = use_signal(String::new);
@@ -993,6 +1009,9 @@ pub fn InvoiceNewPage() -> Element {
     let mut due_date_error = use_signal(String::new);
     let mut quantity_error = use_signal(String::new);
     let mut unit_price_error = use_signal(String::new);
+    // PMS-518: per-field slots for the fields that previously shared the banner.
+    let mut invoice_date_error = use_signal(String::new);
+    let mut line_description_error = use_signal(String::new);
 
     let tax_rates_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -1027,62 +1046,74 @@ pub fn InvoiceNewPage() -> Element {
             return;
         }
         error.set(String::new());
-        due_date_error.set(String::new());
-        quantity_error.set(String::new());
-        unit_price_error.set(String::new());
 
-        let Some(company_uuid) = uuid::Uuid::parse_str(company_id.read().trim()).ok() else {
+        // PMS-518: validate every required field through the shared FormGuard so
+        // all failures surface at once (each in its own inline slot) and the first
+        // invalid field is focused, instead of the previous first-failure-returns
+        // chain that masked every field after the first.
+        let mut guard = FormGuard::new();
+
+        // The CompanyPicker has no inline slot, so its failure goes to the
+        // form-level banner; `note_invalid` still blocks the submit.
+        let company_uuid = uuid::Uuid::parse_str(company_id.read().trim()).ok();
+        if company_uuid.is_none() {
             error.set("A valid company ID (UUID) is required.".to_string());
-            return;
-        };
+            guard.note_invalid(None);
+        }
+
         let inv_date = invoice_date.read().trim().to_string();
         let due = due_date.read().trim().to_string();
-        if inv_date.is_empty() || due.is_empty() {
-            error.set("Invoice date and due date are required.".to_string());
-            return;
-        }
-        // Dates come from the native date picker as ISO `YYYY-MM-DD`, so a
-        // lexicographic compare is a correct date order check.
-        if due < inv_date {
+        invoice_date_error.set(guard.field(
+            "invoice_date",
+            &inv_date,
+            "Invoice date",
+            &[Rule::Required],
+        ));
+        due_date_error.set(guard.field("due_date", &due, "Due date", &[Rule::Required]));
+        // Cross-field order check, only meaningful once both dates are present.
+        // Dates come from the native picker as ISO `YYYY-MM-DD`, so a lexicographic
+        // compare is a correct order check. Overrides the per-field slot set above.
+        if !inv_date.is_empty() && !due.is_empty() && due < inv_date {
             due_date_error.set("Due date must be on or after the invoice date.".to_string());
-            return;
+            guard.note_invalid(Some("due_date"));
         }
+
         let description = line_description.read().trim().to_string();
-        if description.is_empty() {
-            error.set("A line item description is required.".to_string());
-            return;
-        }
+        line_description_error.set(guard.field(
+            "line_description",
+            &description,
+            "Description",
+            &[Rule::Required],
+        ));
+
+        // Quantity / unit price: required, numeric, non-negative. Rule::Number
+        // gives the canonical "must not be negative." / "must be a number."
+        // messages; Required catches the blank case (Number skips blank).
         let quantity = line_quantity.read().trim().to_string();
         let unit_price = line_unit_price.read().trim().to_string();
-        if quantity.is_empty() || unit_price.is_empty() {
-            error.set("Line item quantity and unit price are required.".to_string());
+        let money_rules = [
+            Rule::Required,
+            Rule::Number {
+                min: Some(0.0),
+                max: None,
+                max_decimals: None,
+            },
+        ];
+        quantity_error.set(guard.field("line_quantity", &quantity, "Quantity", &money_rules));
+        unit_price_error.set(guard.field(
+            "line_unit_price",
+            &unit_price,
+            "Unit price",
+            &money_rules,
+        ));
+
+        if guard.blocked() {
             return;
         }
-        // Reject negatives (and non-numeric input) at the field. The native
-        // `min="0"` already blocks this, but validate here too so the message
-        // is explicit and the bad value never reaches the 422 path.
-        match quantity.parse::<f64>() {
-            Ok(q) if q >= 0.0 => {}
-            Ok(_) => {
-                quantity_error.set("Quantity cannot be negative.".to_string());
-                return;
-            }
-            Err(_) => {
-                quantity_error.set("Enter a valid quantity.".to_string());
-                return;
-            }
-        }
-        match unit_price.parse::<f64>() {
-            Ok(p) if p >= 0.0 => {}
-            Ok(_) => {
-                unit_price_error.set("Unit price cannot be negative.".to_string());
-                return;
-            }
-            Err(_) => {
-                unit_price_error.set("Enter a valid unit price.".to_string());
-                return;
-            }
-        }
+        // Past the guard: company is present.
+        let Some(company_uuid) = company_uuid else {
+            return;
+        };
 
         is_submitting.set(true);
         // Effective tax: a manual override if present, else the rate-computed
@@ -1238,13 +1269,19 @@ pub fn InvoiceNewPage() -> Element {
                             name: "invoice_date",
                             label: "Invoice Date",
                             required: true,
+                            rules: vec![Rule::Required],
+                            error: invoice_date_error.read().clone(),
                             value: invoice_date.read().clone(),
-                            oninput: move |e: FormEvent| invoice_date.set(e.value()),
+                            oninput: move |e: FormEvent| {
+                                invoice_date_error.set(String::new());
+                                invoice_date.set(e.value());
+                            },
                         }
                         crate::components::DateField {
                             name: "due_date",
                             label: "Due Date",
                             required: true,
+                            rules: vec![Rule::Required],
                             value: due_date.read().clone(),
                             error: due_date_error.read().clone(),
                             oninput: move |e: FormEvent| {
@@ -1270,9 +1307,14 @@ pub fn InvoiceNewPage() -> Element {
                                 label: "Description",
                                 required: true,
                                 maxlength: 1000,
+                                rules: vec![Rule::Required],
+                                error: line_description_error.read().clone(),
                                 placeholder: "What was delivered",
                                 value: line_description.read().clone(),
-                                oninput: move |e: FormEvent| line_description.set(e.value()),
+                                oninput: move |e: FormEvent| {
+                                    line_description_error.set(String::new());
+                                    line_description.set(e.value());
+                                },
                             }
                             crate::components::Input {
                                 name: "line_quantity",
@@ -1281,6 +1323,10 @@ pub fn InvoiceNewPage() -> Element {
                                 required: true,
                                 step: "0.01",
                                 min: "0",
+                                rules: vec![
+                                    Rule::Required,
+                                    Rule::Number { min: Some(0.0), max: None, max_decimals: None },
+                                ],
                                 placeholder: "Qty",
                                 value: line_quantity.read().clone(),
                                 error: quantity_error.read().clone(),
@@ -1296,6 +1342,10 @@ pub fn InvoiceNewPage() -> Element {
                                 required: true,
                                 step: "0.01",
                                 min: "0",
+                                rules: vec![
+                                    Rule::Required,
+                                    Rule::Number { min: Some(0.0), max: None, max_decimals: None },
+                                ],
                                 placeholder: "0.00",
                                 value: line_unit_price.read().clone(),
                                 error: unit_price_error.read().clone(),
@@ -1784,6 +1834,8 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
     // they belong to instead of collapsing into the single form-level banner.
     let mut amount_err = use_signal(String::new);
     let mut invoice_err = use_signal(String::new);
+    // PMS-518: Payment Date gets its own slot too (previously banner-only).
+    let mut payment_date_err = use_signal(String::new);
 
     let method_options = vec![
         SelectOption::new("check", "Check"),
@@ -1815,20 +1867,27 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
         error.set(String::new());
         amount_err.set(String::new());
         invoice_err.set(String::new());
+        payment_date_err.set(String::new());
 
-        let Some(company_uuid) = uuid::Uuid::parse_str(company_id.read().trim()).ok() else {
+        // PMS-518: accumulate every failure through the shared FormGuard so all
+        // problems surface at once (each in its own inline slot) and the first
+        // invalid field is focused, instead of the previous chain of early
+        // returns. The bespoke Amount / Invoice parses stay because their typed
+        // results (the Decimal-validated string and the invoice UUID) feed the
+        // request body and the existence check below; the guard only adds
+        // focus-first.
+        let mut guard = FormGuard::new();
+
+        // The CompanyPicker has no inline slot, so its failure goes to the
+        // form-level banner; `note_invalid` still blocks the submit.
+        let company_uuid = uuid::Uuid::parse_str(company_id.read().trim()).ok();
+        if company_uuid.is_none() {
             error.set("A valid company ID (UUID) is required.".to_string());
-            return;
-        };
-        let date = payment_date.read().trim().to_string();
-        if date.is_empty() {
-            error.set("Payment date is required.".to_string());
-            return;
+            guard.note_invalid(None);
         }
 
-        // Collect field-level errors so the user sees every problem at once,
-        // each attached to its own field (MAPPS-215).
-        let mut ok = true;
+        let date = payment_date.read().trim().to_string();
+        payment_date_err.set(guard.field("payment_date", &date, "Payment date", &[Rule::Required]));
 
         // Amount: required, strictly positive, at most 2 decimals, in range.
         // `min`/`step` on the field block most bad input in the browser; this
@@ -1838,29 +1897,29 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
             let s = amount.read().trim().to_string();
             if s.is_empty() {
                 amount_err.set("Amount is required.".to_string());
-                ok = false;
+                guard.note_invalid(Some("payment_amount"));
                 String::new()
             } else {
                 match s.parse::<Decimal>() {
                     Ok(d) if d <= Decimal::ZERO => {
                         amount_err.set("Amount must be greater than zero.".to_string());
-                        ok = false;
+                        guard.note_invalid(Some("payment_amount"));
                         String::new()
                     }
                     Ok(d) if d.scale() > 2 => {
                         amount_err.set("Amount must have at most 2 decimal places.".to_string());
-                        ok = false;
+                        guard.note_invalid(Some("payment_amount"));
                         String::new()
                     }
                     Ok(d) if d > Decimal::from(PAYMENT_AMOUNT_MAX) => {
                         amount_err.set("Amount is out of range.".to_string());
-                        ok = false;
+                        guard.note_invalid(Some("payment_amount"));
                         String::new()
                     }
                     Ok(_) => s,
                     Err(_) => {
                         amount_err.set("Amount must be a number.".to_string());
-                        ok = false;
+                        guard.note_invalid(Some("payment_amount"));
                         String::new()
                     }
                 }
@@ -1883,16 +1942,20 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                             "Invoice ID must be a valid UUID, or leave it blank for an unapplied payment."
                                 .to_string(),
                         );
-                        ok = false;
+                        guard.note_invalid(Some("payment_invoice_id"));
                         None
                     }
                 }
             }
         };
 
-        if !ok {
+        if guard.blocked() {
             return;
         }
+        // Past the guard: company is present.
+        let Some(company_uuid) = company_uuid else {
+            return;
+        };
 
         saving.set(true);
         let invoice_value = match invoice_uuid {
@@ -2016,8 +2079,13 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                         name: "payment_date",
                         label: "Payment Date",
                         required: true,
+                        rules: vec![Rule::Required],
+                        error: payment_date_err(),
                         value: payment_date.read().clone(),
-                        oninput: move |e: FormEvent| payment_date.set(e.value()),
+                        oninput: move |e: FormEvent| {
+                            payment_date_err.set(String::new());
+                            payment_date.set(e.value());
+                        },
                     }
                     crate::components::Input {
                         name: "payment_amount",
@@ -2070,6 +2138,12 @@ struct EditableLine {
     description: String,
     quantity: String,
     unit_price: String,
+    // PMS-518: per-field inline validation messages, populated on submit so each
+    // failing line flags its own field instead of collapsing into one banner.
+    // The message travels with the line through add/remove, staying aligned.
+    description_err: String,
+    quantity_err: String,
+    unit_price_err: String,
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -2128,6 +2202,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                 description: l.description.clone(),
                 quantity: l.quantity.clone(),
                 unit_price: l.unit_price.clone(),
+                ..EditableLine::default()
             })
             .collect::<Vec<_>>()
     });
@@ -2138,6 +2213,10 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
     let mut discount_amount = use_signal(|| props.discount_amount.clone());
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // PMS-518: per-field inline slots for the required dates (previously a single
+    // shared banner). Line-item errors live on each `EditableLine` row.
+    let mut invoice_date_err = use_signal(String::new);
+    let mut due_date_err = use_signal(String::new);
 
     // Tax-rate picker (MAPPS-192): compute tax from the stored line subtotal and
     // the selected rate; the Tax field stays editable as a manual override.
@@ -2213,51 +2292,71 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             return;
         }
         error.set(String::new());
+
+        // PMS-518: accumulate every failure through the shared FormGuard so all
+        // problems surface at once (the dates in their own inline slots, each
+        // line in its own per-field slots) and the first invalid field is
+        // focused, instead of the previous first-failure-returns chain.
+        let mut guard = FormGuard::new();
+
         let inv_date = invoice_date.read().trim().to_string();
         let due = due_date.read().trim().to_string();
-        if inv_date.is_empty() || due.is_empty() {
-            error.set("Invoice date and due date are required.".to_string());
-            return;
-        }
+        invoice_date_err.set(guard.field(
+            "invoice_date",
+            &inv_date,
+            "Invoice date",
+            &[Rule::Required],
+        ));
+        due_date_err.set(guard.field("due_date", &due, "Due date", &[Rule::Required]));
+
         // Validate the line items and build the request set (MAPPS-234). An
         // invoice must keep at least one line; each line needs a description and
         // a non-negative numeric quantity and unit price (mirrors the create
         // form's checks so a bad value never reaches the 422 path).
         let rows = lines.read().clone();
         if rows.is_empty() {
+            // The empty-set rule has no per-line slot; surface it on the banner.
             error.set("An invoice must have at least one line item.".to_string());
-            return;
+            guard.note_invalid(None);
         }
+        // Quantity / unit price share the create form's money rules: required,
+        // numeric, non-negative. The trimmed strings still feed the body verbatim.
+        let money_rules = [
+            Rule::Required,
+            Rule::Number {
+                min: Some(0.0),
+                max: None,
+                max_decimals: None,
+            },
+        ];
         let mut lines_json = Vec::with_capacity(rows.len());
         for (idx, line) in rows.iter().enumerate() {
-            let description = line.description.trim();
-            if description.is_empty() {
-                error.set(format!("Line {} needs a description.", idx + 1));
-                return;
-            }
-            let quantity = line.quantity.trim();
-            let unit_price = line.unit_price.trim();
-            match quantity.parse::<f64>() {
-                Ok(q) if q >= 0.0 => {}
-                Ok(_) => {
-                    error.set(format!("Line {} quantity cannot be negative.", idx + 1));
-                    return;
-                }
-                Err(_) => {
-                    error.set(format!("Line {} needs a valid quantity.", idx + 1));
-                    return;
-                }
-            }
-            match unit_price.parse::<f64>() {
-                Ok(p) if p >= 0.0 => {}
-                Ok(_) => {
-                    error.set(format!("Line {} unit price cannot be negative.", idx + 1));
-                    return;
-                }
-                Err(_) => {
-                    error.set(format!("Line {} needs a valid unit price.", idx + 1));
-                    return;
-                }
+            let description = line.description.trim().to_string();
+            let quantity = line.quantity.trim().to_string();
+            let unit_price = line.unit_price.trim().to_string();
+            let description_err = guard.field(
+                &format!("line_description_{idx}"),
+                &description,
+                "Description",
+                &[Rule::Required],
+            );
+            let quantity_err = guard.field(
+                &format!("line_quantity_{idx}"),
+                &quantity,
+                "Quantity",
+                &money_rules,
+            );
+            let unit_price_err = guard.field(
+                &format!("line_unit_price_{idx}"),
+                &unit_price,
+                "Unit price",
+                &money_rules,
+            );
+            {
+                let mut w = lines.write();
+                w[idx].description_err = description_err;
+                w[idx].quantity_err = quantity_err;
+                w[idx].unit_price_err = unit_price_err;
             }
             let line_type = if line.line_type.trim().is_empty() {
                 "service"
@@ -2272,6 +2371,10 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                 "unit_price": unit_price,
                 "sort_order": idx as i32,
             }));
+        }
+
+        if guard.blocked() {
+            return;
         }
         saving.set(true);
         let path = format!("/invoices/{invoice_id}");
@@ -2347,15 +2450,25 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                         name: "invoice_date",
                         label: "Invoice Date",
                         required: true,
+                        rules: vec![Rule::Required],
+                        error: invoice_date_err(),
                         value: invoice_date.read().clone(),
-                        oninput: move |e: FormEvent| invoice_date.set(e.value()),
+                        oninput: move |e: FormEvent| {
+                            invoice_date_err.set(String::new());
+                            invoice_date.set(e.value());
+                        },
                     }
                     crate::components::DateField {
                         name: "due_date",
                         label: "Due Date",
                         required: true,
+                        rules: vec![Rule::Required],
+                        error: due_date_err(),
                         value: due_date.read().clone(),
-                        oninput: move |e: FormEvent| due_date.set(e.value()),
+                        oninput: move |e: FormEvent| {
+                            due_date_err.set(String::new());
+                            due_date.set(e.value());
+                        },
                     }
                 }
                 Select {
@@ -2406,9 +2519,13 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                                     required: true,
                                     maxlength: 1000,
                                     placeholder: "What was delivered",
+                                    rules: vec![Rule::Required],
+                                    error: line.description_err.clone(),
                                     value: line.description.clone(),
                                     oninput: move |e: FormEvent| {
-                                        lines.write()[idx].description = e.value();
+                                        let mut w = lines.write();
+                                        w[idx].description = e.value();
+                                        w[idx].description_err = String::new();
                                     },
                                 }
                                 crate::components::Input {
@@ -2419,9 +2536,20 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                                     step: "0.01".to_string(),
                                     min: "0".to_string(),
                                     placeholder: "Qty",
+                                    rules: vec![
+                                        Rule::Required,
+                                        Rule::Number {
+                                            min: Some(0.0),
+                                            max: None,
+                                            max_decimals: None,
+                                        },
+                                    ],
+                                    error: line.quantity_err.clone(),
                                     value: line.quantity.clone(),
                                     oninput: move |e: FormEvent| {
-                                        lines.write()[idx].quantity = e.value();
+                                        let mut w = lines.write();
+                                        w[idx].quantity = e.value();
+                                        w[idx].quantity_err = String::new();
                                     },
                                 }
                                 crate::components::Input {
@@ -2432,9 +2560,20 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
                                     step: "0.01".to_string(),
                                     min: "0".to_string(),
                                     placeholder: "0.00",
+                                    rules: vec![
+                                        Rule::Required,
+                                        Rule::Number {
+                                            min: Some(0.0),
+                                            max: None,
+                                            max_decimals: None,
+                                        },
+                                    ],
+                                    error: line.unit_price_err.clone(),
                                     value: line.unit_price.clone(),
                                     oninput: move |e: FormEvent| {
-                                        lines.write()[idx].unit_price = e.value();
+                                        let mut w = lines.write();
+                                        w[idx].unit_price = e.value();
+                                        w[idx].unit_price_err = String::new();
                                     },
                                 }
                                 Button {
@@ -2715,6 +2854,9 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // PMS-518: per-field inline slots, previously presence-only on the banner.
+    let mut name_err = use_signal(String::new);
+    let mut rate_err = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -2724,16 +2866,33 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
-        if name.read().trim().is_empty() {
-            error.set("Name is required.".to_string());
-            return;
-        }
-        if rate.read().trim().is_empty() {
-            error.set("Rate is required.".to_string());
-            return;
-        }
-        saving.set(true);
         error.set(String::new());
+
+        // PMS-518: report both fields at once (each in its own inline slot) and
+        // focus the first invalid, instead of bailing on the first presence miss.
+        // The rate string still feeds the body verbatim; the server reparses it.
+        let mut guard = FormGuard::new();
+        let name_v = name.read().trim().to_string();
+        let rate_v = rate.read().trim().to_string();
+        name_err.set(guard.field("tax_rate_name", &name_v, "Name", &[Rule::Required]));
+        rate_err.set(guard.field(
+            "tax_rate_rate",
+            &rate_v,
+            "Rate",
+            &[
+                Rule::Required,
+                Rule::Number {
+                    min: Some(0.0),
+                    max: None,
+                    max_decimals: None,
+                },
+            ],
+        ));
+        if guard.blocked() {
+            return;
+        }
+
+        saving.set(true);
         let body = serde_json::json!({
             "name": name.read().trim(),
             // Server parses the rate string into `rust_decimal::Decimal`.
@@ -2842,8 +3001,13 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
                     label: "Name",
                     placeholder: "e.g. US-CA or Standard VAT",
                     required: true,
+                    rules: vec![Rule::Required],
+                    error: name_err(),
                     value: name.read().clone(),
-                    oninput: move |e: FormEvent| name.set(e.value()),
+                    oninput: move |e: FormEvent| {
+                        name_err.set(String::new());
+                        name.set(e.value());
+                    },
                 }
                 crate::components::Input {
                     name: "tax_rate_rate",
@@ -2851,8 +3015,20 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
                     r#type: "number",
                     placeholder: "e.g. 8.25",
                     required: true,
+                    rules: vec![
+                        Rule::Required,
+                        Rule::Number {
+                            min: Some(0.0),
+                            max: None,
+                            max_decimals: None,
+                        },
+                    ],
+                    error: rate_err(),
                     value: rate.read().clone(),
-                    oninput: move |e: FormEvent| rate.set(e.value()),
+                    oninput: move |e: FormEvent| {
+                        rate_err.set(String::new());
+                        rate.set(e.value());
+                    },
                 }
                 crate::components::Checkbox {
                     name: "tax_rate_is_default",
@@ -3124,6 +3300,8 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // PMS-518: inline slot for the JSON config field, previously banner-only.
+    let mut config_err = use_signal(String::new);
 
     let provider_options = vec![
         SelectOption::new("stripe", "Stripe"),
@@ -3139,14 +3317,24 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
             return;
         }
         error.set(String::new());
-        // The config must be valid JSON; the server stores it encrypted.
+        config_err.set(String::new());
+
+        // PMS-518: the config must be valid JSON (the server stores it
+        // encrypted). The parsed value is reused in the body, so keep the
+        // bespoke parse and route its failure to the field's own inline slot
+        // with focus-first instead of the form-level banner.
+        let mut guard = FormGuard::new();
         let parsed_config: serde_json::Value = match serde_json::from_str(&config_json.read()) {
             Ok(v) => v,
             Err(e) => {
-                error.set(format!("Config must be valid JSON: {e}"));
-                return;
+                config_err.set(format!("Config must be valid JSON: {e}"));
+                guard.note_invalid(Some("gateway_config"));
+                serde_json::Value::Null
             }
         };
+        if guard.blocked() {
+            return;
+        }
         saving.set(true);
         let body = serde_json::json!({
             "provider": provider.read().clone(),
@@ -3272,8 +3460,12 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                     placeholder: "{{ \"api_key\": \"...\" }}",
                     rows: 8,
                     help: "Provider credentials. Stored encrypted at rest.",
+                    error: config_err(),
                     value: config_json.read().clone(),
-                    oninput: move |e: FormEvent| config_json.set(e.value()),
+                    oninput: move |e: FormEvent| {
+                        config_err.set(String::new());
+                        config_json.set(e.value());
+                    },
                 }
             }
         }

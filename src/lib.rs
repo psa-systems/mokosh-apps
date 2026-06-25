@@ -56,7 +56,13 @@ pub fn AuthGuard() -> Element {
         // Hitting `/login` directly or hitting a protected route both lead
         // through bunyip's /oauth2/authorize on this origin.
         let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
-        let _ = crate::modules::oidc::start_login(&cfg, "");
+        // Carry the route the user actually asked for through the OIDC
+        // round-trip so a cold-loaded / bookmarked deep link lands back on
+        // it instead of `/dashboard` (MAPPS-323). The interactive `Login`
+        // component passes its own `/dashboard` default; this guard is the
+        // path that fires for protected deep links.
+        let return_to = crate::modules::oidc::current_return_to();
+        let _ = crate::modules::oidc::start_login(&cfg, return_to);
         return rsx! {
             div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
                 "Signing you in..."
@@ -147,6 +153,21 @@ pub enum Route {
       #[route("/dashboard")]
       Dashboard {},
 
+      // MAPPS-256: full-screen, team-scoped wall-monitor "TV view" of the
+      // dashboard. Inside AuthGuard like every authenticated route, but the
+      // page renders WITHOUT `AppLayout` so no TopBar / Sidebar / banners /
+      // ToastRoot chrome appears over the bare table.
+      #[route("/dashboard/tv")]
+      DashboardTv {},
+
+      // PMS-453: per-user saved dashboards (Phase 1: management surface).
+      #[route("/dashboards")]
+      SavedDashboards {},
+
+      // PMS-472: view surface for one saved dashboard.
+      #[route("/dashboards/:id/view")]
+      SavedDashboardView { id: String },
+
     // Tickets
     #[route("/tickets")]
     TicketList {},
@@ -170,6 +191,13 @@ pub enum Route {
     // MAPPS-194: manager/admin queue to approve/reject submitted timesheets.
     #[route("/timesheets/approvals")]
     TimesheetApprovals {},
+
+    // PMS-481: "My approvals" queue across every approval target
+    // (ticket / time_entry / change_request / quote). The signed-in
+    // user sees pending rows where they are the named approver or
+    // hold the assigned role; approve / reject inline.
+    #[route("/approvals")]
+    Approvals {},
 
     // Projects
     #[route("/projects")]
@@ -218,6 +246,20 @@ pub enum Route {
 
     #[route("/scheduling-templates")]
     SchedulingTemplates {},
+
+    // MAPPS-302: NOC "Big View" routes. Kiosk-friendly variants of the
+    // tickets queue, the dispatch board, and the calendar - no sidebar
+    // or top bar, larger typography, auto-refresh tick. Operators
+    // bookmark these on a wall-mounted screen via the `?refresh=` and
+    // `?status=` / `?priority=` query params.
+    #[route("/big/tickets")]
+    BigTickets {},
+
+    #[route("/big/dispatch")]
+    BigDispatch {},
+
+    #[route("/big/calendar")]
+    BigCalendar {},
 
     // Contracts
     #[route("/contracts")]
@@ -315,6 +357,17 @@ pub enum Route {
     // nav items and buttons keep working (chosen "keep old + add Settings").
     #[route("/settings")]
     SettingsHome {},
+    // MAPPS-258: per-group landing routes. The index lists these four
+    // groups; each landing lists only its own leaf surfaces. The leaf
+    // routes below stay flat so existing deep links keep resolving.
+    #[route("/settings/group/service-types")]
+    SettingsGroupServiceTypes {},
+    #[route("/settings/group/billing")]
+    SettingsGroupBilling {},
+    #[route("/settings/group/tickets")]
+    SettingsGroupTickets {},
+    #[route("/settings/group/integrations")]
+    SettingsGroupIntegrations {},
     #[route("/settings/work-types")]
     SettingsWorkTypes {},
     #[route("/settings/task-statuses")]
@@ -332,6 +385,9 @@ pub enum Route {
     // MAPPS-259: per-user theme + accent picker.
     #[route("/settings/appearance")]
     SettingsAppearance {},
+    // MAPPS-256: per-user wall-monitor TV-view toggle + team scope.
+    #[route("/settings/tv-view")]
+    SettingsTvView {},
     // MAPPS-244: tenant-wide max hours per day (PMS-396 server setting).
     #[route("/settings/time-tracking")]
     SettingsTimeTracking {},
@@ -518,7 +574,22 @@ fn SignupComplete(token: String) -> Element {
 
 #[component]
 fn Dashboard() -> Element {
-    rsx! { dashboard::DashboardPage {} }
+    rsx! { dashboards_view::DefaultDashboardPage {} }
+}
+
+#[component]
+fn SavedDashboards() -> Element {
+    rsx! { dashboards::SavedDashboardsPage {} }
+}
+
+#[component]
+fn SavedDashboardView(id: String) -> Element {
+    rsx! { dashboards_view::SavedDashboardViewPage { id } }
+}
+
+#[component]
+fn DashboardTv() -> Element {
+    rsx! { dashboard::DashboardTvPage {} }
 }
 
 #[component]
@@ -559,6 +630,11 @@ fn Timesheets() -> Element {
 #[component]
 fn TimesheetApprovals() -> Element {
     rsx! { time::TimesheetApprovalsPage {} }
+}
+
+#[component]
+fn Approvals() -> Element {
+    rsx! { approvals::ApprovalsPage {} }
 }
 
 #[component]
@@ -634,6 +710,22 @@ fn DispatchBoard() -> Element {
 #[component]
 fn SchedulingTemplates() -> Element {
     rsx! { calendar::SchedulingTemplatesPage {} }
+}
+
+// MAPPS-302: NOC "Big View" route handlers.
+#[component]
+fn BigTickets() -> Element {
+    rsx! { big_view::BigTicketsPage {} }
+}
+
+#[component]
+fn BigDispatch() -> Element {
+    rsx! { big_view::BigDispatchPage {} }
+}
+
+#[component]
+fn BigCalendar() -> Element {
+    rsx! { big_view::BigCalendarPage {} }
 }
 
 #[component]
@@ -772,6 +864,27 @@ fn SettingsHome() -> Element {
     rsx! { settings::SettingsHomePage {} }
 }
 
+// MAPPS-258 per-group landing pages.
+#[component]
+fn SettingsGroupServiceTypes() -> Element {
+    rsx! { settings::ServiceTypesGroupPage {} }
+}
+
+#[component]
+fn SettingsGroupBilling() -> Element {
+    rsx! { settings::BillingGroupPage {} }
+}
+
+#[component]
+fn SettingsGroupTickets() -> Element {
+    rsx! { settings::TicketsGroupPage {} }
+}
+
+#[component]
+fn SettingsGroupIntegrations() -> Element {
+    rsx! { settings::IntegrationsGroupPage {} }
+}
+
 #[component]
 fn SettingsWorkTypes() -> Element {
     rsx! { settings::WorkTypesSettingsPage {} }
@@ -810,6 +923,11 @@ fn SettingsScheduling() -> Element {
 #[component]
 fn SettingsAppearance() -> Element {
     rsx! { settings::AppearanceSettingsPage {} }
+}
+
+#[component]
+fn SettingsTvView() -> Element {
+    rsx! { settings::TvViewSettingsPage {} }
 }
 
 #[component]

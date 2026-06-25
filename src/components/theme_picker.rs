@@ -29,6 +29,13 @@ pub fn ThemePickerButton() -> Element {
             class: "p-2 rounded-full text-gray-400 hover:text-white hover:bg-gray-700",
             aria_label: "Theme and appearance",
             title: "Appearance",
+            // MAPPS-314: announce the dialog-opener semantics. Without
+            // these the button presents as a plain toggle and
+            // assistive tech can't tell whether the picker is open
+            // (`aria-expanded`) or that activating it opens a dialog
+            // (`aria-haspopup`).
+            aria_expanded: if open() { "true" } else { "false" },
+            aria_haspopup: "dialog",
             onclick: move |_| open.set(true),
             SwatchIcon {}
         }
@@ -105,13 +112,32 @@ pub fn ThemePicker() -> Element {
                     h3 { class: "text-xs font-semibold uppercase tracking-wide text-subtle",
                         "Accent"
                     }
-                    span { class: "text-xs text-subtle", "Dimmed = low contrast on this base" }
+                    // MAPPS-288: hint that dimmed dots are AA-locked. Hover
+                    // any disabled accent for the actual contrast ratio.
+                    span { class: "text-xs text-subtle", "Dimmed = below WCAG AA on this base" }
                 }
                 div { class: "grid grid-cols-7 gap-3",
                     for a in accents::ACCENTS {
                         {
                             let variant = if is_dark() { a.dark } else { a.light };
                             let locked = !contrast::passes_aa(variant.on_accent, variant.fill);
+                            // MAPPS-288: surface the actual contrast ratio on
+                            // hover so a curious user (or an accessibility
+                            // reviewer) can see why an accent is locked instead
+                            // of just observing it dimmed. The disabled state
+                            // already prevents picking a failing combination;
+                            // this adds the user-visible "what / why" the AC
+                            // calls for.
+                            let ratio = contrast::contrast_ratio(variant.on_accent, variant.fill)
+                                .unwrap_or(0.0);
+                            let tooltip = if locked {
+                                format!(
+                                    "{} — locked: contrast {:.1}:1 (needs 4.5:1 for WCAG AA)",
+                                    a.name, ratio
+                                )
+                            } else {
+                                format!("{} (contrast {:.1}:1)", a.name, ratio)
+                            };
                             let selected = accent_id() == a.id;
                             let ring = if selected {
                                 "ring-2 ring-offset-2 ring-offset-surface ring-content"
@@ -128,8 +154,8 @@ pub fn ThemePicker() -> Element {
                                     key: "{a.id}",
                                     r#type: "button",
                                     disabled: locked,
-                                    title: "{a.name}",
-                                    "aria-label": "{a.name}",
+                                    title: "{tooltip}",
+                                    "aria-label": "{tooltip}",
                                     "aria-pressed": "{selected}",
                                     class: "aspect-square w-full rounded-full {ring} {state}",
                                     style: "background-color: {variant.fill}",

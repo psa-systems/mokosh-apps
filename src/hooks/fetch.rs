@@ -177,10 +177,34 @@ pub mod api {
                 } else if !env.error.message.is_empty() {
                     env.error.message
                 } else {
-                    format!("Request failed with status: {status}")
+                    user_friendly_status(status)
                 }
             }
-            Err(_) => format!("Request failed with status: {status}"),
+            Err(_) => user_friendly_status(status),
+        }
+    }
+
+    /// MAPPS-282: replace the developer-facing "Request failed with status:
+    /// 422" string fallback with a user-facing message keyed on the status
+    /// class. This is the last-resort branch in `status_error` (server
+    /// returned a non-2xx with no `ErrorResponse` envelope and no field
+    /// errors), reached by the many forms that still use the string-error
+    /// helpers (`post_authed`, `put_authed`). The forms that have been
+    /// migrated to the `_typed` variants already get the field-level
+    /// `ApiError::user_message` treatment; this brings the legacy callers
+    /// to at least non-developer-facing parity.
+    #[cfg(feature = "web")]
+    fn user_friendly_status(status: u16) -> String {
+        match status {
+            400 => "The request was rejected. Please check the form and try again.".into(),
+            401 => "Your session has expired. Please sign in again.".into(),
+            403 => "You do not have permission to do that.".into(),
+            404 => "The requested resource was not found.".into(),
+            409 => "The change conflicts with another update. Please refresh and retry.".into(),
+            422 => "Validation failed. Please check the form fields.".into(),
+            429 => "Too many requests. Please try again shortly.".into(),
+            500..=599 => "The server hit an error. Please try again.".into(),
+            _ => format!("Request failed ({status})."),
         }
     }
 
@@ -261,6 +285,36 @@ pub mod api {
         let url = format!("{}{}", api_base(), path);
 
         let response = Request::put(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {}", token))
+            .json(body)
+            .map_err(|e| e.to_string())?
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if response.ok() {
+            response.json::<T>().await.map_err(|e| e.to_string())
+        } else {
+            Err(status_error(response).await)
+        }
+    }
+
+    /// PATCH request with auth token. The first caller is the saved
+    /// dashboards module (PMS-453), which surfaces partial-update
+    /// semantics (toggle `is_default`, edit just the name); a PUT
+    /// helper would have invited callers to send the whole row and
+    /// blow away unset fields, which is the wrong shape for that
+    /// surface.
+    #[cfg(feature = "web")]
+    pub async fn patch_with_auth<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+        token: &str,
+    ) -> Result<T, String> {
+        let url = format!("{}{}", api_base(), path);
+
+        let response = Request::patch(&url)
             .header("Content-Type", "application/json")
             .header("Authorization", &format!("Bearer {}", token))
             .json(body)
@@ -357,6 +411,15 @@ pub mod api {
     pub async fn delete_authed(path: &str) -> Result<(), String> {
         let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
         delete_with_auth(path, &t).await
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn patch_authed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, String> {
+        let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
+        patch_with_auth(path, body, &t).await
     }
 
     /// Auto-authed POST for empty-body endpoints (see

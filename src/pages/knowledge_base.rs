@@ -28,10 +28,11 @@ use crate::components::{
 };
 use crate::modules::kb::{
     CreateKbArticleRequest, CreateKbCategoryRequest, KbArticle, KbArticleFeedback,
-    KbArticleVersion, KbCategory, UpdateKbArticleRequest, UpdateKbCategoryRequest,
+    KbArticleVersion, KbCategory, TopTicketDrivingArticle, UpdateKbArticleRequest,
+    UpdateKbCategoryRequest,
 };
 use crate::utils::url::urlencoding_minimal;
-use crate::utils::Paginated;
+use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
 /// Rows per page for the article list (mirrors contacts `PER_PAGE`).
@@ -284,6 +285,20 @@ pub fn KBHomePage() -> Element {
             .ok()
     });
 
+    // PMS-485: top ticket-driving articles widget. Server endpoint
+    // defaults to a 90-day window; we ask for the top 10 to fit the
+    // landing-page card.
+    let top_driving_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let token = crate::hooks::fetch::api::current_access_token()?;
+        crate::hooks::fetch::api::get_with_auth::<Vec<TopTicketDrivingArticle>>(
+            "/kb/top-ticket-driving-articles?limit=10",
+            &token,
+        )
+        .await
+        .ok()
+    });
+
     let categories_snapshot = categories_resource.read_unchecked();
     let categories_loading = categories_snapshot.is_none();
     let categories: Vec<KbCategory> = match &*categories_snapshot {
@@ -296,6 +311,13 @@ pub fn KBHomePage() -> Element {
     let recent_failed = matches!(*recent_snapshot, Some(None));
     let recent: Vec<KbArticle> = match &*recent_snapshot {
         Some(Some(resp)) => resp.data.clone(),
+        _ => Vec::new(),
+    };
+
+    let top_driving_snapshot = top_driving_resource.read_unchecked();
+    let top_driving_loading = top_driving_snapshot.is_none();
+    let top_driving: Vec<TopTicketDrivingArticle> = match &*top_driving_snapshot {
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
 
@@ -374,6 +396,37 @@ pub fn KBHomePage() -> Element {
                                 delete_error.set(String::new());
                                 deleting_category.set(Some(c));
                             },
+                        }
+                    }
+                }
+            }
+
+            // PMS-485: Top ticket-driving articles widget. Reads
+            // tickets joined to kb_articles on `source_kb_article_id`
+            // (stamped on ticket create by PMS-482), grouped + ordered
+            // by count over the trailing 90 days.
+            Card { title: "Top ticket-driving articles",
+                if top_driving_loading {
+                    div { class: "space-y-2",
+                        for _ in 0..3 {
+                            div { class: "h-8 bg-surface-2 rounded animate-pulse" }
+                        }
+                    }
+                } else if top_driving.is_empty() {
+                    div { class: "py-6 text-center text-sm text-muted",
+                        "No ticket-driving articles yet. Use 'Open ticket about this article' on a KB page to start tracking."
+                    }
+                } else {
+                    ul { class: "divide-y divide-border",
+                        for row in top_driving.iter().cloned() {
+                            li { class: "py-2 flex items-center justify-between gap-3",
+                                Link {
+                                    to: Route::KBArticleDetail { id: row.id.to_string() },
+                                    class: "text-accent hover:underline truncate",
+                                    "{row.title}"
+                                }
+                                Badge { variant: BadgeVariant::Gray, "{row.ticket_count}" }
+                            }
                         }
                     }
                 }
@@ -1031,6 +1084,15 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         _ => Vec::new(),
     };
 
+    // MAPPS-309: delete-article state. `confirming_delete` drives the
+    // ConfirmDialog; `delete_busy` mirrors the in-flight DELETE so the
+    // dialog locks until the request returns. On success we navigate
+    // back to the KB landing page (the article id is about to 404).
+    let mut confirming_delete = use_signal(|| false);
+    let mut delete_busy = use_signal(|| false);
+    let mut delete_error = use_signal(String::new);
+    let nav_after_delete = use_navigator();
+
     // Reading-view UI state, persisted per user via the prefs store.
     let left_collapsed = use_signal(|| crate::utils::prefs::get_bool("kb_left_rail", false));
     let right_collapsed = use_signal(|| crate::utils::prefs::get_bool("kb_right_rail", false));
@@ -1073,8 +1135,70 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         _ => "Article".to_string(),
     };
 
+    let title_for_dialog = match &*article_snapshot {
+        Some(Some(a)) => a.title.clone(),
+        _ => String::new(),
+    };
+    let id_for_delete = props.id.clone();
+
     rsx! {
         AppLayout { title: "{header_title}",
+            // MAPPS-309: confirm-before-delete dialog for the article.
+            // Rendered at the AppLayout root so it overlays every
+            // match arm of the article snapshot.
+            crate::components::ConfirmDialog {
+                open: confirming_delete(),
+                title: "Delete article".to_string(),
+                message: {
+                    let mut msg = if title_for_dialog.is_empty() {
+                        "Delete this article? This cannot be undone.".to_string()
+                    } else {
+                        format!("Delete \"{title_for_dialog}\"? This cannot be undone.")
+                    };
+                    if !delete_error.read().is_empty() {
+                        msg.push_str(&format!("\n\n{}", delete_error.read()));
+                    }
+                    msg
+                },
+                confirm_text: "Delete".to_string(),
+                cancel_text: "Cancel".to_string(),
+                destructive: true,
+                loading: delete_busy(),
+                oncancel: move |_| {
+                    if !delete_busy() {
+                        confirming_delete.set(false);
+                        delete_error.set(String::new());
+                    }
+                },
+                onconfirm: move |_| {
+                    if delete_busy() { return; }
+                    delete_busy.set(true);
+                    delete_error.set(String::new());
+                    let id = id_for_delete.clone();
+                    spawn(async move {
+                        #[cfg(feature = "web")]
+                        {
+                            let path = format!("/kb/articles/{id}");
+                            match crate::hooks::fetch::api::delete_authed(&path).await {
+                                Ok(()) => {
+                                    crate::hooks::toast::push_toast(
+                                        crate::components::AlertType::Success,
+                                        "Article deleted.",
+                                    );
+                                    confirming_delete.set(false);
+                                    nav_after_delete.push(Route::KBHome {});
+                                }
+                                Err(err) => {
+                                    delete_error.set(format!("Could not delete article: {err}"));
+                                }
+                            }
+                        }
+                        #[cfg(not(feature = "web"))]
+                        let _ = &id;
+                        delete_busy.set(false);
+                    });
+                },
+            }
             match &*article_snapshot {
                 None => rsx! {
                     // PMS-353
@@ -1136,8 +1260,47 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                         }
                                         Badge { variant: status_variant, "{status_label}" }
                                         Badge { variant: vis_variant, "{vis_label}" }
+                                        // PMS-482: "Open ticket about this
+                                        // article". Navigates to the ticket-
+                                        // new form with the article id +
+                                        // title + URL on the query string;
+                                        // the form pre-fills its title /
+                                        // description and stamps
+                                        // `source_kb_article_id` on the
+                                        // create body. Plain `<a>` so the
+                                        // query string survives intact and
+                                        // the user can right-click to open
+                                        // in a new tab.
+                                        {
+                                            let qs = format!(
+                                                "from_kb_article={}&from_kb_title={}&from_kb_url={}",
+                                                props.id,
+                                                crate::utils::url::urlencoding_minimal(&article.title),
+                                                crate::utils::url::urlencoding_minimal(&format!("/kb/articles/{}", props.id)),
+                                            );
+                                            rsx! {
+                                                a {
+                                                    href: "/tickets/new?{qs}",
+                                                    class: "inline-flex items-center px-3 py-2 text-sm font-medium rounded-md border border-line hover:bg-surface-2 text-content",
+                                                    "Open ticket about this article"
+                                                }
+                                            }
+                                        }
                                         Link { to: Route::KBArticleEdit { id: props.id.clone() },
                                             Button { variant: ButtonVariant::Secondary, "Edit" }
+                                        }
+                                        // MAPPS-309: delete affordance. Gated by
+                                        // `ConfirmDialog` rendered at the page
+                                        // root; success navigates back to the KB
+                                        // landing.
+                                        Button {
+                                            variant: ButtonVariant::Danger,
+                                            disabled: delete_busy(),
+                                            onclick: move |_| {
+                                                delete_error.set(String::new());
+                                                confirming_delete.set(true);
+                                            },
+                                            "Delete"
                                         }
                                         DensityToggle { comfortable }
                                     }
@@ -1392,6 +1555,9 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     let mut tags = use_signal(|| initial.tags.clone());
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // PMS-518: per-field inline error slots, fed by the FormGuard on submit.
+    let mut title_error = use_signal(String::new);
+    let mut content_error = use_signal(String::new);
 
     // Category dropdown options, fetched live.
     let categories_resource = use_resource(move || async move {
@@ -1435,18 +1601,21 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
 
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
-        let title_val = title.read().trim().to_string();
-        if title_val.is_empty() {
-            error.set("Title is required.".to_string());
-            return;
-        }
-        let content_val = content.read().to_string();
-        if content_val.trim().is_empty() {
-            error.set("Body is required.".to_string());
-            return;
-        }
-        is_submitting.set(true);
         error.set(String::new());
+
+        // PMS-518: validate both required fields through the shared FormGuard so
+        // a missing Title no longer masks a missing Body; each surfaces in its own
+        // inline slot and the first invalid field is focused.
+        let mut guard = FormGuard::new();
+        let title_val = title.read().trim().to_string();
+        title_error.set(guard.field("title", &title_val, "Title", &[Rule::Required]));
+        let content_val = content.read().to_string();
+        content_error.set(guard.field("content", content_val.trim(), "Body", &[Rule::Required]));
+        if guard.blocked() {
+            return;
+        }
+
+        is_submitting.set(true);
 
         // Slug: normalize through `slugify` so the stored value is always
         // URL-safe (lowercase, hyphen-separated, no spaces/`<>`/punctuation),
@@ -1546,8 +1715,11 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     placeholder: "How to ...",
                     required: true,
                     maxlength: TITLE_MAX as i64,
+                    rules: vec![Rule::Required],
+                    error: title_error.read().clone(),
                     value: title.read().clone(),
                     oninput: move |e: FormEvent| {
+                        title_error.set(String::new());
                         title.set(e.value());
                         if let Some(s) = next_slug(&e.value(), slug_touched()) {
                             slug.set(s);
@@ -1623,8 +1795,13 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                                 rows: 16,
                                 required: true,
                                 maxlength: BODY_MAX as i64,
+                                rules: vec![Rule::Required],
+                                error: content_error.read().clone(),
                                 value: content.read().clone(),
-                                oninput: move |e: FormEvent| content.set(e.value()),
+                                oninput: move |e: FormEvent| {
+                                    content_error.set(String::new());
+                                    content.set(e.value());
+                                },
                             }
                         },
                         BodyTab::Preview => rsx! {
@@ -1727,6 +1904,8 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
     let mut slug_touched = use_signal(|| is_edit);
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // PMS-518: inline error slot for the required Name, fed by the FormGuard.
+    let mut name_error = use_signal(String::new);
 
     // Parent dropdown: "None" plus every other category. The category being
     // edited is excluded so it cannot be made its own parent.
@@ -1754,13 +1933,18 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
     let on_saved = props.on_saved;
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
+        error.set(String::new());
+
+        // PMS-518: required Name validated through the shared FormGuard (inline
+        // slot + focus), for consistency with the other migrated forms.
+        let mut guard = FormGuard::new();
         let name_val = name.read().trim().to_string();
-        if name_val.is_empty() {
-            error.set("Name is required.".to_string());
+        name_error.set(guard.field("name", &name_val, "Name", &[Rule::Required]));
+        if guard.blocked() {
             return;
         }
+
         is_submitting.set(true);
-        error.set(String::new());
 
         // Slug normalized through `slugify`, derived from the name when blank.
         let slug_raw = slug.read().trim().to_string();
@@ -1869,8 +2053,11 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
                     label: "Name",
                     placeholder: "e.g. Networking",
                     required: true,
+                    rules: vec![Rule::Required],
+                    error: name_error.read().clone(),
                     value: name.read().clone(),
                     oninput: move |e: FormEvent| {
+                        name_error.set(String::new());
                         name.set(e.value());
                         if let Some(s) = next_slug(&e.value(), slug_touched()) {
                             slug.set(s);

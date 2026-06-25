@@ -1,0 +1,273 @@
+//! MAPPS-302: "Big View" presentation mode for ops-center wall screens.
+//!
+//! Three routes (`/big/tickets`, `/big/dispatch`, `/big/calendar`) that
+//! render the underlying data without `AppLayout`'s sidebar / top bar /
+//! feedback launcher, with larger typography for legibility from across
+//! a room, and a periodic auto-refresh tick so the screen stays fresh
+//! without operator interaction.
+//!
+//! URL query params let the operator pre-configure the view for a
+//! specific kiosk:
+//!   - `?refresh=<seconds>` overrides the default 30-second tick.
+//!   - `?status=<name>` and `?priority=<name>` scope the Tickets view
+//!     (case-insensitive match against the server's status / priority
+//!     name field).
+//!
+//! Companion ticket: MAPPS-280 (Dispatch week / month views) will share
+//! the auto-refresh + filter-from-URL plumbing this module exposes.
+
+use dioxus::prelude::*;
+use serde::Deserialize;
+
+use crate::components::{Badge, BadgeVariant, ClockIcon, IconSize};
+use crate::utils::Paginated;
+
+const DEFAULT_REFRESH_SECS: u32 = 30;
+
+/// Read `?refresh=<seconds>` from the URL, clamped to a sane range. The
+/// default 30s keeps the screen in step with the server without
+/// hammering it; operators tune via the query param.
+fn read_refresh_seconds() -> u32 {
+    #[cfg(feature = "web")]
+    {
+        if let Some(raw) = crate::utils::url::current_query_param("refresh") {
+            if let Ok(n) = raw.parse::<u32>() {
+                return n.clamp(5, 600);
+            }
+        }
+    }
+    DEFAULT_REFRESH_SECS
+}
+
+/// Returns a signal that monotonically ticks every `seconds`. Resources
+/// that want to auto-refresh read this in their closure so Dioxus
+/// re-runs the fetch on each tick.
+fn use_periodic_tick(seconds: u32) -> Signal<u64> {
+    let mut tick = use_signal(|| 0u64);
+    use_effect(move || {
+        #[cfg(feature = "web")]
+        {
+            use wasm_bindgen::prelude::*;
+            use wasm_bindgen::JsCast;
+            let cb = Closure::wrap(Box::new(move || {
+                *tick.write() += 1;
+            }) as Box<dyn FnMut()>);
+            if let Some(win) = web_sys::window() {
+                let _ = win.set_interval_with_callback_and_timeout_and_arguments_0(
+                    cb.as_ref().unchecked_ref(),
+                    (seconds * 1000) as i32,
+                );
+            }
+            // The closure must live as long as the interval. Leak is
+            // fine here: the Big View routes are kiosk-mounted, the
+            // tab stays open for the lifetime of the session.
+            cb.forget();
+        }
+        #[cfg(not(feature = "web"))]
+        {
+            let _ = seconds;
+        }
+    });
+    tick
+}
+
+#[derive(Props, Clone, PartialEq)]
+pub struct BigLayoutProps {
+    children: Element,
+    title: String,
+}
+
+/// Stripped-down layout for the Big View routes. No sidebar, no top
+/// bar's worth of chrome. A minimal title strip + a refresh badge so
+/// the operator can see when the screen last updated, and the children
+/// rendered with a larger typographic scale via the `lc-big` class
+/// (`assets/styles.css` could pick this up if you want global
+/// adjustments later; for now the per-page `text-*` classes are
+/// applied directly).
+#[component]
+pub fn BigLayout(props: BigLayoutProps) -> Element {
+    let now_str = current_time_string();
+    rsx! {
+        div { class: "h-screen w-screen overflow-hidden bg-app text-content flex flex-col",
+            // Title strip. Sized large enough to read from across a
+            // room; no menu, no user chip, just the page name and a
+            // live clock.
+            header { class: "flex items-center justify-between px-8 py-4 border-b border-line bg-surface",
+                h1 { class: "text-3xl font-bold tracking-tight", "{props.title}" }
+                div { class: "flex items-center gap-3 text-sm text-muted",
+                    ClockIcon { size: IconSize::Small }
+                    span { "Last updated {now_str}" }
+                }
+            }
+            // Children fill the rest of the viewport.
+            main { class: "flex-1 overflow-auto px-8 py-6", {props.children} }
+        }
+    }
+}
+
+fn current_time_string() -> String {
+    #[cfg(feature = "web")]
+    {
+        if let Some(date) = web_sys::js_sys::Date::new_0()
+            .to_locale_time_string("en-US")
+            .as_string()
+        {
+            return date;
+        }
+    }
+    String::new()
+}
+
+// ===========================================================================
+// /big/tickets
+// ===========================================================================
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+struct BigTicketRow {
+    id: uuid::Uuid,
+    ticket_number: String,
+    title: String,
+    #[serde(default)]
+    company_name: String,
+    status: BigStatusRef,
+    priority: BigStatusRef,
+    #[serde(default)]
+    assigned_to_name: Option<String>,
+    #[serde(default)]
+    updated_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+struct BigStatusRef {
+    #[serde(default)]
+    name: String,
+}
+
+#[component]
+pub fn BigTicketsPage() -> Element {
+    let refresh_secs = read_refresh_seconds();
+    let tick = use_periodic_tick(refresh_secs);
+    let status_filter = crate::utils::url::current_query_param("status").unwrap_or_default();
+    let priority_filter = crate::utils::url::current_query_param("priority").unwrap_or_default();
+
+    let resource = use_resource(move || async move {
+        // Subscribe to the tick so Dioxus re-fetches on every interval
+        // firing. The value is otherwise unused.
+        let _ = *tick.read();
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<BigTicketRow>>(
+            "/tickets?per_page=50&sort=-updated_at",
+        )
+        .await
+        .ok()
+        .map(|p| p.data)
+        .unwrap_or_default()
+    });
+
+    let tickets = resource.read_unchecked().clone().unwrap_or_default();
+    let filtered: Vec<BigTicketRow> = tickets
+        .into_iter()
+        .filter(|t| {
+            if !status_filter.is_empty() && !t.status.name.eq_ignore_ascii_case(&status_filter) {
+                return false;
+            }
+            if !priority_filter.is_empty()
+                && !t.priority.name.eq_ignore_ascii_case(&priority_filter)
+            {
+                return false;
+            }
+            true
+        })
+        .collect();
+    let total = filtered.len();
+
+    rsx! {
+        BigLayout { title: "Tickets - Live Queue".to_string(),
+            if total == 0 {
+                div { class: "py-16 text-center text-2xl text-muted",
+                    "No tickets match the current filter."
+                }
+            } else {
+                div { class: "grid grid-cols-1 lg:grid-cols-2 gap-4",
+                    for t in filtered.into_iter() {
+                        BigTicketCard { key: "{t.id}", ticket: t }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct BigTicketCardProps {
+    ticket: BigTicketRow,
+}
+
+#[component]
+fn BigTicketCard(props: BigTicketCardProps) -> Element {
+    let t = props.ticket;
+    let prio_variant = match t.priority.name.to_lowercase().as_str() {
+        "critical" => BadgeVariant::Red,
+        "high" => BadgeVariant::Red,
+        "medium" => BadgeVariant::Yellow,
+        "low" => BadgeVariant::Green,
+        _ => BadgeVariant::Gray,
+    };
+    let assignee = t
+        .assigned_to_name
+        .clone()
+        .unwrap_or_else(|| "Unassigned".to_string());
+    rsx! {
+        div { class: "rounded-lg border border-line bg-surface px-6 py-4 shadow-sm",
+            div { class: "flex items-center justify-between",
+                div { class: "flex items-center gap-3",
+                    span { class: "text-xl font-semibold text-accent", "{t.ticket_number}" }
+                    Badge { variant: prio_variant, "{t.priority.name}" }
+                }
+                span { class: "text-sm text-muted", "{t.status.name}" }
+            }
+            p { class: "mt-2 text-2xl font-medium truncate", "{t.title}" }
+            div { class: "mt-2 flex items-center justify-between text-sm text-muted",
+                span { "{t.company_name}" }
+                span { "Assigned: {assignee}" }
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// /big/dispatch
+// ===========================================================================
+
+#[component]
+pub fn BigDispatchPage() -> Element {
+    let refresh_secs = read_refresh_seconds();
+    let _tick = use_periodic_tick(refresh_secs);
+    // The existing DispatchBoardPage already owns the per-technician
+    // swimlane render; embed it inside the BigLayout chrome with a
+    // larger title strip. The board itself reads the day from the
+    // signed-in user's timezone and renders per-tech rows, so the kiosk
+    // gets the same data without a code-path divergence. MAPPS-280
+    // (week / month views) will add a view-mode toggle the operator
+    // can drive via `?view=<day|week|month>`.
+    rsx! {
+        BigLayout { title: "Dispatch Board - Today".to_string(),
+            crate::pages::calendar::DispatchBoardPage {}
+        }
+    }
+}
+
+// ===========================================================================
+// /big/calendar
+// ===========================================================================
+
+#[component]
+pub fn BigCalendarPage() -> Element {
+    let refresh_secs = read_refresh_seconds();
+    let _tick = use_periodic_tick(refresh_secs);
+    rsx! {
+        BigLayout { title: "Calendar - This Week".to_string(),
+            crate::pages::calendar::CalendarPage {}
+        }
+    }
+}

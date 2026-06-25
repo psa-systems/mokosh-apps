@@ -959,8 +959,16 @@ struct MonthDayCellProps {
 
 #[component]
 fn MonthDayCell(props: MonthDayCellProps) -> Element {
+    // MAPPS-301: the today highlight was a flat `bg-accent-50`, which is
+    // near-white in Light mode (so today blends into the surrounding
+    // `bg-surface` cells - the QA "very white" report) and jarringly
+    // bright in Dark mode (no dark variant). Use the project's standard
+    // accent-50-light + accent-900/30-dark pair (already used by
+    // `layout.rs::active_nav_class` and the inline-create dropdown rows
+    // in the pickers) plus an inset accent ring so today is unambiguous
+    // at WCAG AA contrast against the neutral cells in both themes.
     let bg_class = if props.is_today {
-        "bg-accent-50"
+        "bg-accent-50 dark:bg-accent-900/30 ring-1 ring-inset ring-accent"
     } else {
         "bg-surface"
     };
@@ -1392,8 +1400,26 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
     // increments, otherwise drop into the Custom path with an explicit End.
     const PRESETS: [i64; 6] = [15, 30, 45, 60, 90, 120];
     let seed_is_preset = PRESETS.contains(&seed_duration);
-    let mut start_value = use_signal(|| utc_to_datetime_local_value(init_start));
-    let mut end_value = use_signal(|| utc_to_datetime_local_value(init_end));
+    // MAPPS-299: compute the timezone-dependent seed strings BEFORE the
+    // `use_signal` calls. The conversion routines reach into
+    // `user_timezone()` which calls `try_use_context::<Signal<AuthContext>>()`
+    // - itself a hook. Running them inside a `use_signal` initialiser
+    // therefore violates the rules of hooks ("hook list already
+    // borrowed; using a hook inside a hook") and panics on first
+    // mount in the Calendar parent (Dispatch happens to dodge the
+    // same crash because its mount path runs the modal's hook setup
+    // when the auth context is in a different borrow state). Hoisting
+    // the timezone reads above the `use_signal` calls keeps every
+    // initialiser pure.
+    let init_start_local = utc_to_datetime_local_value(init_start);
+    let init_end_local = utc_to_datetime_local_value(init_end);
+    let init_start_date = utc_to_date_value(init_start);
+    let init_end_date = {
+        let inclusive_end = (init_end - Duration::days(1)).max(init_start);
+        utc_to_date_value(inclusive_end)
+    };
+    let mut start_value = use_signal(|| init_start_local.clone());
+    let mut end_value = use_signal(|| init_end_local.clone());
     let mut duration_minutes = use_signal(|| seed_duration);
     // Which entry the duration `Select` shows: a preset string or the
     // `DURATION_CUSTOM` sentinel.
@@ -1405,13 +1431,10 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
         }
     });
     let mut all_day = use_signal(|| init_all_day);
-    let mut start_date_value = use_signal(|| utc_to_date_value(init_start));
+    let mut start_date_value = use_signal(|| init_start_date.clone());
     // All-day End date is inclusive in the UI: the persisted End is local
     // 00:00 of the day AFTER this date, so a single-day span reads as one day.
-    let mut end_date_value = use_signal(|| {
-        let inclusive_end = (init_end - Duration::days(1)).max(init_start);
-        utc_to_date_value(inclusive_end)
-    });
+    let mut end_date_value = use_signal(|| init_end_date.clone());
     let mut assignee = use_signal(|| init_assignee);
     let mut recurrence = use_signal(|| init_recurrence);
     let mut recurrence_error = use_signal(String::new);
@@ -2006,6 +2029,13 @@ pub fn DispatchBoardPage() -> Element {
     let today_real = user_today();
     let mut active_day = use_signal(|| today_real);
     let mut form_state = use_signal(|| None::<Option<AppointmentResponse>>);
+    // MAPPS-280: Day / Week / Month view-mode toggle. Day stays the
+    // per-technician swimlane (the rich existing render); Week and
+    // Month re-use the calendar's WeekGrid / MonthGrid against the
+    // dispatch appointments so a dispatcher can plan a week without
+    // navigating away. The data range expands with the view so the
+    // grid has every appointment in scope.
+    let mut view = use_signal(|| CalendarView::Day);
 
     let users_resource = use_users_resource();
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
@@ -2014,15 +2044,33 @@ pub fn DispatchBoardPage() -> Element {
 
     let mut dispatch_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        // Read the `active_day` signal INSIDE the resource closure so the
-        // resource subscribes to it and refetches when the next/previous/
-        // Today controls change the date. Computing the range outside the
-        // closure (from a value-captured `DateTime`) advanced the header
-        // but never re-ran the fetch, so the board stayed on the first
-        // day it loaded (MAPPS-153).
+        // Read the `active_day` + `view` signals INSIDE the resource closure
+        // so the resource subscribes to them and refetches when the
+        // next/previous/Today/view controls change the range. Computing
+        // outside the closure (from a value-captured `DateTime`) advanced
+        // the header but never re-ran the fetch (MAPPS-153 fix).
         let day = active_day();
-        let from_utc = local_date_start_utc(day);
-        let to_utc = local_date_start_utc(day + Duration::days(1));
+        let view = *view.read();
+        let (from_date, to_date) = match view {
+            CalendarView::Day => (day, day + Duration::days(1)),
+            CalendarView::Week => {
+                let monday = day - Duration::days(day.weekday().num_days_from_monday() as i64);
+                (monday, monday + Duration::days(7))
+            }
+            CalendarView::Month => {
+                let first = day.with_day(1).unwrap_or(day);
+                let next_month = if first.month() == 12 {
+                    chrono::NaiveDate::from_ymd_opt(first.year() + 1, 1, 1)
+                        .unwrap_or(first + Duration::days(31))
+                } else {
+                    chrono::NaiveDate::from_ymd_opt(first.year(), first.month() + 1, 1)
+                        .unwrap_or(first + Duration::days(31))
+                };
+                (first, next_month)
+            }
+        };
+        let from_utc = local_date_start_utc(from_date);
+        let to_utc = local_date_start_utc(to_date);
         #[cfg(feature = "web")]
         {
             // Emit the UTC offset as `Z`, not `+00:00`. A literal `+` in
@@ -2057,7 +2105,20 @@ pub fn DispatchBoardPage() -> Element {
         _ => None,
     };
 
-    let title = day.format("%A, %B %-d, %Y").to_string();
+    // MAPPS-280: title reflects the active view's range.
+    let title = match *view.read() {
+        CalendarView::Day => day.format("%A, %B %-d, %Y").to_string(),
+        CalendarView::Week => {
+            let monday = day - Duration::days(day.weekday().num_days_from_monday() as i64);
+            let sunday = monday + Duration::days(6);
+            format!(
+                "{} - {}",
+                monday.format("%b %-d"),
+                sunday.format("%b %-d, %Y")
+            )
+        }
+        CalendarView::Month => day.format("%B %Y").to_string(),
+    };
 
     rsx! {
         AppLayout { title: "Dispatch Board",
@@ -2087,25 +2148,67 @@ pub fn DispatchBoardPage() -> Element {
                         button {
                             r#type: "button",
                             class: "p-2 hover:bg-surface-2 rounded",
-                            title: "Previous day",
-                            aria_label: "Previous day",
-                            onclick: move |_| active_day.set(active_day() - Duration::days(1)),
+                            title: "Previous",
+                            aria_label: "Previous",
+                            onclick: move |_| {
+                                let v = *view.read();
+                                let step = match v {
+                                    CalendarView::Day => Duration::days(1),
+                                    CalendarView::Week => Duration::days(7),
+                                    CalendarView::Month => Duration::days(28),
+                                };
+                                active_day.set(active_day() - step);
+                            },
                             ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
                         }
                         h2 { class: "text-lg font-semibold text-content", "{title}" }
                         button {
                             r#type: "button",
                             class: "p-2 hover:bg-surface-2 rounded",
-                            title: "Next day",
-                            aria_label: "Next day",
-                            onclick: move |_| active_day.set(active_day() + Duration::days(1)),
+                            title: "Next",
+                            aria_label: "Next",
+                            onclick: move |_| {
+                                let v = *view.read();
+                                let step = match v {
+                                    CalendarView::Day => Duration::days(1),
+                                    CalendarView::Week => Duration::days(7),
+                                    CalendarView::Month => Duration::days(28),
+                                };
+                                active_day.set(active_day() + step);
+                            },
                             ChevronRightIcon { class: "h-5 w-5".to_string() }
                         }
                     }
-                    Button {
-                        variant: ButtonVariant::Secondary,
-                        onclick: move |_| active_day.set(today_real),
-                        "Today"
+                    div { class: "flex space-x-2",
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            onclick: move |_| active_day.set(today_real),
+                            "Today"
+                        }
+                        // MAPPS-280: Day / Week / Month view toggle.
+                        // Day = per-technician swimlane (existing rich
+                        // render). Week / Month re-use the calendar
+                        // grids over the dispatch appointments so a
+                        // dispatcher can plan a week without leaving
+                        // the surface; per-technician week swimlanes
+                        // are tracked as a follow-up under this ticket.
+                        div { class: "flex border border-line rounded-md overflow-hidden",
+                            ViewToggleButton {
+                                label: "Day",
+                                active: view() == CalendarView::Day,
+                                onclick: move |_| view.set(CalendarView::Day),
+                            }
+                            ViewToggleButton {
+                                label: "Week",
+                                active: view() == CalendarView::Week,
+                                onclick: move |_| view.set(CalendarView::Week),
+                            }
+                            ViewToggleButton {
+                                label: "Month",
+                                active: view() == CalendarView::Month,
+                                onclick: move |_| view.set(CalendarView::Month),
+                            }
+                        }
                     }
                 }
 
@@ -2119,11 +2222,31 @@ pub fn DispatchBoardPage() -> Element {
                     if is_loading {
                         div { class: "py-12 text-center text-sm text-muted", "Loading dispatch board..." }
                     } else if let Some(d) = dispatch.as_ref() {
-                        DispatchTimeline {
-                            day,
-                            dispatch: d.clone(),
-                            users: users.clone(),
-                            onpick: move |a| form_state.set(Some(Some(a))),
+                        match view() {
+                            CalendarView::Day => rsx! {
+                                DispatchTimeline {
+                                    day,
+                                    dispatch: d.clone(),
+                                    users: users.clone(),
+                                    onpick: move |a| form_state.set(Some(Some(a))),
+                                }
+                            },
+                            CalendarView::Week => rsx! {
+                                WeekGrid {
+                                    active_date: day,
+                                    today: today_real,
+                                    appointments: d.appointments.clone(),
+                                    onpick: move |a| form_state.set(Some(Some(a))),
+                                }
+                            },
+                            CalendarView::Month => rsx! {
+                                MonthGrid {
+                                    active_date: day,
+                                    today: today_real,
+                                    appointments: d.appointments.clone(),
+                                    onpick: move |a| form_state.set(Some(Some(a))),
+                                }
+                            },
                         }
                     }
                 }

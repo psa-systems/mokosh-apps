@@ -331,11 +331,83 @@ fn AuditLogContent() -> Element {
         || !from_text.is_empty()
         || !to_text.is_empty();
 
+    // PMS-455: build the export URL with the same filter envelope the
+    // list resource uses, so what the user sees in the table is what
+    // gets downloaded. Browser handles the actual download via a real
+    // anchor target so we get the `Content-Disposition` filename
+    // verbatim and the Authorization header isn't an issue (the
+    // session cookie carries through on same-origin navigations).
+    let export_href = {
+        let mut q = Vec::<String>::new();
+        if !entity_text.is_empty() {
+            q.push(format!(
+                "entity_type={}",
+                crate::utils::url::urlencoding_minimal(&entity_text)
+            ));
+        }
+        if !action_text.is_empty() {
+            q.push(format!(
+                "action={}",
+                crate::utils::url::urlencoding_minimal(&action_text)
+            ));
+        }
+        if !user_text.is_empty() {
+            q.push(format!(
+                "user_id={}",
+                crate::utils::url::urlencoding_minimal(&user_text)
+            ));
+        }
+        if !from_text.is_empty() {
+            q.push(format!(
+                "from={}",
+                crate::utils::url::urlencoding_minimal(&from_text)
+            ));
+        }
+        if !to_text.is_empty() {
+            q.push(format!(
+                "to={}",
+                crate::utils::url::urlencoding_minimal(&to_text)
+            ));
+        }
+        let qstr = if q.is_empty() {
+            String::new()
+        } else {
+            format!("?{}", q.join("&"))
+        };
+        // `api_base()` returns the API origin + `/api/v1`; the route
+        // prefix matches the list endpoint above.
+        let base = crate::hooks::fetch::api::api_base();
+        format!("{base}/audit-log/export.csv{qstr}")
+    };
+
+    // PMS-474: dated filename so an admin who downloads CSVs from
+    // several days running gets distinct files rather than the
+    // browser appending `(1)`, `(2)`, ... to identical names.
+    // Computed at render time (not memoised) so an operator who
+    // leaves the page open across midnight still gets today's date
+    // on the next click.
+    let export_filename = format!("audit-log-{}.csv", chrono::Utc::now().format("%Y-%m-%d"));
+
     rsx! {
         AppLayout { title: "Audit Log",
             PageHeader {
                 title: "Audit Log",
                 subtitle: "Review who changed what, and when",
+                // PMS-455 / PMS-474: download CSV of the currently-
+                // filtered set. The `href` is a plain anchor (not a
+                // JS-driven button) so the same-origin auth cookie
+                // travels with the navigation. The `download` attr
+                // forces a dated filename ("audit-log-YYYY-MM-DD.csv")
+                // regardless of the server's Content-Disposition so
+                // an admin gets distinct files across runs.
+                actions: rsx! {
+                    a {
+                        href: "{export_href}",
+                        "download": "{export_filename}",
+                        class: "inline-flex items-center px-4 py-2 text-sm font-medium rounded-md border border-line hover:bg-surface-2 text-content",
+                        "Download CSV"
+                    }
+                },
             }
 
             // Filters
