@@ -155,3 +155,12 @@ pub struct UpdateKbArticleRequest {
     pub status: Option<String>,
     pub tags: Option<Vec<String>>,
 }
+
+/// PMS-485: one row of the `/kb/top-ticket-driving-articles` feed used
+/// by the KB landing-page widget.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct TopTicketDrivingArticle {
+    pub id: Uuid,
+    pub title: String,
+    pub ticket_count: i64,
+}

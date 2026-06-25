@@ -44,9 +44,18 @@ pub struct InputProps {
     /// Whether input is disabled
     #[props(default = false)]
     disabled: bool,
-    /// Error message
+    /// Error message. An explicit value here (e.g. a server `field_message`)
+    /// always wins over the component's own rule-based validation below.
     #[props(default)]
     error: String,
+    /// Validation rules evaluated against `value` once the field is touched
+    /// (PMS-516). The first failing rule's message renders in the inline error
+    /// slot. Empty by default, so existing call sites are unaffected until they
+    /// opt in. `error` overrides these. Submit-time validation (forcing every
+    /// field to evaluate even if never focused) lands with the form submit
+    /// guard (PMS-517); this component validates on blur and on subsequent input.
+    #[props(default)]
+    rules: Vec<crate::utils::validation::Rule>,
     /// Help text
     #[props(default)]
     help: String,
@@ -59,12 +68,32 @@ pub struct InputProps {
     /// Stable selector for browser-automation tests (PMC-111).
     #[props(default)]
     data_testid: Option<String>,
+    /// MAPPS-314: optional `aria-label` for visually-unlabeled inputs
+    /// (e.g. `GlobalSearch` which renders a placeholder + magnifier
+    /// only). Skipped when empty so the existing per-field visible
+    /// `<label for>` keeps doing the work for the common case.
+    #[props(default)]
+    aria_label: String,
 }
 
 /// Text input component
 #[component]
 pub fn Input(props: InputProps) -> Element {
-    let input_class = if props.error.is_empty() {
+    // PMS-516: component-owned validation. The field is "touched" once the user
+    // blurs it; from then on it re-validates on every keystroke so the error
+    // clears as the value is corrected. An explicit `error` prop (server field
+    // error) always wins over the rule-based message.
+    let mut touched = use_signal(|| false);
+    let shown_error = if !props.error.is_empty() {
+        props.error.clone()
+    } else if touched() {
+        crate::utils::validation::validate(&props.value, &props.label, &props.rules)
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let input_class = if shown_error.is_empty() {
         "block w-full rounded-md border-line shadow-sm focus:border-accent focus:ring-accent bg-surface text-content sm:text-sm"
     } else {
         "block w-full rounded-md border-red-300 shadow-sm focus:border-red-500 focus:ring-red-500 bg-surface dark:border-red-600 text-content sm:text-sm"
@@ -84,6 +113,15 @@ pub fn Input(props: InputProps) -> Element {
                     }
                 }
             }
+            // MAPPS-277: stop attaching the HTML5 `required` attribute, which
+            // surfaces the browser-native "Please fill out this field" tooltip
+            // on submit. Forms now route every required-field check through
+            // their own per-field validators (e.g. `validate_name_field`,
+            // MAPPS-281 trim-and-set inline error), so the cue surfaces as a
+            // styled inline error message under the field instead of the OS
+            // bubble. Keep `aria-required` so assistive tech still announces
+            // the field as required, and keep the visible asterisk in the
+            // label for sighted users.
             input {
                 id: "{props.name}",
                 name: "{props.name}",
@@ -95,14 +133,16 @@ pub fn Input(props: InputProps) -> Element {
                 class: "{class}",
                 placeholder: "{props.placeholder}",
                 value: "{props.value}",
-                required: props.required,
+                aria_required: if props.required { "true" } else { "false" },
+                aria_label: if props.aria_label.is_empty() { None } else { Some(props.aria_label.clone()) },
                 disabled: props.disabled,
                 "data-testid": props.data_testid.as_deref(),
                 oninput: move |e| props.oninput.call(e),
+                onblur: move |_| touched.set(true),
             }
-            if !props.error.is_empty() {
+            if !shown_error.is_empty() {
                 p { class: "text-sm leading-5 text-red-600 dark:text-red-400",
-                    "{props.error}"
+                    "{shown_error}"
                 }
             } else if !props.help.is_empty() {
                 p { class: "text-sm leading-5 text-muted",
@@ -121,8 +161,13 @@ pub fn Input(props: InputProps) -> Element {
 /// Behavior (documented, consistent everywhere):
 /// - The native picker only ever yields a complete date or an empty string, so
 ///   a half-entered date can't be saved.
-/// - `required: true` marks the field (asterisk + native `required`); the
-///   form's submit handler rejects an empty value with a visible error.
+/// - `required: true` marks the field with an asterisk + `aria_required` (the
+///   native HTML `required` attribute is NOT set - MAPPS-277 removed it because
+///   every form `prevent_default`s, so it would never fire). Enforcement comes
+///   from passing `rules` (PMS-516, e.g. `[Rule::Required]`), which the
+///   underlying [`Input`] validates on blur and drives into the inline error
+///   slot; otherwise the form's submit handler is responsible for rejecting an
+///   empty value.
 /// - An empty optional field saves as "no date" (the documented default).
 #[derive(Props, Clone, PartialEq)]
 pub struct DateFieldProps {
@@ -137,6 +182,9 @@ pub struct DateFieldProps {
     disabled: bool,
     #[props(default)]
     error: String,
+    /// Validation rules (PMS-516); forwarded to the underlying [`Input`].
+    #[props(default)]
+    rules: Vec<crate::utils::validation::Rule>,
     #[props(default)]
     help: String,
     /// Earliest selectable date. Defaults to a sane lower bound so a fumbled
@@ -166,6 +214,7 @@ pub fn DateField(props: DateFieldProps) -> Element {
             required: props.required,
             disabled: props.disabled,
             error: props.error,
+            rules: props.rules,
             help: props.help,
             oninput: move |e| props.oninput.call(e),
         }
@@ -190,6 +239,9 @@ pub struct TextareaProps {
     disabled: bool,
     #[props(default)]
     error: String,
+    /// Validation rules (PMS-516); see [`InputProps::rules`]. `error` overrides.
+    #[props(default)]
+    rules: Vec<crate::utils::validation::Rule>,
     #[props(default)]
     help: String,
     /// `maxlength` attribute. Caps how many characters the textarea accepts so
@@ -205,7 +257,18 @@ pub struct TextareaProps {
 
 #[component]
 pub fn Textarea(props: TextareaProps) -> Element {
-    let input_class = if props.error.is_empty() {
+    // PMS-516: component-owned validation (see `Input`). `error` overrides.
+    let mut touched = use_signal(|| false);
+    let shown_error = if !props.error.is_empty() {
+        props.error.clone()
+    } else if touched() {
+        crate::utils::validation::validate(&props.value, &props.label, &props.rules)
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let input_class = if shown_error.is_empty() {
         "block w-full rounded-md border-line shadow-sm focus:border-accent focus:ring-accent bg-surface text-content sm:text-sm"
     } else {
         "block w-full rounded-md border-red-300 shadow-sm focus:border-red-500 focus:ring-red-500 bg-surface dark:border-red-600 text-content sm:text-sm"
@@ -225,6 +288,11 @@ pub fn Textarea(props: TextareaProps) -> Element {
                     }
                 }
             }
+            // MAPPS-277: drop HTML5 `required` so the browser-native tooltip
+            // doesn't fire; keep `aria-required` for assistive tech and the
+            // asterisk in the label for sighted users. Forms validate
+            // required textareas (e.g. ticket description) in their submit
+            // handler and surface the error inline via `props.error`.
             textarea {
                 id: "{props.name}",
                 name: "{props.name}",
@@ -232,14 +300,15 @@ pub fn Textarea(props: TextareaProps) -> Element {
                 placeholder: "{props.placeholder}",
                 rows: "{props.rows}",
                 maxlength: props.maxlength,
-                required: props.required,
+                aria_required: if props.required { "true" } else { "false" },
                 disabled: props.disabled,
                 oninput: move |e| props.oninput.call(e),
+                onblur: move |_| touched.set(true),
                 "{props.value}"
             }
-            if !props.error.is_empty() {
+            if !shown_error.is_empty() {
                 p { class: "text-sm leading-5 text-red-600 dark:text-red-400",
-                    "{props.error}"
+                    "{shown_error}"
                 }
             } else if !props.help.is_empty() {
                 p { class: "text-sm leading-5 text-muted",
@@ -285,6 +354,10 @@ pub struct SelectProps {
     disabled: bool,
     #[props(default)]
     error: String,
+    /// Validation rules (PMS-516); see [`InputProps::rules`]. `error` overrides.
+    /// Typically `[Rule::Required]` or `[Rule::Uuid]` for a picker `<select>`.
+    #[props(default)]
+    rules: Vec<crate::utils::validation::Rule>,
     #[props(default)]
     help: String,
     #[props(default)]
@@ -295,7 +368,18 @@ pub struct SelectProps {
 
 #[component]
 pub fn Select(props: SelectProps) -> Element {
-    let input_class = if props.error.is_empty() {
+    // PMS-516: component-owned validation (see `Input`). `error` overrides.
+    let mut touched = use_signal(|| false);
+    let shown_error = if !props.error.is_empty() {
+        props.error.clone()
+    } else if touched() {
+        crate::utils::validation::validate(&props.value, &props.label, &props.rules)
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let input_class = if shown_error.is_empty() {
         "block w-full rounded-md border-line shadow-sm focus:border-accent focus:ring-accent bg-surface text-content sm:text-sm"
     } else {
         "block w-full rounded-md border-red-300 shadow-sm focus:border-red-500 focus:ring-red-500 bg-surface dark:border-red-600 text-content sm:text-sm"
@@ -315,13 +399,31 @@ pub fn Select(props: SelectProps) -> Element {
                     }
                 }
             }
+            // MAPPS-270: bind the saved value to the `<select>` element
+            // itself (not just per-option `selected` attributes) so the
+            // displayed choice follows the controlled `props.value` after
+            // an external mutation (e.g. the ticket detail inline editors
+            // restart the ticket resource, which re-renders this Select
+            // with a new prop value). Without the element-level `value`
+            // binding the browser keeps the user's last click on screen
+            // even when the underlying state diverges, which read as
+            // "the change failed" on the inline Status / Priority /
+            // Assigned-To editors (the value did persist, the dropdown
+            // just refused to repaint until a manual reload). The
+            // per-option `selected` binding stays for the initial paint
+            // before Dioxus mounts.
             select {
                 id: "{props.name}",
                 name: "{props.name}",
                 class: "{class}",
-                required: props.required,
+                // MAPPS-277: aria-required only; the HTML5 `required` attr
+                // would surface the browser-native tooltip on submit, which
+                // the form's own validation already replaces inline.
+                aria_required: if props.required { "true" } else { "false" },
                 disabled: props.disabled,
+                value: "{props.value}",
                 onchange: move |e| props.onchange.call(e),
+                onblur: move |_| touched.set(true),
                 if !props.placeholder.is_empty() {
                     option { value: "", disabled: true, selected: props.value.is_empty(),
                         "{props.placeholder}"
@@ -337,9 +439,9 @@ pub fn Select(props: SelectProps) -> Element {
                     }
                 }
             }
-            if !props.error.is_empty() {
+            if !shown_error.is_empty() {
                 p { class: "text-sm leading-5 text-red-600 dark:text-red-400",
-                    "{props.error}"
+                    "{shown_error}"
                 }
             } else if !props.help.is_empty() {
                 p { class: "text-sm leading-5 text-muted",

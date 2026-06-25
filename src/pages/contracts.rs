@@ -26,7 +26,7 @@ use crate::modules::contracts::{
     UpsertRateCardRequest,
 };
 use crate::utils::url::urlencoding_minimal;
-use crate::utils::Paginated;
+use crate::utils::{FormGuard, Paginated};
 use crate::Route;
 
 /// Rows per page for the contract list (mirrors `contacts.rs` PER_PAGE).
@@ -102,7 +102,33 @@ struct CompanyOption {
 /// `company_id` / `status` / `contract_type` filters.
 #[component]
 pub fn ContractListPage() -> Element {
-    let mut company_filter = use_signal(String::new);
+    // MAPPS-271: gate the page on `can_manage_billing` before mounting
+    // any of the fetchers. The server's `list_contracts` route is
+    // `RequireFinance`-gated so a non-finance role hits a 403, and the
+    // generic fetch-failed banner that follows reads as a transient
+    // error ("Could not load contracts. Refresh the page to retry.")
+    // when the cause is actually a permanent permission boundary.
+    // Render the same `PermissionRequired` empty state the Invoices /
+    // Payments pages have always used, so every billing-gated list
+    // looks consistent. Most users hit this branch only as a
+    // theoretical fallback now that PMS-447 floor-promotes Bunyip
+    // subscribers to tenant Admin (Admin already passes
+    // `can_manage_billing()`); the standardised UI still matters for a
+    // future role downgrade or a tenant-internal grant change.
+    if !use_can_manage_billing() {
+        return rsx! {
+            crate::components::PermissionRequired {
+                title: "Contracts".to_string(),
+                body: "Contracts are restricted to administrator and finance roles. Ask an administrator to grant you access.".to_string(),
+            }
+        };
+    }
+
+    // MAPPS-249: seed the company filter from `?company_id=<uuid>` so a context
+    // card's "View All" lands here scoped to that company (the dropdown also
+    // reflects the selection once its options load).
+    let mut company_filter =
+        use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     let mut status_filter = use_signal(String::new);
     let mut type_filter = use_signal(String::new);
     let mut page = use_signal(|| 1usize);
@@ -274,10 +300,22 @@ pub fn ContractListPage() -> Element {
                         if has_filters {
                             // Filtered to nothing: no CTA (creating won't help);
                             // guide the user back to the filters.
+                            // MAPPS-291: one-click "Clear filters" affordance.
                             TableEmpty {
                                 columns: 6,
                                 title: "No contracts match your filters".to_string(),
-                                description: "Try clearing or adjusting the filters above.".to_string(),
+                                description: "Adjust the filters above, or clear them to see every contract again.".to_string(),
+                                actions: rsx! {
+                                    Button {
+                                        variant: ButtonVariant::Secondary,
+                                        onclick: move |_| {
+                                            company_filter.set(String::new());
+                                            status_filter.set(String::new());
+                                            type_filter.set(String::new());
+                                        },
+                                        "Clear filters"
+                                    }
+                                },
                             }
                         } else {
                             TableEmpty {
@@ -375,10 +413,34 @@ fn ContractRow(props: ContractRowProps) -> Element {
 /// New contract page.
 #[component]
 pub fn ContractNewPage() -> Element {
+    // MAPPS-300: pre-fill `company_id` from the URL so the Company detail
+    // "New Contract" CTA lands on a form already scoped to that company.
+    let initial = ContractFormValues {
+        company_id: crate::utils::url::current_query_param("company_id").unwrap_or_default(),
+        ..ContractFormValues::default()
+    };
     rsx! {
         AppLayout { title: "New Contract",
-            PageHeader { title: "New Contract", subtitle: "Create a new contract" }
-            ContractForm { mode: ContractFormMode::Create, initial: ContractFormValues::default() }
+            PageHeader {
+                title: "New Contract",
+                subtitle: "Create a new contract",
+                // MAPPS-294: breadcrumb back to the Contracts list.
+                breadcrumbs: rsx! {
+                    crate::components::Breadcrumbs {
+                        items: vec![
+                            crate::components::BreadcrumbItem {
+                                label: "Contracts".to_string(),
+                                route: Some(Route::ContractList {}),
+                            },
+                            crate::components::BreadcrumbItem {
+                                label: "New Contract".to_string(),
+                                route: None,
+                            },
+                        ],
+                    }
+                },
+            }
+            ContractForm { mode: ContractFormMode::Create, initial }
         }
     }
 }
@@ -855,6 +917,27 @@ fn ContractForm(props: ContractFormProps) -> Element {
         }
 
         if !ok {
+            // PMS-518: the validation above already collects every field error at
+            // once (MAPPS-211); add focus-first-invalid via FormGuard. The
+            // per-field err signals were set in field order, so focus the first
+            // non-empty one (each id matches the field's `name`/DOM id). Line-item
+            // row errors have no single focusable id, so they fall back to no
+            // focus (still blocked) when no top-level field is also invalid.
+            let first_invalid = [
+                ("name", !name_err.read().is_empty()),
+                ("company", !company_err.read().is_empty()),
+                ("billing_amount", !billing_err.read().is_empty()),
+                ("start_date", !start_err.read().is_empty()),
+                ("end_date", !end_err.read().is_empty()),
+                ("contract_number", !number_err.read().is_empty()),
+                ("notes", !notes_err.read().is_empty()),
+            ]
+            .into_iter()
+            .find(|(_, bad)| *bad)
+            .map(|(id, _)| id);
+            let mut guard = FormGuard::new();
+            guard.note_invalid(first_invalid);
+            guard.blocked();
             return;
         }
 
@@ -1490,7 +1573,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                         div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
                             div { class: "lg:col-span-2 space-y-6",
                                 Card { title: "Contract Details",
-                                    dl { class: "grid grid-cols-2 gap-4",
+                                    dl { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                         div {
                                             dt { class: "text-sm text-muted", "Contract Type" }
                                             dd { class: "mt-1 font-medium", "{type_label}" }
@@ -1737,6 +1820,11 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
     let mut deleting = use_signal(|| false);
     let mut confirm_delete = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // PMS-518: per-field inline validation errors so each failure shows under
+    // its own field and a FormGuard can focus the first invalid one.
+    let mut name_err = use_signal(String::new);
+    let mut qty_err = use_signal(String::new);
+    let mut price_err = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -1749,37 +1837,50 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        // PMS-518: accumulate every field error (clearing stale ones first)
+        // instead of bailing on the first failure, then focus-first via
+        // FormGuard. The existing typed parsers are kept so their returned
+        // values still build the request body.
+        name_err.set(String::new());
+        qty_err.set(String::new());
+        price_err.set(String::new());
+        let mut ok = true;
+
         let name_val = name.read().trim().to_string();
         if name_val.is_empty() {
-            error.set("Name is required.".to_string());
-            return;
+            name_err.set("Name is required.".to_string());
+            ok = false;
         }
         let qty_val = match quantity.read().trim().parse::<Decimal>() {
-            Ok(d) if !d.is_sign_negative() => d,
+            Ok(d) if !d.is_sign_negative() => Some(d),
             Ok(_) => {
-                error.set("Quantity cannot be negative.".to_string());
-                return;
+                qty_err.set("Quantity cannot be negative.".to_string());
+                ok = false;
+                None
             }
             Err(_) => {
-                error.set("Quantity is required and must be a number.".to_string());
-                return;
+                qty_err.set("Quantity is required and must be a number.".to_string());
+                ok = false;
+                None
             }
         };
         // Unit price is optional; a blank value bills at zero.
         let price_val = {
             let raw = unit_price.read().trim().to_string();
             if raw.is_empty() {
-                Decimal::ZERO
+                Some(Decimal::ZERO)
             } else {
                 match raw.parse::<Decimal>() {
-                    Ok(d) if !d.is_sign_negative() => d,
+                    Ok(d) if !d.is_sign_negative() => Some(d),
                     Ok(_) => {
-                        error.set("Unit price cannot be negative.".to_string());
-                        return;
+                        price_err.set("Unit price cannot be negative.".to_string());
+                        ok = false;
+                        None
                     }
                     Err(_) => {
-                        error.set("Unit price must be a number.".to_string());
-                        return;
+                        price_err.set("Unit price must be a number.".to_string());
+                        ok = false;
+                        None
                     }
                 }
             }
@@ -1792,6 +1893,25 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
                 t
             }
         };
+
+        if !ok {
+            let first_invalid = [
+                ("contract_item_name", !name_err.read().is_empty()),
+                ("contract_item_qty", !qty_err.read().is_empty()),
+                ("contract_item_price", !price_err.read().is_empty()),
+            ]
+            .into_iter()
+            .find(|(_, bad)| *bad)
+            .map(|(id, _)| id);
+            let mut guard = FormGuard::new();
+            guard.note_invalid(first_invalid);
+            guard.blocked();
+            return;
+        }
+
+        // Validated above: both parse to a value when `ok` holds.
+        let qty_val = qty_val.expect("quantity validated above");
+        let price_val = price_val.expect("unit price validated above");
 
         saving.set(true);
         error.set(String::new());
@@ -1907,6 +2027,7 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
                 placeholder: "e.g. Managed Workstation",
                 required: true,
                 value: name.read().clone(),
+                error: name_err(),
                 oninput: move |e: FormEvent| name.set(e.value()),
             }
             crate::components::Select {
@@ -1924,6 +2045,7 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
                 min: "0".to_string(),
                 required: true,
                 value: quantity.read().clone(),
+                error: qty_err(),
                 oninput: move |e: FormEvent| quantity.set(e.value()),
             }
             crate::components::Input {
@@ -1934,6 +2056,7 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
                 min: "0".to_string(),
                 placeholder: "0.00",
                 value: unit_price.read().clone(),
+                error: price_err(),
                 oninput: move |e: FormEvent| unit_price.set(e.value()),
             }
         }
@@ -2106,6 +2229,8 @@ fn AllotmentFormModal(props: AllotmentFormModalProps) -> Element {
     let mut allotted = use_signal(|| initial.clone());
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // PMS-518: per-field inline error so a FormGuard can focus the field.
+    let mut allotted_err = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -2115,24 +2240,34 @@ fn AllotmentFormModal(props: AllotmentFormModalProps) -> Element {
         if *saving.read() {
             return;
         }
-        // Allotted hours are optional; blank clears the allotment.
+        allotted_err.set(String::new());
+        // Allotted hours are optional; blank clears the allotment. The outer
+        // `Option` distinguishes a parse failure (`None`) from a valid blank
+        // (`Some(None)`), so the parsed value still feeds the request body.
         let included = {
             let raw = allotted.read().trim().to_string();
             if raw.is_empty() {
-                None
+                Some(None)
             } else {
                 match raw.parse::<Decimal>() {
-                    Ok(d) if !d.is_sign_negative() => Some(d),
+                    Ok(d) if !d.is_sign_negative() => Some(Some(d)),
                     Ok(_) => {
-                        error.set("Allotted hours cannot be negative.".to_string());
-                        return;
+                        allotted_err.set("Allotted hours cannot be negative.".to_string());
+                        None
                     }
                     Err(_) => {
-                        error.set("Allotted hours must be a number.".to_string());
-                        return;
+                        allotted_err.set("Allotted hours must be a number.".to_string());
+                        None
                     }
                 }
             }
+        };
+        // PMS-518: single validated field, so focus it directly on failure.
+        let Some(included) = included else {
+            let mut guard = FormGuard::new();
+            guard.note_invalid(Some("contract_allotted_hours"));
+            guard.blocked();
+            return;
         };
 
         saving.set(true);
@@ -2202,6 +2337,7 @@ fn AllotmentFormModal(props: AllotmentFormModalProps) -> Element {
                 min: "0".to_string(),
                 placeholder: "0",
                 value: allotted.read().clone(),
+                error: allotted_err(),
                 oninput: move |e: FormEvent| allotted.set(e.value()),
             }
         }
@@ -2222,6 +2358,20 @@ pub fn RateCardListPage(
     open_create: bool,
 ) -> Element {
     let can_edit = use_can_manage_billing();
+    // MAPPS-271: same posture as ContractListPage above. `list_rate_cards`
+    // on the server is `RequireFinance`-gated, so a non-finance role
+    // hit the generic "Could not load rate cards. Refresh the page to
+    // retry." banner that read as transient when it was actually a
+    // permission boundary. Render the shared `PermissionRequired`
+    // empty state instead.
+    if !can_edit {
+        return rsx! {
+            crate::components::PermissionRequired {
+                title: "Rate Cards".to_string(),
+                body: "Rate cards are restricted to administrator and finance roles. Ask an administrator to grant you access.".to_string(),
+            }
+        };
+    }
     let navigator = use_navigator();
     let mut page = use_signal(|| 1usize);
     let mut editing = use_signal(move || {
@@ -2802,6 +2952,8 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // PMS-518: per-field inline error for Name so a FormGuard can focus it.
+    let mut name_err = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -2813,8 +2965,13 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        name_err.set(String::new());
         if name.read().trim().is_empty() {
-            error.set("Name is required.".to_string());
+            // PMS-518: single validated field, so focus it directly on failure.
+            name_err.set("Name is required.".to_string());
+            let mut guard = FormGuard::new();
+            guard.note_invalid(Some("rate_card_name"));
+            guard.blocked();
             return;
         }
         saving.set(true);
@@ -2895,6 +3052,7 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
                 placeholder: "e.g. Standard 2026",
                 required: true,
                 value: name.read().clone(),
+                error: name_err(),
                 oninput: move |e: FormEvent| name.set(e.value()),
             }
             crate::components::Input {
@@ -2975,6 +3133,12 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // PMS-518: per-field inline validation errors so each failure shows under
+    // its own field and a FormGuard can focus the first invalid one.
+    let mut wt_err = use_signal(String::new);
+    let mut hourly_err = use_signal(String::new);
+    let mut after_err = use_signal(String::new);
+    let mut emergency_err = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -3004,51 +3168,103 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
         if *saving.read() || *deleting.read() {
             return;
         }
+        // PMS-518: accumulate every field error (clearing stale ones first)
+        // instead of bailing on the first failure, then focus-first via
+        // FormGuard. The existing typed parsers are kept so their returned
+        // values still build the request body.
+        wt_err.set(String::new());
+        hourly_err.set(String::new());
+        after_err.set(String::new());
+        emergency_err.set(String::new());
+        let mut ok = true;
+
         let wt = work_type_id.read().trim().to_string();
-        if wt.is_empty() {
-            error.set("Pick a work type.".to_string());
-            return;
-        }
-        let work_type_uuid = match Uuid::parse_str(&wt) {
-            Ok(u) => u,
-            Err(_) => {
-                error.set("Invalid work type.".to_string());
-                return;
+        let work_type_uuid = if wt.is_empty() {
+            wt_err.set("Pick a work type.".to_string());
+            ok = false;
+            None
+        } else {
+            match Uuid::parse_str(&wt) {
+                Ok(u) => Some(u),
+                Err(_) => {
+                    wt_err.set("Invalid work type.".to_string());
+                    ok = false;
+                    None
+                }
             }
         };
         let hourly_str = hourly.read().trim().to_string();
         let hourly_val = match hourly_str.parse::<Decimal>() {
-            Ok(d) => d,
+            Ok(d) => Some(d),
             Err(_) => {
-                error.set("Hourly rate is required and must be a number.".to_string());
-                return;
+                hourly_err.set("Hourly rate is required and must be a number.".to_string());
+                ok = false;
+                None
             }
         };
         let after_str = after.read().trim().to_string();
         let after_val = match parse_money_opt(&after_str) {
-            Ok(v) => v,
+            Ok(v) => Some(v),
             Err(e) => {
-                error.set(e);
-                return;
+                after_err.set(e);
+                ok = false;
+                None
             }
         };
         let emergency_str = emergency.read().trim().to_string();
         let emergency_val = match parse_money_opt(&emergency_str) {
-            Ok(v) => v,
+            Ok(v) => Some(v),
             Err(e) => {
-                error.set(e);
-                return;
+                emergency_err.set(e);
+                ok = false;
+                None
             }
         };
         // `min="0"` on the inputs is only advisory (paste/programmatic input
-        // bypasses it), so reject negative rates client-side too.
-        if hourly_val.is_sign_negative()
-            || after_val.map(|v| v.is_sign_negative()).unwrap_or(false)
-            || emergency_val.map(|v| v.is_sign_negative()).unwrap_or(false)
-        {
-            error.set("Rates cannot be negative.".to_string());
+        // bypasses it), so reject negative rates client-side too. Route each
+        // negative onto its own field; a failed parse already errored that
+        // field (its value is `None`), so the check below skips it.
+        if let Some(h) = hourly_val {
+            if h.is_sign_negative() {
+                hourly_err.set("Rates cannot be negative.".to_string());
+                ok = false;
+            }
+        }
+        if let Some(Some(a)) = after_val {
+            if a.is_sign_negative() {
+                after_err.set("Rates cannot be negative.".to_string());
+                ok = false;
+            }
+        }
+        if let Some(Some(em)) = emergency_val {
+            if em.is_sign_negative() {
+                emergency_err.set("Rates cannot be negative.".to_string());
+                ok = false;
+            }
+        }
+
+        if !ok {
+            let first_invalid = [
+                ("rate_item_work_type", !wt_err.read().is_empty()),
+                ("rate_item_hourly", !hourly_err.read().is_empty()),
+                ("rate_item_after", !after_err.read().is_empty()),
+                ("rate_item_emergency", !emergency_err.read().is_empty()),
+            ]
+            .into_iter()
+            .find(|(_, bad)| *bad)
+            .map(|(id, _)| id);
+            let mut guard = FormGuard::new();
+            guard.note_invalid(first_invalid);
+            guard.blocked();
             return;
         }
+
+        // Validated above: every field parsed to a value when `ok` holds.
+        let work_type_uuid = work_type_uuid.expect("work type validated above");
+        let hourly_val = hourly_val.expect("hourly rate validated above");
+        let after_val = after_val.expect("after-hours rate validated above");
+        let emergency_val = emergency_val.expect("emergency rate validated above");
+
         saving.set(true);
         error.set(String::new());
         let body = UpsertRateCardItemRequest {
@@ -3120,6 +3336,7 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
                 options,
                 value: work_type_id.read().clone(),
                 disabled: is_edit,
+                error: wt_err(),
                 onchange: move |e: FormEvent| work_type_id.set(e.value()),
             }
             crate::components::Input {
@@ -3130,6 +3347,7 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
                 min: "0".to_string(),
                 required: true,
                 value: hourly.read().clone(),
+                error: hourly_err(),
                 oninput: move |e: FormEvent| hourly.set(e.value()),
             }
             crate::components::Input {
@@ -3140,6 +3358,7 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
                 min: "0".to_string(),
                 placeholder: "Optional",
                 value: after.read().clone(),
+                error: after_err(),
                 oninput: move |e: FormEvent| after.set(e.value()),
             }
             crate::components::Input {
@@ -3150,6 +3369,7 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
                 min: "0".to_string(),
                 placeholder: "Optional",
                 value: emergency.read().clone(),
+                error: emergency_err(),
                 oninput: move |e: FormEvent| emergency.set(e.value()),
             }
         }

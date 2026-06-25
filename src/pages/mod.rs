@@ -9,15 +9,19 @@
 //! the hub.
 
 pub mod admin;
+pub mod approvals;
 pub mod assets;
 pub mod audit_log;
 pub mod auth_callback;
+pub mod big_view;
 pub mod billing;
 pub mod button_showcase;
 pub mod calendar;
 pub mod contacts;
 pub mod contracts;
 pub mod dashboard;
+pub mod dashboards;
+pub mod dashboards_view;
 pub mod home;
 pub mod knowledge_base;
 pub mod not_found;

@@ -10,6 +10,15 @@ use mokosh_apps::hooks::{
 use mokosh_apps::Route;
 
 fn main() {
+    // MAPPS-299: install the wasm panic hook BEFORE anything else runs so
+    // a panic during boot (snapshot_initial_search, the first render,
+    // hook setup) still produces a readable trace in the browser console
+    // instead of an opaque `RuntimeError: unreachable` at a hex offset.
+    // Web-only: the desktop / native builds inherit the default Rust
+    // panic handler, which already writes to stderr.
+    #[cfg(target_arch = "wasm32")]
+    console_error_panic_hook::set_once();
+
     // Snapshot ?code=...&state=... BEFORE the Dioxus Router mounts.
     // Dioxus 0.7's router can `history.replaceState` the URL to match
     // its declared route shape (no query params in our `/auth/callback`

@@ -3,6 +3,8 @@
 //! This module contains reusable Dioxus components used throughout the application.
 
 mod asset_picker;
+mod bar_chart;
+mod bulk_actions;
 mod button;
 mod card;
 mod collapsible_card;
@@ -10,12 +12,14 @@ mod collapsible_rail;
 mod company_picker;
 mod contact_picker;
 mod form;
+mod global_search;
 mod icon_button;
 mod icons;
 mod layout;
 mod markdown;
 mod modal;
 mod overflow_actions;
+mod permission_state;
 mod setting_form_modal;
 mod skeleton;
 mod status_badge;
@@ -24,6 +28,8 @@ mod theme_picker;
 mod update_banner;
 
 pub use asset_picker::*;
+pub use bar_chart::*;
+pub use bulk_actions::*;
 pub use button::*;
 pub use card::*;
 pub use collapsible_card::*;
@@ -31,12 +37,14 @@ pub use collapsible_rail::*;
 pub use company_picker::*;
 pub use contact_picker::*;
 pub use form::*;
+pub use global_search::*;
 pub use icon_button::*;
 pub use icons::*;
 pub use layout::*;
 pub use markdown::*;
 pub use modal::*;
 pub use overflow_actions::*;
+pub use permission_state::*;
 pub use setting_form_modal::*;
 pub use skeleton::*;
 pub use status_badge::*;

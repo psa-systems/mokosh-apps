@@ -10,7 +10,7 @@ use crate::components::{
     IconSize, Input, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectOption,
     Table, TableBody, TableCell, TableHead, TableHeader, TableRow, Textarea, TrashIcon,
 };
-use crate::utils::Paginated;
+use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
 /// An asset (`GET /api/v1/assets`).
@@ -37,6 +37,34 @@ struct RemoteAsset {
     warranty_expiry: Option<String>,
     #[serde(default)]
     purchase_date: Option<String>,
+    // PMS-454: CMDB expansion fields. Each `#[serde(default)]` so an
+    // older server that doesn't ship the column still deserialises
+    // (the server-side migration adds them as nullable). The bare
+    // `assigned_user_id` UUID is kept on the wire shape but the UI
+    // only reads `assigned_user_name`; `#[allow(dead_code)]` documents
+    // it as preserved-for-roundtripping rather than dropped.
+    #[serde(default)]
+    #[allow(dead_code)]
+    assigned_user_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    assigned_user_name: Option<String>,
+    #[serde(default)]
+    ip_address: Option<String>,
+    #[serde(default)]
+    hostname: Option<String>,
+    #[serde(default)]
+    mac_address: Option<String>,
+    #[serde(default)]
+    installed_date: Option<String>,
+    #[serde(default)]
+    department: Option<String>,
+    #[serde(default)]
+    in_transit_ticket_id: Option<uuid::Uuid>,
+    // PMS-476 / PMS-456: per-CI lifecycle position (planned /
+    // in_service / retired, or a tenant-coined value). Free-text so
+    // a tenant can coin a stage; `None` renders as "Unknown".
+    #[serde(default)]
+    itil_lifecycle_stage: Option<String>,
     #[serde(default)]
     created_at: Option<String>,
     #[serde(default)]
@@ -115,6 +143,18 @@ struct AuditEntry {
     performed_by_id: Option<uuid::Uuid>,
     #[serde(default)]
     changes: Option<serde_json::Value>,
+}
+
+/// MAPPS-304: render-side state for the asset Change History panel. Lets
+/// the panel distinguish "still loading", "loaded, no entries", and
+/// "fetch failed" - previously every fetch outcome collapsed into a
+/// silent empty list that rendered "No history yet" even on permission
+/// or network failures.
+#[derive(Clone, Debug)]
+enum AuditPanelState {
+    Loading,
+    Ready(Vec<AuditEntry>),
+    Failed(String),
 }
 
 /// User option for resolving audit actor ids to display names (`/auth/users`).
@@ -291,14 +331,78 @@ fn fmt_date(s: &Option<String>) -> String {
     }
 }
 
+/// MAPPS-305: the four bucket states the asset-detail Warranty row keys
+/// its "Needs refresh" badge on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WarrantyRefreshStatus {
+    /// The warranty date is unset or unparseable.
+    Unknown,
+    /// More than `WARRANTY_REFRESH_THRESHOLD_DAYS` until expiry.
+    Healthy,
+    /// Within `WARRANTY_REFRESH_THRESHOLD_DAYS` of expiry.
+    ExpiringSoon,
+    /// Warranty date is in the past.
+    Expired,
+}
+
+const WARRANTY_REFRESH_THRESHOLD_DAYS: i64 = 30;
+
+/// Compute the refresh-status bucket from a server-formatted (`YYYY-MM-DD`)
+/// warranty date string compared to today (in the user's timezone, via
+/// `user_today`). Pure read-only - the field's not mutated, the cue is
+/// derived at render time, no scheduled job needed.
+fn warranty_refresh_status(s: &Option<String>) -> WarrantyRefreshStatus {
+    let Some(raw) = s else {
+        return WarrantyRefreshStatus::Unknown;
+    };
+    let Ok(date) = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") else {
+        return WarrantyRefreshStatus::Unknown;
+    };
+    let today = crate::utils::datetime::user_today();
+    let days_until = (date - today).num_days();
+    if days_until < 0 {
+        WarrantyRefreshStatus::Expired
+    } else if days_until <= WARRANTY_REFRESH_THRESHOLD_DAYS {
+        WarrantyRefreshStatus::ExpiringSoon
+    } else {
+        WarrantyRefreshStatus::Healthy
+    }
+}
+
 /// Asset list page
 #[component]
 pub fn AssetListPage() -> Element {
     let mut search = use_signal(String::new);
+    // MAPPS-303: page-scoped bulk selection (built on MAPPS-290's
+    // `use_bulk_selection`). Drives the per-row checkbox, the
+    // `SelectAllHeader`, and the `BulkActionsBar` "Bulk edit" verb
+    // below; the bar opens a modal whose submit fires N parallel
+    // `PUT /assets/{id}` calls.
+    let mut selection = crate::components::use_bulk_selection();
+    let mut bulk_modal_open = use_signal(|| false);
+    let mut bulk_change_status = use_signal(|| false);
+    let mut bulk_status = use_signal(|| "active".to_string());
+    let mut bulk_change_company = use_signal(|| false);
+    let mut bulk_company_id = use_signal(String::new);
+    let mut bulk_company_name = use_signal(String::new);
+    let mut bulk_submitting = use_signal(|| false);
+    let mut bulk_error = use_signal(String::new);
+    // MAPPS-313: bulk-delete confirmation state for the assets list.
+    // Mirrors the Tickets bulk-delete pattern from MAPPS-310: snapshot
+    // the selection at click time so a mid-dialog uncheck cannot
+    // smuggle a row past the prompt.
+    let mut bulk_delete_confirm = use_signal::<Option<Vec<String>>>(|| None);
+    let mut bulk_delete_running = use_signal(|| false);
 
-    let assets_resource = use_resource(|| async {
+    // MAPPS-249: scope to one company when a context card's "View All" passes
+    // `?company_id=<uuid>`.
+    let mut assets_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteAsset>>("/assets")
+        let mut path = String::from("/assets");
+        if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
+            path.push_str(&format!("?company_id={company_id}"));
+        }
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteAsset>>(&path)
             .await
             .ok()
             .map(|p| p.data)
@@ -388,6 +492,96 @@ pub fn AssetListPage() -> Element {
                 }
             }
 
+            // MAPPS-303 + MAPPS-313: bulk-edit + bulk-delete affordances.
+            // Both render only when at least one asset is selected.
+            crate::components::BulkActionsBar {
+                selection,
+                label: "asset".to_string(),
+                Button {
+                    variant: ButtonVariant::Primary,
+                    onclick: move |_| {
+                        // Reset per-open form state.
+                        bulk_change_status.set(false);
+                        bulk_change_company.set(false);
+                        bulk_company_id.set(String::new());
+                        bulk_company_name.set(String::new());
+                        bulk_error.set(String::new());
+                        bulk_modal_open.set(true);
+                    },
+                    "Bulk edit"
+                }
+                Button {
+                    variant: ButtonVariant::Danger,
+                    disabled: bulk_delete_running(),
+                    onclick: move |_| {
+                        let ids: Vec<String> = selection.read().iter().cloned().collect();
+                        if !ids.is_empty() {
+                            bulk_delete_confirm.set(Some(ids));
+                        }
+                    },
+                    "Delete selected"
+                }
+            }
+            // MAPPS-313: confirmation dialog for the bulk delete.
+            {
+                let pending = bulk_delete_confirm.read().clone();
+                let pending_count = pending.as_ref().map(|v| v.len()).unwrap_or(0);
+                let dialog_message = format!(
+                    "Delete {pending_count} selected asset(s)? Credentials, configuration items, and relationships on these assets are also removed. This cannot be undone."
+                );
+                let confirm_text = format!("Delete {pending_count} asset(s)");
+                rsx! {
+                    crate::components::ConfirmDialog {
+                        open: pending.is_some(),
+                        title: "Delete selected assets".to_string(),
+                        message: dialog_message,
+                        confirm_text,
+                        cancel_text: "Cancel".to_string(),
+                        destructive: true,
+                        loading: bulk_delete_running(),
+                        onconfirm: move |_| {
+                            let Some(ids) = bulk_delete_confirm.read().clone() else { return };
+                            if ids.is_empty() || bulk_delete_running() { return; }
+                            bulk_delete_running.set(true);
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    use futures_util::future::join_all;
+                                    let futs = ids.iter().map(|id| {
+                                        let path = format!("/assets/{id}");
+                                        async move {
+                                            crate::hooks::fetch::api::delete_authed(&path).await
+                                        }
+                                    });
+                                    let results = join_all(futs).await;
+                                    let failures = results.iter().filter(|r| r.is_err()).count();
+                                    if failures == 0 {
+                                        crate::hooks::toast::push_toast(
+                                            crate::components::AlertType::Success,
+                                            format!("Deleted {} asset(s).", ids.len()),
+                                        );
+                                    } else {
+                                        crate::hooks::toast::push_toast(
+                                            crate::components::AlertType::Error,
+                                            format!("Deleted {} of {}; {} failed.", ids.len() - failures, ids.len(), failures),
+                                        );
+                                    }
+                                }
+                                crate::components::clear_selection(&mut selection);
+                                assets_resource.restart();
+                                bulk_delete_confirm.set(None);
+                                bulk_delete_running.set(false);
+                            });
+                        },
+                        oncancel: move |_| {
+                            if !bulk_delete_running() {
+                                bulk_delete_confirm.set(None);
+                            }
+                        },
+                    }
+                }
+            }
+
             DataTable {
                 total_items: total,
                 current_page: 1,
@@ -396,6 +590,11 @@ pub fn AssetListPage() -> Element {
                 Table {
                     TableHead {
                         TableRow {
+                            // MAPPS-303: select-all checkbox for the page.
+                            crate::components::SelectAllHeader {
+                                selection,
+                                ids: filtered.iter().map(|a| a.id.to_string()).collect::<Vec<_>>(),
+                            }
                             TableHeader { "Asset" }
                             TableHeader { "Type" }
                             TableHeader { "Company" }
@@ -430,6 +629,11 @@ pub fn AssetListPage() -> Element {
                                     let aid = a.id.to_string();
                                     rsx! {
                                         TableRow { key: "{aid}",
+                                            // MAPPS-303: per-row checkbox.
+                                            crate::components::SelectRowCell {
+                                                selection,
+                                                id: aid.clone(),
+                                            }
                                             TableCell {
                                                 Link {
                                                     to: Route::AssetDetail { id: aid.clone() },
@@ -441,6 +645,165 @@ pub fn AssetListPage() -> Element {
                                             TableCell { "{cname}" }
                                             TableCell { class: "font-mono text-sm", "{serial}" }
                                             TableCell { Badge { variant, "{label}" } }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // MAPPS-303: bulk-edit modal. Hidden until the BulkActionsBar
+            // verb opens it. Each field is gated on its own "Change this
+            // field" checkbox so the user can change a subset
+            // (Location-only is the QA's office-move use case). Submit
+            // builds a minimal partial body and fires N parallel PUTs.
+            if bulk_modal_open() {
+                {
+                    let status_opts = vec![
+                        SelectOption::new("active", "Active"),
+                        SelectOption::new("in_stock", "In Stock"),
+                        SelectOption::new("in_repair", "In Repair"),
+                        SelectOption::new("retired", "Retired"),
+                        SelectOption::new("inactive", "Inactive"),
+                    ];
+                    let count = selection.read().len();
+                    let count_label = if count == 1 {
+                        "1 asset".to_string()
+                    } else {
+                        format!("{} assets", count)
+                    };
+                    let company_picker_selected_id = if bulk_company_id.read().is_empty() {
+                        None
+                    } else {
+                        Some(bulk_company_id.read().clone())
+                    };
+                    rsx! {
+                        Modal {
+                            open: true,
+                            title: format!("Bulk edit ({})", count_label),
+                            onclose: move |_| {
+                                if !bulk_submitting() {
+                                    bulk_modal_open.set(false);
+                                }
+                            },
+                            footer: rsx! {
+                                Button {
+                                    variant: ButtonVariant::Secondary,
+                                    onclick: move |_| {
+                                        if !bulk_submitting() {
+                                            bulk_modal_open.set(false);
+                                        }
+                                    },
+                                    "Cancel"
+                                }
+                                Button {
+                                    variant: ButtonVariant::Primary,
+                                    disabled: bulk_submitting(),
+                                    onclick: move |_| {
+                                        // Validate that at least one field is being changed.
+                                        if !bulk_change_status() && !bulk_change_company() {
+                                            bulk_error.set("Pick at least one field to change.".to_string());
+                                            return;
+                                        }
+                                        // Build the partial body.
+                                        let mut body = serde_json::Map::new();
+                                        if bulk_change_status() {
+                                            body.insert("status".into(), serde_json::json!(bulk_status.read().as_str()));
+                                        }
+                                        if bulk_change_company() {
+                                            match uuid::Uuid::parse_str(bulk_company_id.read().as_str()) {
+                                                Ok(cid) => {
+                                                    body.insert("company_id".into(), serde_json::json!(cid));
+                                                }
+                                                Err(_) => {
+                                                    bulk_error.set("Pick a company first.".to_string());
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                        let body = serde_json::Value::Object(body);
+                                        let ids: Vec<String> = selection.read().iter().cloned().collect();
+                                        bulk_submitting.set(true);
+                                        bulk_error.set(String::new());
+                                        spawn(async move {
+                                            #[cfg(feature = "web")]
+                                            {
+                                                use futures_util::future::join_all;
+                                                let futs = ids.iter().map(|id| {
+                                                    let path = format!("/assets/{id}");
+                                                    let body = body.clone();
+                                                    async move {
+                                                        crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await
+                                                    }
+                                                });
+                                                let results = join_all(futs).await;
+                                                let failures = results.iter().filter(|r| r.is_err()).count();
+                                                if failures == 0 {
+                                                    crate::hooks::toast::push_toast(
+                                                        crate::components::AlertType::Success,
+                                                        format!("Updated {} asset(s).", ids.len()),
+                                                    );
+                                                } else {
+                                                    crate::hooks::toast::push_toast(
+                                                        crate::components::AlertType::Error,
+                                                        format!("Updated {} of {}; {} failed.", ids.len() - failures, ids.len(), failures),
+                                                    );
+                                                }
+                                            }
+                                            bulk_submitting.set(false);
+                                            bulk_modal_open.set(false);
+                                            crate::components::clear_selection(&mut selection);
+                                            assets_resource.restart();
+                                        });
+                                    },
+                                    if bulk_submitting() { "Saving…" } else { "Apply to selected" }
+                                }
+                            },
+                            div { class: "space-y-4",
+                                if !bulk_error.read().is_empty() {
+                                    p { class: "text-sm text-red-600 dark:text-red-400", "{bulk_error}" }
+                                }
+                                p { class: "text-sm text-muted",
+                                    "Each field below is changed only when its checkbox is on. Anything left unchecked stays as-is on every selected asset."
+                                }
+                                div { class: "space-y-3",
+                                    crate::components::Checkbox {
+                                        name: "bulk_change_status",
+                                        label: "Change Status",
+                                        checked: bulk_change_status(),
+                                        onchange: move |e: FormEvent| bulk_change_status.set(e.checked()),
+                                    }
+                                    if bulk_change_status() {
+                                        Select {
+                                            name: "bulk_status",
+                                            label: "Status".to_string(),
+                                            options: status_opts.clone(),
+                                            value: bulk_status.read().clone(),
+                                            onchange: move |e: FormEvent| bulk_status.set(e.value()),
+                                        }
+                                    }
+                                }
+                                div { class: "space-y-3",
+                                    crate::components::Checkbox {
+                                        name: "bulk_change_company",
+                                        label: "Change Company",
+                                        checked: bulk_change_company(),
+                                        onchange: move |e: FormEvent| bulk_change_company.set(e.checked()),
+                                    }
+                                    if bulk_change_company() {
+                                        crate::components::CompanyPicker {
+                                            value: bulk_company_name.read().clone(),
+                                            selected_id: company_picker_selected_id,
+                                            onselect: move |(id, name): (String, String)| {
+                                                bulk_company_id.set(id);
+                                                bulk_company_name.set(name);
+                                            },
+                                            onclear: move |_| {
+                                                bulk_company_id.set(String::new());
+                                                bulk_company_name.set(String::new());
+                                            },
                                         }
                                     }
                                 }
@@ -515,7 +878,10 @@ fn validate_asset_optional(raw: &str, label: &str, max: usize) -> Result<Option<
 pub fn AssetNewPage() -> Element {
     let mut name = use_signal(String::new);
     let mut asset_type = use_signal(String::new);
-    let mut company = use_signal(String::new);
+    // MAPPS-300: pre-fill `company` from the URL so the Company detail
+    // "New Asset" CTA lands on a form already scoped to that company.
+    let mut company =
+        use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     // PMS-352 AC3: `company` holds the selected company UUID; CompanyPicker
     // reports the display name back here so the picker can render the chosen
     // company and a tenant with no companies can create one inline.
@@ -572,7 +938,25 @@ pub fn AssetNewPage() -> Element {
 
     rsx! {
         AppLayout { title: "New Asset",
-            PageHeader { title: "New Asset", subtitle: "Add a new configuration item" }
+            PageHeader {
+                title: "New Asset",
+                subtitle: "Add a new configuration item",
+                // MAPPS-294: breadcrumb back to the Assets list.
+                breadcrumbs: rsx! {
+                    crate::components::Breadcrumbs {
+                        items: vec![
+                            crate::components::BreadcrumbItem {
+                                label: "Assets".to_string(),
+                                route: Some(Route::AssetList {}),
+                            },
+                            crate::components::BreadcrumbItem {
+                                label: "New Asset".to_string(),
+                                route: None,
+                            },
+                        ],
+                    }
+                },
+            }
 
             Card {
                 form {
@@ -587,29 +971,32 @@ pub fn AssetNewPage() -> Element {
                         manufacturer_err.set(String::new());
                         model_err.set(String::new());
 
-                        // Collect every field error before returning (MAPPS-216)
-                        // so the user sees all problems at once, each attached
-                        // to its own field, rather than the form aborting on
-                        // the first failure.
-                        let mut ok = true;
+                        // PMS-518: validate every required field through the
+                        // shared FormGuard so all failures surface at once (each
+                        // in its own inline slot) and the first invalid field is
+                        // focused. Keeps the bespoke validators that also return
+                        // the trimmed/typed value used to build the body.
+                        let mut guard = FormGuard::new();
 
                         let asset_name = match validate_asset_name(&name.read()) {
                             Ok(v) => v,
                             Err(msg) => {
                                 name_error.set(msg);
-                                ok = false;
+                                guard.note_invalid(Some("name"));
                                 String::new()
                             }
                         };
                         let type_id = asset_type.read().clone();
                         if type_id.is_empty() {
                             type_err.set("Please pick an asset type.".to_string());
-                            ok = false;
+                            guard.note_invalid(Some("type"));
                         }
                         let company_id = company.read().clone();
                         if company_id.is_empty() {
                             company_err.set("Please pick a company.".to_string());
-                            ok = false;
+                            // CompanyPicker has no focusable field id, so block
+                            // without a focus target.
+                            guard.note_invalid(None);
                         }
                         let serial_v = match validate_asset_optional(
                             &serial.read(),
@@ -619,7 +1006,7 @@ pub fn AssetNewPage() -> Element {
                             Ok(v) => v,
                             Err(msg) => {
                                 serial_err.set(msg);
-                                ok = false;
+                                guard.note_invalid(Some("serial"));
                                 None
                             }
                         };
@@ -631,7 +1018,7 @@ pub fn AssetNewPage() -> Element {
                             Ok(v) => v,
                             Err(msg) => {
                                 manufacturer_err.set(msg);
-                                ok = false;
+                                guard.note_invalid(Some("manufacturer"));
                                 None
                             }
                         };
@@ -643,13 +1030,13 @@ pub fn AssetNewPage() -> Element {
                             Ok(v) => v,
                             Err(msg) => {
                                 model_err.set(msg);
-                                ok = false;
+                                guard.note_invalid(Some("model"));
                                 None
                             }
                         };
                         let warranty_v = warranty.read().clone();
 
-                        if !ok {
+                        if guard.blocked() {
                             return;
                         }
 
@@ -885,7 +1272,18 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         }
     });
     let id_for_audit = props.id.clone();
-    let audit_resource = use_resource(move || {
+    // MAPPS-304: surface the audit-log fetch outcome as `Result` so the
+    // panel can render "Loading…", a real entry list, an empty-list state,
+    // and a permission / network failure distinctly. Before, every failure
+    // (including the 403 `RequireAdmin` gate on `/assets/{id}/audit-log`
+    // that a non-admin role hits) was silently collapsed into the
+    // `unwrap_or_default()` empty branch, which rendered as "No history
+    // yet" - the QA report's "Change history does not work at all". The
+    // sibling PMS-447 single-tenancy admin floor stops most users from
+    // hitting that gate, but this distinguishes the remaining failure
+    // cases (network drop, future role downgrade) from a genuinely-empty
+    // audit log.
+    let audit_resource: Resource<Result<Vec<AuditEntry>, String>> = use_resource(move || {
         let id = id_for_audit.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -893,9 +1291,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                 "/assets/{id}/audit-log"
             ))
             .await
-            .ok()
             .map(|p| p.data)
-            .unwrap_or_default()
         }
     });
     // PMS-344: tickets that reference this asset. Server-side filter on
@@ -957,8 +1353,28 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     let mut e_serial = use_signal(String::new);
     let mut e_warranty = use_signal(String::new);
     let mut e_purchase = use_signal(String::new);
+    // PMS-476: ITIL CI lifecycle stage. Free-text so a tenant can
+    // coin a stage; placeholder + help text surface the standard set.
+    let mut e_itil_stage = use_signal(String::new);
+    // PMS-473: CMDB expansion fields. Every one is optional on the
+    // wire so an empty signal means "do not change"; the body
+    // serialiser converts the empty string to a JSON null which the
+    // server `COALESCE`s on the UPDATE.
+    let mut e_assigned_user = use_signal(String::new);
+    let mut e_ip = use_signal(String::new);
+    let mut e_hostname = use_signal(String::new);
+    let mut e_mac = use_signal(String::new);
+    let mut e_installed = use_signal(String::new);
+    let mut e_department = use_signal(String::new);
+    let mut e_in_transit = use_signal(String::new);
     let mut e_submitting = use_signal(|| false);
     let mut e_error = use_signal(String::new);
+    // PMS-518: per-field inline error slots so the edit modal reports every
+    // validation failure at once (matching the New Asset form).
+    let mut e_name_err = use_signal(String::new);
+    let mut e_serial_err = use_signal(String::new);
+    let mut e_manufacturer_err = use_signal(String::new);
+    let mut e_model_err = use_signal(String::new);
     let id_for_save = props.id.clone();
 
     // MAPPS-158: detail-page Delete, wired to the existing
@@ -986,6 +1402,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     let mut nc_notes = use_signal(String::new);
     let mut nc_submitting = use_signal(|| false);
     let mut nc_name_err = use_signal(String::new);
+    let mut nc_type_err = use_signal(String::new);
+    let mut nc_username_err = use_signal(String::new);
+    let mut nc_password_err = use_signal(String::new);
     let mut nc_error = use_signal(String::new);
     let id_for_cred_add = props.id.clone();
 
@@ -1017,7 +1436,15 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     let relationships = rel_resource.read_unchecked().clone().unwrap_or_default();
     let config_items = cfg_resource.read_unchecked().clone().unwrap_or_default();
     let credentials = cred_resource.read_unchecked().clone().unwrap_or_default();
-    let audit = audit_resource.read_unchecked().clone().unwrap_or_default();
+    // MAPPS-304: project the audit Resource into a three-way render state:
+    // `Loading` (resource still in flight), `Ready(Vec)` (fetched - may be
+    // empty), `Err(String)` (fetch failed - render a recoverable message,
+    // not a misleading "No history yet").
+    let audit_state: AuditPanelState = match audit_resource.read_unchecked().as_ref() {
+        None => AuditPanelState::Loading,
+        Some(Ok(items)) => AuditPanelState::Ready(items.clone()),
+        Some(Err(e)) => AuditPanelState::Failed(e.clone()),
+    };
     let related_tickets = tickets_resource
         .read_unchecked()
         .clone()
@@ -1040,7 +1467,15 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         _ => false,
     };
     let edited_label = if was_edited {
-        audit.first().map(|e| {
+        // MAPPS-304: read the most recent audit entry through the new
+        // `AuditPanelState`. `Failed` and `Loading` fall through to
+        // `None` so the "Edited by X" label is hidden rather than
+        // wrong - the panel itself shows the real failure.
+        let latest = match &audit_state {
+            AuditPanelState::Ready(items) => items.first(),
+            _ => None,
+        };
+        latest.map(|e| {
             let who = actor_name(&users, &e.performed_by_id);
             let when = fmt_datetime(&e.performed_at);
             if who == "-" {
@@ -1123,6 +1558,14 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     let serial = a.serial_number.clone().unwrap_or_else(dash);
                     let tag = a.asset_tag.clone().unwrap_or_else(dash);
                     let warranty = fmt_date(&a.warranty_expiry);
+                    // MAPPS-305: derive a "Needs refresh" cue from the warranty
+                    // date. Expired (date < today) is "Expired"; within 30 days
+                    // is "Expires soon". Both signal a refresh / replacement
+                    // candidate without an admin having to spreadsheet-sweep
+                    // the asset list manually. Threshold is hardcoded at 30
+                    // days for now; future config-driven threshold is the
+                    // documented next step on the ticket.
+                    let warranty_status = warranty_refresh_status(&a.warranty_expiry);
                     let purchased = fmt_date(&a.purchase_date);
                     // Snapshot used to seed the edit form when opened.
                     let a_edit = a.clone();
@@ -1137,6 +1580,25 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                         e_serial.set(a_edit.serial_number.clone().unwrap_or_default());
                         e_warranty.set(a_edit.warranty_expiry.clone().unwrap_or_default());
                         e_purchase.set(a_edit.purchase_date.clone().unwrap_or_default());
+                        e_itil_stage.set(a_edit.itil_lifecycle_stage.clone().unwrap_or_default());
+                        // PMS-473: seed the CMDB expansion fields.
+                        e_assigned_user.set(
+                            a_edit
+                                .assigned_user_id
+                                .map(|u| u.to_string())
+                                .unwrap_or_default(),
+                        );
+                        e_ip.set(a_edit.ip_address.clone().unwrap_or_default());
+                        e_hostname.set(a_edit.hostname.clone().unwrap_or_default());
+                        e_mac.set(a_edit.mac_address.clone().unwrap_or_default());
+                        e_installed.set(a_edit.installed_date.clone().unwrap_or_default());
+                        e_department.set(a_edit.department.clone().unwrap_or_default());
+                        e_in_transit.set(
+                            a_edit
+                                .in_transit_ticket_id
+                                .map(|t| t.to_string())
+                                .unwrap_or_default(),
+                        );
                         e_error.set(String::new());
                         editing.set(true);
                     };
@@ -1158,7 +1620,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     if let Some(marker) = edited_marker {
                                         p { class: "text-xs text-subtle italic mb-3", "{marker}" }
                                     }
-                                    dl { class: "grid grid-cols-2 gap-4",
+                                    dl { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                         div {
                                             dt { class: "text-sm text-muted", "Type" }
                                             dd { class: "mt-1", "{tname}" }
@@ -1182,6 +1644,69 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                         div {
                                             dt { class: "text-sm text-muted", "Asset Tag" }
                                             dd { class: "mt-1 font-mono text-sm", "{tag}" }
+                                        }
+                                        // PMS-454: CMDB expansion fields. Each
+                                        // renders only when populated so an
+                                        // older asset that pre-dates the
+                                        // migration does not show a row of
+                                        // empty "-" placeholders.
+                                        if let Some(name) = a.assigned_user_name.clone().filter(|s| !s.trim().is_empty()) {
+                                            div {
+                                                dt { class: "text-sm text-muted", "Assigned to" }
+                                                dd { class: "mt-1", "{name}" }
+                                            }
+                                        }
+                                        if let Some(host) = a.hostname.clone().filter(|s| !s.trim().is_empty()) {
+                                            div {
+                                                dt { class: "text-sm text-muted", "Hostname" }
+                                                dd { class: "mt-1 font-mono text-sm", "{host}" }
+                                            }
+                                        }
+                                        if let Some(ip) = a.ip_address.clone().filter(|s| !s.trim().is_empty()) {
+                                            div {
+                                                dt { class: "text-sm text-muted", "IP address" }
+                                                dd { class: "mt-1 font-mono text-sm", "{ip}" }
+                                            }
+                                        }
+                                        if let Some(mac) = a.mac_address.clone().filter(|s| !s.trim().is_empty()) {
+                                            div {
+                                                dt { class: "text-sm text-muted", "MAC address" }
+                                                dd { class: "mt-1 font-mono text-sm", "{mac}" }
+                                            }
+                                        }
+                                        if let Some(dept) = a.department.clone().filter(|s| !s.trim().is_empty()) {
+                                            div {
+                                                dt { class: "text-sm text-muted", "Department" }
+                                                dd { class: "mt-1", "{dept}" }
+                                            }
+                                        }
+                                        if let Some(installed) = a.installed_date.as_ref().filter(|s| !s.trim().is_empty()) {
+                                            {
+                                                let installed_label = fmt_date(&Some(installed.clone()));
+                                                rsx! {
+                                                    div {
+                                                        dt { class: "text-sm text-muted", "Installed" }
+                                                        dd { class: "mt-1", "{installed_label}" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if let Some(ticket_id) = a.in_transit_ticket_id {
+                                            {
+                                                let tid = ticket_id.to_string();
+                                                rsx! {
+                                                    div {
+                                                        dt { class: "text-sm text-muted", "In-transit ticket" }
+                                                        dd { class: "mt-1",
+                                                            Link {
+                                                                to: Route::TicketDetail { id: tid.clone() },
+                                                                class: "text-accent hover:opacity-90 font-mono text-sm",
+                                                                "{tid}"
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1401,9 +1926,39 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                             span { class: "text-muted", "Status" }
                                             Badge { variant: status_variant, "{status_label}" }
                                         }
-                                        div { class: "flex justify-between",
+                                        // PMS-476: ITIL CI lifecycle
+                                        // stage. Shown only when
+                                        // populated so an asset that
+                                        // pre-dates the column stays
+                                        // visually clean.
+                                        if let Some(stage) = a.itil_lifecycle_stage.clone().filter(|s| !s.trim().is_empty()) {
+                                            div { class: "flex justify-between items-center",
+                                                span { class: "text-muted", "Lifecycle" }
+                                                Badge { variant: BadgeVariant::Gray, "{stage}" }
+                                            }
+                                        }
+                                        div { class: "flex justify-between items-center",
                                             span { class: "text-muted", "Warranty" }
-                                            span { class: "font-medium", "{warranty}" }
+                                            div { class: "flex items-center gap-2",
+                                                span { class: "font-medium", "{warranty}" }
+                                                // MAPPS-305: surface the refresh cue.
+                                                match warranty_status {
+                                                    WarrantyRefreshStatus::Expired => rsx! {
+                                                        Badge {
+                                                            variant: BadgeVariant::Red,
+                                                            "Needs refresh"
+                                                        }
+                                                    },
+                                                    WarrantyRefreshStatus::ExpiringSoon => rsx! {
+                                                        Badge {
+                                                            variant: BadgeVariant::Yellow,
+                                                            "Expires soon"
+                                                        }
+                                                    },
+                                                    WarrantyRefreshStatus::Healthy
+                                                    | WarrantyRefreshStatus::Unknown => rsx! {},
+                                                }
+                                            }
                                         }
                                         div { class: "flex justify-between",
                                             span { class: "text-muted", "Purchased" }
@@ -1413,9 +1968,28 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 }
 
                                 Card { title: "Change History",
-                                    if audit.is_empty() {
-                                        p { class: "text-sm text-subtle italic", "No history yet." }
-                                    } else {
+                                    match audit_state {
+                                        AuditPanelState::Loading => rsx! {
+                                            p { class: "text-sm text-subtle italic", "Loading…" }
+                                        },
+                                        AuditPanelState::Failed(ref e) => rsx! {
+                                            // MAPPS-304: a real failure (403, network, etc.)
+                                            // no longer rendered as "No history yet". The
+                                            // user knows to retry; admins know the gate
+                                            // applies.
+                                            p {
+                                                class: "text-sm text-red-600 dark:text-red-400",
+                                                "Could not load change history."
+                                            }
+                                            p {
+                                                class: "text-xs text-subtle mt-1",
+                                                "{e}"
+                                            }
+                                        },
+                                        AuditPanelState::Ready(ref audit) if audit.is_empty() => rsx! {
+                                            p { class: "text-sm text-subtle italic", "No history yet." }
+                                        },
+                                        AuditPanelState::Ready(ref audit) => rsx! {
                                         div { class: "space-y-3 text-sm",
                                             for e in audit.iter().take(15) {
                                                 {
@@ -1477,6 +2051,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                 }
                                             }
                                         }
+                                        },
                                     }
                                 }
                             }
@@ -1508,36 +2083,44 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     let save_id = save_id.clone();
                     spawn(async move {
                         // Mirror the create-form validation (MAPPS-238/216):
-                        // reject a blank or over-long name and over-long
-                        // optional fields before the PUT, with an inline
-                        // message, instead of posting them to the server.
-                        let asset_name = match validate_asset_name(&e_name()) {
-                            Ok(v) => v,
-                            Err(msg) => {
-                                e_error.set(msg);
-                                return;
-                            }
-                        };
+                        // reject a blank or over-long name and over-long optional
+                        // fields before the PUT. PMS-518: validate all of them and
+                        // report every failure at once in its own inline slot, then
+                        // focus the first invalid field.
+                        e_name_err.set(String::new());
+                        e_serial_err.set(String::new());
+                        e_manufacturer_err.set(String::new());
+                        e_model_err.set(String::new());
+                        let mut guard = FormGuard::new();
+                        let name_res = validate_asset_name(&e_name());
+                        if let Err(msg) = &name_res {
+                            e_name_err.set(msg.clone());
+                            guard.note_invalid(Some("edit-name"));
+                        }
                         if let Err(msg) =
                             validate_asset_optional(&e_serial(), "Serial number", ASSET_SERIAL_MAX)
                         {
-                            e_error.set(msg);
-                            return;
+                            e_serial_err.set(msg);
+                            guard.note_invalid(Some("edit-serial"));
                         }
                         if let Err(msg) = validate_asset_optional(
                             &e_manufacturer(),
                             "Manufacturer",
                             ASSET_MANUFACTURER_MAX,
                         ) {
-                            e_error.set(msg);
-                            return;
+                            e_manufacturer_err.set(msg);
+                            guard.note_invalid(Some("edit-manufacturer"));
                         }
                         if let Err(msg) =
                             validate_asset_optional(&e_model(), "Model", ASSET_MODEL_MAX)
                         {
-                            e_error.set(msg);
+                            e_model_err.set(msg);
+                            guard.note_invalid(Some("edit-model"));
+                        }
+                        if guard.blocked() {
                             return;
                         }
+                        let asset_name = name_res.expect("name validated above");
                         e_submitting.set(true);
                         e_error.set(String::new());
                         let mut body = serde_json::Map::new();
@@ -1559,22 +2142,83 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                             "purchase_date".into(),
                             serde_json::json!(opt_str(&e_purchase())),
                         );
+                        // PMS-476: ITIL CI lifecycle stage. Free-text
+                        // so a tenant can coin a stage; the server
+                        // takes it verbatim and renders it on the
+                        // detail page beside Status.
+                        body.insert(
+                            "itil_lifecycle_stage".into(),
+                            serde_json::json!(opt_str(&e_itil_stage())),
+                        );
+                        // PMS-473: CMDB expansion fields. UUID-shaped
+                        // fields parse to JSON null when the signal
+                        // is empty so the server clears the column;
+                        // a malformed UUID is sent verbatim so the
+                        // server validator surfaces the 422 instead
+                        // of the client silently swallowing it.
+                        body.insert(
+                            "assigned_user_id".into(),
+                            serde_json::json!(opt_str(&e_assigned_user())),
+                        );
+                        body.insert("ip_address".into(), serde_json::json!(opt_str(&e_ip())));
+                        body.insert("hostname".into(), serde_json::json!(opt_str(&e_hostname())));
+                        body.insert("mac_address".into(), serde_json::json!(opt_str(&e_mac())));
+                        body.insert(
+                            "installed_date".into(),
+                            serde_json::json!(opt_str(&e_installed())),
+                        );
+                        body.insert(
+                            "department".into(),
+                            serde_json::json!(opt_str(&e_department())),
+                        );
+                        body.insert(
+                            "in_transit_ticket_id".into(),
+                            serde_json::json!(opt_str(&e_in_transit())),
+                        );
                         let body = serde_json::Value::Object(body);
-                        match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
-                            &format!("/assets/{save_id}"),
-                            &body,
-                        )
-                        .await
-                        {
-                            Ok(_) => {
-                                e_submitting.set(false);
+                        // MAPPS-304: the modal previously used the
+                        // string-returning `put_authed` which collapses
+                        // "request succeeded but the response body
+                        // could not be decoded" into the same `Err`
+                        // branch as a real Status / Network failure.
+                        // QA reported the symptom as "every save shows
+                        // an error toast even though the value
+                        // persists" - the mutation lands but a
+                        // post-mutation decode quirk drops us into the
+                        // error path. Switch to the typed variant and
+                        // treat `ApiError::Decode` as success (the
+                        // mutation succeeded; we re-fetch the row, so
+                        // the decoded body is unused anyway). Status /
+                        // Network errors still surface inline so a
+                        // genuine 4xx/5xx remains visible.
+                        let result = crate::hooks::fetch::api::put_authed_typed::<
+                            serde_json::Value,
+                            _,
+                        >(&format!("/assets/{save_id}"), &body)
+                        .await;
+                        e_submitting.set(false);
+                        match result {
+                            Ok(_) | Err(crate::hooks::fetch::api::ApiError::Decode(_)) => {
                                 editing.set(false);
+                                e_error.set(String::new());
                                 asset_res.restart();
                                 audit_res.restart();
+                                crate::hooks::toast::push_toast(
+                                    crate::components::AlertType::Success,
+                                    "Asset updated.",
+                                );
                             }
-                            Err(err) => {
-                                e_submitting.set(false);
-                                e_error.set(err);
+                            Err(crate::hooks::fetch::api::ApiError::Status {
+                                message, ..
+                            }) => {
+                                e_error.set(if message.is_empty() {
+                                    "Could not update the asset.".into()
+                                } else {
+                                    message
+                                });
+                            }
+                            Err(crate::hooks::fetch::api::ApiError::Network(msg)) => {
+                                e_error.set(format!("Network error: {msg}"));
                             }
                         }
                     });
@@ -1606,10 +2250,15 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 label: "Name",
                                 required: true,
                                 maxlength: ASSET_NAME_MAX as i64,
+                                rules: vec![Rule::Required],
+                                error: e_name_err(),
                                 value: "{e_name}",
-                                oninput: move |e: FormEvent| e_name.set(e.value()),
+                                oninput: move |e: FormEvent| {
+                                    e_name_err.set(String::new());
+                                    e_name.set(e.value());
+                                },
                             }
-                            div { class: "grid grid-cols-2 gap-4",
+                            div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                 Select {
                                     name: "edit-type",
                                     label: "Type",
@@ -1632,30 +2281,42 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 value: "{e_tag}",
                                 oninput: move |e: FormEvent| e_tag.set(e.value()),
                             }
-                            div { class: "grid grid-cols-2 gap-4",
+                            div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                 Input {
                                     name: "edit-manufacturer",
                                     label: "Manufacturer",
                                     maxlength: ASSET_MANUFACTURER_MAX as i64,
+                                    error: e_manufacturer_err(),
                                     value: "{e_manufacturer}",
-                                    oninput: move |e: FormEvent| e_manufacturer.set(e.value()),
+                                    oninput: move |e: FormEvent| {
+                                        e_manufacturer_err.set(String::new());
+                                        e_manufacturer.set(e.value());
+                                    },
                                 }
                                 Input {
                                     name: "edit-model",
                                     label: "Model",
                                     maxlength: ASSET_MODEL_MAX as i64,
+                                    error: e_model_err(),
                                     value: "{e_model}",
-                                    oninput: move |e: FormEvent| e_model.set(e.value()),
+                                    oninput: move |e: FormEvent| {
+                                        e_model_err.set(String::new());
+                                        e_model.set(e.value());
+                                    },
                                 }
                             }
                             Input {
                                 name: "edit-serial",
                                 label: "Serial Number",
                                 maxlength: ASSET_SERIAL_MAX as i64,
+                                error: e_serial_err(),
                                 value: "{e_serial}",
-                                oninput: move |e: FormEvent| e_serial.set(e.value()),
+                                oninput: move |e: FormEvent| {
+                                    e_serial_err.set(String::new());
+                                    e_serial.set(e.value());
+                                },
                             }
-                            div { class: "grid grid-cols-2 gap-4",
+                            div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                 crate::components::DateField {
                                     name: "edit-purchase",
                                     label: "Purchase Date",
@@ -1668,6 +2329,97 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     value: "{e_warranty}",
                                     oninput: move |e: FormEvent| e_warranty.set(e.value()),
                                 }
+                            }
+                            // PMS-476: ITIL CI lifecycle stage. Free
+                            // text so a tenant can coin a stage; the
+                            // help line suggests the standard set.
+                            Input {
+                                name: "edit-itil-stage",
+                                label: "ITIL lifecycle stage",
+                                placeholder: "e.g. in_service",
+                                help: "Standard: planned, in_service, retired. Leave blank for unknown.".to_string(),
+                                value: "{e_itil_stage}",
+                                oninput: move |e: FormEvent| e_itil_stage.set(e.value()),
+                            }
+                            // PMS-473: CMDB expansion fields. The
+                            // assigned-user picker is a Select built
+                            // from the already-cached `users_resource`
+                            // so an inline edit doesn't fire a fresh
+                            // /auth/users fetch. Other fields are
+                            // text / date inputs because the values
+                            // are free-form network identifiers.
+                            {
+                                let mut user_opts = vec![SelectOption::new("", "(unassigned)")];
+                                for u in users.iter() {
+                                    let label = if u.full_name.trim().is_empty() {
+                                        u.id.to_string()
+                                    } else {
+                                        u.full_name.clone()
+                                    };
+                                    user_opts.push(SelectOption::new(u.id.to_string(), label));
+                                }
+                                rsx! {
+                                    Select {
+                                        name: "edit-assigned-user",
+                                        label: "Assigned user",
+                                        options: user_opts,
+                                        value: "{e_assigned_user}",
+                                        onchange: move |e: FormEvent| e_assigned_user.set(e.value()),
+                                    }
+                                }
+                            }
+                            div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
+                                Input {
+                                    name: "edit-hostname",
+                                    label: "Hostname",
+                                    placeholder: "host.example.com",
+                                    value: "{e_hostname}",
+                                    oninput: move |e: FormEvent| e_hostname.set(e.value()),
+                                }
+                                Input {
+                                    name: "edit-ip",
+                                    label: "IP address",
+                                    placeholder: "10.0.0.1 or fe80::1",
+                                    help: "IPv4 or IPv6. Server validates the format.".to_string(),
+                                    value: "{e_ip}",
+                                    oninput: move |e: FormEvent| e_ip.set(e.value()),
+                                }
+                            }
+                            div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
+                                Input {
+                                    name: "edit-mac",
+                                    label: "MAC address",
+                                    placeholder: "aa:bb:cc:dd:ee:ff",
+                                    value: "{e_mac}",
+                                    oninput: move |e: FormEvent| e_mac.set(e.value()),
+                                }
+                                crate::components::DateField {
+                                    name: "edit-installed",
+                                    label: "Installed date",
+                                    value: "{e_installed}",
+                                    oninput: move |e: FormEvent| e_installed.set(e.value()),
+                                }
+                            }
+                            Input {
+                                name: "edit-department",
+                                label: "Department",
+                                placeholder: "e.g. Sales",
+                                value: "{e_department}",
+                                oninput: move |e: FormEvent| e_department.set(e.value()),
+                            }
+                            // In-transit ticket reference: free-text
+                            // UUID input. A picker over /tickets is
+                            // the natural follow-up but the dispatcher
+                            // already has the ticket id when they set
+                            // status=in_transit, so a paste works in
+                            // v1. The server validates the FK.
+                            Input {
+                                name: "edit-in-transit-ticket",
+                                label: "In-transit ticket id",
+                                placeholder: "UUID of the dispatch ticket",
+                                help: "Optional. Sets the ticket the asset is currently being moved against.".to_string(),
+                                value: "{e_in_transit}",
+                                oninput: move |e: FormEvent| e_in_transit.set(e.value()),
                             }
                         }
                     }
@@ -1733,30 +2485,46 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                         return;
                     }
                     nc_name_err.set(String::new());
+                    nc_type_err.set(String::new());
+                    nc_username_err.set(String::new());
+                    nc_password_err.set(String::new());
                     nc_error.set(String::new());
-                    // Validate the way the create form does: a required, capped
-                    // Name and required type/username/password before the POST,
-                    // with inline messages rather than an opaque server 422.
+                    // PMS-518: validate every required field through the shared
+                    // FormGuard so all failures surface at once (each in its own
+                    // inline slot) and the first invalid field is focused. Name
+                    // keeps its bespoke validator (length cap + the trimmed value
+                    // used in the body); the guard adds its first-invalid focus.
+                    let mut guard = FormGuard::new();
                     let name = match validate_cred_name(&nc_name()) {
                         Ok(v) => v,
                         Err(msg) => {
                             nc_name_err.set(msg);
-                            return;
+                            guard.note_invalid(Some("cred-name"));
+                            String::new()
                         }
                     };
                     let credential_type = nc_type().trim().to_string();
-                    if credential_type.is_empty() {
-                        nc_error.set("Please enter a credential type.".to_string());
-                        return;
-                    }
+                    nc_type_err.set(guard.field(
+                        "cred-type",
+                        &credential_type,
+                        "Type",
+                        &[Rule::Required],
+                    ));
                     let username = nc_username();
-                    if username.trim().is_empty() {
-                        nc_error.set("Please enter a username.".to_string());
-                        return;
-                    }
+                    nc_username_err.set(guard.field(
+                        "cred-username",
+                        &username,
+                        "Username",
+                        &[Rule::Required],
+                    ));
                     let password = nc_password();
-                    if password.is_empty() {
-                        nc_error.set("Please enter a password.".to_string());
+                    nc_password_err.set(guard.field(
+                        "cred-password",
+                        &password,
+                        "Password",
+                        &[Rule::Required],
+                    ));
+                    if guard.blocked() {
                         return;
                     }
                     let url = opt_str(&nc_url());
@@ -1848,24 +2616,39 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 label: "Type",
                                 required: true,
                                 placeholder: "e.g. domain, ssh, rdp",
+                                rules: vec![Rule::Required],
+                                error: nc_type_err(),
                                 value: "{nc_type}",
-                                oninput: move |e: FormEvent| nc_type.set(e.value()),
+                                oninput: move |e: FormEvent| {
+                                    nc_type_err.set(String::new());
+                                    nc_type.set(e.value());
+                                },
                             }
-                            div { class: "grid grid-cols-2 gap-4",
+                            div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                                 Input {
                                     name: "cred-username",
                                     label: "Username",
                                     required: true,
+                                    rules: vec![Rule::Required],
+                                    error: nc_username_err(),
                                     value: "{nc_username}",
-                                    oninput: move |e: FormEvent| nc_username.set(e.value()),
+                                    oninput: move |e: FormEvent| {
+                                        nc_username_err.set(String::new());
+                                        nc_username.set(e.value());
+                                    },
                                 }
                                 Input {
                                     name: "cred-password",
                                     label: "Password",
                                     r#type: "password",
                                     required: true,
+                                    rules: vec![Rule::Required],
+                                    error: nc_password_err(),
                                     value: "{nc_password}",
-                                    oninput: move |e: FormEvent| nc_password.set(e.value()),
+                                    oninput: move |e: FormEvent| {
+                                        nc_password_err.set(String::new());
+                                        nc_password.set(e.value());
+                                    },
                                 }
                             }
                             Input {

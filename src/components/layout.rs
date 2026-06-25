@@ -2,6 +2,7 @@
 
 use dioxus::prelude::*;
 
+use super::global_search::GlobalSearch;
 use super::icons::*;
 use super::theme_picker::ThemePickerButton;
 use crate::Route;
@@ -17,6 +18,32 @@ pub struct AppLayoutProps {
 #[component]
 pub fn AppLayout(props: AppLayoutProps) -> Element {
     let mut sidebar_open = use_signal(|| false);
+
+    // MAPPS-287: keep `document.title` in sync with the page title every
+    // route hands to AppLayout. Without this the tab title was always the
+    // fixed `_mokosh_config` index value ("Mokosh Platform") regardless of
+    // route, which broke browser history, bookmarks, tab identification,
+    // and the title announcement screen readers make on navigation.
+    // Format mirrors Bunyip's pattern: `<page> | Mokosh Platform` when a
+    // page provides a title, plain `Mokosh Platform` otherwise. Runs on
+    // every render so a page that mutates its own `title` prop (e.g. a
+    // detail page swapping "Loading..." for the record name) propagates.
+    {
+        let title = props.title.clone();
+        use_effect(move || {
+            #[cfg(feature = "web")]
+            {
+                if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                    let next = if title.trim().is_empty() {
+                        "Mokosh Platform".to_string()
+                    } else {
+                        format!("{} | Mokosh Platform", title.trim())
+                    };
+                    doc.set_title(&next);
+                }
+            }
+        });
+    }
 
     rsx! {
         // Single full-height viewport: top bar spans the full width
@@ -109,8 +136,21 @@ pub fn Sidebar(props: SidebarProps) -> Element {
         // No brand block - the brand lives in the top bar now. The
         // mobile drawer overlaps the top bar so it gets its own close
         // button at the top.
+        //
+        // MAPPS-285: when the drawer is CLOSED, it is still in the DOM
+        // and rendered off-canvas via `-translate-x-full` for the slide
+        // animation. `lg:hidden` removes it from the accessibility tree
+        // at the lg+ breakpoint (CSS `display: none`), but on smaller
+        // viewports it is still semantically visible - a screen reader
+        // tabs through every link, and the user hears the whole menu a
+        // second time after the (visible) desktop sidebar at the
+        // breakpoint edge. `aria_hidden` ties the AT-visibility to the
+        // `open` state too so the drawer is exposed to AT only while
+        // the user has actually opened it. Same pattern Material UI's
+        // `Drawer` and HeadlessUI's `Dialog.Panel` use.
         aside {
             class: "fixed inset-y-0 left-0 z-50 w-64 bg-surface-2 border-r border-line transform transition-transform duration-300 ease-in-out flex flex-col lg:hidden {mobile_class}",
+            aria_hidden: if props.open { "false" } else { "true" },
             div { class: "flex items-center justify-end h-12 px-2",
                 button {
                     class: "p-2 text-subtle hover:text-content",
@@ -522,10 +562,18 @@ pub fn TopBar(props: TopBarProps) -> Element {
                 }
             }
 
-            // Page title
-            div { class: "flex-1 px-4 sm:px-6 lg:px-8 min-w-0",
-                h1 { class: "text-xl font-semibold text-content truncate",
+            // Page title + global search. Title gets a fixed slot on
+            // lg+ so the search box doesn't push it around; on smaller
+            // viewports the title takes the row and search hides.
+            div { class: "flex-1 px-4 sm:px-6 lg:px-8 min-w-0 flex items-center gap-4",
+                h1 { class: "text-xl font-semibold text-content truncate shrink-0",
                     "{props.title}"
+                }
+                // MAPPS-298: top-bar global search. Mounted at lg+ so
+                // the search field has room next to the page title;
+                // narrow viewports keep just the title.
+                div { class: "hidden lg:flex flex-1 max-w-md",
+                    GlobalSearch {}
                 }
             }
 
@@ -537,6 +585,11 @@ pub fn TopBar(props: TopBarProps) -> Element {
                 // Notifications bell + inbox dropdown, wired to the
                 // server `notifications` module (MAPPS-132).
                 NotificationBell {}
+
+                // PMS-486: pending-approvals chip. Polls
+                // `/approvals/pending` and renders a count badge that
+                // links to the standalone /approvals queue.
+                ApprovalsBadge {}
 
                 // User menu (P3-26 avatar dropdown)
                 UserMenu {}
@@ -780,6 +833,36 @@ fn NotificationBell() -> Element {
                     }
                 }
             }
+        }
+    }
+}
+
+/// PMS-486: top-bar pending-approvals chip. Polls `/approvals/pending`
+/// on mount + on every active-org switch (cheap on the server thanks
+/// to the PMS-451 partial indexes on `(approver_user_id) WHERE state =
+/// 'pending'` etc.). The badge collapses to nothing when there is no
+/// pending decision so the chrome stays clean for non-approvers.
+#[component]
+fn ApprovalsBadge() -> Element {
+    let inbox = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Vec<serde_json::Value>>("/approvals/pending")
+            .await
+            .ok()
+            .unwrap_or_default()
+    });
+    let count = inbox.read_unchecked().clone().unwrap_or_default().len();
+    if count == 0 {
+        return rsx! { span {} };
+    }
+    rsx! {
+        Link {
+            to: Route::Approvals {},
+            class: "inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200 hover:opacity-90",
+            aria_label: "{count} pending approvals",
+            title: "Pending approvals",
+            "Approvals "
+            span { class: "font-bold", "{count}" }
         }
     }
 }

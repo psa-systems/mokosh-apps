@@ -19,6 +19,16 @@ pub static TOASTS: GlobalSignal<Vec<Toast>> = Signal::global(Vec::new);
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
+/// MAPPS-312: per-`AlertType` auto-dismiss default. Success / Info
+/// land for 5s then fade; Warning / Error stay sticky so a real
+/// failure cannot be missed by a user who tabbed away.
+fn default_auto_dismiss_ms(alert_type: AlertType) -> Option<u32> {
+    match alert_type {
+        AlertType::Success | AlertType::Info => Some(5_000),
+        AlertType::Warning | AlertType::Error => None,
+    }
+}
+
 /// Push a toast onto the global stack.
 ///
 /// `alert_type` controls the icon and color (`Info`, `Success`,
@@ -30,6 +40,7 @@ pub fn push_toast(alert_type: AlertType, message: impl Into<String>) {
         toast_type: alert_type,
         message: message.into(),
         title: None,
+        auto_dismiss_ms: default_auto_dismiss_ms(alert_type),
     });
 }
 
@@ -45,6 +56,7 @@ pub fn push_toast_with_title(
         toast_type: alert_type,
         message: message.into(),
         title: Some(title.into()),
+        auto_dismiss_ms: default_auto_dismiss_ms(alert_type),
     });
 }
 

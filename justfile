@@ -1,4 +1,4 @@
-# Mokosh Platform - Dioxus Client - Task Runner
+# General Task Runner
 
 # Image used by the pre-commit hook. Matches ci-build/Dockerfile so `just pre-commit` and the Forgejo `check.yml` job run a toolchain compatible with the rust-builder-glibc image the client is built against.
 dev_image := "ghcr.io/niceguyit/rust-builder-glibc:v1.0.1-rust1.94-trixie"
@@ -6,6 +6,8 @@ dev_image := "ghcr.io/niceguyit/rust-builder-glibc:v1.0.1-rust1.94-trixie"
 # List available recipes
 default:
     @just --list
+
+# -- Hooks ------------------------------------------------------------------
 
 # Install the git pre-commit hook (run once per fresh clone). Writes a stub at .git/hooks/pre-commit that execs `just pre-commit`. Bypass with `git commit --no-verify`.
 [group: 'hooks']
@@ -32,14 +34,40 @@ pre-commit: css-build
     let user_name = (^whoami | str trim)
     let target_vol = $"dev-mokosh-apps-target-($user_name)"
     print "\n[pre-commit] cargo fmt --all --check"
-    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/build/target" --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo fmt --all --check
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/cargo-target" --env CARGO_TARGET_DIR=/cargo-target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo fmt --all --check
     print "\n[pre-commit] cargo clippy --all-targets -- -D warnings"
-    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/build/target" --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo clippy --all-targets -- -D warnings
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/cargo-target" --env CARGO_TARGET_DIR=/cargo-target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo clippy --all-targets -- -D warnings
     print "\n[pre-commit] cargo check --target wasm32-unknown-unknown"
-    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/build/target" --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo check --target wasm32-unknown-unknown
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/cargo-target" --env CARGO_TARGET_DIR=/cargo-target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo check --target wasm32-unknown-unknown
     print "\n[pre-commit] cargo test --lib"
-    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/build/target" --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo test --lib
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/cargo-target" --env CARGO_TARGET_DIR=/cargo-target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo test --lib
     print "\n[pre-commit] all checks passed"
+
+# -- Checks ----------------------------------------------------------------------
+
+# Umbrella check: build + clippy + fmt + docker builder stage.
+[group: 'check']
+check: check-web check-clippy check-fmt check-theme-tokens
+
+# Check web/WASM compilation
+[group: 'check']
+check-web:
+    cargo check --target wasm32-unknown-unknown
+
+# MAPPS-259: fail on hardcoded neutral/brand color classes (use tokens)
+[group: 'check']
+check-theme-tokens:
+    bash scripts/check-theme-tokens.sh
+
+# Run clippy lints
+[group: 'check']
+check-clippy:
+    cargo clippy --all-targets -- -D warnings
+
+# Check formatting
+[group: 'check']
+check-fmt:
+    cargo fmt --all --check
 
 # Install JS dependencies
 [private]
@@ -139,30 +167,6 @@ down:
 [group: 'dev']
 restart: down dev-sso
 
-# Run all checks (web, clippy, fmt, theme tokens)
-[group: 'check']
-check: check-web check-clippy check-fmt check-theme-tokens
-
-# Check web/WASM compilation
-[group: 'check']
-check-web:
-    cargo check --target wasm32-unknown-unknown
-
-# MAPPS-259: fail on hardcoded neutral/brand color classes (use tokens)
-[group: 'check']
-check-theme-tokens:
-    bash scripts/check-theme-tokens.sh
-
-# Run clippy lints
-[group: 'check']
-check-clippy:
-    cargo clippy --all-targets -- -D warnings
-
-# Check formatting
-[group: 'check']
-check-fmt:
-    cargo fmt --all --check
-
 # Format code
 [group: 'format']
 fmt:
@@ -188,24 +192,32 @@ check-docker:
 build-docker:
     docker buildx build --tag mokosh-apps:local --file oci-build/Dockerfile .
 
-# Create a release: bump version, push branch, print PR link
+# -- Cleanup ------------------------------------------------------------------
+
+# -- Release ---------------------------------------------------------------------
+
+# Create a release: bump major (vx.0.0), minor (v0.x.0), or hotfix (v0.0.x), push the branch, and open the PR via fj.
+# After the PR merges, the create-release workflow creates the tag and release automatically.
 [group: 'release']
 create-release bump:
     #!/usr/bin/env nu
     let bump = "{{ bump }}"
 
+    # Abort if there are uncommitted changes
     let status = git status --porcelain | str trim
     if ($status | is-not-empty) {
         print $"(ansi red)Working tree is dirty. Please stash or commit your changes first.(ansi reset)"
         exit 1
     }
 
+    # Switch to main if not already there
     let branch = git branch --show-current | str trim
     if $branch != "main" {
         print $"Switching from ($branch) to main..."
         git checkout main
     }
 
+    # Pull latest changes
     git pull --rebase origin main
 
     let cargo_version = (open Cargo.toml | get package.version)
@@ -232,6 +244,7 @@ create-release bump:
     git add Cargo.toml package.json
     git commit --signoff --message $"Release ($tag)"
 
+    # Push release branch
     git push --set-upstream origin $release_branch
 
     # Open the release PR via fj. Body lives in a tempfile so the
@@ -251,7 +264,8 @@ create-release bump:
     }
 
     # `fj pr create` prints `created pull request #N: <title>` on success.
-    # Parse the number out and build the PR URL from `origin`.
+    # Parse the number out and build the PR URL from `origin` so the user
+    # gets a clickable link instead of just the fj line.
     let pr_num = (
         $fj_result.stdout
         | str trim
@@ -272,3 +286,4 @@ create-release bump:
         print $"fj output: ($fj_result.stdout | str trim)"
     }
     print $"After merging, the create-release workflow will tag and release ($tag) automatically."
+

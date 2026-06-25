@@ -5,12 +5,13 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    ticket_status_badge, AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ClockIcon,
-    DataTable, IconSize, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select,
-    SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
-    TableRow, Textarea, UserCircleIcon,
+    clear_selection, ticket_status_badge, use_bulk_selection, AlertType, AppLayout, Badge,
+    BadgeVariant, BulkActionsBar, BulkSelection, Button, ButtonVariant, Card, ClockIcon, DataTable,
+    IconSize, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectAllHeader,
+    SelectOption, SelectRowCell, SortDirection, Table, TableBody, TableCell, TableEmpty, TableHead,
+    TableHeader, TableLoading, TableRow, Textarea, UserCircleIcon,
 };
-use crate::utils::Paginated;
+use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
 /// Subset of mokosh-server's `TicketResponse` we render in the list. The
@@ -118,6 +119,31 @@ struct RemoteTicketPriority {
     name: String,
     #[serde(default)]
     is_default: bool,
+}
+
+/// MAPPS-296: minimal shape of a row from `GET /tickets/types` /
+/// `GET /tickets/categories`. Both endpoints share the `(id, name)`
+/// projection the New Ticket form needs; serde drops every other
+/// field. Created at the top so the new lookups in `TicketNewPage`
+/// resolve.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteTicketLookup {
+    id: uuid::Uuid,
+    #[serde(default)]
+    name: String,
+}
+
+/// MAPPS-296: minimal user-row shape for the New Ticket assignee
+/// dropdown. The server's user list lives at `/auth/users`. `full_name`
+/// is the precomputed `first last` projection; we fall back to `email`
+/// when it is empty.
+#[derive(Clone, Debug, Deserialize)]
+struct RemoteUserLookup {
+    id: uuid::Uuid,
+    #[serde(default)]
+    full_name: String,
+    #[serde(default)]
+    email: String,
 }
 
 /// A ticket note (`GET /tickets/:id/notes`), rendered as an Activity item.
@@ -406,23 +432,101 @@ fn fmt_change_value(v: &Option<serde_json::Value>) -> String {
     }
 }
 
+/// MAPPS-289: sortable columns on the ticket list. Mirrors the
+/// `ContactSortKey` pattern in `contacts.rs`: an enum tracks which
+/// column is active, paired with a `SortDirection`, and the table
+/// reorders client-side over the already-filtered set.
+#[derive(Clone, Copy, PartialEq)]
+enum TicketSortKey {
+    Ticket,
+    Company,
+    Status,
+    Priority,
+    Assigned,
+    Updated,
+}
+
+fn ticket_sort_dir_for(
+    current: &Option<(TicketSortKey, SortDirection)>,
+    key: TicketSortKey,
+) -> Option<SortDirection> {
+    current.and_then(|(k, dir)| if k == key { Some(dir) } else { None })
+}
+
+fn toggle_ticket_sort(
+    current: &mut Signal<Option<(TicketSortKey, SortDirection)>>,
+    key: TicketSortKey,
+) {
+    let next = match *current.read() {
+        Some((k, SortDirection::Ascending)) if k == key => Some((key, SortDirection::Descending)),
+        Some((k, SortDirection::Descending)) if k == key => Some((key, SortDirection::Ascending)),
+        _ => Some((key, SortDirection::Ascending)),
+    };
+    current.set(next);
+}
+
 /// Ticket list page
 #[component]
 pub fn TicketListPage() -> Element {
     let mut search = use_signal(String::new);
     let mut status_filter = use_signal(String::new);
     let mut priority_filter = use_signal(String::new);
+    // MAPPS-289: sortable-column state. Default sort matches the existing
+    // list query (`?sort=-updated_at`) so the first paint is unchanged.
+    let mut sort = use_signal(|| Some((TicketSortKey::Updated, SortDirection::Descending)));
+    // MAPPS-290: page-scoped bulk selection. The header `SelectAllHeader`
+    // toggles every visible row in/out; per-row `SelectRowCell` toggles
+    // single rows; the `BulkActionsBar` renders the verb buttons when
+    // non-empty and clears itself when a verb fires.
+    let mut selection = use_bulk_selection();
+    // MAPPS-310: confirm-before-delete for the bulk delete action.
+    // `None` = no dialog open; `Some(snapshot)` = dialog open against
+    // the snapshotted selection (we freeze the id list at click time
+    // so a user un-checking a row mid-dialog doesn't smuggle past the
+    // confirmation prompt). Other destructive surfaces in the app
+    // (Companies / Contracts / Assets detail) gate on `ConfirmDialog`;
+    // the bulk path bypassed it before this fix.
+    let mut bulk_delete_confirm = use_signal::<Option<Vec<String>>>(|| None);
+    let mut bulk_delete_running = use_signal(|| false);
+
+    // MAPPS-295: source the status-filter options from the tenant's
+    // configured `ticket_statuses` table instead of a hand-rolled slug
+    // list. The list previously hardcoded `new/open/in_progress/pending/
+    // resolved/closed`, while the ticket-detail inline-edit dropdown
+    // already fetches `/tickets/statuses` (PMS-359) - so a tenant whose
+    // workflow includes "Waiting on Client / Waiting on Vendor /
+    // Scheduled" saw those on the detail page but couldn't filter by
+    // them on the list, and the list offered a "Pending" the records
+    // never carried. Source-of-truth is whichever set the server hands
+    // back. Empty fetch (offline / 403) falls back to no options so the
+    // filter just renders the "All Statuses" placeholder, which is
+    // strictly better than fabricating slugs.
+    let status_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketStatus>>("/tickets/statuses")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
 
     // Same progressive-enablement pattern as the companies page: try
     // the live backend first, fall back to the seeded demo rows so the
     // page stays demoable when the route isn't deployed yet or the
     // user is signed out.
-    let tickets_resource = use_resource(|| async {
+    // MAPPS-249: a company context card's "View All" lands here with
+    // `?company_id=<uuid>`. When present, scope the fetch to that company so the
+    // list shows only its tickets and every row stays inside the same company.
+    let mut tickets_resource = use_resource(|| async {
         let token = match crate::hooks::fetch::api::current_access_token() {
             Some(t) => t,
             None => return (Vec::<RemoteTicket>::new(), TicketSource::Demo),
         };
-        match crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteTicket>>("/tickets", &token)
+        let mut path = String::from("/tickets");
+        if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
+            path.push_str(&format!("?company_id={company_id}"));
+        }
+        match crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteTicket>>(&path, &token)
             .await
         {
             Ok(page) => (page.data, TicketSource::Backend),
@@ -439,20 +543,17 @@ pub fn TicketListPage() -> Element {
 
     // Apply search + status/priority filters to the loaded set client-side.
     // The controls previously only updated signals and never narrowed the
-    // list (MAPPS-154); filtering here makes them functional. Comparisons go
-    // through the same humanize helpers the rows use, so the raw server status
-    // ("open", "new", ...) and the option value ("open", "new", ...) normalize
-    // to the same label regardless of casing. An empty selection matches all.
+    // list (MAPPS-154); filtering here makes them functional. Status uses
+    // the tenant's server-side name verbatim (MAPPS-295); priority still
+    // routes through the humanize helper because its options remain the
+    // hardcoded four-level slug set.
     let search_term = search.read().trim().to_lowercase();
-    let status_label_sel = match status_filter.read().as_str() {
-        "" => String::new(),
-        raw => humanize_ticket_status(raw),
-    };
+    let status_name_sel = status_filter.read().clone();
     let priority_label_sel = match priority_filter.read().as_str() {
         "" => String::new(),
         raw => humanize_priority(raw),
     };
-    let filtered_tickets: Vec<RemoteTicket> = remote_tickets
+    let mut filtered_tickets: Vec<RemoteTicket> = remote_tickets
         .iter()
         .filter(|t| {
             if !search_term.is_empty() {
@@ -466,8 +567,7 @@ pub fn TicketListPage() -> Element {
                     return false;
                 }
             }
-            if !status_label_sel.is_empty()
-                && humanize_ticket_status(&t.status.name) != status_label_sel
+            if !status_name_sel.is_empty() && !t.status.name.eq_ignore_ascii_case(&status_name_sel)
             {
                 return false;
             }
@@ -481,15 +581,42 @@ pub fn TicketListPage() -> Element {
         .cloned()
         .collect();
 
-    let status_options = vec![
-        SelectOption::new("", "All Statuses"),
-        SelectOption::new("new", "New"),
-        SelectOption::new("open", "Open"),
-        SelectOption::new("in_progress", "In Progress"),
-        SelectOption::new("pending", "Pending"),
-        SelectOption::new("resolved", "Resolved"),
-        SelectOption::new("closed", "Closed"),
-    ];
+    // MAPPS-289: client-side sort over the filtered set. The list query
+    // already asks the server for `?sort=-updated_at`, so the default
+    // sort signal matches that and the first paint is unchanged; a
+    // header click re-orders without an extra round trip.
+    {
+        let snap = *sort.read();
+        if let Some((key, dir)) = snap {
+            filtered_tickets.sort_by(|a, b| {
+                let ord = match key {
+                    TicketSortKey::Ticket => a.ticket_number.cmp(&b.ticket_number),
+                    TicketSortKey::Company => a.company_name.cmp(&b.company_name),
+                    TicketSortKey::Status => a.status.name.cmp(&b.status.name),
+                    TicketSortKey::Priority => a.priority.name.cmp(&b.priority.name),
+                    TicketSortKey::Assigned => a
+                        .assigned_to_name
+                        .as_deref()
+                        .unwrap_or("")
+                        .cmp(b.assigned_to_name.as_deref().unwrap_or("")),
+                    TicketSortKey::Updated => a.updated_at.cmp(&b.updated_at),
+                };
+                match dir {
+                    SortDirection::Ascending => ord,
+                    SortDirection::Descending => ord.reverse(),
+                }
+            });
+        }
+    }
+
+    // MAPPS-295: build the Status filter options from the tenant's actual
+    // status set. A still-loading or empty resource just shows the "All
+    // Statuses" placeholder option.
+    let tenant_statuses = status_resource.read_unchecked().clone().unwrap_or_default();
+    let mut status_options = vec![SelectOption::new("", "All Statuses")];
+    for s in tenant_statuses.iter() {
+        status_options.push(SelectOption::new(s.name.clone(), s.name.clone()));
+    }
 
     let priority_options = vec![
         SelectOption::new("", "All Priorities"),
@@ -552,6 +679,94 @@ pub fn TicketListPage() -> Element {
                 }
             }
 
+            // MAPPS-290: bulk actions bar. Renders only when at least one
+            // row is selected. The Delete verb issues parallel DELETE
+            // calls and clears the selection on completion. Adding more
+            // verbs (bulk assign, set priority) follows the same shape.
+            BulkActionsBar {
+                selection,
+                label: "ticket".to_string(),
+                Button {
+                    variant: ButtonVariant::Danger,
+                    disabled: bulk_delete_running(),
+                    onclick: move |_| {
+                        // MAPPS-310: stash the snapshot + open the
+                        // confirmation dialog. The actual delete fanout
+                        // runs from the dialog's confirm handler so an
+                        // accidental click is recoverable.
+                        let ids: Vec<String> = selection.read().iter().cloned().collect();
+                        if !ids.is_empty() {
+                            bulk_delete_confirm.set(Some(ids));
+                        }
+                    },
+                    "Delete selected"
+                }
+            }
+
+            // MAPPS-310: confirmation dialog for the bulk delete. The
+            // pending-id list lives in `bulk_delete_confirm`; the
+            // onconfirm handler runs the same join_all delete fanout
+            // the inline onclick used before this fix, then clears
+            // the selection and restarts the resource.
+            {
+                let pending = bulk_delete_confirm.read().clone();
+                let pending_count = pending.as_ref().map(|v| v.len()).unwrap_or(0);
+                let dialog_message = format!(
+                    "Delete {pending_count} selected ticket(s)? Notes, attachments, and time entries on these tickets are also removed. This cannot be undone."
+                );
+                let confirm_text = format!("Delete {pending_count} ticket(s)");
+                rsx! {
+                    crate::components::ConfirmDialog {
+                        open: pending.is_some(),
+                        title: "Delete selected tickets".to_string(),
+                        message: dialog_message,
+                        confirm_text,
+                        cancel_text: "Cancel".to_string(),
+                        destructive: true,
+                        loading: bulk_delete_running(),
+                        onconfirm: move |_| {
+                            let Some(ids) = bulk_delete_confirm.read().clone() else { return };
+                            if ids.is_empty() || bulk_delete_running() { return; }
+                            bulk_delete_running.set(true);
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    use futures_util::future::join_all;
+                                    let futs = ids.iter().map(|id| {
+                                        let path = format!("/tickets/{id}");
+                                        async move {
+                                            crate::hooks::fetch::api::delete_authed(&path).await
+                                        }
+                                    });
+                                    let results = join_all(futs).await;
+                                    let failures = results.iter().filter(|r| r.is_err()).count();
+                                    if failures == 0 {
+                                        crate::hooks::toast::push_toast(
+                                            crate::components::AlertType::Success,
+                                            format!("Deleted {} ticket(s).", ids.len()),
+                                        );
+                                    } else {
+                                        crate::hooks::toast::push_toast(
+                                            crate::components::AlertType::Error,
+                                            format!("Deleted {} of {}; {} failed.", ids.len() - failures, ids.len(), failures),
+                                        );
+                                    }
+                                }
+                                clear_selection(&mut selection);
+                                tickets_resource.restart();
+                                bulk_delete_confirm.set(None);
+                                bulk_delete_running.set(false);
+                            });
+                        },
+                        oncancel: move |_| {
+                            if !bulk_delete_running() {
+                                bulk_delete_confirm.set(None);
+                            }
+                        },
+                    }
+                }
+            }
+
             // Ticket table
             DataTable {
                 loading: is_loading,
@@ -563,12 +778,52 @@ pub fn TicketListPage() -> Element {
                     striped: true,
                     TableHead {
                         TableRow {
-                            TableHeader { sortable: true, "Ticket" }
-                            TableHeader { sortable: true, "Company" }
-                            TableHeader { sortable: true, "Status" }
-                            TableHeader { sortable: true, "Priority" }
-                            TableHeader { sortable: true, "Assigned To" }
-                            TableHeader { sortable: true, "Updated" }
+                            // MAPPS-290: select-all checkbox for the visible page.
+                            SelectAllHeader {
+                                selection,
+                                ids: filtered_tickets.iter().map(|t| t.id.to_string()).collect::<Vec<_>>(),
+                            }
+                            {
+                                let sort_snap = *sort.read();
+                                rsx! {
+                                    TableHeader {
+                                        sortable: true,
+                                        sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Ticket),
+                                        onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Ticket),
+                                        "Ticket"
+                                    }
+                                    TableHeader {
+                                        sortable: true,
+                                        sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Company),
+                                        onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Company),
+                                        "Company"
+                                    }
+                                    TableHeader {
+                                        sortable: true,
+                                        sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Status),
+                                        onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Status),
+                                        "Status"
+                                    }
+                                    TableHeader {
+                                        sortable: true,
+                                        sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Priority),
+                                        onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Priority),
+                                        "Priority"
+                                    }
+                                    TableHeader {
+                                        sortable: true,
+                                        sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Assigned),
+                                        onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Assigned),
+                                        "Assigned To"
+                                    }
+                                    TableHeader {
+                                        sortable: true,
+                                        sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Updated),
+                                        onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Updated),
+                                        "Updated"
+                                    }
+                                }
+                            }
                         }
                     }
                     if is_loading {
@@ -594,12 +849,26 @@ pub fn TicketListPage() -> Element {
                                 },
                             }
                         } else {
-                            // Filtered to nothing: no CTA (creating won't help);
-                            // guide the user back to the filters.
+                            // Filtered to nothing: MAPPS-291 adds a one-click
+                            // "Clear filters" affordance so the user does not
+                            // have to find every filter control and reset
+                            // each one to recover. Resets the three signals
+                            // the toolbar above mounts.
                             TableEmpty {
                                 columns: 6,
                                 title: "No tickets match your filters".to_string(),
-                                description: "Try clearing or adjusting the filters above.".to_string(),
+                                description: "Adjust the filters above, or clear them to see every ticket again.".to_string(),
+                                actions: rsx! {
+                                    Button {
+                                        variant: ButtonVariant::Secondary,
+                                        onclick: move |_| {
+                                            search.set(String::new());
+                                            status_filter.set(String::new());
+                                            priority_filter.set(String::new());
+                                        },
+                                        "Clear filters"
+                                    }
+                                },
                             }
                         }
                     } else {
@@ -616,6 +885,11 @@ pub fn TicketListPage() -> Element {
                                         priority: humanize_priority(&ticket.priority.name),
                                         assigned_to: ticket.assigned_to_name.unwrap_or_else(|| "Unassigned".to_string()),
                                         updated: relative_time(ticket.updated_at),
+                                        // MAPPS-290: hand the page-scoped
+                                        // selection signal down so each
+                                        // row's first cell renders a
+                                        // checkbox bound to it.
+                                        selection: Some(selection),
                                     }
                                 }
                             } else {
@@ -688,6 +962,12 @@ struct TicketRowProps {
     priority: String,
     assigned_to: String,
     updated: String,
+    /// MAPPS-290: optional bulk-selection signal. When `Some`, the row
+    /// renders a `SelectRowCell` as its first cell wired to this signal;
+    /// the demo rows pass `None` so the no-backend fallback table still
+    /// fits the same column shape via a hidden first cell.
+    #[props(default)]
+    selection: Option<BulkSelection>,
 }
 
 #[component]
@@ -709,6 +989,16 @@ fn TicketRow(props: TicketRowProps) -> Element {
         TableRow {
             clickable: true,
             onclick: move |_| { navigator.push(Route::TicketDetail { id: id.clone() }); },
+            // MAPPS-290: per-row checkbox in the first column. The cell
+            // stops propagation so toggling the checkbox doesn't also
+            // navigate to the detail page.
+            if let Some(selection) = props.selection {
+                SelectRowCell { selection, id: props.id.clone() }
+            } else {
+                // Demo rows: keep the column shape consistent with the
+                // header by rendering an inert cell.
+                TableCell { class: "w-10", "" }
+            }
             TableCell {
                 div {
                     Link {
@@ -766,15 +1056,62 @@ fn read_company_prefill_from_url() -> CompanyPrefill {
     CompanyPrefill::default()
 }
 
+/// PMS-482: KB-article prefill captured off the URL when the
+/// ticket-new page is reached via "Open ticket about this article"
+/// from a KB article. Only the `id` is needed for the create body's
+/// `source_kb_article_id`; `title` + `url` are folded into the
+/// title and description signals so the user lands on a pre-filled
+/// form they can immediately edit and submit.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct KbArticlePrefill {
+    id: String,
+    title: String,
+    url: String,
+}
+
+fn read_kb_prefill_from_url() -> KbArticlePrefill {
+    #[cfg(feature = "web")]
+    {
+        if let Some(search) = web_sys::window().and_then(|w| w.location().search().ok()) {
+            if let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) {
+                let id = params.get("from_kb_article").unwrap_or_default();
+                let title = params.get("from_kb_title").unwrap_or_default();
+                let url = params.get("from_kb_url").unwrap_or_default();
+                if uuid::Uuid::parse_str(&id).is_ok() {
+                    return KbArticlePrefill { id, title, url };
+                }
+            }
+        }
+    }
+    KbArticlePrefill::default()
+}
+
 /// New ticket page
 #[component]
 pub fn TicketNewPage() -> Element {
     // MAPPS-207: seed the company from the URL when linked from a company.
     let prefill = use_signal(read_company_prefill_from_url);
     let prefill = prefill.read().clone();
+    // PMS-482: seed title + description from the source KB article when
+    // the user clicked "Open ticket about this article". The article id
+    // rides into the create body as `source_kb_article_id`.
+    let kb_prefill = use_signal(read_kb_prefill_from_url);
+    let kb_prefill = kb_prefill.read().clone();
+    let kb_article_id_for_body = kb_prefill.id.clone();
 
-    let mut title = use_signal(String::new);
-    let mut description = use_signal(String::new);
+    let initial_title = kb_prefill.title.clone();
+    let initial_description = if kb_prefill.title.is_empty() {
+        String::new()
+    } else {
+        let link = if kb_prefill.url.is_empty() {
+            String::new()
+        } else {
+            format!("\nLink: {}", kb_prefill.url)
+        };
+        format!("Article: {}{}", kb_prefill.title, link)
+    };
+    let mut title = use_signal(|| initial_title);
+    let mut description = use_signal(|| initial_description);
     // The company field holds a real company UUID (string) plus its human
     // name, both fed by the CompanyPicker. The old hardcoded "1"/"2"/"3"
     // Select submitted non-UUID ids that fell back to the nil UUID, so the
@@ -799,11 +1136,89 @@ pub fn TicketNewPage() -> Element {
     // its "selected chip" state without an extra fetch.
     let mut asset_id = use_signal(String::new);
     let mut asset_name = use_signal(String::new);
+    // MAPPS-296: capture every common field at create time instead of
+    // forcing the user to follow up with an edit. Type and Category are
+    // tenant-scoped lookups (`/tickets/types` and `/tickets/categories`),
+    // Assignee comes from `/auth/users` (already used by the calendar /
+    // dispatch surfaces), and the Due Date stamps `scheduled_end` so
+    // SLA / dispatch view it on creation.
+    let mut type_id = use_signal(String::new);
+    let mut category_id = use_signal(String::new);
+    let mut assigned_to_id = use_signal(String::new);
+    let mut due_date = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
     // Per-field server validation message routed next to the Title input
     // (MAPPS-210). Cleared on each submit and on edit.
     let mut title_error = use_signal(String::new);
+    // PMS-518: per-field error for the now-enforced required Description.
+    let mut description_error = use_signal(String::new);
+
+    // MAPPS-296: tenant lookups for Type + Category + Assignee. Each
+    // hits its own endpoint and falls back to an empty list on a 403 /
+    // network drop so the form mounts even when the lookups are
+    // unavailable; the matching signal stays empty and the server
+    // applies its defaults.
+    let types_resource = use_resource(|| async move {
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketLookup>>(
+            "/tickets/types?per_page=100",
+        )
+        .await
+        .ok()
+        .map(|p| p.data)
+        .unwrap_or_default()
+    });
+    let categories_resource = use_resource(|| async move {
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketLookup>>(
+            "/tickets/categories?per_page=100",
+        )
+        .await
+        .ok()
+        .map(|p| p.data)
+        .unwrap_or_default()
+    });
+    let users_resource = use_resource(|| async move {
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteUserLookup>>(
+            "/auth/users?per_page=100",
+        )
+        .await
+        .ok()
+        .map(|p| p.data)
+        .unwrap_or_default()
+    });
+
+    let type_options: Vec<SelectOption> = {
+        let mut opts = vec![SelectOption::new("", "(none)")];
+        if let Some(rows) = types_resource.read().as_ref() {
+            for r in rows.iter() {
+                opts.push(SelectOption::new(r.id.to_string(), r.name.clone()));
+            }
+        }
+        opts
+    };
+    let category_options: Vec<SelectOption> = {
+        let mut opts = vec![SelectOption::new("", "(none)")];
+        if let Some(rows) = categories_resource.read().as_ref() {
+            for r in rows.iter() {
+                opts.push(SelectOption::new(r.id.to_string(), r.name.clone()));
+            }
+        }
+        opts
+    };
+    let assignee_options: Vec<SelectOption> = {
+        let mut opts = vec![SelectOption::new("", "Unassigned")];
+        if let Some(rows) = users_resource.read().as_ref() {
+            for u in rows.iter() {
+                let name = if u.full_name.trim().is_empty() {
+                    u.email.clone()
+                } else {
+                    u.full_name.clone()
+                };
+                opts.push(SelectOption::new(u.id.to_string(), name));
+            }
+        }
+        opts
+    };
 
     // Fetch the tenant's ticket priorities on mount. The Paginated envelope
     // matches the server's PaginatedResponse wire shape; meta is ignored
@@ -855,13 +1270,47 @@ pub fn TicketNewPage() -> Element {
         e.prevent_default();
         is_submitting.set(true);
         error.set(String::new());
-        title_error.set(String::new());
 
-        // The CompanyPicker only ever reports real company UUIDs, but a
-        // user can submit before picking one. Validate up front and bail
-        // with a visible message instead of POSTing the nil UUID.
-        let Ok(company_uuid) = uuid::Uuid::parse_str(company_id.read().as_str()) else {
+        // PMS-518: validate every required field through the shared FormGuard,
+        // so all failures surface at once (each in its own inline slot) and the
+        // first invalid field is focused. Generalises the PMS-514 fix; each
+        // `field` call also clears a stale message when the value now passes.
+        //
+        // MAPPS-281: Title/Description are trimmed so a whitespace-only value
+        // does not satisfy the (inert) native `required` and reach the server.
+        let mut guard = FormGuard::new();
+
+        let title_v = title.read().trim().to_string();
+        title_error.set(guard.field("title", &title_v, "Title", &[Rule::Required]));
+
+        // PMS-518: Description is now enforced (it carried the asterisk but was
+        // never validated). The server accepts an empty body, so this is a
+        // purely client-side rule, applied here and on blur via the field's
+        // `rules`.
+        let description_v = description.read().trim().to_string();
+        description_error.set(guard.field(
+            "description",
+            &description_v,
+            "Description",
+            &[Rule::Required],
+        ));
+
+        // The CompanyPicker only ever reports real company UUIDs, but a user can
+        // submit before picking one. It has no inline error slot, so its failure
+        // goes to the form-level banner; `note_invalid` still blocks the submit.
+        let company_uuid = uuid::Uuid::parse_str(company_id.read().as_str()).ok();
+        if company_uuid.is_none() {
             error.set("Please pick a company first.".to_string());
+            guard.note_invalid(None);
+        }
+
+        if guard.blocked() {
+            is_submitting.set(false);
+            return;
+        }
+        // Past the guard: every required field is valid, so the company UUID is
+        // present (re-bound here without an unwrap/expect).
+        let Some(company_uuid) = company_uuid else {
             is_submitting.set(false);
             return;
         };
@@ -879,13 +1328,46 @@ pub fn TicketNewPage() -> Element {
         let contact_uuid: Option<uuid::Uuid> =
             uuid::Uuid::parse_str(contact_id.read().as_str()).ok();
 
-        // Snapshot signals so the spawn doesn't need to read them.
-        let title_v = title.read().clone();
-        let description_v = description.read().clone();
+        // MAPPS-296: optional type / category / assignee. Each empty
+        // signal sends `null` so the server falls back to its default
+        // (no enforced type / category / assignee).
+        let type_uuid: Option<uuid::Uuid> = uuid::Uuid::parse_str(type_id.read().as_str()).ok();
+        let category_uuid: Option<uuid::Uuid> =
+            uuid::Uuid::parse_str(category_id.read().as_str()).ok();
+        let assignee_uuid: Option<uuid::Uuid> =
+            uuid::Uuid::parse_str(assigned_to_id.read().as_str()).ok();
+        // MAPPS-296: Due Date stamps `scheduled_end` (the server-side
+        // SLA / dispatch consume the same field). The date input only
+        // emits `YYYY-MM-DD`, so we land it at 23:59 UTC on the chosen
+        // day - "due by end of day" is the intuitive read for "Due
+        // Date" on a ticket.
+        let due_value = due_date.read().clone();
+        let scheduled_end: Option<String> = if due_value.trim().is_empty() {
+            None
+        } else {
+            Some(format!("{}T23:59:00Z", due_value.trim()))
+        };
+
+        // Title + Description are already validated and captured (trimmed)
+        // above; send the trimmed Description (now a required, non-empty value).
+        // PMS-482: clone the captured KB id into a per-call binding so
+        // the FnMut submit handler can be called more than once.
+        let kb_article_id = kb_article_id_for_body.clone();
 
         spawn(async move {
             #[cfg(feature = "web")]
             {
+                // PMS-482: stamp `source_kb_article_id` when the
+                // page was reached from a KB article. Parsed
+                // defensively (the prefill already validated it as
+                // a UUID, but a hand-edited URL could still slip
+                // through) and folded into the body as Null when
+                // absent so the server uses its default.
+                let kb_article_uuid: serde_json::Value = match uuid::Uuid::parse_str(&kb_article_id)
+                {
+                    Ok(u) => serde_json::Value::String(u.to_string()),
+                    Err(_) => serde_json::Value::Null,
+                };
                 let body = serde_json::json!({
                     "title": title_v,
                     "description": if description_v.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(description_v) },
@@ -893,6 +1375,16 @@ pub fn TicketNewPage() -> Element {
                     "contact_id": contact_uuid,
                     "priority_id": priority_uuid,
                     "asset_id": asset_uuid,
+                    // MAPPS-296: new fields. The server ignores `null`
+                    // and uses its own defaults; this captures every
+                    // field a dispatcher needs at creation instead of
+                    // forcing a follow-up edit.
+                    "type_id": type_uuid,
+                    "category_id": category_uuid,
+                    "assigned_to_id": assignee_uuid,
+                    "scheduled_end": scheduled_end,
+                    // PMS-482: KB-article provenance.
+                    "source_kb_article_id": kb_article_uuid,
                 });
 
                 #[derive(serde::Deserialize)]
@@ -906,6 +1398,11 @@ pub fn TicketNewPage() -> Element {
                 .await
                 {
                     Ok(created) => {
+                        // MAPPS-293: confirming success toast.
+                        crate::hooks::toast::push_toast(
+                            crate::components::AlertType::Success,
+                            "Ticket created.",
+                        );
                         navigator.push(Route::TicketDetail {
                             id: created.id.to_string(),
                         });
@@ -992,6 +1489,7 @@ pub fn TicketNewPage() -> Element {
                             // Server caps the title at 500 chars; mirror it
                             // client-side as a UX nicety (MAPPS-210).
                             maxlength: 500,
+                            rules: vec![Rule::Required],
                             error: title_error.read().clone(),
                             value: title.read().clone(),
                             oninput: move |e: FormEvent| {
@@ -1035,6 +1533,14 @@ pub fn TicketNewPage() -> Element {
                             selected_id: picker_contact_selected_id,
                             label: "Contact".to_string(),
                             company_filter: contact_company_filter,
+                            // MAPPS-276: opt this picker into the inline
+                            // "+ Create new contact" affordance so the New
+                            // Ticket flow doesn't dead-end when the calling
+                            // user isn't in the company's contacts yet. The
+                            // picker inherits the form's selected company
+                            // via `company_filter`, so the new contact
+                            // lands attached to the right company.
+                            allow_inline_create: true,
                             onselect: move |(id, name): (String, String)| {
                                 contact_id.set(id);
                                 contact_name.set(name);
@@ -1052,8 +1558,13 @@ pub fn TicketNewPage() -> Element {
                         placeholder: "Provide detailed information about the issue...",
                         rows: 6,
                         required: true,
+                        rules: vec![Rule::Required],
+                        error: description_error.read().clone(),
                         value: description.read().clone(),
-                        oninput: move |e: FormEvent| description.set(e.value()),
+                        oninput: move |e: FormEvent| {
+                            description_error.set(String::new());
+                            description.set(e.value());
+                        },
                     }
 
                     div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
@@ -1092,6 +1603,45 @@ pub fn TicketNewPage() -> Element {
                         }
                     }
 
+                    // MAPPS-296: richer create form. Type + Category +
+                    // Assignee + Due Date so the dispatcher captures
+                    // everything a service-desk ticket needs at
+                    // creation, instead of opening the new ticket and
+                    // immediately editing in four more fields.
+                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                        Select {
+                            name: "type",
+                            label: "Type",
+                            options: type_options,
+                            value: type_id.read().clone(),
+                            onchange: move |e: FormEvent| type_id.set(e.value()),
+                        }
+                        Select {
+                            name: "category",
+                            label: "Category",
+                            options: category_options,
+                            value: category_id.read().clone(),
+                            onchange: move |e: FormEvent| category_id.set(e.value()),
+                        }
+                    }
+
+                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                        Select {
+                            name: "assigned_to",
+                            label: "Assigned To",
+                            options: assignee_options,
+                            value: assigned_to_id.read().clone(),
+                            onchange: move |e: FormEvent| assigned_to_id.set(e.value()),
+                        }
+                        crate::components::DateField {
+                            name: "due_date",
+                            label: "Due Date".to_string(),
+                            value: due_date.read().clone(),
+                            help: "Stamps the ticket's scheduled-end so SLA + dispatch view it on creation.".to_string(),
+                            oninput: move |e: FormEvent| due_date.set(e.value()),
+                        }
+                    }
+
                     div { class: "flex justify-end space-x-3",
                         Link {
                             to: Route::TicketList {},
@@ -1125,6 +1675,10 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let mut show_note_modal = use_signal(|| false);
     let mut note_type = use_signal(|| "internal".to_string());
     let mut note_content = use_signal(String::new);
+    // PMS-518: inline error for the now-enforced required note Content,
+    // surfaced in the textarea's own slot by the FormGuard in the Add Note
+    // modal's submit handler.
+    let mut note_content_error = use_signal(String::new);
     let mut note_submitting = use_signal(|| false);
     let mut note_error = use_signal(String::new);
     let ticket_id_for_note = props.id.clone();
@@ -1220,9 +1774,24 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let mut editing_desc = use_signal(|| false);
     let mut e_title = use_signal(String::new);
     let mut e_desc = use_signal(String::new);
+    // PMS-518: per-field inline errors for the Edit Ticket modal's required
+    // Title + Description, surfaced in each field's own slot by the FormGuard
+    // in `on_save`.
+    let mut e_title_error = use_signal(String::new);
+    let mut e_desc_error = use_signal(String::new);
     let mut e_submitting = use_signal(|| false);
     let mut e_error = use_signal(String::new);
     let id_for_save = props.id.clone();
+
+    // MAPPS-313: delete-ticket affordance on the detail page. The
+    // existing list bulk-delete (MAPPS-310) and the detail-page
+    // Delete here use the same `ConfirmDialog` shape; success
+    // toasts and navigates back to the list.
+    let mut confirming_ticket_delete = use_signal(|| false);
+    let mut deleting_ticket = use_signal(|| false);
+    let mut delete_ticket_error = use_signal(String::new);
+    let delete_nav = use_navigator();
+    let id_for_delete = props.id.clone();
 
     // MAPPS-198: keep the failure state distinct from the in-flight one.
     // Each resource yields `Option<Option<T>>`: `None` while in flight,
@@ -1341,7 +1910,88 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                             "Log Time"
                         }
                     }
+                    // MAPPS-313: per-ticket Delete affordance, matching
+                    // the pattern on Company / Contract / Asset detail.
+                    Button {
+                        variant: ButtonVariant::Danger,
+                        disabled: deleting_ticket(),
+                        onclick: move |_| {
+                            delete_ticket_error.set(String::new());
+                            confirming_ticket_delete.set(true);
+                        },
+                        "Delete"
+                    }
                 },
+            }
+            // MAPPS-313: confirm-before-delete for the ticket. Success
+            // toasts, navigates back to the list. Failure surfaces the
+            // server message inline in the dialog so the user can
+            // retry without losing their place.
+            {
+                let ticket_label = ticket
+                    .as_ref()
+                    .map(|t| {
+                        if t.ticket_number.trim().is_empty() {
+                            t.title.clone()
+                        } else {
+                            format!("{} - {}", t.ticket_number, t.title)
+                        }
+                    })
+                    .unwrap_or_else(|| "this ticket".to_string());
+                let id_for_confirm = id_for_delete.clone();
+                rsx! {
+                    crate::components::ConfirmDialog {
+                        open: confirming_ticket_delete(),
+                        title: "Delete ticket".to_string(),
+                        message: {
+                            let mut msg = format!(
+                                "Delete {ticket_label}? Notes, attachments, and time entries on this ticket are also removed. This cannot be undone."
+                            );
+                            if !delete_ticket_error.read().is_empty() {
+                                msg.push_str(&format!("\n\n{}", delete_ticket_error.read()));
+                            }
+                            msg
+                        },
+                        confirm_text: "Delete ticket".to_string(),
+                        cancel_text: "Cancel".to_string(),
+                        destructive: true,
+                        loading: deleting_ticket(),
+                        oncancel: move |_| {
+                            if !deleting_ticket() {
+                                confirming_ticket_delete.set(false);
+                                delete_ticket_error.set(String::new());
+                            }
+                        },
+                        onconfirm: move |_| {
+                            if deleting_ticket() { return; }
+                            deleting_ticket.set(true);
+                            delete_ticket_error.set(String::new());
+                            let id = id_for_confirm.clone();
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    let path = format!("/tickets/{id}");
+                                    match crate::hooks::fetch::api::delete_authed(&path).await {
+                                        Ok(()) => {
+                                            crate::hooks::toast::push_toast(
+                                                crate::components::AlertType::Success,
+                                                "Ticket deleted.",
+                                            );
+                                            confirming_ticket_delete.set(false);
+                                            delete_nav.push(Route::TicketList {});
+                                        }
+                                        Err(err) => {
+                                            delete_ticket_error.set(format!("Could not delete ticket: {err}"));
+                                        }
+                                    }
+                                }
+                                #[cfg(not(feature = "web"))]
+                                let _ = &id;
+                                deleting_ticket.set(false);
+                            });
+                        },
+                    }
+                }
             }
 
             div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
@@ -1440,6 +2090,12 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                             }
                         }
                     }
+
+                    // PMS-486: ticket-detail Approvals section. Self-contained
+                    // component owns its own fetch, modal state, and refresh
+                    // cycle; rendered above the activity timeline so the
+                    // open approval requests are immediately visible.
+                    ApprovalsSection { ticket_id: props.id.clone() }
 
                     // Activity timeline (real ticket notes; there is no audit
                     // feed yet, so status / assignment events do not appear).
@@ -1892,12 +2548,25 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     if e_submitting() {
                         return;
                     }
-                    // MAPPS-188: title is required (server validates
-                    // length >= 1). Bail with an inline message instead of
-                    // PUTting a blank title that the server would reject.
+                    e_error.set(String::new());
+                    // PMS-518: validate the required Title + Description through
+                    // the shared FormGuard so both failures surface inline at
+                    // once and the first invalid field is focused. The ids match
+                    // each field component's `name` prop. MAPPS-188: Title is
+                    // still trimmed (the server validates length >= 1) so a
+                    // whitespace-only value never reaches the PUT.
+                    let mut guard = FormGuard::new();
                     let title_v = e_title().trim().to_string();
-                    if title_v.is_empty() {
-                        e_error.set("Title cannot be empty.".to_string());
+                    e_title_error
+                        .set(guard.field("edit-title", &title_v, "Title", &[Rule::Required]));
+                    let desc_v = e_desc().trim().to_string();
+                    e_desc_error.set(guard.field(
+                        "edit-description",
+                        &desc_v,
+                        "Description",
+                        &[Rule::Required],
+                    ));
+                    if guard.blocked() {
                         return;
                     }
                     let save_id = save_id.clone();
@@ -1956,15 +2625,26 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                 name: "edit-title",
                                 label: "Title",
                                 required: true,
+                                rules: vec![Rule::Required],
+                                error: e_title_error.read().clone(),
                                 value: "{e_title}",
-                                oninput: move |e: FormEvent| e_title.set(e.value()),
+                                oninput: move |e: FormEvent| {
+                                    e_title_error.set(String::new());
+                                    e_title.set(e.value());
+                                },
                             }
                             Textarea {
                                 name: "edit-description",
                                 label: "Description",
                                 rows: 8,
+                                required: true,
+                                rules: vec![Rule::Required],
+                                error: e_desc_error.read().clone(),
                                 value: "{e_desc}",
-                                oninput: move |e: FormEvent| e_desc.set(e.value()),
+                                oninput: move |e: FormEvent| {
+                                    e_desc_error.set(String::new());
+                                    e_desc.set(e.value());
+                                },
                             }
                         }
                     }
@@ -1988,18 +2668,28 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         loading: *note_submitting.read(),
                         onclick: move |_| {
                             note_error.set(String::new());
+                            // PMS-518: validate the required Content through the
+                            // shared FormGuard before submitting so the failure
+                            // lands in the textarea's own inline slot and the
+                            // field is focused. Runs before `note_submitting` is
+                            // set, so the bail path leaves it untouched.
+                            let mut guard = FormGuard::new();
+                            let content_v = note_content.read().clone();
+                            note_content_error.set(guard.field(
+                                "content",
+                                content_v.trim(),
+                                "Content",
+                                &[Rule::Required],
+                            ));
+                            if guard.blocked() {
+                                return;
+                            }
                             note_submitting.set(true);
                             let id = ticket_id_for_note.clone();
                             let type_v = note_type.read().clone();
-                            let content_v = note_content.read().clone();
                             spawn(async move {
                                 #[cfg(feature = "web")]
                                 {
-                                    if content_v.trim().is_empty() {
-                                        note_error.set("Note content cannot be empty.".to_string());
-                                        note_submitting.set(false);
-                                        return;
-                                    }
                                     let body = serde_json::json!({
                                         "note_type": type_v,
                                         "content": content_v,
@@ -2047,8 +2737,14 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                         label: "Content",
                         placeholder: "Enter your note...",
                         rows: 4,
+                        required: true,
+                        rules: vec![Rule::Required],
+                        error: note_content_error.read().clone(),
                         value: note_content.read().clone(),
-                        oninput: move |e: FormEvent| note_content.set(e.value()),
+                        oninput: move |e: FormEvent| {
+                            note_content_error.set(String::new());
+                            note_content.set(e.value());
+                        },
                     }
                 }
             }
@@ -2134,6 +2830,294 @@ fn TimelineItem(props: TimelineItemProps) -> Element {
                             "{props.time}"
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// PMS-486: Approvals section on the ticket-detail page.
+// ============================================================================
+
+#[derive(Clone, Debug, Deserialize)]
+struct TicketApprovalRow {
+    id: uuid::Uuid,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    requested_by_name: Option<String>,
+    #[serde(default)]
+    approver_user_name: Option<String>,
+    #[serde(default)]
+    approver_role: Option<String>,
+    #[serde(default)]
+    decision: Option<String>,
+    #[serde(default)]
+    decision_notes: Option<String>,
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(default)]
+    requested_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    decided_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct UserPickerRow {
+    id: uuid::Uuid,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    email: String,
+}
+
+#[derive(Props, Clone, PartialEq)]
+pub struct ApprovalsSectionProps {
+    pub ticket_id: String,
+}
+
+#[component]
+pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
+    let mut version = use_signal(|| 0u32);
+    let mut show_request = use_signal(|| false);
+    let mut approver_user_id = use_signal(String::new);
+    let mut approver_role = use_signal(String::new);
+    let mut request_notes = use_signal(String::new);
+    let mut request_submitting = use_signal(|| false);
+    let mut request_error = use_signal(String::new);
+
+    let id_for_list = props.ticket_id.clone();
+    let approvals_resource = use_resource(move || {
+        let id = id_for_list.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _v = version.read();
+            crate::hooks::fetch::api::get_authed::<Vec<TicketApprovalRow>>(&format!(
+                "/tickets/{id}/approvals"
+            ))
+            .await
+            .ok()
+        }
+    });
+    let users_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<UserPickerRow>>("/auth/users")
+            .await
+            .ok()
+            .map(|p| p.data)
+            .unwrap_or_default()
+    });
+
+    let snap = approvals_resource.read_unchecked();
+    let rows: Vec<TicketApprovalRow> = match &*snap {
+        Some(Some(rows)) => rows.clone(),
+        _ => Vec::new(),
+    };
+    let loading = snap.is_none();
+    let fetch_failed = matches!(*snap, Some(None));
+    let users = users_resource.read_unchecked().clone().unwrap_or_default();
+
+    let ticket_for_submit = props.ticket_id.clone();
+    let on_submit = move |_| {
+        let user_id = approver_user_id.read().trim().to_string();
+        let role = approver_role.read().trim().to_string();
+        let notes = request_notes.read().trim().to_string();
+        // PMS-518: the approver is an XOR rule (exactly one of a specific user
+        // OR a role). Neither side owns an inline error slot, so a violation
+        // goes to the form-level banner; `note_invalid` blocks the submit and
+        // focuses the approver picker. Runs before `request_submitting` is set,
+        // so the bail path leaves it untouched.
+        let mut guard = FormGuard::new();
+        if user_id.is_empty() && role.is_empty() {
+            request_error.set("Pick an approver or enter a role.".to_string());
+            guard.note_invalid(Some("approver_user_id"));
+        }
+        if !user_id.is_empty() && !role.is_empty() {
+            request_error.set("Pick either an approver or a role, not both.".to_string());
+            guard.note_invalid(Some("approver_user_id"));
+        }
+        if guard.blocked() {
+            return;
+        }
+        let ticket = ticket_for_submit.clone();
+        request_submitting.set(true);
+        request_error.set(String::new());
+        spawn(async move {
+            let mut body = serde_json::Map::new();
+            if !user_id.is_empty() {
+                if let Ok(u) = uuid::Uuid::parse_str(&user_id) {
+                    body.insert(
+                        "approver_user_id".to_string(),
+                        serde_json::Value::String(u.to_string()),
+                    );
+                }
+            }
+            if !role.is_empty() {
+                body.insert("approver_role".to_string(), serde_json::Value::String(role));
+            }
+            if !notes.is_empty() {
+                body.insert("notes".to_string(), serde_json::Value::String(notes));
+            }
+            let json = serde_json::Value::Object(body);
+            match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
+                &format!("/tickets/{ticket}/approvals"),
+                &json,
+            )
+            .await
+            {
+                Ok(_) => {
+                    crate::hooks::toast::push_toast(AlertType::Success, "Approval requested");
+                    show_request.set(false);
+                    approver_user_id.set(String::new());
+                    approver_role.set(String::new());
+                    request_notes.set(String::new());
+                    version += 1;
+                }
+                Err(e) => {
+                    request_error.set(format!("Could not create approval: {e}"));
+                }
+            }
+            request_submitting.set(false);
+        });
+    };
+
+    let mut user_options: Vec<SelectOption> = users
+        .iter()
+        .map(|u| {
+            let label = if u.name.trim().is_empty() {
+                u.email.clone()
+            } else {
+                u.name.clone()
+            };
+            SelectOption::new(u.id.to_string(), label)
+        })
+        .collect();
+    user_options.insert(0, SelectOption::new("", "- Pick approver -"));
+
+    rsx! {
+        Card { title: "Approvals",
+            div { class: "flex justify-end mb-3",
+                Button {
+                    variant: ButtonVariant::Primary,
+                    onclick: move |_| show_request.set(true),
+                    "Request approval"
+                }
+            }
+            if loading {
+                p { class: "text-sm text-subtle italic", "Loading approvals..." }
+            } else if fetch_failed {
+                p { class: "text-sm text-red-600 dark:text-red-300", "Could not load approvals for this ticket." }
+            } else if rows.is_empty() {
+                p { class: "text-sm text-subtle italic", "No approvals requested on this ticket yet." }
+            } else {
+                ul { class: "space-y-3",
+                    for row in rows.iter().cloned() {
+                        {
+                            let key = row.id.to_string();
+                            let state_variant = match row.state.as_str() {
+                                "approved" => BadgeVariant::Green,
+                                "rejected" => BadgeVariant::Red,
+                                _ => BadgeVariant::Yellow,
+                            };
+                            let approver_label = match (row.approver_user_name.clone(), row.approver_role.clone()) {
+                                (Some(n), _) if !n.trim().is_empty() => format!("To: {n}"),
+                                (_, Some(r)) if !r.trim().is_empty() => format!("Role: {r}"),
+                                _ => "(unassigned)".to_string(),
+                            };
+                            let requester = row.requested_by_name.clone().unwrap_or_default();
+                            let when = row
+                                .requested_at
+                                .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
+                                .unwrap_or_default();
+                            let decided = row
+                                .decided_at
+                                .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
+                                .unwrap_or_default();
+                            let notes = row.notes.clone().unwrap_or_default();
+                            let decision = row.decision.clone().unwrap_or_default();
+                            let decision_notes = row.decision_notes.clone().unwrap_or_default();
+                            rsx! {
+                                li { key: "{key}", class: "rounded border border-line p-3",
+                                    div { class: "flex items-center gap-2 flex-wrap",
+                                        Badge { variant: state_variant, "{row.state}" }
+                                        span { class: "text-sm text-content", "{approver_label}" }
+                                    }
+                                    if !requester.is_empty() {
+                                        p { class: "text-xs text-subtle mt-1", "Requested by {requester}" }
+                                    }
+                                    if !when.is_empty() {
+                                        p { class: "text-xs text-subtle", "Requested {when}" }
+                                    }
+                                    if !notes.is_empty() {
+                                        p { class: "text-sm text-muted mt-2 whitespace-pre-wrap", "{notes}" }
+                                    }
+                                    if !decision.is_empty() {
+                                        p { class: "text-xs text-subtle mt-2",
+                                            "Decision: " strong { "{decision}" }
+                                            if !decided.is_empty() { " on {decided}" }
+                                        }
+                                    }
+                                    if !decision_notes.is_empty() {
+                                        p { class: "text-sm text-muted mt-1 whitespace-pre-wrap italic",
+                                            "{decision_notes}"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Modal {
+            open: *show_request.read(),
+            title: "Request approval",
+            size: crate::components::ModalSize::Medium,
+            onclose: move |_| show_request.set(false),
+            footer: rsx! {
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| show_request.set(false),
+                    "Cancel"
+                }
+                Button {
+                    variant: ButtonVariant::Primary,
+                    loading: *request_submitting.read(),
+                    onclick: on_submit,
+                    "Request"
+                }
+            },
+            div { class: "space-y-4",
+                if !request_error().is_empty() {
+                    div { class: "rounded-md bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 px-3 py-2 text-sm text-red-700 dark:text-red-300",
+                        "{request_error}"
+                    }
+                }
+                p { class: "text-xs text-subtle",
+                    "Pick a specific approver OR enter a role. The server requires exactly one."
+                }
+                Select {
+                    name: "approver_user_id",
+                    label: "Approver",
+                    options: user_options,
+                    value: approver_user_id.read().clone(),
+                    onchange: move |e: FormEvent| approver_user_id.set(e.value()),
+                }
+                crate::components::Input {
+                    name: "approver_role",
+                    label: "Approver role (optional)",
+                    value: "{approver_role}",
+                    placeholder: "e.g. manager, finance",
+                    oninput: move |e: FormEvent| approver_role.set(e.value()),
+                }
+                Textarea {
+                    name: "request_notes",
+                    label: "Notes (optional)",
+                    rows: 3,
+                    value: "{request_notes}",
+                    oninput: move |e: FormEvent| request_notes.set(e.value()),
                 }
             }
         }
