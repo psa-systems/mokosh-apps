@@ -9,12 +9,14 @@ pub mod money;
 pub mod pagination;
 pub mod prefs;
 pub mod url;
+pub mod validation;
 pub mod version;
 
 // Re-exports
 pub use envelope::{Paginated, PaginatedMeta};
 pub use error::{AppError, AppResult};
 pub use pagination::{PaginatedResponse, PaginationParams};
+pub use validation::{validate, Rule};
 pub use version::{BUILD_DATE, GIT_HASH, VERSION};
 
 /// `#[serde(default = "...")]` helper: defaults a missing boolean field to
