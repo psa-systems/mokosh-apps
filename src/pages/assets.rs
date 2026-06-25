@@ -2082,21 +2082,49 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                             serde_json::json!(opt_str(&e_in_transit())),
                         );
                         let body = serde_json::Value::Object(body);
-                        match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
-                            &format!("/assets/{save_id}"),
-                            &body,
-                        )
-                        .await
-                        {
-                            Ok(_) => {
-                                e_submitting.set(false);
+                        // MAPPS-304: the modal previously used the
+                        // string-returning `put_authed` which collapses
+                        // "request succeeded but the response body
+                        // could not be decoded" into the same `Err`
+                        // branch as a real Status / Network failure.
+                        // QA reported the symptom as "every save shows
+                        // an error toast even though the value
+                        // persists" - the mutation lands but a
+                        // post-mutation decode quirk drops us into the
+                        // error path. Switch to the typed variant and
+                        // treat `ApiError::Decode` as success (the
+                        // mutation succeeded; we re-fetch the row, so
+                        // the decoded body is unused anyway). Status /
+                        // Network errors still surface inline so a
+                        // genuine 4xx/5xx remains visible.
+                        let result = crate::hooks::fetch::api::put_authed_typed::<
+                            serde_json::Value,
+                            _,
+                        >(&format!("/assets/{save_id}"), &body)
+                        .await;
+                        e_submitting.set(false);
+                        match result {
+                            Ok(_) | Err(crate::hooks::fetch::api::ApiError::Decode(_)) => {
                                 editing.set(false);
+                                e_error.set(String::new());
                                 asset_res.restart();
                                 audit_res.restart();
+                                crate::hooks::toast::push_toast(
+                                    crate::components::AlertType::Success,
+                                    "Asset updated.",
+                                );
                             }
-                            Err(err) => {
-                                e_submitting.set(false);
-                                e_error.set(err);
+                            Err(crate::hooks::fetch::api::ApiError::Status {
+                                message, ..
+                            }) => {
+                                e_error.set(if message.is_empty() {
+                                    "Could not update the asset.".into()
+                                } else {
+                                    message
+                                });
+                            }
+                            Err(crate::hooks::fetch::api::ApiError::Network(msg)) => {
+                                e_error.set(format!("Network error: {msg}"));
                             }
                         }
                     });
