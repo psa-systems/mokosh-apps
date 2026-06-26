@@ -78,10 +78,22 @@ pub fn AuthGuard() -> Element {
     // of `window.location` rather than the router's current Route
     // because we need to make the comparison synchronously inside
     // render; pulling from web_sys avoids a re-entrant signal read.
-    let needs_onboarding = auth_state
-        .user
-        .as_ref()
-        .is_some_and(|u| !u.profile_completed);
+    //
+    // MAPPS-317: gate the redirect on `server_loaded` so the optimistic
+    // rehydrate window (which sets profile_completed=true before /me
+    // confirms) cannot transiently report `needs_onboarding = false`
+    // and then flip later. Without the gate, the chain
+    //   AuthGuard (flip to false) -> /onboarding/profile mount
+    //   -> Onboarding's defense-in-depth effect sees the next /me
+    //   -> flip back to true -> nav.replace(Dashboard)
+    // bounces a user clicking Calendar into Dashboard on the first
+    // click. With the gate, AuthGuard only redirects after the first
+    // /me reconcile, by which point profile_completed is stable.
+    let needs_onboarding = auth_state.server_loaded
+        && auth_state
+            .user
+            .as_ref()
+            .is_some_and(|u| !u.profile_completed);
     if needs_onboarding {
         #[cfg(target_arch = "wasm32")]
         let on_onboarding_route = web_sys::window()
@@ -90,6 +102,10 @@ pub fn AuthGuard() -> Element {
         #[cfg(not(target_arch = "wasm32"))]
         let on_onboarding_route = false;
         if !on_onboarding_route {
+            tracing::info!(
+                target: "auth_guard",
+                "redirecting to /onboarding/profile (profile_completed=false, server_loaded=true)"
+            );
             nav.replace(Route::Onboarding {});
             return rsx! {
                 div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
