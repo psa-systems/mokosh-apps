@@ -18,7 +18,7 @@
 use dioxus::prelude::*;
 use serde::Deserialize;
 
-use crate::components::{Button, ButtonVariant, Input, Modal, ModalSize};
+use crate::components::{Button, ButtonVariant, IconSize, Input, Modal, ModalSize, PlusIcon};
 use crate::utils::url::urlencoding_minimal;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -245,23 +245,30 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                                 // per parent so contact picker call sites
                                 // that should only attach existing contacts
                                 // stay unchanged.
+                                // MAPPS-320: render it in a visually distinct
+                                // band (gap + top border + muted background +
+                                // leading icon) so a hurried click can't be
+                                // confused with an existing match.
                                 if allow_inline_create {
-                                    button {
-                                        r#type: "button",
-                                        class: "w-full text-left px-3 py-2 text-sm border-t border-line text-accent hover:bg-accent-50 dark:hover:bg-accent-900/30",
-                                        onclick: move |_| {
-                                            seed_create_form(&query_for_seed, &mut new_first, &mut new_last);
-                                            new_email.set(String::new());
-                                            create_error.set(String::new());
-                                            show_dropdown.set(false);
-                                            show_create_modal.set(true);
-                                        },
-                                        if query_text.is_empty() {
-                                            "+ Create new contact"
-                                        } else {
-                                            {
-                                                let q = query_text.clone();
-                                                rsx! { "+ Create \"{q}\"" }
+                                    div { class: "mt-1 border-t border-line",
+                                        button {
+                                            r#type: "button",
+                                            class: "flex w-full items-center gap-1.5 text-left px-3 py-2 text-sm bg-surface-2/50 text-accent hover:bg-accent-50 dark:hover:bg-accent-900/30",
+                                            onclick: move |_| {
+                                                seed_create_form(&query_for_seed, &mut new_first, &mut new_last);
+                                                new_email.set(String::new());
+                                                create_error.set(String::new());
+                                                show_dropdown.set(false);
+                                                show_create_modal.set(true);
+                                            },
+                                            PlusIcon { size: IconSize::Small }
+                                            if query_text.is_empty() {
+                                                "Create new contact"
+                                            } else {
+                                                {
+                                                    let q = query_text.clone();
+                                                    rsx! { "Create \"{q}\"" }
+                                                }
                                             }
                                         }
                                     }
@@ -318,11 +325,15 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                                 // searching for a similar-name contact who
                                 // is not actually in the list can still
                                 // create one without leaving the form.
+                                // MAPPS-320: visually distinct Create band
+                                // (gap + top border + muted background +
+                                // leading icon) so a fat-finger click on the
+                                // bottom match can't bleed into Create.
                                 if allow_inline_create {
-                                    div { class: "border-t border-line",
+                                    div { class: "mt-1 border-t border-line",
                                         button {
                                             r#type: "button",
-                                            class: "w-full text-left px-3 py-2 text-sm text-accent hover:bg-accent-50 dark:hover:bg-accent-900/30",
+                                            class: "flex w-full items-center gap-1.5 text-left px-3 py-2 text-sm bg-surface-2/50 text-accent hover:bg-accent-50 dark:hover:bg-accent-900/30",
                                             onclick: move |_| {
                                                 seed_create_form(&query_for_seed, &mut new_first, &mut new_last);
                                                 new_email.set(String::new());
@@ -330,12 +341,13 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                                                 show_dropdown.set(false);
                                                 show_create_modal.set(true);
                                             },
+                                            PlusIcon { size: IconSize::Small }
                                             if query_text.is_empty() {
-                                                "+ Create new contact"
+                                                "Create new contact"
                                             } else {
                                                 {
                                                     let q = query_text.clone();
-                                                    rsx! { "+ Create \"{q}\"" }
+                                                    rsx! { "Create \"{q}\"" }
                                                 }
                                             }
                                         }
