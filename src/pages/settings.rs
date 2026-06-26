@@ -32,9 +32,9 @@ use uuid::Uuid;
 
 use crate::components::{
     AppLayout, Badge, BadgeVariant, BreadcrumbItem, Breadcrumbs, Button, ButtonVariant, Card,
-    DataTable, IconSize, PageHeader, PlusIcon, SearchInput, Select, SelectOption, SettingFormModal,
-    Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
-    ThemePicker,
+    Checkbox, DataTable, IconSize, Input, PageHeader, PlusIcon, SearchInput, Select, SelectOption,
+    SettingFormModal, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
+    TableLoading, TableRow, ThemePicker,
 };
 use crate::utils::money::format_money_str;
 use crate::utils::Paginated;
@@ -94,6 +94,66 @@ pub fn AppearanceSettingsPage() -> Element {
             Card {
                 div { class: "p-6",
                     ThemePicker {}
+                }
+            }
+        }
+    }
+}
+
+/// `/settings/tv-view` - per-user wall-monitor TV-view toggle (MAPPS-256).
+/// Not admin-gated; every user personalizes their own view. Writes the
+/// `mokosh_tv_view` boolean and the optional `mokosh_tv_team` team id via
+/// `prefs.rs` (through the `tv_view` hook), mirroring the theme precedent.
+#[component]
+pub fn TvViewSettingsPage() -> Element {
+    let mut enabled = use_signal(crate::hooks::tv_view::is_enabled);
+    let mut team = use_signal(crate::hooks::tv_view::selected_team);
+
+    rsx! {
+        AppLayout { title: "TV View",
+            PageHeader {
+                title: "TV View",
+                subtitle: "Full-screen wall-monitor dashboard, scoped to your team, saved to this browser",
+                breadcrumbs: rsx! {
+                    SettingsBreadcrumb { current: Route::SettingsTvView {} }
+                },
+            }
+            Card {
+                div { class: "p-6 space-y-6 max-w-xl",
+                    Checkbox {
+                        name: "tv_view_enabled",
+                        label: "Enable TV view",
+                        checked: enabled(),
+                        help: "Shows a link into the full-screen dashboard from your normal dashboard.",
+                        onchange: move |e: FormEvent| {
+                            let on = e.checked();
+                            enabled.set(on);
+                            crate::hooks::tv_view::set_enabled(on);
+                        },
+                    }
+
+                    div {
+                        Input {
+                            name: "tv_view_team",
+                            label: "Team id (optional)",
+                            value: team(),
+                            placeholder: "Leave blank to show all your teams",
+                            help: "Pin the board to a single team's tickets and KPIs. Blank uses the union of every team you belong to.",
+                            oninput: move |e: FormEvent| {
+                                let v = e.value();
+                                team.set(v.clone());
+                                crate::hooks::tv_view::set_selected_team(&v);
+                            },
+                        }
+                    }
+
+                    if enabled() {
+                        Link {
+                            to: Route::DashboardTv {},
+                            class: "inline-flex items-center rounded-md bg-accent text-on-accent px-4 py-2 text-sm font-medium hover:opacity-90",
+                            "Open TV view"
+                        }
+                    }
                 }
             }
         }
@@ -161,6 +221,29 @@ impl SettingsGroupKey {
             SettingsGroupKey::Integrations => Some(Route::SettingsGroupIntegrations {}),
         }
     }
+
+    /// Color identity tying the group to its left-nav area (MAPPS-257).
+    /// Drives the group heading tint and each card's left-accent border.
+    fn color(self) -> SectionColor {
+        match self {
+            SettingsGroupKey::Personalization => SectionColor::Rose,
+            SettingsGroupKey::ServiceTypes => SectionColor::Emerald,
+            SettingsGroupKey::Billing => SectionColor::Amber,
+            SettingsGroupKey::Tickets => SectionColor::Blue,
+            SettingsGroupKey::Integrations => SectionColor::Violet,
+        }
+    }
+
+    /// Content-heavy groups render prominent: fewer, wider columns with
+    /// larger padding so each card claims more of the row (MAPPS-257). The
+    /// Service & Asset Types and Billing & SLA landings carry the most
+    /// surfaces, so they read as the larger sections.
+    fn prominent(self) -> bool {
+        matches!(
+            self,
+            SettingsGroupKey::ServiceTypes | SettingsGroupKey::Billing
+        )
+    }
 }
 
 /// The four nested admin groups, in index display order. Personalization is
@@ -195,6 +278,14 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         route: Route::SettingsAppearance {},
         title: "Appearance",
         description: "Theme (light, dark, or system) and accent color for your account.",
+        group: SettingsGroupKey::Personalization,
+        advanced: false,
+    },
+    SettingsSurface {
+        route: Route::SettingsTvView {},
+        title: "TV View",
+        description:
+            "Full-screen wall-monitor dashboard, scoped to your team. Toggle it on and pick a team.",
         group: SettingsGroupKey::Personalization,
         advanced: false,
     },
@@ -362,12 +453,16 @@ pub fn SettingsHomePage() -> Element {
     // surface in the current mode (so an all-advanced group like
     // Integrations drops off the basic index instead of leading to an
     // empty landing).
-    let group_cards: Vec<(Route, &'static str, &'static str)> = SETTINGS_GROUP_ORDER
-        .iter()
-        .copied()
-        .filter(|g| surfaces_in_group(*g, adv).next().is_some())
-        .filter_map(|g| g.landing().map(|route| (route, g.title(), g.description())))
-        .collect();
+    let group_cards: Vec<(SettingsGroupKey, Route, &'static str, &'static str)> =
+        SETTINGS_GROUP_ORDER
+            .iter()
+            .copied()
+            .filter(|g| surfaces_in_group(*g, adv).next().is_some())
+            .filter_map(|g| {
+                g.landing()
+                    .map(|route| (g, route, g.title(), g.description()))
+            })
+            .collect();
 
     // Search reaches every leaf across all groups (bypassing the nesting),
     // matching title or description case-insensitively.
@@ -389,6 +484,11 @@ pub fn SettingsHomePage() -> Element {
                 title: "Settings",
                 subtitle: "Manage the standard types and configuration that shape how your workspace behaves",
             }
+
+            // Constrain the index to roughly 80% of the max-w-7xl content
+            // box (max-w-5xl is 64rem vs 80rem) so it reads as a focused
+            // settings surface rather than spanning full-bleed (MAPPS-257).
+            div { class: "mx-auto w-full max-w-5xl",
 
             div { class: "mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between",
                 div { class: "w-full sm:max-w-xs",
@@ -415,7 +515,9 @@ pub fn SettingsHomePage() -> Element {
 
             if q.is_empty() {
                 if !personalization.is_empty() {
-                    SettingsGroup { heading: SettingsGroupKey::Personalization.title().to_string(),
+                    SettingsGroup {
+                        heading: SettingsGroupKey::Personalization.title().to_string(),
+                        color: Some(SettingsGroupKey::Personalization.color()),
                         for surface in personalization {
                             SettingsCard {
                                 to: surface.route.clone(),
@@ -426,11 +528,12 @@ pub fn SettingsHomePage() -> Element {
                     }
                 }
                 SettingsGroup { heading: "Configuration".to_string(),
-                    for (route, title, description) in group_cards {
+                    for (group, route, title, description) in group_cards {
                         SettingsCard {
                             to: route,
                             title: title.to_string(),
                             description: description.to_string(),
+                            color: Some(group.color()),
                         }
                     }
                 }
@@ -441,17 +544,77 @@ pub fn SettingsHomePage() -> Element {
                     }
                 }
             } else {
-                div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3",
+                div { class: "{group_grid_class(false)}",
                     for surface in results {
                         SettingsCard {
                             to: surface.route.clone(),
                             title: surface.title.to_string(),
                             description: surface.description.to_string(),
+                            color: Some(surface.group.color()),
                         }
                     }
                 }
             }
+
+            }
         }
+    }
+}
+
+/// Per-section color identity tying each Settings group to its
+/// corresponding left-nav area (MAPPS-257). Tailwind needs literal class
+/// names, so every arm spells the class out in full - the color name is
+/// never interpolated into a class string at runtime. Light- and
+/// dark-mode variants are supplied for each color so both modes keep
+/// adequate contrast.
+#[derive(Clone, Copy, PartialEq)]
+enum SectionColor {
+    /// Service & Asset Types -> Assets / Operations nav area.
+    Emerald,
+    /// Billing & SLA -> Contracts & Billing nav area.
+    Amber,
+    /// Tickets -> Service Desk (the existing active-nav accent hue).
+    Blue,
+    /// Integrations -> Admin nav area.
+    Violet,
+    /// Personalization -> per-user, not a nav domain, so it stands apart
+    /// in its own hue rather than borrowing a section color.
+    Rose,
+}
+
+impl SectionColor {
+    /// Heading tint, with a lighter dark-mode variant for contrast.
+    fn heading_class(self) -> &'static str {
+        match self {
+            SectionColor::Emerald => "text-emerald-600 dark:text-emerald-400",
+            SectionColor::Amber => "text-amber-600 dark:text-amber-400",
+            SectionColor::Blue => "text-blue-600 dark:text-blue-400",
+            SectionColor::Violet => "text-violet-600 dark:text-violet-400",
+            SectionColor::Rose => "text-rose-600 dark:text-rose-400",
+        }
+    }
+
+    /// Colored left-accent border for a card: base + same-family hover,
+    /// each with a lighter dark-mode variant.
+    fn card_border_class(self) -> &'static str {
+        match self {
+            SectionColor::Emerald => "border-l-emerald-500 hover:border-l-emerald-400 dark:border-l-emerald-400 dark:hover:border-l-emerald-300",
+            SectionColor::Amber => "border-l-amber-500 hover:border-l-amber-400 dark:border-l-amber-400 dark:hover:border-l-amber-300",
+            SectionColor::Blue => "border-l-blue-500 hover:border-l-blue-400 dark:border-l-blue-400 dark:hover:border-l-blue-300",
+            SectionColor::Violet => "border-l-violet-500 hover:border-l-violet-400 dark:border-l-violet-400 dark:hover:border-l-violet-300",
+            SectionColor::Rose => "border-l-rose-500 hover:border-l-rose-400 dark:border-l-rose-400 dark:hover:border-l-rose-300",
+        }
+    }
+}
+
+/// Card grid columns. Prominent (content-heavy) groups get fewer, wider
+/// columns so each card claims more of the row; `items-stretch` keeps every
+/// card the same height regardless of description length (MAPPS-257).
+fn group_grid_class(prominent: bool) -> &'static str {
+    if prominent {
+        "grid grid-cols-1 gap-4 items-stretch sm:grid-cols-2"
+    } else {
+        "grid grid-cols-1 gap-4 items-stretch sm:grid-cols-2 lg:grid-cols-3"
     }
 }
 
@@ -485,6 +648,12 @@ fn SettingsBreadcrumb(current: Route) -> Element {
 /// honored from the persisted pref).
 #[component]
 fn SettingsGroupLanding(group: SettingsGroupKey) -> Element {
+    // Color and size the landing's cards by the group's nav-area identity
+    // (MAPPS-257), shared down to each `SettingsCard` via context.
+    use_context_provider(|| GroupStyle {
+        color: group.color(),
+        prominent: group.prominent(),
+    });
     let show_advanced = crate::utils::prefs::get_bool(PREF_SHOW_ADVANCED, false);
     let title = group.title();
     let visible: Vec<&SettingsSurface> = surfaces_in_group(group, show_advanced).collect();
@@ -521,7 +690,7 @@ fn SettingsGroupLanding(group: SettingsGroupKey) -> Element {
                     }
                 }
             } else {
-                div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3",
+                div { class: "{group_grid_class(group.prominent())}",
                     for surface in visible {
                         SettingsCard {
                             to: surface.route.clone(),
@@ -533,6 +702,14 @@ fn SettingsGroupLanding(group: SettingsGroupKey) -> Element {
             }
         }
     }
+}
+
+/// Group styling shared down to each `SettingsCard` via context so the
+/// card call sites stay free of repeated color/size props.
+#[derive(Clone, Copy, PartialEq)]
+struct GroupStyle {
+    color: SectionColor,
+    prominent: bool,
 }
 
 /// `/settings/group/service-types` - Service & Asset Types landing.
@@ -568,23 +745,54 @@ pub fn IntegrationsGroupPage() -> Element {
 }
 
 #[component]
-fn SettingsGroup(heading: String, children: Element) -> Element {
+fn SettingsGroup(
+    heading: String,
+    // A color ties the group to its nav area (MAPPS-257); `None` leaves
+    // the heading neutral, used by the synthetic "Configuration" umbrella
+    // whose cards are each colored by their own target domain instead.
+    #[props(default)] color: Option<SectionColor>,
+    #[props(default)] prominent: bool,
+    children: Element,
+) -> Element {
+    use_context_provider(|| GroupStyle {
+        color: color.unwrap_or(SectionColor::Blue),
+        prominent,
+    });
+    let heading_class = match color {
+        Some(c) => c.heading_class(),
+        None => "text-muted",
+    };
     rsx! {
         div { class: "mb-8",
-            h2 { class: "text-sm font-semibold uppercase tracking-wide text-muted mb-3",
+            h2 { class: "text-sm font-semibold uppercase tracking-wide mb-3 {heading_class}",
                 "{heading}"
             }
-            div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3", {children} }
+            div { class: "{group_grid_class(prominent)}", {children} }
         }
     }
 }
 
 #[component]
-fn SettingsCard(to: Route, title: String, description: String) -> Element {
+fn SettingsCard(
+    to: Route,
+    title: String,
+    description: String,
+    // Per-card color override. Cards inside a single-domain group inherit
+    // the group's color from context; mixed grids (the Configuration
+    // umbrella and search results) pass each card its own domain color.
+    #[props(default)] color: Option<SectionColor>,
+) -> Element {
+    // Default keeps the card sensible if ever rendered outside a group.
+    let style = try_use_context::<GroupStyle>().unwrap_or(GroupStyle {
+        color: SectionColor::Blue,
+        prominent: false,
+    });
+    let border = color.unwrap_or(style.color).card_border_class();
+    let padding = if style.prominent { "p-6" } else { "p-4" };
     rsx! {
         Link {
             to,
-            class: "block rounded-lg border border-line bg-surface p-4 hover:border-accent hover:shadow-sm transition-colors",
+            class: "block h-full rounded-lg border border-line border-l-4 bg-surface {padding} {border} hover:shadow-sm transition-colors",
             div { class: "font-medium text-content", "{title}" }
             div { class: "mt-1 text-sm text-muted", "{description}" }
         }
