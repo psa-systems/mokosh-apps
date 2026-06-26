@@ -43,6 +43,13 @@ pub struct CompanyPickerProps {
     /// Mark the underlying input required.
     #[props(default)]
     pub required: bool,
+    /// MAPPS-322: inline validation message rendered under the picker (same
+    /// slot the wrapped [`Input`] uses for its own errors). The parent form's
+    /// submit guard sets this when no company is picked, so "Company is
+    /// required." surfaces next to the picker instead of in the form-level
+    /// banner. Empty string renders nothing.
+    #[props(default)]
+    pub error: String,
     /// Fires once when the user picks a row. Receives `(id, name)`.
     pub onselect: EventHandler<(String, String)>,
     /// Fires when the user clears the selection (Change / X button).
@@ -151,6 +158,10 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                 label: props.label,
                 placeholder: "Search companies...",
                 required: props.required,
+                // MAPPS-322: forward the parent's validation message so a
+                // blank-company submit paints the red border + inline error
+                // on the picker, matching every other required field.
+                error: props.error.clone(),
                 value: query.read().clone(),
                 oninput: move |e: FormEvent| {
                     query.set(e.value());
