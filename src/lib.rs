@@ -114,7 +114,89 @@ pub fn AuthGuard() -> Element {
             };
         }
     }
-    rsx! { Outlet::<Route> {} }
+    // MAPPS-318: catch errors propagated up from any route subtree so a
+    // single broken page does not abandon the user on a frozen URL with
+    // no way out. The boundary catches `?` / `bail!` errors returned
+    // from a component returning `Element` (which is
+    // `Result<VNode, RenderError>`). It does NOT catch wasm panics:
+    // dioxus-core 0.7 documents that `CapturedPanic` is unreachable on
+    // wasm because the runtime does not support unwinding, so a `panic!`
+    // still aborts the runtime. Follow-up for genuine panic recovery is
+    // parked until upstream wasm supports catching unwinds; for now the
+    // hook-of-hook and similar invariants must be caught in tests + the
+    // console-error-panic-hook trace.
+    rsx! {
+        ErrorBoundary {
+            handle_error: |errors: ErrorContext| rsx! {
+                RouteErrorFallback { errors }
+            },
+            Outlet::<Route> {}
+        }
+    }
+}
+
+/// MAPPS-318: full-screen fallback rendered when the route-level
+/// `ErrorBoundary` catches a propagated error. Sidebar / topbar live
+/// inside each route's `AppLayout`, so they are not present here; the
+/// "Go to dashboard" button clears the boundary AND navigates so the
+/// user lands on a fresh route subtree with chrome restored.
+#[component]
+fn RouteErrorFallback(errors: ErrorContext) -> Element {
+    let nav = use_navigator();
+    let errors_for_log = errors.clone();
+    use_effect(move || {
+        tracing::error!(
+            target: "route_error_boundary",
+            "caught route render error: {:?}",
+            errors_for_log
+        );
+    });
+    let goto_dashboard = {
+        let errors = errors.clone();
+        move |_| {
+            errors.clear_errors();
+            nav.replace(Route::Dashboard {});
+        }
+    };
+    let reload = move |_| {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(win) = web_sys::window() {
+            let _ = win.location().reload();
+        }
+    };
+    let detail = format!("{errors:?}");
+    rsx! {
+        div { class: "min-h-screen flex items-center justify-center px-4 bg-app",
+            div { class: "max-w-md w-full bg-surface rounded-lg shadow-lg p-8 text-center",
+                h1 { class: "text-xl font-semibold text-content mb-2",
+                    "Something went wrong on this page"
+                }
+                p { class: "text-sm text-muted mb-6",
+                    "An unexpected error stopped this view from rendering. Your sign-in and other tabs are unaffected."
+                }
+                if cfg!(debug_assertions) {
+                    pre {
+                        class: "text-left text-xs bg-surface-2 rounded-md p-3 mb-4 overflow-x-auto whitespace-pre-wrap break-words",
+                        "{detail}"
+                    }
+                }
+                div { class: "flex justify-center gap-3",
+                    button {
+                        r#type: "button",
+                        class: "inline-flex items-center justify-center font-medium rounded-md px-4 py-2 text-sm bg-accent text-on-accent hover:opacity-90",
+                        onclick: goto_dashboard,
+                        "Go to dashboard"
+                    }
+                    button {
+                        r#type: "button",
+                        class: "inline-flex items-center justify-center font-medium rounded-md px-4 py-2 text-sm bg-surface-2 text-content border border-line",
+                        onclick: reload,
+                        "Reload page"
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Application routes
