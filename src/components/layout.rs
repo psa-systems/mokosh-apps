@@ -330,7 +330,16 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
 
             if is_admin {
                 NavSection { title: "Admin", rail_collapsed: collapsed,
-                    NavItem { to: Route::Team {}, icon: rsx!(UsersIcon {}), label: "Team", collapsed }
+                    // MAPPS-329: Team nav is hidden by default and only
+                    // renders when the operator sets
+                    // `MOKOSH_TEAM_ENABLED=true` (or `=1`) on the
+                    // mokosh-www container. `Route::Team`, the page, and
+                    // its API are intentionally left intact - typing
+                    // `/team` still works - so flipping the flag is a
+                    // zero-code unlock when the feature is ready.
+                    if crate::modules::runtime_config::flag_enabled("team_enabled") {
+                        NavItem { to: Route::Team {}, icon: rsx!(UsersIcon {}), label: "Team", collapsed }
+                    }
                     NavItem { to: Route::AuditLog {}, icon: rsx!(DocumentIcon {}), label: "Audit Log", collapsed }
                     NavItem { to: Route::SlaManagement {}, icon: rsx!(DocumentIcon {}), label: "SLA Management", collapsed }
                     // MAPPS-169: single entry into the centralized Settings hub.
