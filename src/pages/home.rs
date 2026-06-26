@@ -32,26 +32,42 @@ pub fn HomePage() -> Element {
                 }
             }
 
-            // Hero section
-            div { class: "container mx-auto px-6 py-24",
-                div { class: "max-w-3xl",
-                    h1 { class: "text-5xl font-bold text-white mb-6",
-                        "Professional Services Automation for Modern MSPs"
-                    }
-                    p { class: "text-xl text-blue-100 mb-8",
-                        "Streamline your IT service business with our all-in-one platform. "
-                        "Manage tickets, track time, bill clients, and deliver exceptional service."
-                    }
-                    div { class: "flex space-x-4",
-                        Link {
-                            to: Route::Login {},
-                            class: "bg-white text-blue-600 px-6 py-3 rounded-md font-semibold hover:bg-blue-50 transition-colors", // theme-guard-allow: marketing hero CTA on brand gradient
-                            "Get Started"
+            // Hero section - two-column: copy + mascot (MAPPS-327)
+            div { class: "container mx-auto px-6 py-16 lg:py-24",
+                div { class: "grid items-center gap-12 lg:grid-cols-2",
+                    // Copy + CTAs
+                    div { class: "max-w-xl",
+                        span { class: "mb-5 inline-flex items-center rounded-full bg-white/10 px-3 py-1 text-xs font-medium uppercase tracking-wide text-blue-100", // theme-guard-allow: marketing hero eyebrow on brand gradient
+                            "Professional Services Automation"
                         }
-                        a {
-                            href: "#features",
-                            class: "border-2 border-white text-white px-6 py-3 rounded-md font-semibold hover:bg-white hover:text-blue-600 transition-colors", // theme-guard-allow: marketing hero CTA on brand gradient
-                            "Learn More"
+                        h1 { class: "text-4xl sm:text-5xl lg:text-6xl font-bold text-white leading-tight",
+                            "Run your whole MSP from one platform."
+                        }
+                        p { class: "mt-6 text-lg text-blue-100 leading-relaxed",
+                            "Tickets, time, projects, contracts, billing, and assets - woven into a single service platform so nothing slips through the cracks."
+                        }
+                        div { class: "mt-8 flex flex-col sm:flex-row gap-4",
+                            Link {
+                                to: Route::Login {},
+                                class: "bg-white text-blue-600 px-6 py-3 rounded-md font-semibold hover:bg-blue-50 transition-colors text-center", // theme-guard-allow: marketing hero CTA on brand gradient
+                                "Get Started"
+                            }
+                            a {
+                                href: "#features",
+                                class: "border-2 border-white text-white px-6 py-3 rounded-md font-semibold hover:bg-white hover:text-blue-600 transition-colors text-center", // theme-guard-allow: marketing hero CTA on brand gradient
+                                "Learn More"
+                            }
+                        }
+                    }
+                    // Mascot + tagline caption
+                    div { class: "flex flex-col items-center",
+                        img {
+                            src: asset!("/assets/mokosh-hero.png"),
+                            alt: "Mokosh, the weaver goddess, at her loom",
+                            class: "w-full max-w-md h-auto drop-shadow-2xl",
+                        }
+                        p { class: "relative z-10 -mt-24 rounded-full border border-blue-100 bg-white px-5 py-2 text-sm italic text-blue-700 shadow-lg whitespace-nowrap", // theme-guard-allow: marketing hero tagline pill on brand gradient
+                            "\"Weaves it all together.\""
                         }
                     }
                 }
