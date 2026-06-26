@@ -43,3 +43,12 @@ pub fn get(field: &str) -> Option<String> {
 pub fn get(_field: &str) -> Option<String> {
     None
 }
+
+/// MAPPS-329: read a boolean feature-flag field off `window.__MOKOSH_CONFIG__`.
+/// Returns true ONLY when the field is present AND the string parses as
+/// truthy (`"true"` case-insensitive, or `"1"`). Anything else - including
+/// the field being unset entirely - returns false so flags are locked-off
+/// by default and need an explicit operator opt-in to enable.
+pub fn flag_enabled(field: &str) -> bool {
+    get(field).is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
+}

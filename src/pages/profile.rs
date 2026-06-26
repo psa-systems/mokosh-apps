@@ -300,8 +300,16 @@ fn IdentityStrip() -> Element {
                         }
                     }
                     if !role.is_empty() {
+                        // MAPPS-329: explicit "Mokosh Role" so a user with
+                        // admin-on-mokosh does not assume the same level on
+                        // the Bunyip hub. The Bunyip role is a separate
+                        // claim issued by the OP and managed in Bunyip's
+                        // own admin surface.
                         p { class: "mt-1 text-xs uppercase tracking-wide text-muted",
-                            "Role: {role}"
+                            "Mokosh Role: {role}"
+                        }
+                        p { class: "text-xs text-muted",
+                            "Bunyip hub role is separate."
                         }
                     }
                 }

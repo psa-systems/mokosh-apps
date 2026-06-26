@@ -55,6 +55,11 @@ if ! {
     # e.g. "openid email offline_access profile" without rebuilding the
     # SPA image.
     emit_field oidc_scopes "${MOKOSH_OIDC_SCOPES:-}"
+    # MAPPS-329: Team admin nav feature flag. Locked off by default; set
+    # `MOKOSH_TEAM_ENABLED=true` (or `=1`) per deployment to expose the
+    # Team item under the Admin nav section. Route::Team and its API stay
+    # reachable by direct URL regardless of the flag.
+    emit_field team_enabled "${MOKOSH_TEAM_ENABLED:-}"
     # build_sha is the git revision the WASM bundle was built from.
     # Baked into the image at build time via Dockerfile's GIT_SHA build
     # arg. The SPA polls `_mokosh_config.js` and reloads when this
