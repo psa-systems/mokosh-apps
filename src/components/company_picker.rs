@@ -15,7 +15,7 @@
 use dioxus::prelude::*;
 use serde::Deserialize;
 
-use crate::components::{Button, ButtonVariant, Input, Modal, ModalSize};
+use crate::components::{Button, ButtonVariant, IconSize, Input, Modal, ModalSize, PlusIcon};
 use crate::utils::url::urlencoding_minimal;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -188,22 +188,30 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                                 // only when the parent opted in via the new
                                 // `allow_inline_create` prop, so contact /
                                 // time-entry pickers stay unchanged.
+                                // MAPPS-320: render the row in a muted band
+                                // with a border-t and a leading "+" icon so
+                                // it reads as a distinct action and a fat-
+                                // finger click on the last match cannot
+                                // mistakenly fall into Create.
                                 if allow_inline_create {
-                                    button {
-                                        r#type: "button",
-                                        class: "w-full text-left px-3 py-2 text-sm border-t border-line text-accent hover:bg-accent-50 dark:hover:bg-accent-900/30",
-                                        onclick: move |_| {
-                                            new_name.set(query_for_seed.clone());
-                                            create_error.set(String::new());
-                                            show_dropdown.set(false);
-                                            show_create_modal.set(true);
-                                        },
-                                        if query_text.is_empty() {
-                                            "+ Create new company"
-                                        } else {
-                                            {
-                                                let q = query_text.clone();
-                                                rsx! { "+ Create \"{q}\"" }
+                                    div { class: "mt-1 border-t border-line bg-surface-2/60",
+                                        button {
+                                            r#type: "button",
+                                            class: "w-full text-left px-3 py-2.5 text-sm text-accent hover:bg-accent-50 dark:hover:bg-accent-900/30 flex items-center gap-2",
+                                            onclick: move |_| {
+                                                new_name.set(query_for_seed.clone());
+                                                create_error.set(String::new());
+                                                show_dropdown.set(false);
+                                                show_create_modal.set(true);
+                                            },
+                                            PlusIcon { size: IconSize::Small }
+                                            if query_text.is_empty() {
+                                                "Create new company"
+                                            } else {
+                                                {
+                                                    let q = query_text.clone();
+                                                    rsx! { "Create \"{q}\"" }
+                                                }
                                             }
                                         }
                                     }
@@ -252,22 +260,27 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                                 // a clear preview of what name will be
                                 // submitted.
                                 if allow_inline_create {
-                                    div { class: "border-t border-line",
+                                    // MAPPS-320: muted band + leading "+"
+                                    // icon + top margin gap so the Create
+                                    // row never visually merges with the
+                                    // last match above.
+                                    div { class: "mt-1 border-t border-line bg-surface-2/60",
                                         button {
                                             r#type: "button",
-                                            class: "w-full text-left px-3 py-2 text-sm text-accent hover:bg-accent-50 dark:hover:bg-accent-900/30",
+                                            class: "w-full text-left px-3 py-2.5 text-sm text-accent hover:bg-accent-50 dark:hover:bg-accent-900/30 flex items-center gap-2",
                                             onclick: move |_| {
                                                 new_name.set(query_for_seed.clone());
                                                 create_error.set(String::new());
                                                 show_dropdown.set(false);
                                                 show_create_modal.set(true);
                                             },
+                                            PlusIcon { size: IconSize::Small }
                                             if query_text.is_empty() {
-                                                "+ Create new company"
+                                                "Create new company"
                                             } else {
                                                 {
                                                     let q = query_text.clone();
-                                                    rsx! { "+ Create \"{q}\"" }
+                                                    rsx! { "Create \"{q}\"" }
                                                 }
                                             }
                                         }
