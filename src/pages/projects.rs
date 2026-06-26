@@ -525,6 +525,11 @@ pub fn ProjectListPage() -> Element {
                 },
             }
 
+            // MAPPS-321: scope indicator.
+            crate::components::ContextFilterBanner {
+                scope: crate::components::ContextFilterScope::Projects,
+            }
+
             // Stats
             div { class: "grid grid-cols-1 gap-5 sm:grid-cols-4 mb-6",
                 Card { class: "text-center",

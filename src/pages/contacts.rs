@@ -3114,6 +3114,11 @@ pub fn ContactListPage() -> Element {
                 },
             }
 
+            // MAPPS-321: scope indicator.
+            crate::components::ContextFilterBanner {
+                scope: crate::components::ContextFilterScope::Contacts,
+            }
+
             // Filters
             Card { class: "mb-6",
                 div { class: "flex flex-col sm:flex-row gap-4",
