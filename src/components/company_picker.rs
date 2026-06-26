@@ -15,7 +15,7 @@
 use dioxus::prelude::*;
 use serde::Deserialize;
 
-use crate::components::{Button, ButtonVariant, Input, Modal, ModalSize};
+use crate::components::{Button, ButtonVariant, IconSize, Input, Modal, ModalSize, PlusIcon};
 use crate::utils::url::urlencoding_minimal;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -188,22 +188,29 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                                 // only when the parent opted in via the new
                                 // `allow_inline_create` prop, so contact /
                                 // time-entry pickers stay unchanged.
+                                // MAPPS-320: render it in a visually distinct
+                                // band (gap + top border + muted background +
+                                // leading icon) so a hurried click can't be
+                                // confused with an existing match.
                                 if allow_inline_create {
-                                    button {
-                                        r#type: "button",
-                                        class: "w-full text-left px-3 py-2 text-sm border-t border-line text-accent hover:bg-accent-50 dark:hover:bg-accent-900/30",
-                                        onclick: move |_| {
-                                            new_name.set(query_for_seed.clone());
-                                            create_error.set(String::new());
-                                            show_dropdown.set(false);
-                                            show_create_modal.set(true);
-                                        },
-                                        if query_text.is_empty() {
-                                            "+ Create new company"
-                                        } else {
-                                            {
-                                                let q = query_text.clone();
-                                                rsx! { "+ Create \"{q}\"" }
+                                    div { class: "mt-1 border-t border-line",
+                                        button {
+                                            r#type: "button",
+                                            class: "flex w-full items-center gap-1.5 text-left px-3 py-2 text-sm bg-surface-2/50 text-accent hover:bg-accent-50 dark:hover:bg-accent-900/30",
+                                            onclick: move |_| {
+                                                new_name.set(query_for_seed.clone());
+                                                create_error.set(String::new());
+                                                show_dropdown.set(false);
+                                                show_create_modal.set(true);
+                                            },
+                                            PlusIcon { size: IconSize::Small }
+                                            if query_text.is_empty() {
+                                                "Create new company"
+                                            } else {
+                                                {
+                                                    let q = query_text.clone();
+                                                    rsx! { "Create \"{q}\"" }
+                                                }
                                             }
                                         }
                                     }
@@ -251,23 +258,28 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                                 // the empty-list branch and gives the user
                                 // a clear preview of what name will be
                                 // submitted.
+                                // MAPPS-320: visually distinct Create band
+                                // (gap + top border + muted background +
+                                // leading icon) so a fat-finger click on the
+                                // bottom match can't bleed into Create.
                                 if allow_inline_create {
-                                    div { class: "border-t border-line",
+                                    div { class: "mt-1 border-t border-line",
                                         button {
                                             r#type: "button",
-                                            class: "w-full text-left px-3 py-2 text-sm text-accent hover:bg-accent-50 dark:hover:bg-accent-900/30",
+                                            class: "flex w-full items-center gap-1.5 text-left px-3 py-2 text-sm bg-surface-2/50 text-accent hover:bg-accent-50 dark:hover:bg-accent-900/30",
                                             onclick: move |_| {
                                                 new_name.set(query_for_seed.clone());
                                                 create_error.set(String::new());
                                                 show_dropdown.set(false);
                                                 show_create_modal.set(true);
                                             },
+                                            PlusIcon { size: IconSize::Small }
                                             if query_text.is_empty() {
-                                                "+ Create new company"
+                                                "Create new company"
                                             } else {
                                                 {
                                                     let q = query_text.clone();
-                                                    rsx! { "+ Create \"{q}\"" }
+                                                    rsx! { "Create \"{q}\"" }
                                                 }
                                             }
                                         }
