@@ -100,6 +100,16 @@ jobs:
       # ---------------------------------------------------------------------
       - name: Build failure context
         id: logs
+        # Pass untrusted PR-controlled values (title, branch, head SHA) through
+        # the environment instead of interpolating ${{ ... }} into the script
+        # body, where attacker-controlled content (e.g. a crafted PR title)
+        # would be parsed as shell. The values are then referenced as quoted
+        # "$VAR" so they are treated as inert data.
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          PR_TITLE: ${{ steps.pr.outputs.pr_title }}
+          PR_BRANCH: ${{ steps.pr.outputs.branch }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         run: |
           set -e
           # Use the runner-provided temp dir ($RUNNER_TEMP) instead of a
@@ -112,9 +122,9 @@ jobs:
           {
             echo "# Failed CI Run Context"
             echo ""
-            echo "PR: #${{ inputs.pr_number }}: ${{ steps.pr.outputs.pr_title }}"
-            echo "Branch: ${{ steps.pr.outputs.branch }}"
-            echo "Commit: ${{ steps.pr.outputs.head_sha }}"
+            echo "PR: #${PR_NUMBER}: ${PR_TITLE}"
+            echo "Branch: ${PR_BRANCH}"
+            echo "Commit: ${HEAD_SHA}"
             echo ""
             echo "## Investigation"
             echo ""
@@ -147,8 +157,14 @@ jobs:
       - name: Run Claude Code
         if: steps.logs.outputs.skip != 'true'
         id: claude
+        # EXTRA_INSTRUCTIONS is dispatcher-supplied free text and CONTEXT_FILE
+        # is a generated path; pass both through the environment and reference
+        # them as quoted "$VAR" rather than interpolating ${{ ... }} into the
+        # script, so untrusted content can never be parsed as shell.
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CONTEXT_FILE: ${{ steps.logs.outputs.context_file }}
+          EXTRA_INSTRUCTIONS: ${{ inputs.extra_instructions }}
         run: |
           set -e
           PROMPT=$(cat <<'EOF'
@@ -172,13 +188,13 @@ jobs:
           # The prompt heredoc is single-quoted (no shell expansion), so swap
           # the placeholder for the real $RUNNER_TEMP context path produced by
           # the previous step.
-          PROMPT="${PROMPT//__CONTEXT_FILE__/${{ steps.logs.outputs.context_file }}}"
+          PROMPT="${PROMPT//__CONTEXT_FILE__/$CONTEXT_FILE}"
 
           # Append any extra instructions from the dispatcher
-          if [ -n "${{ inputs.extra_instructions }}" ]; then
+          if [ -n "$EXTRA_INSTRUCTIONS" ]; then
             PROMPT="$PROMPT
 
-          Additional instructions: ${{ inputs.extra_instructions }}"
+          Additional instructions: $EXTRA_INSTRUCTIONS"
           fi
 
           RESULT_FILE="$RUNNER_TEMP/claude-result.json"
@@ -207,6 +223,7 @@ jobs:
         env:
           CLAUDE_SUMMARY: ${{ steps.claude.outputs.summary }}
           PR_NUMBER: ${{ inputs.pr_number }}
+          PR_BRANCH: ${{ steps.pr.outputs.branch }}
         run: |
           set -e
           git config user.name "claude-bot"
@@ -230,7 +247,7 @@ jobs:
           } > "$COMMIT_MSG_FILE"
 
           git commit --file="$COMMIT_MSG_FILE"
-          git push origin "${{ steps.pr.outputs.branch }}"
+          git push origin "$PR_BRANCH"
           echo "pushed=true" >> "$GITHUB_OUTPUT"
 
       # ---------------------------------------------------------------------
