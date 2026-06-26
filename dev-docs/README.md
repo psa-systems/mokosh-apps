@@ -15,6 +15,7 @@ claims. The same audit produced matching documentation in
 | [`codebase-state.md`](codebase-state.md) | What this client looks like to a user today: cross-cutting bugs, the 27 ranked UI/UX issues, the per-page status, and the proposed fixes (`F1..F19`). |
 | [`client-server-integration.md`](client-server-integration.md) | How `mokosh-apps` and `mokosh-server` fit together. Section-by-section gap table, shared-DTO pattern, and the recommended order in which to wire UI to backend. |
 | [`versioning.md`](versioning.md) | Where the displayed version comes from (build-time wiring in `build.rs` -> footer/banner) and how staging-vs-production update targets work. |
+| [`spa-rollout-runbook.md`](spa-rollout-runbook.md) | How to roll the SPA so the load balancer never serves two builds at once: pin a versioned image tag per deploy, roll replicas in lockstep, and verify a single `build_sha` from `_mokosh_config.js`. |
 | [`qa-test-plan.md`](qa-test-plan.md) | End-to-end functional QA coverage: what to exercise across every route and flow. |
 | [`qa-input-validation-prompt.md`](qa-input-validation-prompt.md) | The full per-field input-validation matrix: which values each field must accept and reject. |
 | [`qa-field-and-button-audit-prompt.md`](qa-field-and-button-audit-prompt.md) | The technique layer: HOW to probe every field and button (HTML-constraint enumeration, `validity` probing, post-create API persistence checks, button audit) so defects surface instead of hiding. |
