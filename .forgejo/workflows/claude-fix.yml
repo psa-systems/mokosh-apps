@@ -61,13 +61,19 @@ jobs:
 
       - name: Get PR metadata
         id: pr
+        # pr_number is dispatcher-supplied untrusted input; pass it through the
+        # environment and reference it as quoted "$PR_NUMBER" rather than
+        # interpolating ${{ inputs.pr_number }} into the script body, where a
+        # crafted value could be parsed as shell. github.server_url and
+        # github.repository are platform-trusted contexts and stay direct.
         env:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ inputs.pr_number }}
         run: |
           set -e
           PR_JSON=$(curl -sSf \
             -H "Authorization: token $FORGEJO_TOKEN" \
-            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/pulls/${{ inputs.pr_number }}")
+            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/pulls/$PR_NUMBER")
 
           BRANCH=$(echo "$PR_JSON" | jq -r '.head.ref')
           HEAD_SHA=$(echo "$PR_JSON" | jq -r '.head.sha')
@@ -77,7 +83,7 @@ jobs:
           echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
           echo "pr_title=$PR_TITLE" >> "$GITHUB_OUTPUT"
 
-          echo "PR #${{ inputs.pr_number }}: $PR_TITLE"
+          echo "PR #${PR_NUMBER}: $PR_TITLE"
           echo "Branch: $BRANCH"
           echo "Head SHA: $HEAD_SHA"
 
@@ -259,6 +265,7 @@ jobs:
           FORGEJO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CLAUDE_SUMMARY: ${{ steps.claude.outputs.summary }}
           PUSHED: ${{ steps.push.outputs.pushed }}
+          PR_NUMBER: ${{ inputs.pr_number }}
         run: |
           if [ "${PUSHED}" = "true" ]; then
             HEADER="🤖 **Claude pushed a fix.**"
@@ -277,4 +284,4 @@ jobs:
             -H "Authorization: token $FORGEJO_TOKEN" \
             -H "Content-Type: application/json" \
             -d "$JSON" \
-            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/issues/${{ inputs.pr_number }}/comments"
+            "${{ github.server_url }}/api/v1/repos/${{ github.repository }}/issues/$PR_NUMBER/comments"
