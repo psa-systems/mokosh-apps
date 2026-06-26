@@ -31,10 +31,17 @@ jobs:
 
       - name: Create release
         shell: nu {0}
+        # PR_HEAD_REF is attacker-influenced (a contributor names their own
+        # branch). Pass it through the environment and read it as data via
+        # $env.PR_HEAD_REF rather than interpolating ${{ ... }} into the nu
+        # script body, where a branch name containing `"` / `(` / `;` would
+        # break out of the string literal and be parsed as nu code. Same
+        # env-routing pattern as claude-fix.yml (MAPPS-306 / MAPPS-307).
         env:
           FORGEJO_TOKEN: ${{ secrets.FORGEJO_PAT }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
-          let branch = "${{ github.event.pull_request.head.ref }}"
+          let branch = $env.PR_HEAD_REF
           let tag = ($branch | str replace "release/" "")
 
           # Build changelog from commits since the previous tag
