@@ -826,6 +826,10 @@ pub fn CalendarPage() -> Element {
                                             today: today_real,
                                             appointments: appointments.clone(),
                                             onpick: move |a| form_state.set(Some(Some(a))),
+                                            oncreate: move |d: NaiveDate| {
+                                                active_date.set(d);
+                                                form_state.set(Some(None));
+                                            },
                                         }
                                     },
                                     CalendarView::Week => rsx! {
@@ -834,6 +838,10 @@ pub fn CalendarPage() -> Element {
                                             today: today_real,
                                             appointments: appointments.clone(),
                                             onpick: move |a| form_state.set(Some(Some(a))),
+                                            oncreate: move |d: NaiveDate| {
+                                                active_date.set(d);
+                                                form_state.set(Some(None));
+                                            },
                                         }
                                     },
                                     CalendarView::Day => rsx! {
@@ -841,6 +849,10 @@ pub fn CalendarPage() -> Element {
                                             active_date: active_date(),
                                             appointments: appointments.clone(),
                                             onpick: move |a| form_state.set(Some(Some(a))),
+                                            oncreate: move |d: NaiveDate| {
+                                                active_date.set(d);
+                                                form_state.set(Some(None));
+                                            },
                                         }
                                     },
                                 }
@@ -911,6 +923,11 @@ struct MonthGridProps {
     today: NaiveDate,
     appointments: Vec<AppointmentResponse>,
     onpick: EventHandler<AppointmentResponse>,
+    /// MAPPS-319: open the New Appointment modal pre-filled with the
+    /// clicked day. Fired from `MonthDayCell` on empty-area click;
+    /// appointment chips inside the cell stop propagation so their own
+    /// onpick handler runs instead.
+    oncreate: EventHandler<NaiveDate>,
 }
 
 #[component]
@@ -935,11 +952,13 @@ fn MonthGrid(props: MonthGridProps) -> Element {
                     rsx! {
                         MonthDayCell {
                             key: "{date}",
+                            date,
                             day: date.day(),
                             is_other_month: !in_active,
                             is_today: date == props.today,
                             appointments: day_appts,
                             onpick: move |a| props.onpick.call(a),
+                            oncreate: move |d| props.oncreate.call(d),
                         }
                     }
                 }
@@ -950,11 +969,13 @@ fn MonthGrid(props: MonthGridProps) -> Element {
 
 #[derive(Props, Clone, PartialEq)]
 struct MonthDayCellProps {
+    date: NaiveDate,
     day: u32,
     is_other_month: bool,
     is_today: bool,
     appointments: Vec<AppointmentResponse>,
     onpick: EventHandler<AppointmentResponse>,
+    oncreate: EventHandler<NaiveDate>,
 }
 
 #[component]
@@ -980,9 +1001,18 @@ fn MonthDayCell(props: MonthDayCellProps) -> Element {
         "text-content"
     };
     let total = props.appointments.len();
+    let cell_date = props.date;
 
     rsx! {
-        div { class: "min-h-24 p-2 {bg_class}",
+        // MAPPS-319: the whole cell is clickable; the click opens the
+        // New Appointment modal pre-filled with this day. Appointment
+        // chips below stop propagation so their own onpick fires instead.
+        div {
+            class: "min-h-24 p-2 cursor-pointer {bg_class}",
+            role: "button",
+            tabindex: "0",
+            aria_label: "Create appointment on this day",
+            onclick: move |_| props.oncreate.call(cell_date),
             span { class: "text-sm {text_class}", "{props.day}" }
             div { class: "mt-1 space-y-1",
                 for (i, appt) in props.appointments.iter().enumerate() {
@@ -996,7 +1026,10 @@ fn MonthDayCell(props: MonthDayCellProps) -> Element {
                                     r#type: "button",
                                     class: "w-full text-left text-xs truncate px-1 py-0.5 rounded {chip} hover:opacity-80",
                                     title: "{label}",
-                                    onclick: move |_| props.onpick.call(appt_clone.clone()),
+                                    onclick: move |e: MouseEvent| {
+                                        e.stop_propagation();
+                                        props.onpick.call(appt_clone.clone());
+                                    },
                                     "{label}"
                                 }
                             }
@@ -1024,6 +1057,10 @@ struct WeekGridProps {
     today: NaiveDate,
     appointments: Vec<AppointmentResponse>,
     onpick: EventHandler<AppointmentResponse>,
+    /// MAPPS-319: open the New Appointment modal pre-filled with the
+    /// clicked column's date. Fired from `DayColumn` on empty-area
+    /// click; appointment blocks stop propagation.
+    oncreate: EventHandler<NaiveDate>,
 }
 
 #[component]
@@ -1081,8 +1118,10 @@ fn WeekGrid(props: WeekGridProps) -> Element {
                             rsx! {
                                 DayColumn {
                                     key: "{day}",
+                                    day,
                                     appointments: day_appts,
                                     onpick: move |a| props.onpick.call(a),
+                                    oncreate: move |d| props.oncreate.call(d),
                                 }
                             }
                         }
@@ -1105,8 +1144,10 @@ fn hour_label(hour: u32) -> String {
 
 #[derive(Props, Clone, PartialEq)]
 struct DayColumnProps {
+    day: NaiveDate,
     appointments: Vec<AppointmentResponse>,
     onpick: EventHandler<AppointmentResponse>,
+    oncreate: EventHandler<NaiveDate>,
 }
 
 /// One day's column in the week view: an absolutely-positioned stack of
@@ -1114,9 +1155,18 @@ struct DayColumnProps {
 #[component]
 fn DayColumn(props: DayColumnProps) -> Element {
     let rows = (GRID_END_HOUR - GRID_START_HOUR) as usize;
+    let day = props.day;
     rsx! {
-        div { class: "relative border-l border-line",
+        // MAPPS-319: column-level onclick opens New Appointment pre-
+        // filled with this day. Appointment blocks below stop
+        // propagation so their own onpick (edit) fires instead.
+        div {
+            class: "relative border-l border-line cursor-pointer",
             style: "height: {rows as f64 * 3.0}rem;",
+            role: "button",
+            tabindex: "0",
+            aria_label: "Create appointment on this day",
+            onclick: move |_| props.oncreate.call(day),
             // Hour grid lines.
             for _ in 0..rows {
                 div { class: "h-12 border-b border-line" }
@@ -1135,7 +1185,10 @@ fn DayColumn(props: DayColumnProps) -> Element {
                             class: "absolute left-0.5 right-0.5 rounded px-1 py-0.5 text-[10px] leading-tight text-white text-left overflow-hidden shadow-sm hover:opacity-90 {color}",
                             style: "top: {top_pct:.4}%; height: {height_pct:.4}%;",
                             title: "{time}: {label}",
-                            onclick: move |_| props.onpick.call(appt_clone.clone()),
+                            onclick: move |e: MouseEvent| {
+                                e.stop_propagation();
+                                props.onpick.call(appt_clone.clone());
+                            },
                             div { class: "font-medium truncate", "{label}" }
                             div { class: "truncate opacity-90", "{time}" }
                         }
@@ -1167,6 +1220,10 @@ struct DayGridProps {
     active_date: NaiveDate,
     appointments: Vec<AppointmentResponse>,
     onpick: EventHandler<AppointmentResponse>,
+    /// MAPPS-319: open the New Appointment modal pre-filled with
+    /// `active_date` on empty-area click. Appointment blocks stop
+    /// propagation so the edit path fires for them instead.
+    oncreate: EventHandler<NaiveDate>,
 }
 
 #[component]
@@ -1197,8 +1254,14 @@ fn DayGrid(props: DayGridProps) -> Element {
                 }
             }
             // Single positioned column (taller rows than the week view).
-            div { class: "relative border-l border-line",
+            // MAPPS-319: column-level onclick opens New Appointment.
+            div {
+                class: "relative border-l border-line cursor-pointer",
                 style: "height: {rows as f64 * 4.0}rem;",
+                role: "button",
+                tabindex: "0",
+                aria_label: "Create appointment on this day",
+                onclick: move |_| props.oncreate.call(day),
                 for _ in 0..rows {
                     div { class: "h-16 border-b border-line" }
                 }
@@ -1216,7 +1279,10 @@ fn DayGrid(props: DayGridProps) -> Element {
                                 class: "absolute left-2 right-2 rounded-md px-2 py-1 text-xs text-white text-left overflow-hidden shadow-sm hover:opacity-90 {color}",
                                 style: "top: {top_pct:.4}%; height: {height_pct:.4}%;",
                                 title: "{time}: {label}",
-                                onclick: move |_| props.onpick.call(appt_clone.clone()),
+                                onclick: move |e: MouseEvent| {
+                                    e.stop_propagation();
+                                    props.onpick.call(appt_clone.clone());
+                                },
                                 div { class: "font-medium truncate", "{label}" }
                                 div { class: "opacity-90", "{time}" }
                                 if !location.is_empty() {
@@ -2237,6 +2303,10 @@ pub fn DispatchBoardPage() -> Element {
                                     today: today_real,
                                     appointments: d.appointments.clone(),
                                     onpick: move |a| form_state.set(Some(Some(a))),
+                                    oncreate: move |d: NaiveDate| {
+                                        active_day.set(d);
+                                        form_state.set(Some(None));
+                                    },
                                 }
                             },
                             CalendarView::Month => rsx! {
@@ -2245,6 +2315,10 @@ pub fn DispatchBoardPage() -> Element {
                                     today: today_real,
                                     appointments: d.appointments.clone(),
                                     onpick: move |a| form_state.set(Some(Some(a))),
+                                    oncreate: move |d: NaiveDate| {
+                                        active_day.set(d);
+                                        form_state.set(Some(None));
+                                    },
                                 }
                             },
                         }

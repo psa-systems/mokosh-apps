@@ -37,6 +37,14 @@ pub struct AuthContext {
     /// after sign-in; powers the tenant switcher UI. Empty before
     /// sign-in.
     pub memberships: Vec<MembershipView>,
+    /// MAPPS-317: false until `/api/v1/auth/me` has reconciled the
+    /// optimistic rehydrate at least once. The AuthGuard's forced-
+    /// onboarding redirect reads this so it never fires on the
+    /// optimistic window. Without the gate, the chain
+    /// AuthGuard (stale signal) -> /onboarding/profile -> Onboarding
+    /// effect sees profile_completed=true -> /dashboard bounces a
+    /// user clicking Calendar to Dashboard on the first click.
+    pub server_loaded: bool,
 }
 
 impl AuthContext {
@@ -126,6 +134,9 @@ fn initial_auth_context() -> AuthContext {
             tokens: None,
             active_tenant_id: None,
             memberships: Vec::new(),
+            // Dev-only ADMIN_EMAIL bypass; the AuthGuard's onboarding
+            // gate trusts this synthesized user without a /me round-trip.
+            server_loaded: true,
         },
         _ => rehydrate_from_storage().unwrap_or_default(),
     }
@@ -210,6 +221,9 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
         // re-fetches them once the SPA mounts. Avoids persisting the
         // membership list (it can drift independently of the token).
         memberships: Vec::new(),
+        // MAPPS-317: false until the post-rehydrate /me fetch lands.
+        // AuthGuard's onboarding gate trusts this flag; see lib.rs.
+        server_loaded: false,
     })
 }
 
@@ -430,6 +444,11 @@ async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
         u.date_format_string = me.date_format_string;
         u.own_company_id = me.own_company_id;
     }
+    // MAPPS-317: flip the gate so AuthGuard's onboarding-redirect
+    // check now trusts profile_completed. Must run AFTER the user
+    // mutate above so any AuthGuard re-render that observes
+    // server_loaded=true also sees the reconciled profile flag.
+    a.server_loaded = true;
     // Force the memberships loader to re-fetch by clearing the cached
     // list; the use_memberships_loader effect re-runs when
     // `memberships.is_empty()` and the user is authenticated.

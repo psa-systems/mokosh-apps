@@ -69,13 +69,22 @@ pub fn Onboarding() -> Element {
     // hits /onboarding/profile directly (bookmark, refresh, manual
     // URL), bounce them to the dashboard. Otherwise this route would
     // let a user re-trigger the onboarding flow for no reason.
+    //
+    // MAPPS-317: also gated on `server_loaded`. The AuthGuard now
+    // only redirects to /onboarding/profile after /me has reconciled,
+    // so by the time this effect runs the auth signal is settled.
+    // If this effect still fires unexpectedly the tracing line below
+    // is what surfaces it in console logs for the next bug round.
     use_effect(move || {
-        if auth
-            .read()
-            .user
-            .as_ref()
-            .is_some_and(|u| u.profile_completed)
-        {
+        let a = auth.read();
+        if !a.server_loaded {
+            return;
+        }
+        if a.user.as_ref().is_some_and(|u| u.profile_completed) {
+            tracing::info!(
+                target: "onboarding",
+                "profile_completed=true on /onboarding/profile, redirecting to /dashboard"
+            );
             nav.replace(Route::Dashboard {});
         }
     });

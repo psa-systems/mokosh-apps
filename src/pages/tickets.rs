@@ -1162,6 +1162,9 @@ pub fn TicketNewPage() -> Element {
     let mut title_error = use_signal(String::new);
     // PMS-518: per-field error for the now-enforced required Description.
     let mut description_error = use_signal(String::new);
+    // MAPPS-322: per-field error for the required Company, routed into the
+    // CompanyPicker's own inline slot instead of the form-level banner.
+    let mut company_error = use_signal(String::new);
 
     // MAPPS-296: tenant lookups for Type + Category + Assignee. Each
     // hits its own endpoint and falls back to an empty list on a 403 /
@@ -1304,22 +1307,26 @@ pub fn TicketNewPage() -> Element {
             &[Rule::Required],
         ));
 
-        // The CompanyPicker only ever reports real company UUIDs, but a user can
-        // submit before picking one. It has no inline error slot, so its failure
-        // goes to the form-level banner; `note_invalid` still blocks the submit.
-        let company_uuid = uuid::Uuid::parse_str(company_id.read().as_str()).ok();
-        if company_uuid.is_none() {
-            error.set("Please pick a company first.".to_string());
-            guard.note_invalid(None);
-        }
+        // MAPPS-322: Company is required. Route the failure into the picker's
+        // own inline error slot (it now takes an `error:` prop) instead of the
+        // form-level banner, and focus its search input. `Rule::Uuid` guards a
+        // malformed id; in practice the picker only ever yields a real UUID or
+        // an empty string, so the surfaced message is `Rule::Required`'s
+        // "Company is required."
+        company_error.set(guard.field(
+            "company_search",
+            company_id.read().as_str(),
+            "Company",
+            &[Rule::Required, Rule::Uuid],
+        ));
 
         if guard.blocked() {
             is_submitting.set(false);
             return;
         }
-        // Past the guard: every required field is valid, so the company UUID is
-        // present (re-bound here without an unwrap/expect).
-        let Some(company_uuid) = company_uuid else {
+        // Past the guard: every required field is valid, so the company UUID
+        // parses (re-bound here without an unwrap/expect).
+        let Some(company_uuid) = uuid::Uuid::parse_str(company_id.read().as_str()).ok() else {
             is_submitting.set(false);
             return;
         };
@@ -1379,7 +1386,11 @@ pub fn TicketNewPage() -> Element {
                 };
                 let body = serde_json::json!({
                     "title": title_v,
-                    "description": if description_v.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(description_v) },
+                    // MAPPS-322: Description is required and validated non-empty
+                    // above, so send the (trimmed) string verbatim. The old
+                    // "collapse empty to null" branch made the asterisk a lie:
+                    // it let a blank description through as `null`.
+                    "description": description_v,
                     "company_id": company_uuid,
                     "contact_id": contact_uuid,
                     "priority_id": priority_uuid,
@@ -1425,6 +1436,14 @@ pub fn TicketNewPage() -> Element {
                         // (MAPPS-210).
                         if let Some(msg) = err.field_message("title") {
                             title_error.set(msg);
+                        } else if let Some(msg) = err.field_message("description") {
+                            // MAPPS-322: a server-side description validation
+                            // failure (empty / over-cap) lands inline.
+                            description_error.set(msg);
+                        } else if let Some(msg) = err.field_message("company_id") {
+                            // MAPPS-322: route the company validation failure
+                            // next to the picker, same as title/description.
+                            company_error.set(msg);
                         } else {
                             error.set(format!("Could not create ticket: {}", err.user_message()));
                         }
@@ -1511,6 +1530,10 @@ pub fn TicketNewPage() -> Element {
                             value: company_name.read().clone(),
                             selected_id: picker_selected_id,
                             required: true,
+                            // MAPPS-322: surface the required-company error
+                            // inline on the picker, cleared on select/clear
+                            // like the title/description fields.
+                            error: company_error.read().clone(),
                             // PMS-352: opt this picker into the inline
                             // "+ Create new company" affordance so a
                             // first-time technician on a tenant with zero
@@ -1518,6 +1541,7 @@ pub fn TicketNewPage() -> Element {
                             // without leaving the form to seed a company.
                             allow_inline_create: true,
                             onselect: move |(id, name): (String, String)| {
+                                company_error.set(String::new());
                                 company_id.set(id);
                                 company_name.set(name);
                                 // Contacts are scoped to a company; clear
@@ -1526,6 +1550,7 @@ pub fn TicketNewPage() -> Element {
                                 contact_name.set(String::new());
                             },
                             onclear: move |_| {
+                                company_error.set(String::new());
                                 company_id.set(String::new());
                                 company_name.set(String::new());
                                 contact_id.set(String::new());
@@ -2582,9 +2607,13 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     spawn(async move {
                         e_submitting.set(true);
                         e_error.set(String::new());
+                        // MAPPS-322: send the trimmed, guard-validated values.
+                        // `desc_v` is already non-empty (the FormGuard above
+                        // blocks a blank edit), so an edit can no longer blank
+                        // an existing description.
                         let body = serde_json::json!({
                             "title": title_v,
-                            "description": e_desc(),
+                            "description": desc_v,
                         });
                         match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
                             &format!("/tickets/{save_id}"),
