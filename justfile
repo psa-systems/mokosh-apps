@@ -89,15 +89,20 @@ css-watch: ensure-npm
 [group: 'dev']
 dev:
     #!/usr/bin/env nu
-    # Pick the first non-loopback IPv4 on a physical/bridge interface.
+    # Pick the first private (RFC1918) IPv4 on a physical/bridge interface.
     # Match common modern names too (ens3/enp* predictable names, wlan*)
-    # instead of only eth0/br0, and fail with a clear message rather than
-    # panicking on `.get 0` when nothing matches.
+    # instead of only eth0/br0. Bind only to a private LAN address, never a
+    # public interface: br0 on this host is public, and binding dev services
+    # to it exposed them to the internet (a sibling stack's postgres was
+    # compromised by the PG_MEM botnet that way). Fall back to loopback with a
+    # warning when no private address is present, so dx serve can never be
+    # published on a public interface.
     let candidates = (sys net | where name =~ '^(en|eth|br|wlan)' | get ip | flatten | where protocol == 'ipv4' and loop == false)
-    if ($candidates | is-empty) {
-        error make { msg: "Could not detect a host LAN IP: no non-loopback IPv4 found on an en*/eth*/br*/wlan* interface. Check `sys net` output and widen the interface filter in the `dev` recipe if your NIC uses a different name." }
+    let private = ($candidates | where (($it.address | str starts-with '10.') or ($it.address =~ '^172\.(1[6-9]|2[0-9]|3[01])\.') or ($it.address | str starts-with '192.168.')))
+    let host_ip = (if ($private | is-empty) { '127.0.0.1' } else { $private | get 0.address })
+    if $host_ip == '127.0.0.1' {
+        print 'WARNING: no private (RFC1918) LAN IPv4 found on an en*/eth*/br*/wlan* interface; binding dx serve to loopback (127.0.0.1) only.'
     }
-    let host_ip = ($candidates | get 0.address)
     let uid = (^id --user | str trim)
     let gid = (^id --group | str trim)
     let user_name = (^whoami | str trim)
