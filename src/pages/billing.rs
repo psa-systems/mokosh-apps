@@ -2879,7 +2879,12 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
         let mut guard = FormGuard::new();
         let name_v = name.read().trim().to_string();
         let rate_v = rate.read().trim().to_string();
-        name_err.set(guard.field("tax_rate_name", &name_v, "Name", &[Rule::Required]));
+        name_err.set(guard.field(
+            "tax_rate_name",
+            &name_v,
+            "Name",
+            &[Rule::Required, Rule::MaxLen(100)],
+        ));
         rate_err.set(guard.field(
             "tax_rate_rate",
             &rate_v,
@@ -2888,8 +2893,8 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
                 Rule::Required,
                 Rule::Number {
                     min: Some(0.0),
-                    max: None,
-                    max_decimals: None,
+                    max: Some(100.0),
+                    max_decimals: Some(2),
                 },
             ],
         ));
@@ -3006,7 +3011,10 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
                     label: "Name",
                     placeholder: "e.g. US-CA or Standard VAT",
                     required: true,
-                    rules: vec![Rule::Required],
+                    // Mirror the server cap (`UpsertTaxRateRequest::name`,
+                    // `length(max = 100)`) so the client rejects over-long names.
+                    maxlength: 100,
+                    rules: vec![Rule::Required, Rule::MaxLen(100)],
                     error: name_err(),
                     value: name.read().clone(),
                     oninput: move |e: FormEvent| {
@@ -3020,12 +3028,18 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
                     r#type: "number",
                     placeholder: "e.g. 8.25",
                     required: true,
+                    // Mirror the Ticket Priorities SLA-multiplier field
+                    // (MAPPS-220): a 2-decimal percentage bounded to 0..=100, so
+                    // `8.25` is accepted while negatives and >100% are rejected.
+                    step: "0.01".to_string(),
+                    min: "0".to_string(),
+                    max: "100".to_string(),
                     rules: vec![
                         Rule::Required,
                         Rule::Number {
                             min: Some(0.0),
-                            max: None,
-                            max_decimals: None,
+                            max: Some(100.0),
+                            max_decimals: Some(2),
                         },
                     ],
                     error: rate_err(),
