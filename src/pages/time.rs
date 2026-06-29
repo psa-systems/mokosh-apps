@@ -908,10 +908,12 @@ pub fn TimeEntryNewPage() -> Element {
                         label: "Billable",
                         checked: *is_billable.read(),
                         help: "Mark this time entry as billable to the customer",
-                        onchange: move |_| {
-                            let current = *is_billable.read();
-                            is_billable.set(!current);
-                        },
+                        // PMS-571: drive state from the event's actual checked
+                        // value (re-anchoring to the DOM) instead of inverting
+                        // stored state, which could desync a controlled checkbox
+                        // so clicks appeared to do nothing. Matches the working
+                        // `certified` checkbox.
+                        onchange: move |e: FormEvent| is_billable.set(e.checked()),
                     }
 
                     div { class: "flex justify-end space-x-3",
@@ -2348,10 +2350,9 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
                     name: "edit_billable",
                     label: "Billable",
                     checked: *is_billable.read(),
-                    onchange: move |_| {
-                        let c = *is_billable.read();
-                        is_billable.set(!c);
-                    },
+                    // PMS-571: re-anchor to the event's checked value (see the
+                    // create-form billable checkbox) so the toggle is reliable.
+                    onchange: move |e: FormEvent| is_billable.set(e.checked()),
                 }
             }
         }
