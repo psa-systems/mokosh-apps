@@ -197,17 +197,22 @@ const PREF_FIRST_DAY: &str = "mokosh_first_day_of_week";
 
 #[component]
 pub fn ProfilePage() -> Element {
+    // MAPPS-331: keep the actual `/auth/me` failure mode on the resource
+    // (status + server message) instead of collapsing every fault into a
+    // bare `None`. The banner below surfaces the real reason so the user
+    // can hand a concrete fault back without DevTools digging, and so a
+    // future regression is observable from the page itself.
     let me_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         #[cfg(feature = "web")]
         {
-            crate::hooks::fetch::api::get_authed::<MeResponse>("/auth/me")
-                .await
-                .ok()
+            crate::hooks::fetch::api::get_authed_typed::<MeResponse>("/auth/me").await
         }
         #[cfg(not(feature = "web"))]
         {
-            None::<MeResponse>
+            Err::<MeResponse, crate::hooks::fetch::api::ApiError>(
+                crate::hooks::fetch::api::ApiError::Network("non-web build".into()),
+            )
         }
     });
 
@@ -229,16 +234,23 @@ pub fn ProfilePage() -> Element {
                 None => rsx! {
                     crate::components::DetailSkeleton {} // PMS-353
                 },
-                Some(None) => rsx! {
-                    Card {
-                        div { class: "py-12 text-center",
-                            p { class: "text-sm text-red-600 dark:text-red-300",
-                                "Could not load your profile. Refresh the page to retry."
+                Some(Err(err)) => {
+                    let detail = err.to_string();
+                    let toast = err.user_message();
+                    rsx! {
+                        Card {
+                            div { class: "py-12 text-center",
+                                p { class: "text-sm text-red-600 dark:text-red-300",
+                                    "Could not load your profile: {toast}"
+                                }
+                                p { class: "mt-2 text-xs text-muted",
+                                    "Detail: {detail}"
+                                }
                             }
                         }
                     }
-                },
-                Some(Some(me)) => rsx! {
+                }
+                Some(Ok(me)) => rsx! {
                     PersonalInfoForm { initial: me.clone() }
                 },
             }
