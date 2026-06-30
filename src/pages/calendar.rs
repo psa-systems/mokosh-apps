@@ -2015,6 +2015,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                     placeholder: "e.g. Onsite: Acme Corp",
                     required: true,
                     maxlength: APPT_TITLE_MAX,
+                    error: title_err(),
                     value: title.read().clone(),
                     oninput: move |e: FormEvent| title.set(e.value()),
                 }
@@ -2033,6 +2034,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                             label: "Start date",
                             r#type: "date".to_string(),
                             required: true,
+                            error: start_err(),
                             value: start_date_value.read().clone(),
                             oninput: move |e: FormEvent| start_date_value.set(e.value()),
                         }
@@ -2042,6 +2044,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                             r#type: "date".to_string(),
                             required: true,
                             help: "Inclusive. The event spans whole days through this date.".to_string(),
+                            error: end_err(),
                             value: end_date_value.read().clone(),
                             oninput: move |e: FormEvent| end_date_value.set(e.value()),
                         }
@@ -2055,6 +2058,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                             label: "Start",
                             r#type: "datetime-local".to_string(),
                             required: true,
+                            error: start_err(),
                             value: start_value.read().clone(),
                             oninput: move |e: FormEvent| {
                                 let next = e.value();
@@ -2100,6 +2104,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                                 label: "End",
                                 r#type: "datetime-local".to_string(),
                                 required: true,
+                                error: end_err(),
                                 value: end_value.read().clone(),
                                 oninput: move |e: FormEvent| {
                                     let next = e.value();
@@ -2147,6 +2152,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                         name: "appt_assignee",
                         label: "Assigned to",
                         options: assignee_options.clone(),
+                        error: assignee_err(),
                         value: assignee.read().clone(),
                         onchange: move |e: FormEvent| assignee.set(e.value()),
                     }
