@@ -473,8 +473,15 @@ pub struct CheckboxProps {
 
 #[component]
 pub fn Checkbox(props: CheckboxProps) -> Element {
+    // `bg-surface` styles the unchecked box to match the theme. The
+    // @tailwindcss/forms base layer paints the :checked state as a white
+    // checkmark SVG over a `currentColor` (accent) fill, but the `bg-surface`
+    // utility outranks that base rule and keeps the background light, so in
+    // light mode the white check renders white-on-white and is invisible
+    // (PMS-577). Re-assert the accent fill (and drop the border) on :checked
+    // so the checkmark has contrast in both themes.
     let class = format!(
-        "h-4 w-4 rounded border-line text-accent focus:ring-accent bg-surface {}",
+        "h-4 w-4 rounded border-line text-accent focus:ring-accent bg-surface checked:bg-accent checked:border-transparent {}",
         props.class
     );
 
