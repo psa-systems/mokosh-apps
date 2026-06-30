@@ -18,42 +18,16 @@ use crate::Route;
 /// Rows per page for the client-side paginated list views (F3).
 const PER_PAGE: usize = 25;
 
-/// PMS-582: curated industry vocabulary for the company Industry combobox.
-/// Industry is a finite taxonomy, so we standardize toward these clean
-/// canonical values (rather than echoing existing free-text variants like
-/// "IT" / "I.T." / "Information Technology"). The field stays free text, so a
-/// value outside this list is still accepted for the long tail.
-const COMPANY_INDUSTRIES: &[&str] = &[
-    "Accounting",
-    "Agriculture",
-    "Automotive",
-    "Banking",
-    "Biotechnology",
-    "Construction",
-    "Consulting",
-    "Education",
-    "Energy & Utilities",
-    "Engineering",
-    "Entertainment & Media",
-    "Finance",
-    "Food & Beverage",
-    "Government",
-    "Healthcare",
-    "Hospitality",
-    "Information Technology",
-    "Insurance",
-    "Legal",
-    "Manufacturing",
-    "Marketing & Advertising",
-    "Nonprofit",
-    "Pharmaceuticals",
-    "Real Estate",
-    "Retail",
-    "Telecommunications",
-    "Transportation & Logistics",
-    "Travel & Tourism",
-    "Wholesale",
-];
+/// PMS-601: one row of the company-industry lookup, used to populate the
+/// Industry combobox's suggestions from the tenant's editable list. The
+/// canonical defaults now live server-side (seeded per tenant), not in a
+/// frontend constant; the field stays free text for the long tail.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct IndustryOption {
+    name: String,
+    #[serde(default)]
+    is_active: bool,
+}
 
 /// Sortable columns on the company list (F3).
 #[derive(Clone, Copy, PartialEq)]
@@ -588,6 +562,28 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let mut name = use_signal(|| initial.name.clone());
     let mut company_type = use_signal(|| initial_type.clone());
     let mut industry = use_signal(|| initial.industry.clone());
+    // PMS-601: industry suggestions come from the tenant's editable lookup
+    // (Settings > Company Industries), not a hardcoded list. Active names only.
+    let industry_options = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Paginated<IndustryOption>>(
+            "/contacts/company-industries?per_page=200",
+        )
+        .await
+        .ok()
+        .map(|p| {
+            p.data
+                .into_iter()
+                .filter(|o| o.is_active)
+                .map(|o| o.name)
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default()
+    });
+    let industry_suggestions = industry_options
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
     let mut website = use_signal(|| initial.website.clone());
     let mut phone = use_signal(|| initial.phone.clone());
     let mut line1 = use_signal(|| initial.address_line1.clone());
@@ -843,7 +839,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                     crate::components::SuggestInput {
                         name: "industry",
                         label: "Industry",
-                        suggestions: COMPANY_INDUSTRIES.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        suggestions: industry_suggestions.clone(),
                         help: "Pick a standard industry or type your own.",
                         value: industry.read().clone(),
                         oninput: move |v: String| industry.set(v),
