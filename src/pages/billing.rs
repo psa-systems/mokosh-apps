@@ -1017,6 +1017,10 @@ pub fn InvoiceNewPage() -> Element {
     // PMS-518: per-field slots for the fields that previously shared the banner.
     let mut invoice_date_error = use_signal(String::new);
     let mut line_description_error = use_signal(String::new);
+    // PMS-579: company validation now renders inline under the CompanyPicker
+    // (which forwards it to its wrapped Input) instead of the form-level banner,
+    // matching every other required field. Shared by both submit paths.
+    let mut company_error = use_signal(String::new);
 
     let tax_rates_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -1058,12 +1062,15 @@ pub fn InvoiceNewPage() -> Element {
         // chain that masked every field after the first.
         let mut guard = FormGuard::new();
 
-        // The CompanyPicker has no inline slot, so its failure goes to the
-        // form-level banner; `note_invalid` still blocks the submit.
+        // PMS-579: surface a missing company inline under the picker (red
+        // outline + message), no "UUID" wording. `note_invalid` with the
+        // picker's input id keeps it in the first-invalid focus order.
         let company_uuid = uuid::Uuid::parse_str(company_id.read().trim()).ok();
         if company_uuid.is_none() {
-            error.set("A valid company ID (UUID) is required.".to_string());
-            guard.note_invalid(None);
+            company_error.set("Company is required.".to_string());
+            guard.note_invalid(Some("company_search"));
+        } else {
+            company_error.set(String::new());
         }
 
         let inv_date = invoice_date.read().trim().to_string();
@@ -1178,12 +1185,12 @@ pub fn InvoiceNewPage() -> Element {
             return;
         }
         error.set(String::new());
+        // PMS-579: same inline company error as the manual create path.
         let Some(company_uuid) = uuid::Uuid::parse_str(company_id.read().trim()).ok() else {
-            error.set(
-                "A valid company ID (UUID) is required to generate from time entries.".to_string(),
-            );
+            company_error.set("Company is required.".to_string());
             return;
         };
+        company_error.set(String::new());
 
         is_generating.set(true);
         let inv_date = optional_string(&invoice_date.read());
@@ -1259,9 +1266,12 @@ pub fn InvoiceNewPage() -> Element {
                         selected_id: company_picker_selected_id,
                         required: true,
                         allow_inline_create: true,
+                        // PMS-579: inline field-level error instead of the banner.
+                        error: company_error.read().clone(),
                         onselect: move |(id, name): (String, String)| {
                             company_id.set(id);
                             company_name.set(name);
+                            company_error.set(String::new());
                         },
                         onclear: move |_| {
                             company_id.set(String::new());
