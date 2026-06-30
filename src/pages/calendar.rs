@@ -486,6 +486,19 @@ fn type_chip_class(appointment_type: &str) -> &'static str {
     }
 }
 
+/// PMS-599: a Tailwind opacity fragment for appointments whose end time has
+/// already passed, so elapsed events read as muted across every view. Empty for
+/// current/future appointments. Paired with the blocks' existing `hover:opacity-*`
+/// so hovering a past event un-mutes it. Back-dating is intentional (tracking),
+/// so past appointments are shown, just dimmed.
+fn past_class(appt: &AppointmentResponse) -> &'static str {
+    if appt.end_time < Utc::now() {
+        "opacity-50"
+    } else {
+        ""
+    }
+}
+
 /// Appointment type options shared by the create/edit form and any
 /// type-driven UI. Values match the server's CHECK constraint
 /// (`ticket`, `project`, `meeting`, `other`).
@@ -1019,12 +1032,13 @@ fn MonthDayCell(props: MonthDayCellProps) -> Element {
                     if i < 3 {
                         {
                             let chip = type_chip_class(&appt.appointment_type);
+                            let past = past_class(appt);
                             let appt_clone = appt.clone();
                             let label = format!("{} {}", time_label(appt.start_time), appt.title);
                             rsx! {
                                 button {
                                     r#type: "button",
-                                    class: "w-full text-left text-xs truncate px-1 py-0.5 rounded {chip} hover:opacity-80",
+                                    class: "w-full text-left text-xs truncate px-1 py-0.5 rounded {chip} {past} hover:opacity-80",
                                     title: "{label}",
                                     onclick: move |e: MouseEvent| {
                                         e.stop_propagation();
@@ -1176,13 +1190,14 @@ fn DayColumn(props: DayColumnProps) -> Element {
                 {
                     let (top_pct, height_pct) = block_geometry(appt);
                     let color = type_color(&appt.appointment_type);
+                    let past = past_class(appt);
                     let appt_clone = appt.clone();
                     let label = appt.title.clone();
                     let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
                     rsx! {
                         button {
                             r#type: "button",
-                            class: "absolute left-0.5 right-0.5 rounded px-1 py-0.5 text-[10px] leading-tight text-white text-left overflow-hidden shadow-sm hover:opacity-90 {color}",
+                            class: "absolute left-0.5 right-0.5 rounded px-1 py-0.5 text-[10px] leading-tight text-white text-left overflow-hidden shadow-sm hover:opacity-90 {color} {past}",
                             style: "top: {top_pct:.4}%; height: {height_pct:.4}%;",
                             title: "{time}: {label}",
                             onclick: move |e: MouseEvent| {
@@ -1269,6 +1284,7 @@ fn DayGrid(props: DayGridProps) -> Element {
                     {
                         let (top_pct, height_pct) = block_geometry(appt);
                         let color = type_color(&appt.appointment_type);
+                        let past = past_class(appt);
                         let appt_clone = appt.clone();
                         let label = appt.title.clone();
                         let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
@@ -1276,7 +1292,7 @@ fn DayGrid(props: DayGridProps) -> Element {
                         rsx! {
                             button {
                                 r#type: "button",
-                                class: "absolute left-2 right-2 rounded-md px-2 py-1 text-xs text-white text-left overflow-hidden shadow-sm hover:opacity-90 {color}",
+                                class: "absolute left-2 right-2 rounded-md px-2 py-1 text-xs text-white text-left overflow-hidden shadow-sm hover:opacity-90 {color} {past}",
                                 style: "top: {top_pct:.4}%; height: {height_pct:.4}%;",
                                 title: "{time}: {label}",
                                 onclick: move |e: MouseEvent| {
@@ -1333,6 +1349,7 @@ fn AgendaCard(props: AgendaCardProps) -> Element {
                                 "meeting" => "border-l-purple-500",
                                 _ => "border-l-gray-500",
                             };
+                            let past = past_class(appt);
                             let time = time_label(appt.start_time);
                             let title = appt.title.clone();
                             let who = props
@@ -1342,7 +1359,7 @@ fn AgendaCard(props: AgendaCardProps) -> Element {
                                 .map(|u| u.display_name())
                                 .unwrap_or_default();
                             rsx! {
-                                div { class: "border-l-4 {border} bg-surface-2 p-3 rounded-r",
+                                div { class: "border-l-4 {border} bg-surface-2 p-3 rounded-r {past}",
                                     p { class: "text-xs text-muted", "{time}" }
                                     p { class: "font-medium text-content", "{title}" }
                                     if !who.is_empty() {
@@ -2551,13 +2568,14 @@ fn DispatchRow(props: DispatchRowProps) -> Element {
                     {
                         let (left, width) = appointment_h_geometry(appt);
                         let color = type_color(&appt.appointment_type);
+                        let past = past_class(appt);
                         let appt_clone = appt.clone();
                         let label = appt.title.clone();
                         let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
                         rsx! {
                             button {
                                 r#type: "button",
-                                class: "absolute top-1 bottom-1 rounded-md px-2 py-1 text-xs text-white shadow-sm overflow-hidden text-left hover:opacity-90 {color}",
+                                class: "absolute top-1 bottom-1 rounded-md px-2 py-1 text-xs text-white shadow-sm overflow-hidden text-left hover:opacity-90 {color} {past}",
                                 style: "left: {left:.4}%; width: {width:.4}%;",
                                 title: "{time}: {label}",
                                 onclick: move |_| props.onpick.call(appt_clone.clone()),
