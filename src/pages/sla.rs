@@ -456,9 +456,14 @@ fn PolicyFormModal(props: PolicyFormModalProps) -> Element {
                 crate::components::Select {
                     name: "policy_business_hours",
                     label: "Business Hours",
-                    placeholder: "None (24x7)",
+                    placeholder: "No profile (runs 24/7)",
+                    // PMS-586: the old "None (24x7)" conflated "no profile
+                    // selected" with a 24x7 schedule. Spell out the real effect.
+                    help: "With no business-hours profile, the SLA clock runs continuously (24/7). Pick a profile to pause the clock outside its hours."
+                        .to_string(),
                     options: {
-                        let mut opts = vec![crate::components::SelectOption::new("", "None (24x7)")];
+                        let mut opts =
+                            vec![crate::components::SelectOption::new("", "No profile (runs 24/7)")];
                         for (id, label) in bh_options.iter() {
                             opts.push(crate::components::SelectOption::new(id.clone(), label.clone()));
                         }
