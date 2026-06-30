@@ -30,7 +30,17 @@
         # start and are therefore unknown at build time. Hardcoding a strict
         # connect-src would break sign-in. See dev-docs/audits/
         # security-2026-06-25/triage.md (Low finding 2) for the residual risk.
-        Content-Security-Policy "frame-ancestors 'none'"
+        # MAPPS-338: full content CSP from runtime env. Caddy expands
+        # {$VAR:-default} at startup, so the value reflects MOKOSH_API_BASE
+        # / MOKOSH_OIDC_ISSUER without rebuilding the image. Both default
+        # to empty (covers dev + the host-prefix-derivation fallback the
+        # SPA carries); when empty the CSP collapses to `'self'` for that
+        # source, which is correct for the same-origin case. `'wasm-unsafe-eval'`
+        # is required because Dioxus boots through `WebAssembly.instantiate`
+        # in a code path Chromium's strict CSP enforces against;
+        # `'unsafe-inline'` on style-src covers Tailwind's small inline
+        # `style="..."` usages.
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' {$MOKOSH_API_BASE:-} {$MOKOSH_OIDC_ISSUER:-}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
         X-Frame-Options "DENY"
         X-Content-Type-Options "nosniff"
         Referrer-Policy "strict-origin-when-cross-origin"
