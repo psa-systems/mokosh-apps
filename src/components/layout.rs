@@ -54,6 +54,12 @@ pub fn AppLayout(props: AppLayoutProps) -> Element {
         // so users see the affordance when nav overflows on short
         // viewports.
         div { class: "h-screen flex flex-col bg-app overflow-hidden",
+            // App-wide "server unreachable" banner (MAPPS-333). Sits at
+            // the very top so an outage is the first thing surfaced;
+            // renders nothing while the server is reachable, so healthy
+            // layouts are unaffected.
+            super::ServerStatusBanner {}
+
             // Admin-only update-available banner. Sits above the top
             // bar (page-wide) and renders nothing for non-admins or
             // when no update is published, so non-admin layouts are
