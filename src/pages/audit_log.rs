@@ -306,7 +306,9 @@ fn AuditLogContent() -> Element {
     // switch via the generation read; an error just leaves ids unresolved.
     let users_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteUser>>("/auth/users")
+        // PMS-584: pull a full page so the user-name filter dropdown (and the
+        // diff FK resolution) cover every user, not just the default page.
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteUser>>("/auth/users?per_page=200")
             .await
             .ok()
     });
