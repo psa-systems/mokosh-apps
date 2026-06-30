@@ -661,7 +661,6 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let mut website_err = use_signal(String::new);
     let mut phone_err = use_signal(String::new);
     let mut postal_err = use_signal(String::new);
-    let mut country_err = use_signal(String::new);
 
     // MAPPS-292: install a `beforeunload` guard while the user has typed
     // anything into the form. The Company form has roughly ten fields so
@@ -715,6 +714,18 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         opts
     };
 
+    // PMS-581: US-only country. Offer United States; preserve any existing
+    // non-US value so editing a legacy company keeps it. A blank country is
+    // sent as "US" at submit time (see handle_submit).
+    let country_options = {
+        let current = country.read().trim().to_string();
+        let mut opts = vec![SelectOption::new("US", "United States")];
+        if !current.is_empty() && current != "US" {
+            opts.push(SelectOption::new(current.clone(), current.clone()));
+        }
+        opts
+    };
+
     let navigator = use_navigator();
     let submit_label = match &mode {
         CompanyFormMode::Create => "Create Company",
@@ -728,7 +739,6 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         website_err.set(String::new());
         phone_err.set(String::new());
         postal_err.set(String::new());
-        country_err.set(String::new());
         // PMS-518: validate the formatted/structured fields inline before submit
         // (MAPPS-177, MAPPS-213) and report ALL failures at once, each in its own
         // inline slot, then focus the first invalid field. The bespoke validators
@@ -756,11 +766,6 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             postal_err.set(msg.clone());
             guard.note_invalid(Some("address_postal_code"));
         }
-        let country_res = validate_country_field(&country.read());
-        if let Err(msg) = &country_res {
-            country_err.set(msg.clone());
-            guard.note_invalid(Some("address_country"));
-        }
         if guard.blocked() {
             return;
         }
@@ -768,7 +773,16 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         let website_value = website_res.expect("website validated above");
         let phone_value = phone_res.expect("phone validated above");
         let postal_value = postal_res.expect("postal validated above");
-        let country_value = country_res.expect("country validated above");
+        // PMS-581: US-only. A blank country defaults to "US"; a preserved
+        // legacy value passes through unchanged.
+        let country_value = {
+            let c = country.read().trim().to_string();
+            if c.is_empty() {
+                "US".to_string()
+            } else {
+                c
+            }
+        };
         is_submitting.set(true);
         let body = serde_json::json!({
             "name": name_value,
@@ -861,9 +875,6 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                                     "phone" => phone_err.set(fe.message.clone()),
                                     "postal_code" | "address.postal_code" => {
                                         postal_err.set(fe.message.clone())
-                                    }
-                                    "country" | "address.country" => {
-                                        country_err.set(fe.message.clone())
                                     }
                                     _ => leftover.push(fe.message.clone()),
                                 }
@@ -982,15 +993,13 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         error: postal_err(),
                         oninput: move |e: FormEvent| postal.set(e.value()),
                     }
-                    crate::components::Input {
+                    Select {
                         name: "address_country",
                         label: "Country",
-                        placeholder: "US",
-                        // 2-letter ISO code (see validate_country_field).
-                        maxlength: 2,
+                        // PMS-581: US-only. A blank value displays/saves as US.
+                        options: country_options,
                         value: country.read().clone(),
-                        error: country_err(),
-                        oninput: move |e: FormEvent| country.set(e.value()),
+                        onchange: move |e: FormEvent| country.set(e.value()),
                     }
                 }
 
