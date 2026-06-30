@@ -3765,11 +3765,13 @@ fn ContactForm(props: ContactFormProps) -> Element {
                         error: email_err(),
                         oninput: move |e: FormEvent| email.set(e.value()),
                     }
-                    crate::components::Input {
+                    crate::components::SuggestInput {
                         name: "title",
                         label: "Title",
+                        field: "title",
+                        help: "Free text. Suggestions are titles already used in your workspace.",
                         value: title.read().clone(),
-                        oninput: move |e: FormEvent| title.set(e.value()),
+                        oninput: move |v: String| title.set(v),
                     }
                     crate::components::Input {
                         name: "phone",
@@ -3785,11 +3787,13 @@ fn ContactForm(props: ContactFormProps) -> Element {
                         error: mobile_err(),
                         oninput: move |e: FormEvent| mobile.set(e.value()),
                     }
-                    crate::components::Input {
+                    crate::components::SuggestInput {
                         name: "department",
                         label: "Department",
+                        field: "department",
+                        help: "Free text. Suggestions are departments already used in your workspace.",
                         value: department.read().clone(),
-                        oninput: move |e: FormEvent| department.set(e.value()),
+                        oninput: move |v: String| department.set(v),
                     }
                     Select {
                         name: "contact_type",
