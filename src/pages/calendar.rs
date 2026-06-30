@@ -1037,6 +1037,7 @@ fn MonthDayCell(props: MonthDayCellProps) -> Element {
                             let label = format!("{} {}", time_label(appt.start_time), appt.title);
                             rsx! {
                                 button {
+                                    key: "{appt.id}",
                                     r#type: "button",
                                     class: "w-full text-left text-xs truncate px-1 py-0.5 rounded {chip} {past} hover:opacity-80",
                                     title: "{label}",
@@ -2676,6 +2677,7 @@ fn DispatchRow(props: DispatchRowProps) -> Element {
                         let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
                         rsx! {
                             button {
+                                key: "{appt.id}",
                                 r#type: "button",
                                 class: "absolute top-1 bottom-1 rounded-md px-2 py-1 text-xs text-white shadow-sm overflow-hidden text-left hover:opacity-90 {color} {past}",
                                 style: "left: {left:.4}%; width: {width:.4}%;",
