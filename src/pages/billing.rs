@@ -615,6 +615,22 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         .unwrap_or_default();
     let editable = matches!(status.as_str(), "draft" | "pending");
     let collectible = matches!(status.as_str(), "pending" | "sent" | "partially_paid");
+    // PMS-580: a frozen invoice (sent and beyond) is a finalized financial
+    // record. There is no edit / cancel / void once sent; correction goes
+    // through a credit note (not yet built). Spell that out inline so the
+    // missing actions read as intentional rather than broken. Draft / pending
+    // show nothing here (their actions, including Void, are available above).
+    let frozen_note = match status.as_str() {
+        "sent" | "partially_paid" => Some(
+            "This invoice has been sent and is now a finalized record. It can't be edited, cancelled, or voided. Record a payment to collect the balance; corrections are made with a credit note.",
+        ),
+        "paid" => Some(
+            "This invoice is paid and finalized. It can't be edited or voided; corrections are made with a credit note.",
+        ),
+        "void" => Some("This invoice has been voided and is kept on record. It can't be edited or reinstated."),
+        "written_off" => Some("This invoice has been written off and is kept on record. It can't be edited or reinstated."),
+        _ => None,
+    };
     let pay_company_id = invoice
         .as_ref()
         .and_then(|i| i.company_id)
@@ -724,6 +740,8 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                         Button {
                             variant: ButtonVariant::Danger,
                             loading: *busy.read(),
+                            // PMS-580: clarify that Void is the pre-send back-out.
+                            title: "Voids this draft invoice and keeps it on record. Once an invoice is sent it can no longer be voided.".to_string(),
                             onclick: move |_| {
                                 if !*busy.read() {
                                     confirming_void.set(true);
@@ -733,6 +751,15 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                         }
                     }
                 },
+            }
+
+            // PMS-580: explain why a finalized invoice exposes no edit / cancel /
+            // void actions.
+            if let Some(note) = frozen_note {
+                div {
+                    class: "mb-3 text-xs text-muted bg-surface-2 border border-line rounded-md px-3 py-2",
+                    "{note}"
+                }
             }
 
             if !act_err.is_empty() {
