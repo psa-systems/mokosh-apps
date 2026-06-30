@@ -3,9 +3,9 @@
 use dioxus::prelude::*;
 use mokosh_apps::hooks::{
     use_apply_theme, use_auth_provider, use_bfcache_invalidator, use_current_user_loader,
-    use_memberships_loader, use_sidebar_collapsed_provider, use_sidebar_provider,
-    use_sidebar_scroll_provider, use_theme_sync, use_token_refresh, use_update_check,
-    use_version_cache_provider,
+    use_memberships_loader, use_server_status_monitor, use_sidebar_collapsed_provider,
+    use_sidebar_provider, use_sidebar_scroll_provider, use_theme_sync, use_token_refresh,
+    use_update_check, use_version_cache_provider,
 };
 use mokosh_apps::Route;
 
@@ -77,6 +77,11 @@ fn App() -> Element {
     // is detected, so users pick up deploys automatically (no
     // Ctrl+Shift+R required).
     use_update_check();
+    // MAPPS-333: while mokosh-server is unreachable, poll /ready on an
+    // interval and flip the app back to reachable on recovery. Idle (no
+    // network) while healthy. Drives the ServerStatusBanner mounted in
+    // AppLayout.
+    use_server_status_monitor();
 
     rsx! {
         document::Stylesheet { href: asset!("/assets/styles.css") }

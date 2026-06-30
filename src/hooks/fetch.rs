@@ -36,6 +36,52 @@ pub fn active_tenant_generation() -> u64 {
     0
 }
 
+/// App-wide "is mokosh-server reachable" flag (MAPPS-333). `true`
+/// (reachable) on boot; flipped to `false` by the classification helpers
+/// below when a request fails with a "down" condition, and back to
+/// `true` on the first response that proves the server is answering.
+///
+/// A `GlobalSignal` (not a context `Signal`) for the same reason
+/// [`TENANT_GENERATION`] is one: the `api` helpers below are plain async
+/// fns, not components, so they cannot reach a context-provided signal.
+/// WASM is single-threaded, so a `GlobalSignal` is the right primitive
+/// (same rationale as the toast surface). The banner reads it via
+/// [`crate::hooks::use_server_reachable`] and the recovery poll lives in
+/// [`crate::hooks::server_status`].
+#[cfg(feature = "web")]
+pub static SERVER_REACHABLE: GlobalSignal<bool> = Signal::global(|| true);
+
+/// Classify a completed HTTP response. Any response at all - even a 4xx -
+/// proves the server is reachable, so it clears the "down" state. A `5xx`
+/// is treated as "down" per MAPPS-333: the server is up but failing, and
+/// we surface that the same way as an outage. A `4xx` (auth, validation)
+/// is NOT "down" and keeps surfacing through the normal per-call paths.
+#[cfg(feature = "web")]
+pub(crate) fn note_response_status(status: u16) {
+    set_server_reachable(!(500..600).contains(&status));
+}
+
+/// Classify a transport-level failure: the opaque browser fetch rejection
+/// (which the console frequently renders as a CORS error even though no
+/// CORS misconfiguration exists), DNS failure, or timeout. This is the
+/// server being unreachable; per MAPPS-333 it is classified here as
+/// server-down and never passed through to the user as a CORS / "Failed
+/// to fetch" message. (Mokosh App sets no CSP of its own, so there is no
+/// CSP-block case to distinguish from a genuine outage here.)
+#[cfg(feature = "web")]
+pub(crate) fn note_transport_error() {
+    set_server_reachable(false);
+}
+
+/// Write the reachability flag, but only on an actual transition so a
+/// successful request does not wake every reader on each call.
+#[cfg(feature = "web")]
+fn set_server_reachable(reachable: bool) {
+    if *SERVER_REACHABLE.peek() != reachable {
+        *SERVER_REACHABLE.write() = reachable;
+    }
+}
+
 /// API client for making HTTP requests
 pub mod api {
     #[cfg(feature = "web")]
@@ -118,6 +164,25 @@ pub mod api {
     // The web-only API helpers below are grouped under this `api`
     // module; the non-`web` build compiles the module with no items.
 
+    /// Map a transport-level send failure to a `String` error, classifying
+    /// it as a server-unreachable condition (MAPPS-333) on the way out.
+    /// Used only at `.send()` sites - serialization (`.json()`) failures
+    /// keep the plain mapping since they are not connectivity problems.
+    #[cfg(feature = "web")]
+    fn transport_err(e: impl std::fmt::Display) -> String {
+        super::note_transport_error();
+        e.to_string()
+    }
+
+    /// Transport-error sibling of [`transport_err`] for the typed helpers,
+    /// classifying the failure as server-unreachable before wrapping it as
+    /// [`ApiError::Network`].
+    #[cfg(feature = "web")]
+    fn network_err(e: impl std::fmt::Display) -> ApiError {
+        super::note_transport_error();
+        ApiError::Network(e.to_string())
+    }
+
     /// Get request
     #[cfg(feature = "web")]
     pub async fn get<T: DeserializeOwned>(path: &str) -> Result<T, String> {
@@ -127,7 +192,7 @@ pub mod api {
             .header("Content-Type", "application/json")
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(transport_err)?;
 
         if response.ok() {
             response.json::<T>().await.map_err(|e| e.to_string())
@@ -146,8 +211,11 @@ pub mod api {
     pub async fn probe(path: &str) -> Result<(u16, String), String> {
         let url = format!("{}{}", api_base(), path);
 
-        let response = Request::get(&url).send().await.map_err(|e| e.to_string())?;
+        let response = Request::get(&url).send().await.map_err(transport_err)?;
         let status = response.status();
+        // Classify the probe result so the recovery poll's `/ready` hit
+        // flips the app back to reachable on success (MAPPS-333).
+        super::note_response_status(status);
         let body = response.text().await.map_err(|e| e.to_string())?;
         Ok((status, body))
     }
@@ -164,6 +232,9 @@ pub mod api {
     #[cfg(feature = "web")]
     async fn status_error(response: gloo_net::http::Response) -> String {
         let status = response.status();
+        // A real HTTP response (even an error one) proves reachability; a
+        // 5xx is classified as "down" (MAPPS-333).
+        super::note_response_status(status);
         let body = response.text().await.unwrap_or_default();
         match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
             Ok(env) => {
@@ -218,7 +289,7 @@ pub mod api {
             .header("Authorization", &format!("Bearer {}", token))
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(transport_err)?;
 
         if response.ok() {
             response.json::<T>().await.map_err(|e| e.to_string())
@@ -241,7 +312,7 @@ pub mod api {
             .map_err(|e| e.to_string())?
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(transport_err)?;
 
         if response.ok() {
             response.json::<T>().await.map_err(|e| e.to_string())
@@ -266,7 +337,7 @@ pub mod api {
             .map_err(|e| e.to_string())?
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(transport_err)?;
 
         if response.ok() {
             response.json::<T>().await.map_err(|e| e.to_string())
@@ -291,7 +362,7 @@ pub mod api {
             .map_err(|e| e.to_string())?
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(transport_err)?;
 
         if response.ok() {
             response.json::<T>().await.map_err(|e| e.to_string())
@@ -321,7 +392,7 @@ pub mod api {
             .map_err(|e| e.to_string())?
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(transport_err)?;
 
         if response.ok() {
             response.json::<T>().await.map_err(|e| e.to_string())
@@ -340,7 +411,7 @@ pub mod api {
             .header("Authorization", &format!("Bearer {}", token))
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(transport_err)?;
 
         if response.ok() {
             Ok(())
@@ -362,7 +433,7 @@ pub mod api {
             .header("Authorization", &format!("Bearer {}", token))
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(transport_err)?;
 
         if response.ok() {
             Ok(())
@@ -551,6 +622,8 @@ pub mod api {
         response: gloo_net::http::Response,
     ) -> Result<T, ApiError> {
         let status = response.status();
+        // Any response clears the "down" state; a 5xx sets it (MAPPS-333).
+        super::note_response_status(status);
         if (200..300).contains(&status) {
             return response
                 .json::<T>()
@@ -579,10 +652,7 @@ pub mod api {
         if let Some(t) = current_access_token() {
             req = req.header("Authorization", &format!("Bearer {t}"));
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| ApiError::Network(e.to_string()))?;
+        let resp = req.send().await.map_err(network_err)?;
         handle_response(resp).await
     }
 
@@ -601,7 +671,7 @@ pub mod api {
             .map_err(|e| ApiError::Network(e.to_string()))?
             .send()
             .await
-            .map_err(|e| ApiError::Network(e.to_string()))?;
+            .map_err(network_err)?;
         handle_response(resp).await
     }
 
@@ -623,7 +693,7 @@ pub mod api {
             .map_err(|e| ApiError::Network(e.to_string()))?
             .send()
             .await
-            .map_err(|e| ApiError::Network(e.to_string()))?;
+            .map_err(network_err)?;
         handle_response(resp).await
     }
 
@@ -640,8 +710,9 @@ pub mod api {
             .header("Authorization", &format!("Bearer {t}"))
             .send()
             .await
-            .map_err(|e| ApiError::Network(e.to_string()))?;
+            .map_err(network_err)?;
         let status = resp.status();
+        super::note_response_status(status);
         if (200..300).contains(&status) {
             Ok(())
         } else {
