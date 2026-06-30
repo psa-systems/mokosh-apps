@@ -311,6 +311,13 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         advanced: false,
     },
     SettingsSurface {
+        route: Route::SettingsCompanyIndustries {},
+        title: "Company Industries",
+        description: "Suggested industries when categorizing a company.",
+        group: SettingsGroupKey::ServiceTypes,
+        advanced: false,
+    },
+    SettingsSurface {
         route: Route::SettingsProjectTypes {},
         title: "Project Types",
         description: "Classify projects (e.g. client vs internal).",

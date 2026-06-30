@@ -472,6 +472,9 @@ pub enum Route {
     SettingsTaskStatuses {},
     #[route("/settings/asset-types")]
     SettingsAssetTypes {},
+    // PMS-601: company industry lookup editor.
+    #[route("/settings/company-industries")]
+    SettingsCompanyIndustries {},
     // MAPPS-173: project type editor (server CRUD from PMS-322).
     #[route("/settings/project-types")]
     SettingsProjectTypes {},
@@ -996,6 +999,11 @@ fn SettingsTaskStatuses() -> Element {
 #[component]
 fn SettingsAssetTypes() -> Element {
     rsx! { settings::AssetTypesSettingsPage {} }
+}
+
+#[component]
+fn SettingsCompanyIndustries() -> Element {
+    rsx! { settings::CompanyIndustriesSettingsPage {} }
 }
 
 #[component]
