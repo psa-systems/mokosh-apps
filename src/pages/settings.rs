@@ -2118,8 +2118,7 @@ pub fn CompanyIndustriesSettingsPage() -> Element {
 
     let mut resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        let path =
-            format!("/contacts/company-industries?page={current_page}&per_page={PER_PAGE}");
+        let path = format!("/contacts/company-industries?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<CompanyIndustryRow>>(&path)
             .await
             .ok()
