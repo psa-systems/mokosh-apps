@@ -317,6 +317,29 @@ fn AuditLogContent() -> Element {
         _ => Vec::new(),
     };
 
+    // PMS-584: user filter as a pick-by-name dropdown (value = user id). A
+    // selected id that isn't in the fetched list (deleted / paged out) is kept
+    // as a short-id option so the active filter still shows.
+    let user_options = {
+        let mut opts = vec![SelectOption::new("", "All Users")];
+        let known = users.iter().any(|u| u.id.to_string() == user_text);
+        if !user_text.is_empty() && !known {
+            opts.push(SelectOption::new(
+                user_text.clone(),
+                user_text.chars().take(8).collect::<String>(),
+            ));
+        }
+        for u in &users {
+            let label = if u.full_name.trim().is_empty() {
+                u.id.to_string().chars().take(8).collect::<String>()
+            } else {
+                u.full_name.clone()
+            };
+            opts.push(SelectOption::new(u.id.to_string(), label));
+        }
+        opts
+    };
+
     let resource_snapshot = audit_resource.read_unchecked();
     let is_loading = resource_snapshot.is_none();
     let error_message: Option<String> = match &*resource_snapshot {
@@ -435,12 +458,12 @@ fn AuditLogContent() -> Element {
                             page.set(1);
                         },
                     }
-                    crate::components::Input {
+                    Select {
                         name: "user_id",
-                        label: "User ID",
-                        placeholder: "UUID",
+                        label: "User",
+                        options: user_options,
                         value: user_id_filter.read().clone(),
-                        oninput: move |e: FormEvent| {
+                        onchange: move |e: FormEvent| {
                             user_id_filter.set(e.value());
                             page.set(1);
                         },
