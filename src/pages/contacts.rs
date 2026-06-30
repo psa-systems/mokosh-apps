@@ -18,6 +18,43 @@ use crate::Route;
 /// Rows per page for the client-side paginated list views (F3).
 const PER_PAGE: usize = 25;
 
+/// PMS-582: curated industry vocabulary for the company Industry combobox.
+/// Industry is a finite taxonomy, so we standardize toward these clean
+/// canonical values (rather than echoing existing free-text variants like
+/// "IT" / "I.T." / "Information Technology"). The field stays free text, so a
+/// value outside this list is still accepted for the long tail.
+const COMPANY_INDUSTRIES: &[&str] = &[
+    "Accounting",
+    "Agriculture",
+    "Automotive",
+    "Banking",
+    "Biotechnology",
+    "Construction",
+    "Consulting",
+    "Education",
+    "Energy & Utilities",
+    "Engineering",
+    "Entertainment & Media",
+    "Finance",
+    "Food & Beverage",
+    "Government",
+    "Healthcare",
+    "Hospitality",
+    "Information Technology",
+    "Insurance",
+    "Legal",
+    "Manufacturing",
+    "Marketing & Advertising",
+    "Nonprofit",
+    "Pharmaceuticals",
+    "Real Estate",
+    "Retail",
+    "Telecommunications",
+    "Transportation & Logistics",
+    "Travel & Tourism",
+    "Wholesale",
+];
+
 /// Sortable columns on the company list (F3).
 #[derive(Clone, Copy, PartialEq)]
 enum CompanySortKey {
@@ -803,13 +840,13 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         value: company_type.read().clone(),
                         onchange: move |e: FormEvent| company_type.set(e.value()),
                     }
-                    crate::components::Input {
+                    crate::components::SuggestInput {
                         name: "industry",
                         label: "Industry",
-                        placeholder: "e.g. Healthcare",
-                        maxlength: 255,
+                        suggestions: COMPANY_INDUSTRIES.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        help: "Pick a standard industry or type your own.",
                         value: industry.read().clone(),
-                        oninput: move |e: FormEvent| industry.set(e.value()),
+                        oninput: move |v: String| industry.set(v),
                     }
                     crate::components::Input {
                         name: "website",
