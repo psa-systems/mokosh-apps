@@ -18,6 +18,68 @@ use crate::Route;
 /// Rows per page for the client-side paginated list views (F3).
 const PER_PAGE: usize = 25;
 
+/// PMS-581: US states / territories for the company Address State dropdown.
+/// `(USPS code, name)`; the stored value is the code. The product is US-only,
+/// so this is the canonical region list.
+const US_STATES: &[(&str, &str)] = &[
+    ("AL", "Alabama"),
+    ("AK", "Alaska"),
+    ("AZ", "Arizona"),
+    ("AR", "Arkansas"),
+    ("CA", "California"),
+    ("CO", "Colorado"),
+    ("CT", "Connecticut"),
+    ("DE", "Delaware"),
+    ("DC", "District of Columbia"),
+    ("FL", "Florida"),
+    ("GA", "Georgia"),
+    ("HI", "Hawaii"),
+    ("ID", "Idaho"),
+    ("IL", "Illinois"),
+    ("IN", "Indiana"),
+    ("IA", "Iowa"),
+    ("KS", "Kansas"),
+    ("KY", "Kentucky"),
+    ("LA", "Louisiana"),
+    ("ME", "Maine"),
+    ("MD", "Maryland"),
+    ("MA", "Massachusetts"),
+    ("MI", "Michigan"),
+    ("MN", "Minnesota"),
+    ("MS", "Mississippi"),
+    ("MO", "Missouri"),
+    ("MT", "Montana"),
+    ("NE", "Nebraska"),
+    ("NV", "Nevada"),
+    ("NH", "New Hampshire"),
+    ("NJ", "New Jersey"),
+    ("NM", "New Mexico"),
+    ("NY", "New York"),
+    ("NC", "North Carolina"),
+    ("ND", "North Dakota"),
+    ("OH", "Ohio"),
+    ("OK", "Oklahoma"),
+    ("OR", "Oregon"),
+    ("PA", "Pennsylvania"),
+    ("RI", "Rhode Island"),
+    ("SC", "South Carolina"),
+    ("SD", "South Dakota"),
+    ("TN", "Tennessee"),
+    ("TX", "Texas"),
+    ("UT", "Utah"),
+    ("VT", "Vermont"),
+    ("VA", "Virginia"),
+    ("WA", "Washington"),
+    ("WV", "West Virginia"),
+    ("WI", "Wisconsin"),
+    ("WY", "Wyoming"),
+    ("AS", "American Samoa"),
+    ("GU", "Guam"),
+    ("MP", "Northern Mariana Islands"),
+    ("PR", "Puerto Rico"),
+    ("VI", "U.S. Virgin Islands"),
+];
+
 /// PMS-601: one row of the company-industry lookup, used to populate the
 /// Industry combobox's suggestions from the tenant's editable list. The
 /// canonical defaults now live server-side (seeded per tenant), not in a
@@ -599,7 +661,10 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let mut website_err = use_signal(String::new);
     let mut phone_err = use_signal(String::new);
     let mut postal_err = use_signal(String::new);
-    let mut country_err = use_signal(String::new);
+    // PMS-581: inline errors for the previously-unvalidated address text fields.
+    let mut line1_err = use_signal(String::new);
+    let mut line2_err = use_signal(String::new);
+    let mut city_err = use_signal(String::new);
 
     // MAPPS-292: install a `beforeunload` guard while the user has typed
     // anything into the form. The Company form has roughly ten fields so
@@ -637,6 +702,34 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         SelectOption::new("partner", "Partner"),
     ];
 
+    // PMS-581: US-state dropdown options. Leading blank = "no state". Preserve
+    // any existing non-code value (legacy free text) as its own option so an
+    // edit never silently drops it.
+    let state_options = {
+        let current = state.read().clone();
+        let mut opts = vec![SelectOption::new("", "Select a state")];
+        let known = US_STATES.iter().any(|(code, _)| *code == current);
+        if !current.is_empty() && !known {
+            opts.push(SelectOption::new(current.clone(), current.clone()));
+        }
+        for (code, name) in US_STATES {
+            opts.push(SelectOption::new(*code, *name));
+        }
+        opts
+    };
+
+    // PMS-581: US-only country. Offer United States; preserve any existing
+    // non-US value so editing a legacy company keeps it. A blank country is
+    // sent as "US" at submit time (see handle_submit).
+    let country_options = {
+        let current = country.read().trim().to_string();
+        let mut opts = vec![SelectOption::new("US", "United States")];
+        if !current.is_empty() && current != "US" {
+            opts.push(SelectOption::new(current.clone(), current.clone()));
+        }
+        opts
+    };
+
     let navigator = use_navigator();
     let submit_label = match &mode {
         CompanyFormMode::Create => "Create Company",
@@ -650,7 +743,9 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         website_err.set(String::new());
         phone_err.set(String::new());
         postal_err.set(String::new());
-        country_err.set(String::new());
+        line1_err.set(String::new());
+        line2_err.set(String::new());
+        city_err.set(String::new());
         // PMS-518: validate the formatted/structured fields inline before submit
         // (MAPPS-177, MAPPS-213) and report ALL failures at once, each in its own
         // inline slot, then focus the first invalid field. The bespoke validators
@@ -678,10 +773,19 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
             postal_err.set(msg.clone());
             guard.note_invalid(Some("address_postal_code"));
         }
-        let country_res = validate_country_field(&country.read());
-        if let Err(msg) = &country_res {
-            country_err.set(msg.clone());
-            guard.note_invalid(Some("address_country"));
+        // PMS-581: bound the free-text address fields and reject control chars,
+        // matching the inline-validation standard of the rest of the form.
+        if let Err(msg) = validate_address_text(&line1.read(), "Street", 255) {
+            line1_err.set(msg);
+            guard.note_invalid(Some("address_line1"));
+        }
+        if let Err(msg) = validate_address_text(&line2.read(), "Street (line 2)", 255) {
+            line2_err.set(msg);
+            guard.note_invalid(Some("address_line2"));
+        }
+        if let Err(msg) = validate_address_text(&city.read(), "City", 100) {
+            city_err.set(msg);
+            guard.note_invalid(Some("address_city"));
         }
         if guard.blocked() {
             return;
@@ -690,7 +794,16 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         let website_value = website_res.expect("website validated above");
         let phone_value = phone_res.expect("phone validated above");
         let postal_value = postal_res.expect("postal validated above");
-        let country_value = country_res.expect("country validated above");
+        // PMS-581: US-only. A blank country defaults to "US"; a preserved
+        // legacy value passes through unchanged.
+        let country_value = {
+            let c = country.read().trim().to_string();
+            if c.is_empty() {
+                "US".to_string()
+            } else {
+                c
+            }
+        };
         is_submitting.set(true);
         let body = serde_json::json!({
             "name": name_value,
@@ -784,9 +897,6 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                                     "postal_code" | "address.postal_code" => {
                                         postal_err.set(fe.message.clone())
                                     }
-                                    "country" | "address.country" => {
-                                        country_err.set(fe.message.clone())
-                                    }
                                     _ => leftover.push(fe.message.clone()),
                                 }
                             }
@@ -872,6 +982,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         label: "Street",
                         maxlength: 255,
                         value: line1.read().clone(),
+                        error: line1_err(),
                         oninput: move |e: FormEvent| line1.set(e.value()),
                     }
                     crate::components::Input {
@@ -879,21 +990,23 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         label: "Street (line 2)",
                         maxlength: 255,
                         value: line2.read().clone(),
+                        error: line2_err(),
                         oninput: move |e: FormEvent| line2.set(e.value()),
                     }
                     crate::components::Input {
                         name: "address_city",
                         label: "City",
-                        maxlength: 255,
+                        maxlength: 100,
                         value: city.read().clone(),
+                        error: city_err(),
                         oninput: move |e: FormEvent| city.set(e.value()),
                     }
-                    crate::components::Input {
+                    Select {
                         name: "address_state",
                         label: "State / Region",
-                        maxlength: 255,
+                        options: state_options,
                         value: state.read().clone(),
-                        oninput: move |e: FormEvent| state.set(e.value()),
+                        onchange: move |e: FormEvent| state.set(e.value()),
                     }
                     crate::components::Input {
                         name: "address_postal_code",
@@ -904,15 +1017,13 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         error: postal_err(),
                         oninput: move |e: FormEvent| postal.set(e.value()),
                     }
-                    crate::components::Input {
+                    Select {
                         name: "address_country",
                         label: "Country",
-                        placeholder: "US",
-                        // 2-letter ISO code (see validate_country_field).
-                        maxlength: 2,
+                        // PMS-581: US-only. A blank value displays/saves as US.
+                        options: country_options,
                         value: country.read().clone(),
-                        error: country_err(),
-                        oninput: move |e: FormEvent| country.set(e.value()),
+                        onchange: move |e: FormEvent| country.set(e.value()),
                     }
                 }
 
@@ -1032,6 +1143,24 @@ fn validate_country_field(raw: &str) -> Result<serde_json::Value, String> {
     } else {
         Err("Country must be a 2-letter ISO code (e.g. US).".to_string())
     }
+}
+
+/// PMS-581: validate an optional free-text address field. Blank is accepted.
+/// Otherwise it must be within `max` characters and free of control characters
+/// (which includes NUL, rejected by Postgres anyway). Gating only - the body
+/// keeps sending the `optional_string` form.
+fn validate_address_text(raw: &str, label: &str, max: usize) -> Result<(), String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    if trimmed.chars().count() > max {
+        return Err(format!("{label} must be {max} characters or fewer."));
+    }
+    if trimmed.chars().any(|c| c.is_control()) {
+        return Err(format!("{label} contains invalid characters."));
+    }
+    Ok(())
 }
 
 /// Validate an optional postal code. Blank -> `Ok(None)`. Otherwise 2-12
