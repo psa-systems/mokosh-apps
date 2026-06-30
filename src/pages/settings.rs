@@ -2083,6 +2083,260 @@ fn AssetTypeFormModal(props: AssetTypeFormModalProps) -> Element {
 }
 
 // ============================================================================
+// Company industries (GET/POST `/contacts/company-industries`,
+// PUT/DELETE `/contacts/company-industries/{id}`)
+//
+// PMS-601 lookup that feeds the company Industry combobox's suggestions.
+// Name + Active only; admin-managed.
+// ============================================================================
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct CompanyIndustryRow {
+    id: Uuid,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    is_active: bool,
+}
+
+#[component]
+pub fn CompanyIndustriesSettingsPage() -> Element {
+    if !use_is_admin() {
+        return rsx! { AdminOnlyNotice { title: "Company Industries" } };
+    }
+
+    let mut page = use_signal(|| 1usize);
+    let mut editing = use_signal(|| None::<CompanyIndustryFormState>);
+    let current_page = (*page.read()).max(1);
+
+    let mut resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let path =
+            format!("/contacts/company-industries?page={current_page}&per_page={PER_PAGE}");
+        crate::hooks::fetch::api::get_authed::<Paginated<CompanyIndustryRow>>(&path)
+            .await
+            .ok()
+    });
+
+    let snap = resource.read_unchecked();
+    let is_loading = snap.is_none();
+    let fetch_failed = matches!(*snap, Some(None));
+    let (rows, total): (Vec<CompanyIndustryRow>, u64) = match &*snap {
+        Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
+        _ => (Vec::new(), 0),
+    };
+
+    rsx! {
+        AppLayout { title: "Company Industries",
+            PageHeader {
+                title: "Company Industries",
+                subtitle: "Suggested industries when categorizing a company",
+                breadcrumbs: rsx! {
+                    SettingsBreadcrumb { current: Route::SettingsCompanyIndustries {} }
+                },
+                actions: rsx! {
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        onclick: move |_| editing.set(Some(CompanyIndustryFormState::new())),
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "New Industry"
+                    }
+                },
+            }
+
+            if fetch_failed {
+                LoadError { what: "company industries" }
+            }
+
+            DataTable {
+                loading: is_loading,
+                total_items: total as usize,
+                current_page,
+                per_page: PER_PAGE,
+                columns: 2,
+                onpagechange: move |p| page.set(p),
+                Table {
+                    TableHead {
+                        TableRow {
+                            TableHeader { "Name" }
+                            TableHeader { "Active" }
+                        }
+                    }
+                    if is_loading {
+                        TableLoading { columns: 2, rows: 4 }
+                    } else if rows.is_empty() && !fetch_failed {
+                        TableEmpty {
+                            columns: 2,
+                            message: "No industries yet. Click New Industry to add one.".to_string(),
+                        }
+                    } else {
+                        TableBody {
+                            for row in rows.iter().cloned() {
+                                {
+                                    let key = row.id.to_string();
+                                    let edit_state = CompanyIndustryFormState::from_existing(&row);
+                                    let name = row.name.clone();
+                                    let active = row.is_active;
+                                    rsx! {
+                                        TableRow { key: "{key}", clickable: true,
+                                            onclick: move |_| editing.set(Some(edit_state.clone())),
+                                            TableCell {
+                                                span { class: "font-medium text-accent", "{name}" }
+                                            }
+                                            TableCell { ActiveBadge { active } }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(state) = editing.read().clone() {
+                CompanyIndustryFormModal {
+                    state,
+                    onclose: move |_| editing.set(None),
+                    onsaved: move |_| {
+                        editing.set(None);
+                        resource.restart();
+                    },
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CompanyIndustryFormState {
+    id: Option<String>,
+    name: String,
+    is_active: bool,
+}
+
+impl CompanyIndustryFormState {
+    fn new() -> Self {
+        Self {
+            id: None,
+            name: String::new(),
+            is_active: true,
+        }
+    }
+
+    fn from_existing(r: &CompanyIndustryRow) -> Self {
+        Self {
+            id: Some(r.id.to_string()),
+            name: r.name.clone(),
+            is_active: r.is_active,
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct CompanyIndustryFormModalProps {
+    state: CompanyIndustryFormState,
+    onclose: EventHandler<()>,
+    onsaved: EventHandler<()>,
+}
+
+#[component]
+fn CompanyIndustryFormModal(props: CompanyIndustryFormModalProps) -> Element {
+    let initial = props.state.clone();
+    let is_edit = initial.id.is_some();
+
+    let mut name = use_signal(|| initial.name.clone());
+    let mut is_active = use_signal(|| initial.is_active);
+    let mut saving = use_signal(|| false);
+    let mut deleting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let onclose = props.onclose;
+    let onsaved = props.onsaved;
+
+    let save_id = initial.id.clone();
+    let handle_save = move |_| {
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        if name.read().trim().is_empty() {
+            error.set("Name is required.".to_string());
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        let body = serde_json::json!({
+            "name": name.read().trim(),
+            "is_active": *is_active.read(),
+        });
+        let id = save_id.clone();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match save_lookup(id, "/contacts/company-industries", &body).await {
+                    Ok(()) => onsaved.call(()),
+                    Err(err) => error.set(format!("Could not save industry: {err}")),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    let delete_id = initial.id.clone();
+    let handle_delete = move |_| {
+        let Some(id) = delete_id.clone() else {
+            return;
+        };
+        if *saving.read() || *deleting.read() {
+            return;
+        }
+        deleting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match delete_lookup(&id, "/contacts/company-industries").await {
+                    Ok(true) => onsaved.call(()),
+                    Ok(false) => {}
+                    Err(err) => error.set(format!("Could not delete industry: {err}")),
+                }
+            }
+            deleting.set(false);
+        });
+    };
+
+    rsx! {
+        SettingFormModal {
+            title: if is_edit { "Edit Industry".to_string() } else { "New Industry".to_string() },
+            is_edit,
+            saving: *saving.read(),
+            deleting: *deleting.read(),
+            error: error.read().clone(),
+            onclose: move |_| onclose.call(()),
+            onsave: handle_save,
+            ondelete: handle_delete,
+            create_label: "Create Industry".to_string(),
+            crate::components::Input {
+                name: "company_industry_name",
+                label: "Name",
+                placeholder: "e.g. Healthcare",
+                required: true,
+                value: name.read().clone(),
+                oninput: move |e: FormEvent| name.set(e.value()),
+            }
+            crate::components::Checkbox {
+                name: "company_industry_active",
+                label: "Active",
+                checked: *is_active.read(),
+                onchange: move |_| {
+                    let next = !*is_active.read();
+                    is_active.set(next);
+                },
+            }
+        }
+    }
+}
+
+// ============================================================================
 // Project types  (GET/POST `/project-types`, PUT/DELETE `/project-types/{id}`)
 //
 // PMS-322 lookup table replacing the old hardcoded `client`/`internal` enum.
