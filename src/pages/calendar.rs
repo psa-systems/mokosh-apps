@@ -2568,13 +2568,14 @@ fn DispatchRow(props: DispatchRowProps) -> Element {
                     {
                         let (left, width) = appointment_h_geometry(appt);
                         let color = type_color(&appt.appointment_type);
+                        let past = past_class(appt);
                         let appt_clone = appt.clone();
                         let label = appt.title.clone();
                         let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
                         rsx! {
                             button {
                                 r#type: "button",
-                                class: "absolute top-1 bottom-1 rounded-md px-2 py-1 text-xs text-white shadow-sm overflow-hidden text-left hover:opacity-90 {color}",
+                                class: "absolute top-1 bottom-1 rounded-md px-2 py-1 text-xs text-white shadow-sm overflow-hidden text-left hover:opacity-90 {color} {past}",
                                 style: "left: {left:.4}%; width: {width:.4}%;",
                                 title: "{time}: {label}",
                                 onclick: move |_| props.onpick.call(appt_clone.clone()),
