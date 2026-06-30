@@ -1624,6 +1624,12 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
     let mut assignee = use_signal(|| init_assignee);
     let mut recurrence = use_signal(|| init_recurrence);
     let mut recurrence_error = use_signal(String::new);
+    // PMS-578: per-field inline errors (the standard pattern). `error` is now
+    // reserved for non-field failures (e.g. the save request failing).
+    let mut title_err = use_signal(String::new);
+    let mut assignee_err = use_signal(String::new);
+    let mut start_err = use_signal(String::new);
+    let mut end_err = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -1684,30 +1690,42 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
         if saving() || deleting() {
             return;
         }
+        // PMS-578: clear prior field errors, then flag the required fields
+        // inline (both at once) instead of a single top-of-form banner.
+        title_err.set(String::new());
+        assignee_err.set(String::new());
+        start_err.set(String::new());
+        end_err.set(String::new());
+
         let title_val = title.read().trim().to_string();
+        let assigned_to_id = uuid::Uuid::parse_str(assignee.read().trim()).ok();
+        let mut blocked = false;
         if title_val.is_empty() {
-            error.set("Title is required.".to_string());
+            title_err.set("Title is required.".to_string());
+            blocked = true;
+        }
+        if assigned_to_id.is_none() {
+            assignee_err.set("Pick a technician to assign.".to_string());
+            blocked = true;
+        }
+        if blocked {
             return;
         }
-        let assignee_str = assignee.read().clone();
-        let Some(assigned_to_id) = uuid::Uuid::parse_str(assignee_str.trim()).ok() else {
-            error.set("Please pick a technician to assign.".to_string());
-            return;
-        };
+        let assigned_to_id = assigned_to_id.expect("assignee validated above");
         let is_all_day = all_day();
         // Resolve the start/end instants from whichever editor is active:
         // an all-day date span, or the timed start + duration model.
         let (start_time, end_time) = if is_all_day {
             let Some(start_date) = parse_date_value(&start_date_value.read()) else {
-                error.set("Please enter a valid start date.".to_string());
+                start_err.set("Enter a valid start date.".to_string());
                 return;
             };
             let Some(end_date) = parse_date_value(&end_date_value.read()) else {
-                error.set("Please enter a valid end date.".to_string());
+                end_err.set("Enter a valid end date.".to_string());
                 return;
             };
             if end_date < start_date {
-                error.set("End date must be on or after the start date.".to_string());
+                end_err.set("End date must be on or after the start date.".to_string());
                 return;
             }
             // Span whole local days: Start at local 00:00 of the start date,
@@ -1718,14 +1736,14 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
             (start, end)
         } else {
             let Some(start) = parse_local_datetime_to_utc(&start_value.read()) else {
-                error.set("Please enter a valid start time.".to_string());
+                start_err.set("Enter a valid start time.".to_string());
                 return;
             };
             // End follows Start + the chosen duration. The custom path stores
             // an explicit End in `end_value`; presets store minutes directly.
             let end = if duration_choice.read().as_str() == DURATION_CUSTOM {
                 let Some(custom_end) = parse_local_datetime_to_utc(&end_value.read()) else {
-                    error.set("Please enter a valid end time.".to_string());
+                    end_err.set("Enter a valid end time.".to_string());
                     return;
                 };
                 custom_end
@@ -1737,7 +1755,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
         // Defensive guard: a non-positive custom duration would invert the
         // span. Presets and the all-day path can never trip this.
         if end_time < start_time {
-            error.set("End time must be on or after the start time.".to_string());
+            end_err.set("End time must be on or after the start time.".to_string());
             return;
         }
 
