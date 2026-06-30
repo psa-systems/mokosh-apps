@@ -18,6 +18,68 @@ use crate::Route;
 /// Rows per page for the client-side paginated list views (F3).
 const PER_PAGE: usize = 25;
 
+/// PMS-581: US states / territories for the company Address State dropdown.
+/// `(USPS code, name)`; the stored value is the code. The product is US-only,
+/// so this is the canonical region list.
+const US_STATES: &[(&str, &str)] = &[
+    ("AL", "Alabama"),
+    ("AK", "Alaska"),
+    ("AZ", "Arizona"),
+    ("AR", "Arkansas"),
+    ("CA", "California"),
+    ("CO", "Colorado"),
+    ("CT", "Connecticut"),
+    ("DE", "Delaware"),
+    ("DC", "District of Columbia"),
+    ("FL", "Florida"),
+    ("GA", "Georgia"),
+    ("HI", "Hawaii"),
+    ("ID", "Idaho"),
+    ("IL", "Illinois"),
+    ("IN", "Indiana"),
+    ("IA", "Iowa"),
+    ("KS", "Kansas"),
+    ("KY", "Kentucky"),
+    ("LA", "Louisiana"),
+    ("ME", "Maine"),
+    ("MD", "Maryland"),
+    ("MA", "Massachusetts"),
+    ("MI", "Michigan"),
+    ("MN", "Minnesota"),
+    ("MS", "Mississippi"),
+    ("MO", "Missouri"),
+    ("MT", "Montana"),
+    ("NE", "Nebraska"),
+    ("NV", "Nevada"),
+    ("NH", "New Hampshire"),
+    ("NJ", "New Jersey"),
+    ("NM", "New Mexico"),
+    ("NY", "New York"),
+    ("NC", "North Carolina"),
+    ("ND", "North Dakota"),
+    ("OH", "Ohio"),
+    ("OK", "Oklahoma"),
+    ("OR", "Oregon"),
+    ("PA", "Pennsylvania"),
+    ("RI", "Rhode Island"),
+    ("SC", "South Carolina"),
+    ("SD", "South Dakota"),
+    ("TN", "Tennessee"),
+    ("TX", "Texas"),
+    ("UT", "Utah"),
+    ("VT", "Vermont"),
+    ("VA", "Virginia"),
+    ("WA", "Washington"),
+    ("WV", "West Virginia"),
+    ("WI", "Wisconsin"),
+    ("WY", "Wyoming"),
+    ("AS", "American Samoa"),
+    ("GU", "Guam"),
+    ("MP", "Northern Mariana Islands"),
+    ("PR", "Puerto Rico"),
+    ("VI", "U.S. Virgin Islands"),
+];
+
 /// PMS-601: one row of the company-industry lookup, used to populate the
 /// Industry combobox's suggestions from the tenant's editable list. The
 /// canonical defaults now live server-side (seeded per tenant), not in a
@@ -637,6 +699,22 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         SelectOption::new("partner", "Partner"),
     ];
 
+    // PMS-581: US-state dropdown options. Leading blank = "no state". Preserve
+    // any existing non-code value (legacy free text) as its own option so an
+    // edit never silently drops it.
+    let state_options = {
+        let current = state.read().clone();
+        let mut opts = vec![SelectOption::new("", "Select a state")];
+        let known = US_STATES.iter().any(|(code, _)| *code == current);
+        if !current.is_empty() && !known {
+            opts.push(SelectOption::new(current.clone(), current.clone()));
+        }
+        for (code, name) in US_STATES {
+            opts.push(SelectOption::new(*code, *name));
+        }
+        opts
+    };
+
     let navigator = use_navigator();
     let submit_label = match &mode {
         CompanyFormMode::Create => "Create Company",
@@ -888,12 +966,12 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         value: city.read().clone(),
                         oninput: move |e: FormEvent| city.set(e.value()),
                     }
-                    crate::components::Input {
+                    Select {
                         name: "address_state",
                         label: "State / Region",
-                        maxlength: 255,
+                        options: state_options,
                         value: state.read().clone(),
-                        oninput: move |e: FormEvent| state.set(e.value()),
+                        onchange: move |e: FormEvent| state.set(e.value()),
                     }
                     crate::components::Input {
                         name: "address_postal_code",
