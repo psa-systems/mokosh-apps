@@ -39,9 +39,10 @@ ip = "0.0.0.0"
 # Google OAuth popup + postMessage flow to satisfy same-origin checks.
 # `server` is the in-network DNS name of the mokosh-server compose
 # service (the dev-mokosh-private-${USER} network is shared with the
-# server stack).
+# server stack). The server listens on its $MOKOSH_PORT (8080); 4301 is
+# the SPA dev-server port, not the API port.
 [[web.proxy]]
-backend = "http://server:4301/api/"
+backend = "http://server:8080/api/"
 
 [build]
 # Build configuration
