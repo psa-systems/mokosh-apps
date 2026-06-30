@@ -667,6 +667,23 @@ fn UserMenu() -> Element {
         // away from the hub logout URL and back onto an authenticated-
         // looking dashboard view. So: clear sessionStorage, navigate
         // away, let the full page reload reset all in-memory state.
+        //
+        // MAPPS-336: revoke the refresh token family at the OP BEFORE
+        // wiping local sessionStorage. The local clear alone left the
+        // rotated-but-not-revoked family alive until natural expiry, so
+        // a leaked / stolen refresh token survived the user clicking
+        // "Log out". `revoke_refresh_token` is fire-and-forget per RFC
+        // 7009 (`/oauth2/revoke` returns 200 for unknown tokens too) so
+        // a transient network failure doesn't block the local cleanup.
+        // The await runs on a fresh task so the closure stays sync.
+        if let Some(tokens) = crate::modules::oidc::storage::load_auth() {
+            if let Some(refresh) = tokens.refresh_token {
+                let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
+                spawn(async move {
+                    let _ = crate::modules::oidc::flow::revoke_refresh_token(&cfg, &refresh).await;
+                });
+            }
+        }
         crate::modules::oidc::storage::clear_auth();
         if let Some(win) = web_sys::window() {
             let _ = win.location().replace(&hub_logout);

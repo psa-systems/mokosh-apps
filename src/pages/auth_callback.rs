@@ -20,7 +20,25 @@ pub fn AuthCallbackPage() -> Element {
 
     use_future(move || async move {
         let cfg = OidcConfig::for_current_origin();
-        match complete_login(&cfg).await {
+        let exchange_result = complete_login(&cfg).await;
+        // MAPPS-336: strip `?code=` + `?state=` from window.location BEFORE
+        // any further navigation runs. Relying on the Dioxus router's
+        // history.replaceState side-effect was racy: the code lingered in
+        // browser history and in Referer headers on the next request when
+        // the router skipped or deferred the rewrite. Replace happens on
+        // both success and error so a failed exchange does not leave the
+        // sensitive query string sitting in the URL bar either.
+        #[cfg(feature = "web")]
+        if let Some(win) = web_sys::window() {
+            if let Ok(history) = win.history() {
+                let _ = history.replace_state_with_url(
+                    &wasm_bindgen::JsValue::NULL,
+                    "",
+                    Some("/auth/callback"),
+                );
+            }
+        }
+        match exchange_result {
             Ok((tokens, return_to)) => {
                 let claims = match tokens.id_claims() {
                     Ok(c) => c,
