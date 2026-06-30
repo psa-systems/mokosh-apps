@@ -1373,29 +1373,38 @@ fn DayGrid(props: DayGridProps) -> Element {
                 for _ in 0..rows {
                     div { class: "h-16 border-b border-line" }
                 }
-                for appt in day_appts.iter() {
-                    {
-                        let (top_pct, height_pct) = block_geometry(appt);
-                        let color = type_color(&appt.appointment_type);
-                        let past = past_class(appt);
-                        let appt_clone = appt.clone();
-                        let label = appt.title.clone();
-                        let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
-                        let location = appt.location.clone().unwrap_or_default();
-                        rsx! {
-                            button {
-                                r#type: "button",
-                                class: "absolute left-2 right-2 rounded-md px-2 py-1 text-xs text-white text-left overflow-hidden shadow-sm hover:opacity-90 {color} {past}",
-                                style: "top: {top_pct:.4}%; height: {height_pct:.4}%;",
-                                title: "{time}: {label}",
-                                onclick: move |e: MouseEvent| {
-                                    e.stop_propagation();
-                                    props.onpick.call(appt_clone.clone());
-                                },
-                                div { class: "font-medium truncate", "{label}" }
-                                div { class: "opacity-90", "{time}" }
-                                if !location.is_empty() {
-                                    div { class: "truncate opacity-90", "{location}" }
+                // PMS-598: lane layout so concurrent events sit side by side;
+                // `key` keeps Dioxus from collapsing sibling blocks.
+                {
+                    let lanes = overlap_lanes(&day_appts);
+                    rsx! {
+                        for (i, appt) in day_appts.iter().enumerate() {
+                            {
+                                let (top_pct, height_pct) = block_geometry(appt);
+                                let (left_pct, width_pct) = lane_h_geometry(lanes[i]);
+                                let color = type_color(&appt.appointment_type);
+                                let past = past_class(appt);
+                                let appt_clone = appt.clone();
+                                let label = appt.title.clone();
+                                let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
+                                let location = appt.location.clone().unwrap_or_default();
+                                rsx! {
+                                    button {
+                                        key: "{appt.id}",
+                                        r#type: "button",
+                                        class: "absolute rounded-md px-2 py-1 text-xs text-white text-left overflow-hidden shadow-sm hover:opacity-90 {color} {past}",
+                                        style: "top: {top_pct:.4}%; height: {height_pct:.4}%; left: {left_pct:.4}%; width: {width_pct:.4}%;",
+                                        title: "{time}: {label}",
+                                        onclick: move |e: MouseEvent| {
+                                            e.stop_propagation();
+                                            props.onpick.call(appt_clone.clone());
+                                        },
+                                        div { class: "font-medium truncate", "{label}" }
+                                        div { class: "opacity-90", "{time}" }
+                                        if !location.is_empty() {
+                                            div { class: "truncate opacity-90", "{location}" }
+                                        }
+                                    }
                                 }
                             }
                         }
