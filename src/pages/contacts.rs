@@ -661,6 +661,10 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let mut website_err = use_signal(String::new);
     let mut phone_err = use_signal(String::new);
     let mut postal_err = use_signal(String::new);
+    // PMS-581: inline errors for the previously-unvalidated address text fields.
+    let mut line1_err = use_signal(String::new);
+    let mut line2_err = use_signal(String::new);
+    let mut city_err = use_signal(String::new);
 
     // MAPPS-292: install a `beforeunload` guard while the user has typed
     // anything into the form. The Company form has roughly ten fields so
@@ -739,6 +743,9 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         website_err.set(String::new());
         phone_err.set(String::new());
         postal_err.set(String::new());
+        line1_err.set(String::new());
+        line2_err.set(String::new());
+        city_err.set(String::new());
         // PMS-518: validate the formatted/structured fields inline before submit
         // (MAPPS-177, MAPPS-213) and report ALL failures at once, each in its own
         // inline slot, then focus the first invalid field. The bespoke validators
@@ -765,6 +772,20 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         if let Err(msg) = &postal_res {
             postal_err.set(msg.clone());
             guard.note_invalid(Some("address_postal_code"));
+        }
+        // PMS-581: bound the free-text address fields and reject control chars,
+        // matching the inline-validation standard of the rest of the form.
+        if let Err(msg) = validate_address_text(&line1.read(), "Street", 255) {
+            line1_err.set(msg);
+            guard.note_invalid(Some("address_line1"));
+        }
+        if let Err(msg) = validate_address_text(&line2.read(), "Street (line 2)", 255) {
+            line2_err.set(msg);
+            guard.note_invalid(Some("address_line2"));
+        }
+        if let Err(msg) = validate_address_text(&city.read(), "City", 100) {
+            city_err.set(msg);
+            guard.note_invalid(Some("address_city"));
         }
         if guard.blocked() {
             return;
@@ -961,6 +982,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         label: "Street",
                         maxlength: 255,
                         value: line1.read().clone(),
+                        error: line1_err(),
                         oninput: move |e: FormEvent| line1.set(e.value()),
                     }
                     crate::components::Input {
@@ -968,13 +990,15 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         label: "Street (line 2)",
                         maxlength: 255,
                         value: line2.read().clone(),
+                        error: line2_err(),
                         oninput: move |e: FormEvent| line2.set(e.value()),
                     }
                     crate::components::Input {
                         name: "address_city",
                         label: "City",
-                        maxlength: 255,
+                        maxlength: 100,
                         value: city.read().clone(),
+                        error: city_err(),
                         oninput: move |e: FormEvent| city.set(e.value()),
                     }
                     Select {
@@ -1119,6 +1143,24 @@ fn validate_country_field(raw: &str) -> Result<serde_json::Value, String> {
     } else {
         Err("Country must be a 2-letter ISO code (e.g. US).".to_string())
     }
+}
+
+/// PMS-581: validate an optional free-text address field. Blank is accepted.
+/// Otherwise it must be within `max` characters and free of control characters
+/// (which includes NUL, rejected by Postgres anyway). Gating only - the body
+/// keeps sending the `optional_string` form.
+fn validate_address_text(raw: &str, label: &str, max: usize) -> Result<(), String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    if trimmed.chars().count() > max {
+        return Err(format!("{label} must be {max} characters or fewer."));
+    }
+    if trimmed.chars().any(|c| c.is_control()) {
+        return Err(format!("{label} contains invalid characters."));
+    }
+    Ok(())
 }
 
 /// Validate an optional postal code. Blank -> `Ok(None)`. Otherwise 2-12
