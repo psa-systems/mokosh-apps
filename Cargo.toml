@@ -22,6 +22,12 @@ web = []
 multi-tenant = []
 single-tenant = []
 server = []
+# MAPPS-338: opt-in dev shortcut that auto-signs the WASM in as Admin
+# from `ADMIN_EMAIL` + `ADMIN_PASSWORD` compile-time env. Off by default
+# even in debug builds so a debug WASM that ships to staging by accident
+# does not auto-grant Admin. Flip on locally via
+# `cargo run --features dev_admin_bypass` (and set the env vars).
+dev_admin_bypass = []
 
 [lib]
 name = "mokosh_apps"

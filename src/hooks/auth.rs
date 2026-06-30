@@ -111,8 +111,15 @@ pub fn use_auth_provider() -> Signal<AuthContext> {
 /// DEV ONLY: when both ADMIN_EMAIL and ADMIN_PASSWORD are set at compile time
 /// AND non-empty, the app starts pre-authenticated as that admin user and the
 /// login screen is bypassed. Mirrors the bootstrap pattern from vervain-server.
-/// Compiled out of release builds via `cfg(debug_assertions)`.
-#[cfg(debug_assertions)]
+///
+/// MAPPS-338: the gate is now `cfg(all(debug_assertions, feature =
+/// "dev_admin_bypass"))` instead of `cfg(debug_assertions)` alone. A
+/// debug WASM that ships to staging or production by accident (CI
+/// mishap, operator-side build) no longer auto-signs the user in as
+/// Admin. Dev devs enable the bypass explicitly via
+/// `--features dev_admin_bypass`; the feature is off by default in every
+/// shipped artifact.
+#[cfg(all(debug_assertions, feature = "dev_admin_bypass"))]
 fn initial_auth_context() -> AuthContext {
     match (option_env!("ADMIN_EMAIL"), option_env!("ADMIN_PASSWORD")) {
         (Some(email), Some(password)) if !email.is_empty() && !password.is_empty() => AuthContext {
@@ -142,7 +149,7 @@ fn initial_auth_context() -> AuthContext {
     }
 }
 
-#[cfg(not(debug_assertions))]
+#[cfg(not(all(debug_assertions, feature = "dev_admin_bypass")))]
 fn initial_auth_context() -> AuthContext {
     rehydrate_from_storage().unwrap_or_default()
 }

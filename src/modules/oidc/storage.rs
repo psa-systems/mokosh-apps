@@ -57,9 +57,33 @@ pub struct PendingFlow {
     pub state: String,
     pub nonce: String,
     pub return_to: String,
+    /// MAPPS-338: epoch milliseconds when this flow was issued. Read on
+    /// `take_pending` to reject flows older than `PENDING_FLOW_TTL_MS`;
+    /// a stale flow from a tab opened a week ago should not satisfy the
+    /// OIDC callback today. `#[serde(default)]` keeps deserialization
+    /// compatible with rows minted before this field existed (they
+    /// default to `0`, which `is_expired` reads as "expired" so the user
+    /// re-authenticates cleanly).
+    #[serde(default)]
+    pub issued_at_ms: u64,
 }
 
-pub fn save_pending(flow: &PendingFlow) -> Result<(), String> {
+/// MAPPS-338: maximum age of a `PendingFlow` before `take_pending`
+/// rejects it. 10 minutes mirrors the upstream OIDC code TTL window; a
+/// flow older than that would fail the code-redemption side anyway.
+pub const PENDING_FLOW_TTL_MS: u64 = 10 * 60 * 1000;
+
+/// MAPPS-338: current epoch milliseconds. Wraps `js_sys::Date::now`
+/// because chrono in WASM does not give us a monotonic-friendly handle.
+fn now_ms() -> u64 {
+    js_sys::Date::now() as u64
+}
+
+pub fn save_pending(flow: &mut PendingFlow) -> Result<(), String> {
+    // MAPPS-338: stamp issuance time at save so `take_pending` can age it.
+    if flow.issued_at_ms == 0 {
+        flow.issued_at_ms = now_ms();
+    }
     let storage = session_storage()?;
     let json = serde_json::to_string(flow).map_err(|e| e.to_string())?;
     storage
@@ -74,7 +98,17 @@ pub fn take_pending() -> Result<PendingFlow, String> {
         .map_err(|_| "sessionStorage read failed".to_string())?
         .ok_or_else(|| "no pending OIDC flow".to_string())?;
     let _ = storage.remove_item(STATE_KEY);
-    serde_json::from_str(&raw).map_err(|e| format!("corrupt flow state: {e}"))
+    let flow: PendingFlow =
+        serde_json::from_str(&raw).map_err(|e| format!("corrupt flow state: {e}"))?;
+    // MAPPS-338: reject stale flows. A week-old tab should not authenticate.
+    let age = now_ms().saturating_sub(flow.issued_at_ms);
+    if age > PENDING_FLOW_TTL_MS {
+        return Err(format!(
+            "pending OIDC flow expired (age {} ms > {} ms)",
+            age, PENDING_FLOW_TTL_MS
+        ));
+    }
+    Ok(flow)
 }
 
 fn session_storage() -> Result<web_sys::Storage, String> {

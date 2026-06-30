@@ -24,8 +24,13 @@ pub fn s256_challenge(verifier: &str) -> String {
 }
 
 /// Random opaque value for the `state` and `nonce` query parameters.
+///
+/// MAPPS-338: 32 bytes (256 bits) instead of the prior 16 bytes. RFC 6819
+/// §5.3.5 floors `state` at 128 bits; 256 bits gives ample headroom and
+/// matches the entropy budget of the PKCE verifier so the weakest link
+/// in the flow is no longer the nonce.
 pub fn random_opaque() -> String {
-    let mut bytes = [0u8; 16];
+    let mut bytes = [0u8; 32];
     rand::rng().fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
 }

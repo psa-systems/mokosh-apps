@@ -42,11 +42,13 @@ pub fn start_login(cfg: &OidcConfig, return_to: impl Into<String>) -> Result<(),
         .resolve_redirect_uri()
         .map_err(|e| FlowError::Config(e.to_string()))?;
 
-    save_pending(&PendingFlow {
+    save_pending(&mut PendingFlow {
         code_verifier: verifier,
         state: state.clone(),
         nonce: nonce.clone(),
         return_to: return_to.clone(),
+        // MAPPS-338: stamped inside `save_pending` (defaults to 0 here).
+        issued_at_ms: 0,
     })
     .map_err(FlowError::Storage)?;
 
