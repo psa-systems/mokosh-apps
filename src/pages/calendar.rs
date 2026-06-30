@@ -1037,6 +1037,7 @@ fn MonthDayCell(props: MonthDayCellProps) -> Element {
                             let label = format!("{} {}", time_label(appt.start_time), appt.title);
                             rsx! {
                                 button {
+                                    key: "{appt.id}",
                                     r#type: "button",
                                     class: "w-full text-left text-xs truncate px-1 py-0.5 rounded {chip} {past} hover:opacity-80",
                                     title: "{label}",
@@ -1185,27 +1186,36 @@ fn DayColumn(props: DayColumnProps) -> Element {
             for _ in 0..rows {
                 div { class: "h-12 border-b border-line" }
             }
-            // Appointment blocks.
-            for appt in props.appointments.iter() {
-                {
-                    let (top_pct, height_pct) = block_geometry(appt);
-                    let color = type_color(&appt.appointment_type);
-                    let past = past_class(appt);
-                    let appt_clone = appt.clone();
-                    let label = appt.title.clone();
-                    let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
-                    rsx! {
-                        button {
-                            r#type: "button",
-                            class: "absolute left-0.5 right-0.5 rounded px-1 py-0.5 text-[10px] leading-tight text-white text-left overflow-hidden shadow-sm hover:opacity-90 {color} {past}",
-                            style: "top: {top_pct:.4}%; height: {height_pct:.4}%;",
-                            title: "{time}: {label}",
-                            onclick: move |e: MouseEvent| {
-                                e.stop_propagation();
-                                props.onpick.call(appt_clone.clone());
-                            },
-                            div { class: "font-medium truncate", "{label}" }
-                            div { class: "truncate opacity-90", "{time}" }
+            // Appointment blocks. PMS-598: lane layout so concurrent events sit
+            // side by side instead of stacking; `key` keeps Dioxus from collapsing
+            // sibling blocks.
+            {
+                let lanes = overlap_lanes(&props.appointments);
+                rsx! {
+                    for (i, appt) in props.appointments.iter().enumerate() {
+                        {
+                            let (top_pct, height_pct) = block_geometry(appt);
+                            let (left_pct, width_pct) = lane_h_geometry(lanes[i]);
+                            let color = type_color(&appt.appointment_type);
+                            let past = past_class(appt);
+                            let appt_clone = appt.clone();
+                            let label = appt.title.clone();
+                            let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
+                            rsx! {
+                                button {
+                                    key: "{appt.id}",
+                                    r#type: "button",
+                                    class: "absolute rounded px-1 py-0.5 text-[10px] leading-tight text-white text-left overflow-hidden shadow-sm hover:opacity-90 {color} {past}",
+                                    style: "top: {top_pct:.4}%; height: {height_pct:.4}%; left: {left_pct:.4}%; width: {width_pct:.4}%;",
+                                    title: "{time}: {label}",
+                                    onclick: move |e: MouseEvent| {
+                                        e.stop_propagation();
+                                        props.onpick.call(appt_clone.clone());
+                                    },
+                                    div { class: "font-medium truncate", "{label}" }
+                                    div { class: "truncate opacity-90", "{time}" }
+                                }
+                            }
                         }
                     }
                 }
@@ -1224,6 +1234,90 @@ fn block_geometry(appt: &AppointmentResponse) -> (f64, f64) {
     // shows a tappable sliver.
     let height = (((end - start) / GRID_TOTAL_HOURS) * 100.0).max(3.0);
     (top.max(0.0), height)
+}
+
+/// PMS-598: split overlapping appointments into side-by-side lanes so concurrent
+/// events are all visible instead of stacking on one slot. Pure over the time
+/// intervals; [`overlap_lanes`] adapts `AppointmentResponse`s to it.
+///
+/// Returns, per input index, `(lane, lane_count)`: `lane` is the 0-based column
+/// and `lane_count` the number of columns the slot is split into for that
+/// appointment's overlap cluster, so `width = 1/lane_count` and
+/// `left = lane/lane_count`. Every event in a connected overlap cluster shares
+/// the cluster's column count (the conventional calendar layout), guaranteeing
+/// no two blocks visually overlap.
+fn lanes_from_intervals(intervals: &[(DateTime<Utc>, DateTime<Utc>)]) -> Vec<(usize, usize)> {
+    let n = intervals.len();
+    let mut result = vec![(0usize, 1usize); n];
+    if n == 0 {
+        return result;
+    }
+    // Process in start order (ties broken by end) so greedy lane reuse is correct.
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| {
+        intervals[a]
+            .0
+            .cmp(&intervals[b].0)
+            .then(intervals[a].1.cmp(&intervals[b].1))
+    });
+
+    let mut cluster: Vec<usize> = Vec::new(); // original indices in the open cluster
+    let mut lane_end: Vec<DateTime<Utc>> = Vec::new(); // current end time per lane
+    let mut cluster_end: Option<DateTime<Utc>> = None; // max end across the cluster
+
+    for &i in &order {
+        let (s, e) = intervals[i];
+        // A start at/after the whole cluster's end closes the cluster: stamp the
+        // column count on its members and reset for the next disjoint group.
+        if cluster_end.is_some_and(|c| s >= c) {
+            let cols = lane_end.len().max(1);
+            for &j in &cluster {
+                result[j].1 = cols;
+            }
+            cluster.clear();
+            lane_end.clear();
+            cluster_end = None;
+        }
+        // First lane whose last event has ended by `s`; else open a new lane.
+        let lane = match lane_end.iter().position(|le| *le <= s) {
+            Some(li) => {
+                lane_end[li] = e;
+                li
+            }
+            None => {
+                lane_end.push(e);
+                lane_end.len() - 1
+            }
+        };
+        result[i].0 = lane;
+        cluster.push(i);
+        cluster_end = Some(cluster_end.map_or(e, |c| c.max(e)));
+    }
+    // Close the final cluster.
+    let cols = lane_end.len().max(1);
+    for &j in &cluster {
+        result[j].1 = cols;
+    }
+    result
+}
+
+/// PMS-598: lane layout for a day's appointments (see [`lanes_from_intervals`]).
+fn overlap_lanes(appts: &[AppointmentResponse]) -> Vec<(usize, usize)> {
+    let intervals: Vec<(DateTime<Utc>, DateTime<Utc>)> =
+        appts.iter().map(|a| (a.start_time, a.end_time)).collect();
+    lanes_from_intervals(&intervals)
+}
+
+/// PMS-598: turn a `(lane, lane_count)` assignment into `(left%, width%)` across
+/// the column, leaving a small seam between split blocks (and a hair of right
+/// margin when an event is alone, matching the previous inset look).
+fn lane_h_geometry((lane, cols): (usize, usize)) -> (f64, f64) {
+    let cols = cols.max(1);
+    let col_w = 100.0 / cols as f64;
+    let left = lane as f64 * col_w;
+    let gap = if cols > 1 { 1.5 } else { 1.0 };
+    let width = (col_w - gap).max(1.0);
+    (left, width)
 }
 
 // ============================================================================
@@ -1280,29 +1374,38 @@ fn DayGrid(props: DayGridProps) -> Element {
                 for _ in 0..rows {
                     div { class: "h-16 border-b border-line" }
                 }
-                for appt in day_appts.iter() {
-                    {
-                        let (top_pct, height_pct) = block_geometry(appt);
-                        let color = type_color(&appt.appointment_type);
-                        let past = past_class(appt);
-                        let appt_clone = appt.clone();
-                        let label = appt.title.clone();
-                        let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
-                        let location = appt.location.clone().unwrap_or_default();
-                        rsx! {
-                            button {
-                                r#type: "button",
-                                class: "absolute left-2 right-2 rounded-md px-2 py-1 text-xs text-white text-left overflow-hidden shadow-sm hover:opacity-90 {color} {past}",
-                                style: "top: {top_pct:.4}%; height: {height_pct:.4}%;",
-                                title: "{time}: {label}",
-                                onclick: move |e: MouseEvent| {
-                                    e.stop_propagation();
-                                    props.onpick.call(appt_clone.clone());
-                                },
-                                div { class: "font-medium truncate", "{label}" }
-                                div { class: "opacity-90", "{time}" }
-                                if !location.is_empty() {
-                                    div { class: "truncate opacity-90", "{location}" }
+                // PMS-598: lane layout so concurrent events sit side by side;
+                // `key` keeps Dioxus from collapsing sibling blocks.
+                {
+                    let lanes = overlap_lanes(&day_appts);
+                    rsx! {
+                        for (i, appt) in day_appts.iter().enumerate() {
+                            {
+                                let (top_pct, height_pct) = block_geometry(appt);
+                                let (left_pct, width_pct) = lane_h_geometry(lanes[i]);
+                                let color = type_color(&appt.appointment_type);
+                                let past = past_class(appt);
+                                let appt_clone = appt.clone();
+                                let label = appt.title.clone();
+                                let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
+                                let location = appt.location.clone().unwrap_or_default();
+                                rsx! {
+                                    button {
+                                        key: "{appt.id}",
+                                        r#type: "button",
+                                        class: "absolute rounded-md px-2 py-1 text-xs text-white text-left overflow-hidden shadow-sm hover:opacity-90 {color} {past}",
+                                        style: "top: {top_pct:.4}%; height: {height_pct:.4}%; left: {left_pct:.4}%; width: {width_pct:.4}%;",
+                                        title: "{time}: {label}",
+                                        onclick: move |e: MouseEvent| {
+                                            e.stop_propagation();
+                                            props.onpick.call(appt_clone.clone());
+                                        },
+                                        div { class: "font-medium truncate", "{label}" }
+                                        div { class: "opacity-90", "{time}" }
+                                        if !location.is_empty() {
+                                            div { class: "truncate opacity-90", "{location}" }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -2574,6 +2677,7 @@ fn DispatchRow(props: DispatchRowProps) -> Element {
                         let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
                         rsx! {
                             button {
+                                key: "{appt.id}",
                                 r#type: "button",
                                 class: "absolute top-1 bottom-1 rounded-md px-2 py-1 text-xs text-white shadow-sm overflow-hidden text-left hover:opacity-90 {color} {past}",
                                 style: "left: {left:.4}%; width: {width:.4}%;",
@@ -3086,6 +3190,50 @@ fn parse_nonneg_i32(s: &str) -> Option<i32> {
     }
     let n: i32 = trimmed.parse().ok()?;
     (n >= 0).then_some(n)
+}
+
+#[cfg(test)]
+mod lanes_tests {
+    use super::lanes_from_intervals;
+    use chrono::{DateTime, Utc};
+
+    /// Hour `h` of a fixed day as a UTC instant.
+    fn t(h: i64) -> DateTime<Utc> {
+        DateTime::<Utc>::from_timestamp(h * 3600, 0).unwrap()
+    }
+
+    #[test]
+    fn empty_and_single() {
+        assert_eq!(lanes_from_intervals(&[]), Vec::<(usize, usize)>::new());
+        assert_eq!(lanes_from_intervals(&[(t(9), t(10))]), vec![(0, 1)]);
+    }
+
+    #[test]
+    fn sequential_share_one_lane() {
+        // 9-10 then 10-11: touching, not overlapping -> same lane, single column.
+        let got = lanes_from_intervals(&[(t(9), t(10)), (t(10), t(11))]);
+        assert_eq!(got, vec![(0, 1), (0, 1)]);
+    }
+
+    #[test]
+    fn two_overlapping_split_into_two_columns() {
+        let got = lanes_from_intervals(&[(t(9), t(11)), (t(10), t(12))]);
+        assert_eq!(got, vec![(0, 2), (1, 2)]);
+    }
+
+    #[test]
+    fn cluster_shares_column_count_and_reuses_freed_lane() {
+        // A 9-10, B 9-11, C 10-11: all one cluster; C reuses A's freed lane 0.
+        let got = lanes_from_intervals(&[(t(9), t(10)), (t(9), t(11)), (t(10), t(11))]);
+        assert_eq!(got, vec![(0, 2), (1, 2), (0, 2)]);
+    }
+
+    #[test]
+    fn disjoint_clusters_counted_independently() {
+        // Two overlapping (cols=2), a gap, then a lone event (cols=1).
+        let got = lanes_from_intervals(&[(t(9), t(11)), (t(10), t(12)), (t(14), t(15))]);
+        assert_eq!(got, vec![(0, 2), (1, 2), (0, 1)]);
+    }
 }
 
 #[cfg(test)]
