@@ -306,13 +306,38 @@ fn AuditLogContent() -> Element {
     // switch via the generation read; an error just leaves ids unresolved.
     let users_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteUser>>("/auth/users")
+        // PMS-584: pull a full page so the user-name filter dropdown (and the
+        // diff FK resolution) cover every user, not just the default page.
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteUser>>("/auth/users?per_page=200")
             .await
             .ok()
     });
     let users: Vec<RemoteUser> = match &*users_resource.read_unchecked() {
         Some(Some(resp)) => resp.data.clone(),
         _ => Vec::new(),
+    };
+
+    // PMS-584: user filter as a pick-by-name dropdown (value = user id). A
+    // selected id that isn't in the fetched list (deleted / paged out) is kept
+    // as a short-id option so the active filter still shows.
+    let user_options = {
+        let mut opts = vec![SelectOption::new("", "All Users")];
+        let known = users.iter().any(|u| u.id.to_string() == user_text);
+        if !user_text.is_empty() && !known {
+            opts.push(SelectOption::new(
+                user_text.clone(),
+                user_text.chars().take(8).collect::<String>(),
+            ));
+        }
+        for u in &users {
+            let label = if u.full_name.trim().is_empty() {
+                u.id.to_string().chars().take(8).collect::<String>()
+            } else {
+                u.full_name.clone()
+            };
+            opts.push(SelectOption::new(u.id.to_string(), label));
+        }
+        opts
     };
 
     let resource_snapshot = audit_resource.read_unchecked();
@@ -433,12 +458,12 @@ fn AuditLogContent() -> Element {
                             page.set(1);
                         },
                     }
-                    crate::components::Input {
+                    Select {
                         name: "user_id",
-                        label: "User ID",
-                        placeholder: "UUID",
+                        label: "User",
+                        options: user_options,
                         value: user_id_filter.read().clone(),
-                        oninput: move |e: FormEvent| {
+                        onchange: move |e: FormEvent| {
                             user_id_filter.set(e.value());
                             page.set(1);
                         },
