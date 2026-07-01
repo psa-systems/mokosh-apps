@@ -564,15 +564,22 @@ pub fn TopBar(props: TopBarProps) -> Element {
                 }
                 Link {
                     to: Route::Dashboard {},
-                    class: "flex flex-col leading-tight min-w-0",
-                    span { class: "text-base font-bold text-content truncate",
-                        "Mokosh Platform"
+                    class: "flex items-center gap-2 min-w-0",
+                    img {
+                        src: asset!("/assets/icon-192.png"),
+                        alt: "Mokosh",
+                        class: "h-8 w-8 shrink-0",
                     }
-                    // Active-org indicator. Hidden until auth resolves an
-                    // active tenant - we don't show a "no org" state in
-                    // the brand slot to avoid a confusing flash on load.
-                    if let Some(name) = active_org.as_deref() {
-                        span { class: "text-xs text-subtle truncate", "{name}" }
+                    div { class: "flex flex-col leading-tight min-w-0",
+                        span { class: "text-base font-bold text-content truncate",
+                            "Mokosh Platform"
+                        }
+                        // Active-org indicator. Hidden until auth resolves an
+                        // active tenant - we don't show a "no org" state in
+                        // the brand slot to avoid a confusing flash on load.
+                        if let Some(name) = active_org.as_deref() {
+                            span { class: "text-xs text-subtle truncate", "{name}" }
+                        }
                     }
                 }
             }
@@ -1096,7 +1103,12 @@ pub fn AuthLayout(props: AuthLayoutProps) -> Element {
         div { class: "min-h-screen flex flex-col justify-center py-12 sm:px-6 lg:px-8 bg-app",
             div { class: "sm:mx-auto sm:w-full sm:max-w-md",
                 // Logo
-                div { class: "text-center",
+                div { class: "flex flex-col items-center gap-3",
+                    img {
+                        src: asset!("/assets/icon-192.png"),
+                        alt: "Mokosh",
+                        class: "h-16 w-16",
+                    }
                     span { class: "text-3xl font-bold text-accent",
                         "Mokosh Platform"
                     }
