@@ -34,10 +34,17 @@ pub fn AppLayout(props: AppLayoutProps) -> Element {
             #[cfg(feature = "web")]
             {
                 if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-                    let next = if title.trim().is_empty() {
+                    let t = title.trim();
+                    // Detail pages hand AppLayout `title = "Loading..."` while their
+                    // record fetches, then swap in the record name. If that fetch
+                    // stalls or errors (e.g. the CSP-blocked-data incident) the tab
+                    // was left reading "Loading... | Mokosh Platform" indefinitely.
+                    // Treat the loading placeholder as "no title yet" so the tab
+                    // shows a clean "Mokosh Platform" until the real title arrives.
+                    let next = if t.is_empty() || t == "Loading..." {
                         "Mokosh Platform".to_string()
                     } else {
-                        format!("{} | Mokosh Platform", title.trim())
+                        format!("{} | Mokosh Platform", t)
                     };
                     doc.set_title(&next);
                 }

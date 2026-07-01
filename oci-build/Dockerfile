@@ -88,6 +88,17 @@ COPY --from=caddy-bin /usr/bin/caddy /usr/bin/caddy
 # Copy static bundle
 COPY --from=builder /build/target/dx/mokosh-apps/release/web/public /usr/share/caddy
 
+# Serve the top-level static files at the ROOT paths that index.html and the PWA
+# manifest reference (/favicon.svg, /manifest.webmanifest, /icon-192.png, ...).
+# They live under assets/ but `dx build` does not emit them into web/public at
+# those root paths, so without this COPY each one falls through Caddy's
+# `try_files ... /index.html` and returns index.html as text/html - the browser
+# gets no favicon and the manifest fails to parse. Copy them into the Caddy web
+# root so file_server serves them before the SPA fallback.
+COPY assets/favicon.svg assets/favicon.ico assets/apple-touch-icon.png \
+     assets/manifest.webmanifest assets/icon-192.png assets/icon-512.png \
+     assets/icon-maskable-512.png /usr/share/caddy/
+
 # Pre-create /etc/caddy with the default 0755 mode. The Caddyfile
 # COPY below pins --chmod=0644 so the file is readable by appuser
 # regardless of what the host's umask did to the source file in the
