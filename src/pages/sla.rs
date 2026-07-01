@@ -1065,6 +1065,9 @@ fn BusinessHoursFormModal(props: BusinessHoursFormModalProps) -> Element {
     let mut is_default = use_signal(|| initial.is_default);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // PMS-604: schedule-specific error rendered inline on the Textarea (bad
+    // client-side JSON, or the server's field-keyed 422), not in the banner.
+    let mut schedule_err = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -1074,17 +1077,18 @@ fn BusinessHoursFormModal(props: BusinessHoursFormModalProps) -> Element {
         if *saving.read() {
             return;
         }
+        schedule_err.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
         }
-        // Parse the schedule blob before sending so a typo surfaces here
-        // rather than as an opaque 422 from the server.
+        // Parse the schedule blob before sending so a typo surfaces inline on
+        // the field rather than as an opaque 422 from the server.
         let schedule = match serde_json::from_str::<serde_json::Value>(schedule_json.read().trim())
         {
             Ok(v) => v,
             Err(e) => {
-                error.set(format!("Schedule is not valid JSON: {e}"));
+                schedule_err.set(format!("Schedule is not valid JSON: {e}"));
                 return;
             }
         };
@@ -1137,7 +1141,14 @@ fn BusinessHoursFormModal(props: BusinessHoursFormModalProps) -> Element {
                     }
                     Err(err) => {
                         crate::hooks::push_api_error(&err);
-                        error.set(err.user_message());
+                        // PMS-604: a malformed-schedule 422 is keyed onto the
+                        // `schedule` field; show it inline. Anything else stays
+                        // in the banner.
+                        if let Some(msg) = err.field_message("schedule") {
+                            schedule_err.set(msg);
+                        } else {
+                            error.set(err.user_message());
+                        }
                     }
                 }
             }
@@ -1195,6 +1206,7 @@ fn BusinessHoursFormModal(props: BusinessHoursFormModalProps) -> Element {
                     label: "Schedule (JSON)",
                     rows: 10,
                     help: "Per-day windows, e.g. {{\"mon\": [{{\"start\": \"09:00\", \"end\": \"17:00\"}}]}}.",
+                    error: schedule_err.read().clone(),
                     value: schedule_json.read().clone(),
                     oninput: move |e: FormEvent| schedule_json.set(e.value()),
                 }
@@ -1382,6 +1394,9 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
     let mut holidays_json = use_signal(|| initial.holidays_json.clone());
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // PMS-604: holidays-specific error rendered inline on the Textarea (bad
+    // client-side JSON, or the server's field-keyed 422), not in the banner.
+    let mut holidays_err = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -1391,6 +1406,7 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
         if *saving.read() {
             return;
         }
+        holidays_err.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
@@ -1399,7 +1415,7 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
         {
             Ok(v) => v,
             Err(e) => {
-                error.set(format!("Holidays is not valid JSON: {e}"));
+                holidays_err.set(format!("Holidays is not valid JSON: {e}"));
                 return;
             }
         };
@@ -1439,7 +1455,14 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
                     }
                     Err(err) => {
                         crate::hooks::push_api_error(&err);
-                        error.set(err.user_message());
+                        // PMS-604: a malformed-holidays 422 is keyed onto the
+                        // `holidays` field; show it inline. Anything else stays
+                        // in the banner.
+                        if let Some(msg) = err.field_message("holidays") {
+                            holidays_err.set(msg);
+                        } else {
+                            error.set(err.user_message());
+                        }
                     }
                 }
             }
@@ -1488,6 +1511,7 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
                     label: "Holidays (JSON)",
                     rows: 10,
                     help: "List of {{date, name}} entries, e.g. [{{\"date\": \"2026-01-01\", \"name\": \"New Year's Day\"}}].",
+                    error: holidays_err.read().clone(),
                     value: holidays_json.read().clone(),
                     oninput: move |e: FormEvent| holidays_json.set(e.value()),
                 }
