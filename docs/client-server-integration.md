@@ -5,7 +5,7 @@ wiring a UI surface to backend, or when wondering "is there an
 endpoint I can call yet?"
 
 A symmetric view of the same content lives at
-[`mokosh-server/dev-docs/client-server-integration.md`](../../mokosh-server/dev-docs/client-server-integration.md).
+[`mokosh-server/docs/client-server-integration.md`](../../mokosh-server/docs/client-server-integration.md).
 
 ## At a glance
 

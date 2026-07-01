@@ -1,7 +1,7 @@
 //! Build-time version metadata. Populated by `build.rs` via
 //! `cargo:rustc-env`. Surfaced in the UI for build troubleshooting.
 //!
-//! See `dev-docs/versioning.md` for the full version-sourcing and
+//! See `docs/versioning.md` for the full version-sourcing and
 //! update-target story (staging vs production).
 
 /// Canonical released semver, from Cargo.toml's `version` (via

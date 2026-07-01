@@ -3,7 +3,7 @@
 //! A live showcase of the canonical `Button` variants, sizes, and states so
 //! the convention is enforceable in review: when a new "create" button drifts
 //! to the wrong colour, this page is the reference for what it should be. The
-//! prose version lives in `dev-docs/button-variants.md`.
+//! prose version lives in `docs/button-variants.md`.
 //!
 //! Reachable at `/dev/buttons` (behind the auth guard).
 
