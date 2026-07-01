@@ -62,6 +62,10 @@ struct SearchHit {
 pub fn GlobalSearch() -> Element {
     let mut query = use_signal(String::new);
     let mut show_dropdown = use_signal(|| false);
+    // MAPPS-346: collapsed to a magnifier icon by default; the icon lives in
+    // the top-bar action cluster (left of the theme picker) and expands the
+    // text entry leftward on click.
+    let mut expanded = use_signal(|| false);
     let navigator = use_navigator();
 
     // Reading the query signal inside the resource closure subscribes
@@ -94,10 +98,27 @@ pub fn GlobalSearch() -> Element {
         || !response.projects.is_empty();
 
     rsx! {
-        div { class: "relative w-full max-w-md",
-            // Search input. Click to focus opens the dropdown; the
-            // outside-click backdrop below closes it.
-            div { class: "relative",
+        div { class: "relative flex items-center",
+            // MAPPS-346: outside-click backdrop while expanded. Closes the
+            // dropdown; collapses to the icon only when the entry is empty,
+            // so a typed query is never lost by an accidental outside click.
+            if expanded() {
+                div {
+                    class: "fixed inset-0 z-10",
+                    onclick: move |_| {
+                        show_dropdown.set(false);
+                        if query.read().trim().is_empty() {
+                            expanded.set(false);
+                        }
+                    },
+                }
+            }
+            // The text entry expands leftward from the fixed icon. Absolute
+            // `right-full` anchors its right edge to the icon so neither the
+            // icon nor the sibling action chips shift when it opens.
+            if expanded() {
+                div { class: "absolute right-full top-1/2 -translate-y-1/2 mr-2 z-20 w-72",
+                    div { class: "relative",
                 div { class: "absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-subtle",
                     // Inline magnifier glyph - the icons module doesn't
                     // ship a search icon and this is the only consumer.
@@ -124,19 +145,23 @@ pub fn GlobalSearch() -> Element {
                     placeholder: "Search tickets, contacts, companies...",
                     value: query.read().clone(),
                     class: "pl-9".to_string(),
+                    // MAPPS-346: ready to type the moment the icon expands.
+                    autofocus: true,
                     oninput: move |e: FormEvent| {
                         query.set(e.value());
                         show_dropdown.set(true);
                     },
+                    onkeydown: move |e: KeyboardEvent| {
+                        // Escape is an explicit cancel: clear and collapse.
+                        if e.key() == Key::Escape {
+                            query.set(String::new());
+                            show_dropdown.set(false);
+                            expanded.set(false);
+                        }
+                    },
                 }
             }
             if *show_dropdown.read() && !query_text.trim().is_empty() {
-                // Outside-click backdrop closes the dropdown. Same
-                // pattern the CompanyPicker uses.
-                div {
-                    class: "fixed inset-0 z-10",
-                    onclick: move |_| show_dropdown.set(false),
-                }
                 div { class: "absolute z-20 left-0 right-0 mt-1 max-h-[32rem] overflow-y-auto rounded-md border border-line bg-raised shadow-lg",
                     if query_text.trim().len() < 2 {
                         div { class: "px-3 py-2 text-sm text-muted",
@@ -212,6 +237,31 @@ pub fn GlobalSearch() -> Element {
                                 }
                             },
                         }
+                    }
+                }
+            }
+                }
+            }
+            // MAPPS-346: the magnifier icon stays fixed in the action
+            // cluster. Clicking opens + focuses the entry; it sits above
+            // the backdrop (z-30) so it stays clickable while expanded.
+            button {
+                r#type: "button",
+                class: "relative z-30 p-2 rounded-full text-gray-400 hover:text-white hover:bg-gray-700",
+                aria_label: "Search",
+                title: "Search",
+                aria_expanded: if expanded() { "true" } else { "false" },
+                onclick: move |_| expanded.set(true),
+                svg {
+                    class: "w-5 h-5",
+                    fill: "none",
+                    stroke: "currentColor",
+                    view_box: "0 0 24 24",
+                    path {
+                        stroke_linecap: "round",
+                        stroke_linejoin: "round",
+                        stroke_width: "2",
+                        d: "M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z",
                     }
                 }
             }
