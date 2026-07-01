@@ -29,27 +29,27 @@ pub fn AppLayout(props: AppLayoutProps) -> Element {
     // every render so a page that mutates its own `title` prop (e.g. a
     // detail page swapping "Loading..." for the record name) propagates.
     {
-        let title = props.title.clone();
-        use_effect(move || {
-            #[cfg(feature = "web")]
-            {
-                if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-                    let t = title.trim();
-                    // Detail pages hand AppLayout `title = "Loading..."` while their
-                    // record fetches, then swap in the record name. If that fetch
-                    // stalls or errors (e.g. the CSP-blocked-data incident) the tab
-                    // was left reading "Loading... | Mokosh Platform" indefinitely.
-                    // Treat the loading placeholder as "no title yet" so the tab
-                    // shows a clean "Mokosh Platform" until the real title arrives.
-                    let next = if t.is_empty() || t == "Loading..." {
-                        "Mokosh Platform".to_string()
-                    } else {
-                        format!("{} | Mokosh Platform", t)
-                    };
-                    doc.set_title(&next);
-                }
+        // Set the tab title directly in the component body, NOT via use_effect.
+        // The effect version captured `title` by value and read no signal, so it
+        // fired once on mount and never re-ran when a detail page swapped its
+        // loading placeholder for the real record name - leaving tabs stuck on
+        // "Loading… | Mokosh Platform" even after the record loaded. The body
+        // runs on every render with the current props.title, and set_title is
+        // idempotent. Both loading placeholders the pages use - "Loading…"
+        // (U+2026) and ASCII "Loading..." - are treated as "no title yet" so the
+        // tab shows a clean "Mokosh Platform" until the real title arrives.
+        #[cfg(feature = "web")]
+        {
+            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                let t = props.title.trim();
+                let next = if t.is_empty() || t == "Loading…" || t == "Loading..." {
+                    "Mokosh Platform".to_string()
+                } else {
+                    format!("{} | Mokosh Platform", t)
+                };
+                doc.set_title(&next);
             }
-        });
+        }
     }
 
     rsx! {
