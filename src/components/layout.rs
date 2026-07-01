@@ -286,7 +286,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                 id: nav_id,
                 // Collapsed: tighter horizontal padding so icons center in the
                 // narrow strip; expanded keeps the original px-2.
-                class: if collapsed { "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-hide px-1 pt-1 pb-4 space-y-1" } else { "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-hide px-2 pt-1 pb-4 space-y-1" },
+                class: if collapsed { "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-hide px-1 pt-1 pb-2 space-y-0.5" } else { "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-hide px-2 pt-1 pb-4 space-y-1" },
                 // On mount of the persistent desktop sidebar, jump straight
                 // to the offset recorded before the last navigation so the
                 // re-mount is invisible. `peek` so reading it here never
@@ -429,8 +429,10 @@ fn NavSection(props: NavSectionProps) -> Element {
     // never touch it here) so re-expanding the rail restores each section's
     // prior open/closed state.
     if props.rail_collapsed {
+        // MAPPS-346: tight collapsed density so the icon-only rail fits
+        // without scrolling. A small pt keeps groups visually distinct.
         return rsx! {
-            div { class: "pt-2 space-y-1",
+            div { class: "pt-1 space-y-0.5",
                 {props.children}
             }
         };
@@ -515,9 +517,9 @@ fn NavItem(props: NavItemProps) -> Element {
     // stays a working router `Link` so navigation works from the strip.
     if props.collapsed {
         let class = if is_active {
-            "group flex items-center justify-center px-2 py-2 rounded-md bg-surface text-content border-l-2 border-accent"
+            "group flex items-center justify-center px-2 py-1 rounded-md bg-surface text-content border-l-2 border-accent"
         } else {
-            "group flex items-center justify-center px-2 py-2 rounded-md text-muted hover:bg-surface hover:text-content"
+            "group flex items-center justify-center px-2 py-1 rounded-md text-muted hover:bg-surface hover:text-content"
         };
         return rsx! {
             Link {
