@@ -191,7 +191,7 @@ pub fn Sidebar(props: SidebarProps) -> Element {
             // CollapsibleRail (collapsible_rail.rs:48-63). Sits above the
             // nav so it stays put while the nav below scrolls.
             div {
-                class: if collapsed { "flex justify-center px-1 py-2 shrink-0" } else { "flex justify-end px-2 py-2 shrink-0" },
+                class: if collapsed { "flex justify-center px-1 pt-2 pb-1 shrink-0" } else { "flex justify-end px-2 pt-2 pb-1 shrink-0" },
                 button {
                     class: "p-1 rounded-md text-subtle hover:text-content focus:outline-none",
                     aria_label: "{toggle_title}",
@@ -275,7 +275,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                 id: nav_id,
                 // Collapsed: tighter horizontal padding so icons center in the
                 // narrow strip; expanded keeps the original px-2.
-                class: if collapsed { "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin px-1 py-4 space-y-1" } else { "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin px-2 py-4 space-y-1" },
+                class: if collapsed { "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin px-1 pt-1 pb-4 space-y-1" } else { "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin px-2 pt-1 pb-4 space-y-1" },
                 // On mount of the persistent desktop sidebar, jump straight
                 // to the offset recorded before the last navigation so the
                 // re-mount is invisible. `peek` so reading it here never
@@ -561,7 +561,7 @@ pub fn TopBar(props: TopBarProps) -> Element {
             // Brand block - same width as the sidebar below it.
             // Includes the mobile hamburger so the brand area also opens
             // the drawer on small screens.
-            div { class: "flex items-center h-full lg:w-64 px-4 lg:px-6 border-r border-line",
+            div { class: "flex items-center h-full lg:w-64 px-4 lg:px-6",
                 button {
                     class: "lg:hidden p-2 mr-2 rounded-md text-subtle hover:text-content hover:bg-surface-2",
                     aria_label: "Open navigation",
@@ -591,23 +591,22 @@ pub fn TopBar(props: TopBarProps) -> Element {
                 }
             }
 
-            // Page title + global search. Title gets a fixed slot on
-            // lg+ so the search box doesn't push it around; on smaller
-            // viewports the title takes the row and search hides.
-            div { class: "flex-1 px-4 sm:px-6 lg:px-8 min-w-0 flex items-center gap-4",
-                h1 { class: "text-xl font-semibold text-content truncate shrink-0",
+            // Page title. MAPPS-346: the global search moved out to the
+            // action cluster (it now collapses to an icon), freeing this
+            // slot so the title can center across the bar.
+            div { class: "flex-1 px-4 sm:px-6 lg:px-8 min-w-0 flex items-center justify-center",
+                h1 { class: "text-xl font-semibold text-content truncate",
                     "{props.title}"
-                }
-                // MAPPS-298: top-bar global search. Mounted at lg+ so
-                // the search field has room next to the page title;
-                // narrow viewports keep just the title.
-                div { class: "hidden lg:flex flex-1 max-w-md",
-                    GlobalSearch {}
                 }
             }
 
             // Right side actions
             div { class: "flex items-center px-4 sm:px-6 lg:px-8 space-x-4",
+                // MAPPS-346: global search, collapsed to a magnifier icon
+                // that expands the text entry leftward. Sits to the left of
+                // the theme picker.
+                GlobalSearch {}
+
                 // Theme + accent picker (MAPPS-259), opens a centered modal.
                 ThemePickerButton {}
 
