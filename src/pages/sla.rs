@@ -1394,6 +1394,9 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
     let mut holidays_json = use_signal(|| initial.holidays_json.clone());
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // PMS-604: holidays-specific error rendered inline on the Textarea (bad
+    // client-side JSON, or the server's field-keyed 422), not in the banner.
+    let mut holidays_err = use_signal(String::new);
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -1403,6 +1406,7 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
         if *saving.read() {
             return;
         }
+        holidays_err.set(String::new());
         if name.read().trim().is_empty() {
             error.set("Name is required.".to_string());
             return;
@@ -1411,7 +1415,7 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
         {
             Ok(v) => v,
             Err(e) => {
-                error.set(format!("Holidays is not valid JSON: {e}"));
+                holidays_err.set(format!("Holidays is not valid JSON: {e}"));
                 return;
             }
         };
@@ -1451,7 +1455,14 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
                     }
                     Err(err) => {
                         crate::hooks::push_api_error(&err);
-                        error.set(err.user_message());
+                        // PMS-604: a malformed-holidays 422 is keyed onto the
+                        // `holidays` field; show it inline. Anything else stays
+                        // in the banner.
+                        if let Some(msg) = err.field_message("holidays") {
+                            holidays_err.set(msg);
+                        } else {
+                            error.set(err.user_message());
+                        }
                     }
                 }
             }
@@ -1500,6 +1511,7 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
                     label: "Holidays (JSON)",
                     rows: 10,
                     help: "List of {{date, name}} entries, e.g. [{{\"date\": \"2026-01-01\", \"name\": \"New Year's Day\"}}].",
+                    error: holidays_err.read().clone(),
                     value: holidays_json.read().clone(),
                     oninput: move |e: FormEvent| holidays_json.set(e.value()),
                 }
