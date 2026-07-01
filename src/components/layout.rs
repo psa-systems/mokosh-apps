@@ -137,7 +137,6 @@ pub fn Sidebar(props: SidebarProps) -> Element {
     // Expanded keeps today's lg:w-64; collapsed shrinks to a narrow
     // icon-only strip.
     let desktop_width = if collapsed { "lg:w-16" } else { "lg:w-64" };
-    let toggle_glyph = if collapsed { "\u{203A}" } else { "\u{2039}" };
     let toggle_title = if collapsed {
         "Expand sidebar"
     } else {
@@ -180,31 +179,43 @@ pub fn Sidebar(props: SidebarProps) -> Element {
         }
 
         // Desktop sidebar - sits below the top bar in the flex column
-        // (no fixed positioning needed). Border-r separates it from
-        // the main content. Uses `scrollbar-thin` (not `scrollbar-hide`)
-        // so when the viewport is short enough that the nav list must
-        // scroll, the user sees the affordance instead of silently
-        // clipping behind the main panel's own scrollbar (PMC-22).
-        aside { class: "hidden lg:flex {desktop_width} lg:flex-col bg-surface-2 border-r border-line overflow-y-auto overscroll-contain scrollbar-thin",
-            // Outer rail collapse toggle. Mirrors the chevron-glyph
-            // "Collapse panel" / "Expand panel" affordance from
-            // CollapsibleRail (collapsible_rail.rs:48-63). Sits above the
-            // nav so it stays put while the nav below scrolls.
-            div {
-                class: if collapsed { "flex justify-center px-1 pt-2 pb-1 shrink-0" } else { "flex justify-end px-2 pt-2 pb-1 shrink-0" },
-                button {
-                    class: "p-1 rounded-md text-subtle hover:text-content focus:outline-none",
-                    aria_label: "{toggle_title}",
-                    aria_expanded: if collapsed { "false" } else { "true" },
-                    title: "{toggle_title}",
-                    onclick: move |_| {
-                        let now = rail_collapsed.read().0;
-                        rail_collapsed.set(crate::hooks::SidebarCollapsed(!now));
-                    },
-                    "{toggle_glyph}"
+        // (no fixed positioning needed). MAPPS-346: the collapse toggle
+        // moved out of an in-sidebar row (which left dead space under the
+        // top bar) onto a half-circle handle straddling the right border,
+        // and the sidebar's scrollbar is hidden (`scrollbar-hide`) so the
+        // rail reads as a clean surface. The relative wrapper is NOT
+        // clipped so the handle can protrude past the border; the aside
+        // inside owns the (hidden) scroll.
+        div { class: "relative hidden lg:flex {desktop_width} shrink-0 lg:flex-col transition-[width] duration-200 ease-in-out",
+            aside { class: "flex-1 min-h-0 flex flex-col bg-surface-2 border-r border-line overflow-y-auto overscroll-contain scrollbar-hide",
+                SidebarContent { persist_scroll: true, collapsed }
+            }
+            // Half-circle collapse handle on the right border. The chevron
+            // points the way the click moves the rail: right to expand when
+            // collapsed, left (rotate-180) to collapse when open.
+            button {
+                class: "absolute top-1/2 right-0 -translate-y-1/2 translate-x-full z-30 flex h-10 w-5 items-center justify-center rounded-r-full border border-l-0 border-line bg-surface-2 text-subtle shadow-sm hover:text-content focus:outline-none",
+                aria_label: "{toggle_title}",
+                aria_expanded: if collapsed { "false" } else { "true" },
+                title: "{toggle_title}",
+                onclick: move |_| {
+                    let now = rail_collapsed.read().0;
+                    rail_collapsed.set(crate::hooks::SidebarCollapsed(!now));
+                },
+                svg {
+                    class: if collapsed { "w-4 h-4" } else { "w-4 h-4 rotate-180" },
+                    xmlns: "http://www.w3.org/2000/svg",
+                    fill: "none",
+                    view_box: "0 0 24 24",
+                    stroke_width: "2",
+                    stroke: "currentColor",
+                    path {
+                        stroke_linecap: "round",
+                        stroke_linejoin: "round",
+                        d: "m8.25 4.5 7.5 7.5-7.5 7.5",
+                    }
                 }
             }
-            SidebarContent { persist_scroll: true, collapsed }
         }
     }
 }
@@ -275,7 +286,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                 id: nav_id,
                 // Collapsed: tighter horizontal padding so icons center in the
                 // narrow strip; expanded keeps the original px-2.
-                class: if collapsed { "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin px-1 pt-1 pb-4 space-y-1" } else { "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin px-2 pt-1 pb-4 space-y-1" },
+                class: if collapsed { "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-hide px-1 pt-1 pb-4 space-y-1" } else { "flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-hide px-2 pt-1 pb-4 space-y-1" },
                 // On mount of the persistent desktop sidebar, jump straight
                 // to the offset recorded before the last navigation so the
                 // re-mount is invisible. `peek` so reading it here never
