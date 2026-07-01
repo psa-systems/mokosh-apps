@@ -434,10 +434,12 @@ fn NavSection(props: NavSectionProps) -> Element {
     // never touch it here) so re-expanding the rail restores each section's
     // prior open/closed state.
     if props.rail_collapsed {
-        // MAPPS-346: tight collapsed density so the icon-only rail fits
-        // without scrolling. A small pt keeps groups visually distinct.
+        // MAPPS-346: `display: contents` so this section's icons become
+        // direct flex children of the nav. That lets the nav's
+        // justify-between distribute every icon with one consistent gap
+        // instead of spacing the section groups apart.
         return rsx! {
-            div { class: "pt-1 space-y-0.5",
+            div { class: "contents",
                 {props.children}
             }
         };
