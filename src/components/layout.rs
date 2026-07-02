@@ -109,6 +109,15 @@ pub fn AppLayout(props: AppLayoutProps) -> Element {
             // so any page or hook can push notifications without
             // wiring its own container.
             crate::hooks::toast::ToastRoot {}
+
+            // MAPPS-348: terminal "your bunyip account was deleted"
+            // overlay. Renders nothing while the ACCOUNT_DELETED flag
+            // is false (the common case); once mokosh-server returns a
+            // 410 Gone with `code: ACCOUNT_DELETED` the shared fetch
+            // layer flips the flag and this covers the app with the
+            // blocking modal + logout countdown. Sits at the layout
+            // root so every route inherits it.
+            super::AccountDeletedOverlay {}
         }
     }
 }
