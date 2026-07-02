@@ -14,6 +14,8 @@
 
 use dioxus::prelude::*;
 use serde::Deserialize;
+#[cfg(feature = "web")]
+use wasm_bindgen::JsCast;
 
 use crate::components::Input;
 use crate::utils::url::urlencoding_minimal;
@@ -68,6 +70,25 @@ pub fn GlobalSearch() -> Element {
     let mut expanded = use_signal(|| false);
     let navigator = use_navigator();
 
+    // MAPPS-347: focus the entry as soon as it expands, without touching the
+    // shared `Input` component. Running the effect at top level (Dioxus hook
+    // ordering) and gating the focus call on `expanded()` keeps this local to
+    // the search component. The effect fires after commit, so the input is
+    // mounted by the time we `getElementById` it.
+    #[cfg(feature = "web")]
+    use_effect(move || {
+        if expanded() {
+            if let Some(el) = web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.get_element_by_id("global_search"))
+            {
+                if let Ok(input) = el.dyn_into::<web_sys::HtmlElement>() {
+                    let _ = input.focus();
+                }
+            }
+        }
+    });
+
     // Reading the query signal inside the resource closure subscribes
     // the resource to it so each keystroke re-fetches (same pattern as
     // CompanyPicker / ContactPicker). The empty / very-short branches
@@ -118,7 +139,20 @@ pub fn GlobalSearch() -> Element {
             // icon nor the sibling action chips shift when it opens.
             if expanded() {
                 div { class: "absolute right-full top-1/2 -translate-y-1/2 mr-2 z-20 w-72",
-                    div { class: "relative",
+                    // MAPPS-347: Escape handler lives on the wrapper div, so
+                    // keydown bubbles up from the focused input to here. This
+                    // keeps the shared `Input` component free of extra event
+                    // handlers (they interfered with inline-error rendering on
+                    // the ticket-create form).
+                    div {
+                        class: "relative",
+                        onkeydown: move |e: KeyboardEvent| {
+                            if e.key() == Key::Escape {
+                                query.set(String::new());
+                                show_dropdown.set(false);
+                                expanded.set(false);
+                            }
+                        },
                 div { class: "absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-subtle",
                     // Inline magnifier glyph - the icons module doesn't
                     // ship a search icon and this is the only consumer.
@@ -145,19 +179,9 @@ pub fn GlobalSearch() -> Element {
                     placeholder: "Search tickets, contacts, companies...",
                     value: query.read().clone(),
                     class: "pl-9".to_string(),
-                    // MAPPS-346: ready to type the moment the icon expands.
-                    autofocus: true,
                     oninput: move |e: FormEvent| {
                         query.set(e.value());
                         show_dropdown.set(true);
-                    },
-                    onkeydown: move |e: KeyboardEvent| {
-                        // Escape is an explicit cancel: clear and collapse.
-                        if e.key() == Key::Escape {
-                            query.set(String::new());
-                            show_dropdown.set(false);
-                            expanded.set(false);
-                        }
                     },
                 }
             }
