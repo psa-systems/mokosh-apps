@@ -2,6 +2,7 @@
 //!
 //! This module contains reusable Dioxus components used throughout the application.
 
+mod account_deleted_overlay;
 mod asset_picker;
 mod bar_chart;
 mod bulk_actions;
@@ -30,6 +31,7 @@ mod table;
 mod theme_picker;
 mod update_banner;
 
+pub use account_deleted_overlay::*;
 pub use asset_picker::*;
 pub use bar_chart::*;
 pub use bulk_actions::*;

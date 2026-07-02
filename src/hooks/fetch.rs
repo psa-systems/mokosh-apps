@@ -51,6 +51,36 @@ pub fn active_tenant_generation() -> u64 {
 #[cfg(feature = "web")]
 pub static SERVER_REACHABLE: GlobalSignal<bool> = Signal::global(|| true);
 
+/// MAPPS-348: sticky "the current user's bunyip account was deleted" flag.
+/// Flipped to `true` the moment ANY fetch on the SPA sees a `410 Gone`
+/// response carrying `error.code == "ACCOUNT_DELETED"` (the terminal
+/// signal mokosh-server emits from every auth extractor when
+/// `users.deleted_at` is set - see mokosh-server MAPPS-348). Never
+/// flipped back to `false`: this is a one-way transition, the same
+/// deletion the Bunyip webhook triggered on the server. The AppLayout
+/// reads it via [`crate::hooks::use_account_deleted`] and renders the
+/// terminal modal + logout countdown; the fetch layer STOPS bubbling
+/// the 4xx through the per-page error surface once the signal has
+/// flipped, so a burst of 410s does not spam toasts on top of the
+/// modal.
+///
+/// GlobalSignal (not context) for the same reason [`SERVER_REACHABLE`]
+/// is: the `api` helpers are plain async fns and can't reach a
+/// context-provided signal.
+#[cfg(feature = "web")]
+pub static ACCOUNT_DELETED: GlobalSignal<bool> = Signal::global(|| false);
+
+/// Flip [`ACCOUNT_DELETED`] to `true`. Idempotent (called from every
+/// fetch on the error path once the account is tombstoned, but only
+/// writes to the signal on the first observation) so a burst of
+/// concurrent 410s does not wake readers repeatedly.
+#[cfg(feature = "web")]
+pub(crate) fn note_account_deleted() {
+    if !*ACCOUNT_DELETED.peek() {
+        *ACCOUNT_DELETED.write() = true;
+    }
+}
+
 /// Classify a completed HTTP response. Any response at all - even a 4xx -
 /// proves the server is reachable, so it clears the "down" state. A `5xx`
 /// is treated as "down" per MAPPS-333: the server is up but failing, and
@@ -238,6 +268,15 @@ pub mod api {
         let body = response.text().await.unwrap_or_default();
         match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
             Ok(env) => {
+                // MAPPS-348: 410 Gone with `ACCOUNT_DELETED` is the terminal
+                // signal from mokosh-server that the bunyip account was
+                // deleted (users.deleted_at is set). Flip the global signal
+                // so AppLayout renders the terminal modal; the returned
+                // message is still surfaced to any caller that inspects it,
+                // but the overlay will normally block further UI.
+                if status == 410 && env.error.code == "ACCOUNT_DELETED" {
+                    super::note_account_deleted();
+                }
                 let fields = env.error.errors.unwrap_or_default();
                 if status == 422 && !fields.is_empty() {
                     fields
@@ -633,7 +672,15 @@ pub mod api {
         let body = response.text().await.unwrap_or_default();
         let (message, fields) =
             match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
-                Ok(env) => (env.error.message, env.error.errors.unwrap_or_default()),
+                Ok(env) => {
+                    // MAPPS-348: mirror `status_error`'s terminal-state
+                    // detection on the typed path so a fetch on either
+                    // helper flips the global `ACCOUNT_DELETED` signal.
+                    if status == 410 && env.error.code == "ACCOUNT_DELETED" {
+                        super::note_account_deleted();
+                    }
+                    (env.error.message, env.error.errors.unwrap_or_default())
+                }
                 // Fall back to the raw body, capped so a runaway HTML
                 // 500 page doesn't end up in a toast.
                 Err(_) => (body.chars().take(200).collect(), Vec::new()),
