@@ -74,15 +74,6 @@ pub struct InputProps {
     /// `<label for>` keeps doing the work for the common case.
     #[props(default)]
     aria_label: String,
-    /// MAPPS-346: focus the field as soon as it mounts. Off by default so
-    /// existing call sites are unaffected; `GlobalSearch` turns it on so the
-    /// input is ready to type in the moment its collapsed icon expands.
-    #[props(default = false)]
-    autofocus: bool,
-    /// MAPPS-346: optional keydown passthrough (e.g. `GlobalSearch` collapses
-    /// on `Escape`). Default no-op leaves other call sites unchanged.
-    #[props(default)]
-    onkeydown: EventHandler<KeyboardEvent>,
 }
 
 /// Text input component
@@ -148,16 +139,6 @@ pub fn Input(props: InputProps) -> Element {
                 "data-testid": props.data_testid.as_deref(),
                 oninput: move |e| props.oninput.call(e),
                 onblur: move |_| touched.set(true),
-                onkeydown: move |e| props.onkeydown.call(e),
-                onmounted: move |e| {
-                    // MAPPS-346: opt-in autofocus. Mirrors the modal focus
-                    // pattern (set_focus is async, so spawn it).
-                    if props.autofocus {
-                        spawn(async move {
-                            let _ = e.set_focus(true).await;
-                        });
-                    }
-                },
             }
             if !shown_error.is_empty() {
                 p { class: "text-sm leading-5 text-red-600 dark:text-red-400",
