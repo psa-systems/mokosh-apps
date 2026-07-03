@@ -91,48 +91,44 @@ fn priority_badge(name: &str) -> BadgeVariant {
 /// Main dashboard page component
 #[component]
 pub fn DashboardPage() -> Element {
-    let report_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<DashboardReport>("/reports/dashboard")
-            .await
-            .ok()
-            .unwrap_or_default()
+    // MAPPS-351: the dashboard report is this page's PRIMARY resource. All
+    // four loads go through `use_remote_resource`, which (a) preserves a
+    // failed fetch instead of swallowing it to an empty default, and (b)
+    // subscribes to the server-reachable flag so every resource
+    // auto-refetches the instant the MAPPS-333 recovery poll flips the
+    // server back. If the primary is `Unavailable` (failed while the server
+    // is down) we render the honest ContentUnavailable body instead of an
+    // empty, misleading dashboard. (These hooks run unconditionally and in
+    // a fixed order before any early return, per the rules of hooks.)
+    let report_data = crate::hooks::use_remote_resource(|| async {
+        crate::hooks::fetch::api::get_authed::<DashboardReport>("/reports/dashboard").await
     });
-    let tickets_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
+    let tickets = crate::hooks::use_remote_resource(|| async {
         crate::hooks::fetch::api::get_authed::<Paginated<DashTicket>>("/tickets")
             .await
-            .ok()
             .map(|p| p.data)
-            .unwrap_or_default()
-    });
-    let time_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
+    })
+    .value_or_default();
+    let time_entries = crate::hooks::use_remote_resource(|| async {
         crate::hooks::fetch::api::get_authed::<Paginated<DashTimeEntry>>("/time-entries")
             .await
-            .ok()
             .map(|p| p.data)
-            .unwrap_or_default()
-    });
-    let projects_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
+    })
+    .value_or_default();
+    let projects = crate::hooks::use_remote_resource(|| async {
         crate::hooks::fetch::api::get_authed::<Paginated<DashProject>>("/projects")
             .await
-            .ok()
             .map(|p| p.data)
-            .unwrap_or_default()
-    });
+    })
+    .value_or_default();
 
-    let report = report_resource.read_unchecked().clone().unwrap_or_default();
-    let tickets = tickets_resource
-        .read_unchecked()
-        .clone()
-        .unwrap_or_default();
-    let time_entries = time_resource.read_unchecked().clone().unwrap_or_default();
-    let projects = projects_resource
-        .read_unchecked()
-        .clone()
-        .unwrap_or_default();
+    if report_data.is_unavailable() {
+        // Already on the dashboard, so no self-referential "Go to dashboard".
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Dashboard".to_string(), show_dashboard_link: false }
+        };
+    }
+    let report = report_data.value_or_default();
 
     // Stat values.
     let open_tickets: i64 = report.open_by_priority.iter().map(|b| b.count).sum();

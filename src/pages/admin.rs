@@ -91,6 +91,9 @@ pub fn TenantManagementPage() -> Element {
         // F1: re-fetch on org switch / token swap so the roster reflects
         // the active scope instead of the prior tenant's cached rows.
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-351: also refetch on reconnect so the roster drops the demo
+        // fallback once the real backend answers again.
+        let _reachable = crate::hooks::use_server_reachable();
         let token = match crate::hooks::fetch::api::current_access_token() {
             Some(t) => t,
             None => return (Vec::<RemoteTenant>::new(), TenantSource::Demo),
@@ -108,6 +111,18 @@ pub fn TenantManagementPage() -> Element {
         Some((rows, source)) => (rows.clone(), *source),
         None => (Vec::new(), TenantSource::Demo),
     };
+
+    // MAPPS-351: this page intentionally falls back to demo rows when the
+    // backend errors, so it stays demoable. But when the server is flagged
+    // DOWN, those demo rows would masquerade as real data during an outage -
+    // show the honest unavailable state instead. Gated on the reachability
+    // flag so a reachable no-token / 4xx keeps the demo fallback. Clears on
+    // reconnect (the resource subscribes to reachability above).
+    if !crate::hooks::use_server_reachable() && source == TenantSource::Demo && !is_loading {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Tenant Management".to_string() }
+        };
+    }
 
     // Stat-card counts are derived from the same data the table renders,
     // so they stay in sync with the roster instead of the old hardcoded
