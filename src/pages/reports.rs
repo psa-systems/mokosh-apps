@@ -196,6 +196,9 @@ struct ReportView {
 /// Reports home page
 #[component]
 pub fn ReportsPage() -> Element {
+    // MAPPS-357: N/A - this landing page is not data-driven. It renders a
+    // static, hard-coded catalog of report categories with no fetch, so there
+    // is no primary resource that can fail and no write control to gate.
     rsx! {
         AppLayout { title: "Reports",
             PageHeader {
@@ -339,17 +342,27 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
         _ => "Report",
     };
 
+    // MAPPS-357: the normalised report view is this page's PRIMARY resource.
+    // It flows through `use_remote_resource`, which preserves a failed fetch
+    // (instead of the old `.unwrap_or_default()` that made an outage look like
+    // an empty report) and auto-refetches on reconnect. `build_view` returns a
+    // raw `Result`; a failure while the server is still reachable (e.g. a
+    // role-gated billing 403) degrades to an empty view inside `build_view`, so
+    // only a genuine outage reaches `Unavailable`. The hook reads
+    // `active_tenant_generation` internally, so the explicit subscription the
+    // old hand-rolled resource carried is no longer needed here.
     let report_type = props.report_type.clone();
-    let view_resource = use_resource(move || {
+    let view_data = crate::hooks::use_remote_resource(move || {
         let rt = report_type.clone();
-        async move {
-            let _gen = crate::hooks::fetch::active_tenant_generation();
-            build_view(&rt).await
-        }
+        async move { build_view(&rt).await }
     });
-    let view = view_resource.read_unchecked().clone();
-    let is_loading = view.is_none();
-    let view = view.unwrap_or_default();
+    let is_loading = view_data.is_loading();
+    if view_data.is_unavailable() {
+        return rsx! {
+            crate::components::ContentUnavailable { title: report_title.to_string() }
+        };
+    }
+    let view = view_data.value_or_default();
 
     rsx! {
         AppLayout { title: report_title,
@@ -482,20 +495,42 @@ fn chart_data_from_breakdown(rows: &[(String, String)]) -> Vec<BarChartDatum> {
         .collect()
 }
 
+/// MAPPS-357: fetch a report payload for `build_view`, degrading a failure
+/// that happened while the server is still reachable (a role-gated 403, a
+/// one-off decode error) to the type default - exactly the prior best-effort
+/// `.unwrap_or_default()` behavior - while propagating a failure caused by an
+/// unreachable server so the primary resource becomes `Unavailable` and the
+/// page renders the honest outage state instead of a report full of zeros.
+async fn fetch_or_default<T>(path: &str) -> Result<T, String>
+where
+    T: Default + serde::de::DeserializeOwned,
+{
+    match crate::hooks::fetch::api::get_authed::<T>(path).await {
+        Ok(v) => Ok(v),
+        // Reachable failure: preserve the old degrade-to-default behavior.
+        Err(_) if crate::hooks::use_server_reachable() => Ok(T::default()),
+        // Server unreachable: surface the outage to the caller.
+        Err(e) => Err(e),
+    }
+}
+
 /// Fetch the backend report a `report_type` maps to and normalise it into a
-/// `ReportView`. Each fetch is best-effort (`.ok()`); billing requires a
-/// manager role, so a lower-privilege session yields an empty billing view.
-async fn build_view(report_type: &str) -> ReportView {
+/// `ReportView`. MAPPS-357: returns `Err` only when the PRIMARY fetch fails
+/// while the server is unreachable, so the page can surface an outage; a
+/// failure while the server is still reachable degrades to the type default
+/// via `fetch_or_default`. Billing requires a manager role, so a
+/// lower-privilege session still yields an empty (but supported) billing view.
+async fn build_view(report_type: &str) -> Result<ReportView, String> {
     match report_kind(report_type) {
         ReportKind::Tickets => {
-            let tickets = crate::hooks::fetch::api::get_authed::<TicketsReport>("/reports/tickets")
-                .await
-                .unwrap_or_default();
+            let tickets = fetch_or_default::<TicketsReport>("/reports/tickets").await?;
+            // Secondary KPI aggregate: degrade to zeros on any failure (during
+            // a real outage the primary fetch above already returned early).
             let dash = crate::hooks::fetch::api::get_authed::<DashReport>("/reports/dashboard")
                 .await
                 .unwrap_or_default();
             let open: i64 = tickets.opened_by_status.iter().map(|b| b.count).sum();
-            ReportView {
+            Ok(ReportView {
                 supported: true,
                 summary: vec![
                     ("Tickets closed".into(), tickets.closed_total.to_string()),
@@ -509,14 +544,12 @@ async fn build_view(report_type: &str) -> ReportView {
                     .iter()
                     .map(|b| (b.label.clone(), b.count.to_string()))
                     .collect(),
-            }
+            })
         }
         ReportKind::Time => {
-            let time = crate::hooks::fetch::api::get_authed::<TimeReport>("/reports/time")
-                .await
-                .unwrap_or_default();
+            let time = fetch_or_default::<TimeReport>("/reports/time").await?;
             let total_min: i64 = time.minutes_by_user.iter().map(|u| u.count).sum();
-            ReportView {
+            Ok(ReportView {
                 supported: true,
                 summary: vec![
                     (
@@ -534,13 +567,11 @@ async fn build_view(report_type: &str) -> ReportView {
                 ],
                 breakdown_title: String::new(),
                 breakdown: Vec::new(),
-            }
+            })
         }
         ReportKind::Billing => {
-            let billing = crate::hooks::fetch::api::get_authed::<BillingReport>("/reports/billing")
-                .await
-                .unwrap_or_default();
-            ReportView {
+            let billing = fetch_or_default::<BillingReport>("/reports/billing").await?;
+            Ok(ReportView {
                 supported: true,
                 summary: vec![
                     ("Invoiced".into(), format_money_str(&billing.invoiced)),
@@ -553,14 +584,12 @@ async fn build_view(report_type: &str) -> ReportView {
                     .iter()
                     .map(|a| (a.bucket.clone(), format_money_str(&a.total)))
                     .collect(),
-            }
+            })
         }
         ReportKind::Projects => {
-            let p = crate::hooks::fetch::api::get_authed::<ProjectsReport>("/reports/projects")
-                .await
-                .unwrap_or_default();
+            let p = fetch_or_default::<ProjectsReport>("/reports/projects").await?;
             let tasks = format!("{}/{}", p.tasks_completed, p.tasks_total);
-            ReportView {
+            Ok(ReportView {
                 supported: true,
                 summary: vec![
                     ("Budget hours".into(), format!("{:.1}", pf(&p.budget_hours))),
@@ -576,14 +605,12 @@ async fn build_view(report_type: &str) -> ReportView {
                     .iter()
                     .map(|b| (b.label.clone(), b.count.to_string()))
                     .collect(),
-            }
+            })
         }
         ReportKind::Clients => {
-            let c = crate::hooks::fetch::api::get_authed::<ClientsReport>("/reports/clients")
-                .await
-                .unwrap_or_default();
+            let c = fetch_or_default::<ClientsReport>("/reports/clients").await?;
             let companies = format!("{}/{}", c.companies_active, c.companies_total);
-            ReportView {
+            Ok(ReportView {
                 supported: true,
                 summary: vec![
                     ("Active companies".into(), companies),
@@ -601,9 +628,9 @@ async fn build_view(report_type: &str) -> ReportView {
                     .iter()
                     .map(|b| (b.label.clone(), b.count.to_string()))
                     .collect(),
-            }
+            })
         }
-        ReportKind::Unsupported => ReportView::default(),
+        ReportKind::Unsupported => Ok(ReportView::default()),
     }
 }
 
@@ -613,6 +640,14 @@ async fn build_view(report_type: &str) -> ReportView {
 /// columns / rows / totals table. No raw SQL is ever exposed (PMS-180).
 #[component]
 fn CustomReportBuilder() -> Element {
+    // MAPPS-357: N/A for the ContentUnavailable retrofit. This is a private
+    // helper component (not a routed `*Page`), and it already surfaces an
+    // explicit failure state: the `load_err` branch below renders "Could not
+    // load the report catalog. The reports service may be unavailable." when
+    // the schema fetch fails, so an outage does not read as an empty builder.
+    // "Run report" POSTs a query spec (a read that computes a report, not a
+    // create/update/delete), so it is intentionally left enabled like a
+    // refresh control rather than gated on `can_mutate`.
     let schema_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_authed::<Vec<SourceSchema>>("/reports/custom/schema").await

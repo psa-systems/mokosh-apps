@@ -54,7 +54,11 @@ fn default_grid_span() -> u32 {
     4
 }
 
-#[derive(Clone, Debug, Deserialize)]
+// MAPPS-357: `Default` is required so this row can back a
+// `use_remote_resource::<SavedDashboardRow>` (the hook's `T: Default` bound);
+// the default row is only ever produced for a non-outage failure the hook
+// degrades to `Ready(default)`, never rendered as real content.
+#[derive(Clone, Debug, Default, Deserialize)]
 struct SavedDashboardRow {
     #[allow(dead_code)]
     id: Uuid,
@@ -112,23 +116,40 @@ pub fn catalog_lookup(key: &str) -> Option<&'static WidgetCatalogEntry> {
 #[component]
 pub fn SavedDashboardViewPage(id: String) -> Element {
     let version = use_signal(|| 0u32);
+    // MAPPS-357: computed once in the body (a plain reactive flag read) so the
+    // editor's Save re-enables itself on reconnect. Read before any early
+    // return, per the rules of hooks.
+    let can_mutate = crate::hooks::use_can_mutate();
     let id_for_fetch = id.clone();
-    let row_resource = use_resource(move || {
+    // MAPPS-357: the saved dashboard row is this page's PRIMARY resource - if
+    // it fails to load, there is nothing meaningful to render. Move to
+    // `use_remote_resource` so an outage surfaces the honest unavailable state
+    // instead of a perpetual "Loading...". The fetcher returns the raw
+    // `Result` (no `.ok()`); the `version` subscription stays inside the
+    // closure so a Save still refetches, and the hook adds the
+    // reachability + tenant-generation deps itself.
+    let row_resource = crate::hooks::use_remote_resource(move || {
         let id = id_for_fetch.clone();
         async move {
-            let _gen = crate::hooks::fetch::active_tenant_generation();
             let _ = version.read();
             crate::hooks::fetch::api::get_authed::<SavedDashboardRow>(&format!("/dashboards/{id}"))
                 .await
-                .ok()
         }
     });
-    let row = row_resource.read_unchecked().clone().flatten();
+    if row_resource.is_unavailable() {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Dashboard".to_string() }
+        };
+    }
+    // `into_ready()` keeps the Loading (None) vs Ready (Some) distinction the
+    // old `.flatten()` provided, so a still-loading page keeps its "Loading..."
+    // header rather than flashing an empty editor.
+    let row = row_resource.into_ready();
 
     rsx! {
         AppLayout {
             match row {
-                Some(d) => render_with_editor(d, version),
+                Some(d) => render_with_editor(d, version, can_mutate),
                 None => rsx! {
                     PageHeader {
                         title: "Dashboard".to_string(),
@@ -145,14 +166,26 @@ pub fn SavedDashboardViewPage(id: String) -> Element {
 /// renders the v1 hardcoded dashboard as the fallback.
 #[component]
 pub fn DefaultDashboardPage() -> Element {
-    let default_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
+    // MAPPS-357: the pinned-default lookup is this page's PRIMARY resource.
+    // On an outage the old `.ok().flatten()` collapsed a failed fetch to
+    // `None`, which silently fell through to the hardcoded dashboard and hid
+    // the outage as "no pin". `use_remote_resource` keeps the failure so we
+    // render the honest unavailable state instead. The fetcher returns the raw
+    // `Result<Option<_>, _>`; a real absence still resolves to `Ready(None)`.
+    let default_resource = crate::hooks::use_remote_resource(|| async {
         crate::hooks::fetch::api::get_authed::<Option<SavedDashboardRow>>("/dashboards/default")
             .await
-            .ok()
-            .flatten()
     });
-    let pinned = default_resource.read_unchecked().clone().flatten();
+    if default_resource.is_unavailable() {
+        // This is the /dashboard entrypoint, so no self-referential link.
+        return rsx! {
+            crate::components::ContentUnavailable {
+                title: "Dashboard".to_string(),
+                show_dashboard_link: false,
+            }
+        };
+    }
+    let pinned = default_resource.value_or_default();
 
     match pinned {
         Some(d) => rsx! {
@@ -173,7 +206,7 @@ fn render_read_only(d: SavedDashboardRow) -> Element {
     }
 }
 
-fn render_with_editor(d: SavedDashboardRow, mut version: Signal<u32>) -> Element {
+fn render_with_editor(d: SavedDashboardRow, mut version: Signal<u32>, can_mutate: bool) -> Element {
     let initial: DashboardLayout = serde_json::from_value(d.layout.clone()).unwrap_or_default();
     let mut editing = use_signal(|| false);
     let mut draft = use_signal(|| initial.clone());
@@ -237,8 +270,19 @@ fn render_with_editor(d: SavedDashboardRow, mut version: Signal<u32>) -> Element
     let actions = if *editing.read() {
         rsx! {
             div { class: "inline-flex gap-2",
+                // Cancel only resets the in-memory draft (no server call), so
+                // it stays enabled while down; only Save writes to the server.
                 Button { variant: ButtonVariant::Secondary, onclick: on_cancel, "Cancel" }
-                Button { variant: ButtonVariant::Primary, onclick: on_save, "Save layout" }
+                // MAPPS-357: Save is the only control that writes to the server
+                // (PATCH /dashboards/{id}); block it while the server is
+                // unreachable so the click cannot silently fail.
+                Button {
+                    variant: ButtonVariant::Primary,
+                    onclick: on_save,
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't save the layout while the server is unreachable".to_string()),
+                    "Save layout"
+                }
             }
         }
     } else {
@@ -254,6 +298,11 @@ fn render_with_editor(d: SavedDashboardRow, mut version: Signal<u32>) -> Element
             actions: actions,
         }
         if *editing.read() {
+            // MAPPS-357: the add-widget buttons, the per-widget coord inputs,
+            // and Remove all mutate the in-memory `draft` only (never the
+            // server); they are persisted solely by the disabled Save, so they
+            // stay enabled while down - mirroring team.rs, where the invite
+            // form inputs stay editable and only the submit is blocked.
             Card { title: "Add widget".to_string(),
                 div { class: "flex flex-wrap gap-2",
                     for entry in WIDGET_CATALOG.iter() {

@@ -54,7 +54,9 @@ pub fn SlaManagementPage() -> Element {
         .map(|u| u.role.is_admin())
         .unwrap_or(false);
 
-    let mut tab = use_signal(|| SlaTab::Policies);
+    // Not `mut`: the tab-switch buttons now live in `SlaShell`, which
+    // receives this signal and writes it. This component only reads it.
+    let tab = use_signal(|| SlaTab::Policies);
 
     if !is_admin {
         return rsx! {
@@ -71,8 +73,34 @@ pub fn SlaManagementPage() -> Element {
         };
     }
 
+    // MAPPS-357: the AppLayout + tab-bar chrome moved into `SlaShell` so each
+    // tab owns it. That lets a tab whose primary resource fails during an
+    // outage return the full-page ContentUnavailable (a single AppLayout)
+    // instead of nesting a second AppLayout inside this one.
     let current = *tab.read();
 
+    match current {
+        SlaTab::Policies => rsx! { SlaPoliciesTab { tab } },
+        SlaTab::BusinessHours => rsx! { BusinessHoursTab { tab } },
+        SlaTab::Holidays => rsx! { HolidayCalendarsTab { tab } },
+    }
+}
+
+/// MAPPS-357: shared chrome for the three SLA tabs. Owning the AppLayout,
+/// page header, and tab bar here (rather than in `SlaManagementPage`) lets a
+/// tab return the full-page `ContentUnavailable` on an outage without nesting
+/// a second AppLayout. The tab bar reads and writes the shared `tab` signal so
+/// switching tabs still swaps the active surface.
+#[derive(Props, Clone, PartialEq)]
+struct SlaShellProps {
+    tab: Signal<SlaTab>,
+    children: Element,
+}
+
+#[component]
+fn SlaShell(props: SlaShellProps) -> Element {
+    let mut tab = props.tab;
+    let current = *tab.read();
     rsx! {
         AppLayout { title: "SLA Management",
             PageHeader {
@@ -101,11 +129,7 @@ pub fn SlaManagementPage() -> Element {
                 }
             }
 
-            match current {
-                SlaTab::Policies => rsx! { SlaPoliciesTab {} },
-                SlaTab::BusinessHours => rsx! { BusinessHoursTab {} },
-                SlaTab::Holidays => rsx! { HolidayCalendarsTab {} },
-            }
+            {props.children}
         }
     }
 }
@@ -139,9 +163,16 @@ fn SlaTabButton(props: SlaTabButtonProps) -> Element {
 // =========================================================================
 
 #[component]
-fn SlaPoliciesTab() -> Element {
+fn SlaPoliciesTab(tab: Signal<SlaTab>) -> Element {
+    // MAPPS-357: the policies list is this tab's PRIMARY resource. Pattern B:
+    // it stays a hand-rolled `use_resource` (the create/edit flow calls
+    // `policies.restart()`) and keeps `.ok()` - NOT `.unwrap_or_default()` -
+    // so a failed load stays distinguishable from an empty policy set and can
+    // render `ContentUnavailable`. The `_reachable` read subscribes it so the
+    // list auto-refetches on reconnect.
     let mut policies = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _reachable = crate::hooks::use_server_reachable();
         let _token = crate::hooks::fetch::api::current_access_token()?;
         crate::hooks::fetch::api::get_authed_typed::<Paginated<SlaPolicy>>(&format!(
             "/sla/policies?page=1&per_page={PER_PAGE}"
@@ -167,10 +198,27 @@ fn SlaPoliciesTab() -> Element {
         _ => 0,
     };
 
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty policy set - render the honest unavailable page (which keeps
+    // the nav + banner) instead of an empty table. A fetch that fails while the
+    // server is still reachable (a 4xx) keeps the inline banner below. Writes
+    // are blocked while down; `can_mutate` disables the create control.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "SLA Management".to_string() }
+        };
+    }
+
     rsx! {
+        SlaShell { tab,
         div { class: "mb-4 flex justify-end",
             Button {
                 variant: ButtonVariant::Primary,
+                // MAPPS-357: block create while the server is unreachable.
+                disabled: !can_mutate,
+                title: (!can_mutate).then(|| "Can't create a policy while the server is unreachable".to_string()),
                 onclick: move |_| editing.set(Some(PolicyFormState::new())),
                 "New Policy"
             }
@@ -269,6 +317,7 @@ fn SlaPoliciesTab() -> Element {
                 policy_name,
                 onclose: move |_| { targets_for.set(None); },
             }
+        }
         }
     }
 }
@@ -410,6 +459,9 @@ fn PolicyFormModal(props: PolicyFormModalProps) -> Element {
         });
     };
 
+    // MAPPS-357: block the save while the server is unreachable so a click
+    // cannot silently fail (edits are discarded, not queued).
+    let can_mutate = crate::hooks::use_can_mutate();
     let footer = rsx! {
         Button {
             variant: ButtonVariant::Secondary,
@@ -419,6 +471,8 @@ fn PolicyFormModal(props: PolicyFormModalProps) -> Element {
         Button {
             variant: ButtonVariant::Primary,
             loading: *saving.read(),
+            disabled: !can_mutate,
+            title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
             onclick: handle_save,
             if is_edit { "Save Changes" } else { "Create Policy" }
         }
@@ -789,6 +843,9 @@ fn TargetRow(props: TargetRowProps) -> Element {
 
     let has_target = target_id.is_some();
 
+    // MAPPS-357: block save / remove while the server is unreachable.
+    let can_mutate = crate::hooks::use_can_mutate();
+
     rsx! {
         TableRow {
             TableCell {
@@ -832,6 +889,8 @@ fn TargetRow(props: TargetRowProps) -> Element {
                         variant: ButtonVariant::Primary,
                         size: crate::components::ButtonSize::Small,
                         loading: *saving.read(),
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                         onclick: handle_save,
                         "Save"
                     }
@@ -840,6 +899,8 @@ fn TargetRow(props: TargetRowProps) -> Element {
                             variant: ButtonVariant::Danger,
                             size: crate::components::ButtonSize::Small,
                             loading: *deleting.read(),
+                            disabled: !can_mutate,
+                            title: (!can_mutate).then(|| "Can't remove while the server is unreachable".to_string()),
                             onclick: open_delete_confirm,
                             "Remove"
                         }
@@ -877,9 +938,16 @@ fn TargetRow(props: TargetRowProps) -> Element {
 // =========================================================================
 
 #[component]
-fn BusinessHoursTab() -> Element {
+fn BusinessHoursTab(tab: Signal<SlaTab>) -> Element {
+    // MAPPS-357: the business-hours list is this tab's PRIMARY resource.
+    // Pattern B: it stays a hand-rolled `use_resource` (the create/edit flow
+    // calls `hours.restart()`) and keeps `.ok()` so a failed load stays
+    // distinguishable from an empty set and can render `ContentUnavailable`.
+    // The `_reachable` read subscribes it so the list auto-refetches on
+    // reconnect.
     let mut hours = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _reachable = crate::hooks::use_server_reachable();
         #[cfg(feature = "web")]
         {
             let _token = crate::hooks::fetch::api::current_access_token()?;
@@ -909,10 +977,25 @@ fn BusinessHoursTab() -> Element {
         _ => 0,
     };
 
+    // MAPPS-357: outage (failed load while flagged down) -> honest unavailable
+    // page, not an empty set. A reachable 4xx keeps the inline banner below.
+    // Writes are blocked while down via `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "SLA Management".to_string() }
+        };
+    }
+
     rsx! {
+        SlaShell { tab,
         div { class: "mb-4 flex justify-end",
             Button {
                 variant: ButtonVariant::Primary,
+                // MAPPS-357: block create while the server is unreachable.
+                disabled: !can_mutate,
+                title: (!can_mutate).then(|| "Can't create business hours while the server is unreachable".to_string()),
                 onclick: move |_| editing.set(Some(BusinessHoursFormState::new())),
                 "New Business Hours"
             }
@@ -993,6 +1076,7 @@ fn BusinessHoursTab() -> Element {
                     hours.restart();
                 },
             }
+        }
         }
     }
 }
@@ -1156,6 +1240,8 @@ fn BusinessHoursFormModal(props: BusinessHoursFormModalProps) -> Element {
         });
     };
 
+    // MAPPS-357: block the save while the server is unreachable.
+    let can_mutate = crate::hooks::use_can_mutate();
     let footer = rsx! {
         Button {
             variant: ButtonVariant::Secondary,
@@ -1165,6 +1251,8 @@ fn BusinessHoursFormModal(props: BusinessHoursFormModalProps) -> Element {
         Button {
             variant: ButtonVariant::Primary,
             loading: *saving.read(),
+            disabled: !can_mutate,
+            title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
             onclick: handle_save,
             if is_edit { "Save Changes" } else { "Create" }
         }
@@ -1229,9 +1317,16 @@ fn BusinessHoursFormModal(props: BusinessHoursFormModalProps) -> Element {
 // =========================================================================
 
 #[component]
-fn HolidayCalendarsTab() -> Element {
+fn HolidayCalendarsTab(tab: Signal<SlaTab>) -> Element {
+    // MAPPS-357: the holiday-calendar list is this tab's PRIMARY resource.
+    // Pattern B: it stays a hand-rolled `use_resource` (the create/edit flow
+    // calls `calendars.restart()`) and keeps `.ok()` so a failed load stays
+    // distinguishable from an empty set and can render `ContentUnavailable`.
+    // The `_reachable` read subscribes it so the list auto-refetches on
+    // reconnect.
     let mut calendars = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _reachable = crate::hooks::use_server_reachable();
         #[cfg(feature = "web")]
         {
             let _token = crate::hooks::fetch::api::current_access_token()?;
@@ -1261,10 +1356,25 @@ fn HolidayCalendarsTab() -> Element {
         _ => 0,
     };
 
+    // MAPPS-357: outage (failed load while flagged down) -> honest unavailable
+    // page, not an empty set. A reachable 4xx keeps the inline banner below.
+    // Writes are blocked while down via `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "SLA Management".to_string() }
+        };
+    }
+
     rsx! {
+        SlaShell { tab,
         div { class: "mb-4 flex justify-end",
             Button {
                 variant: ButtonVariant::Primary,
+                // MAPPS-357: block create while the server is unreachable.
+                disabled: !can_mutate,
+                title: (!can_mutate).then(|| "Can't create a holiday calendar while the server is unreachable".to_string()),
                 onclick: move |_| editing.set(Some(HolidayFormState::new())),
                 "New Holiday Calendar"
             }
@@ -1338,6 +1448,7 @@ fn HolidayCalendarsTab() -> Element {
                     calendars.restart();
                 },
             }
+        }
         }
     }
 }
@@ -1470,6 +1581,8 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
         });
     };
 
+    // MAPPS-357: block the save while the server is unreachable.
+    let can_mutate = crate::hooks::use_can_mutate();
     let footer = rsx! {
         Button {
             variant: ButtonVariant::Secondary,
@@ -1479,6 +1592,8 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
         Button {
             variant: ButtonVariant::Primary,
             loading: *saving.read(),
+            disabled: !can_mutate,
+            title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
             onclick: handle_save,
             if is_edit { "Save Changes" } else { "Create" }
         }

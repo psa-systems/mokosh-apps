@@ -268,6 +268,9 @@ fn AuditLogContent() -> Element {
         let to = to_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-357: subscribe to reachability so the log auto-refetches the
+            // instant the server comes back (paired with the recovery poll).
+            let _reachable = crate::hooks::use_server_reachable();
             let mut path = format!("/audit-log?page={current_page}&per_page={PER_PAGE}");
             if !entity_type.is_empty() {
                 path.push_str(&format!(
@@ -350,6 +353,22 @@ fn AuditLogContent() -> Element {
         Some(Ok(resp)) => (resp.data.clone(), resp.meta.total),
         _ => (Vec::new(), 0),
     };
+    // MAPPS-357: primary resource is the audit list (`GET /audit-log`); its
+    // failure means the page has no meaningful content. (`users_resource` is
+    // secondary - FK name resolution / the user filter dropdown - and may keep
+    // degrading to an empty list.) A failed load while the server is flagged
+    // down is an outage, not an empty log: render the honest unavailable state
+    // (which keeps the nav + banner) instead of an empty table. A fetch that
+    // fails while still reachable (a 4xx) keeps the inline error banner below.
+    // The raw `Result` is preserved (not collapsed to `.ok()`) so that inline
+    // `error_message` distinction survives.
+    let fetch_failed = matches!(*resource_snapshot, Some(Err(_)));
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Audit Log".to_string() }
+        };
+    }
     let has_filters = !entity_text.is_empty()
         || !action_text.is_empty()
         || !user_text.is_empty()

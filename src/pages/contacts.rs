@@ -276,6 +276,9 @@ pub fn CompanyListPage() -> Element {
         let current_page = (*page.read()).max(1);
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-357: subscribe to reachability so the list auto-refetches
+            // the instant the server comes back (paired with the recovery poll).
+            let _reachable = crate::hooks::use_server_reachable();
             let token = crate::hooks::fetch::api::current_access_token()?;
             let mut path = format!("/contacts/companies?page={current_page}&per_page={PER_PAGE}");
             if !q.is_empty() {
@@ -304,6 +307,22 @@ pub fn CompanyListPage() -> Element {
         _ => (Vec::new(), 0),
     };
     let has_filters = !search_text.is_empty() || !type_text.is_empty();
+
+    // MAPPS-357: `companies_resource` is this page's primary resource. It
+    // stays a hand-rolled `use_resource` (rather than `use_remote_resource`)
+    // because the page needs the loading / failed / `meta.total` distinction
+    // from the `Option<PaginatedCompanies>` envelope (which is not `Default`).
+    // A failed load while the server is flagged down is an outage, not an
+    // empty account list: render the honest unavailable state instead of an
+    // empty companies table. A 4xx while still reachable keeps the inline
+    // banner below. There are no write controls on this page (New = nav,
+    // Clear filters = filter reset), so nothing to gate with `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Companies".to_string() }
+        };
+    }
 
     rsx! {
         AppLayout { title: "Companies",
@@ -491,6 +510,10 @@ fn CompanyRow(props: CompanyRowProps) -> Element {
 /// New company page
 #[component]
 pub fn CompanyNewPage() -> Element {
+    // MAPPS-357: N/A for a ContentUnavailable state - this page fetches no
+    // primary entity (it is a blank create form). The one write control (the
+    // Create submit) is disabled while the server is down inside `CompanyForm`,
+    // which owns the button and is shared with the edit page.
     rsx! {
         AppLayout { title: "New Company",
             PageHeader { title: "New Company", subtitle: "Add a new company account" }
@@ -515,6 +538,9 @@ pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
         let id = id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-357: subscribe to reachability so the edited entity
+            // auto-refetches once the server comes back.
+            let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<CompanyEditPayload>(&format!(
                 "/contacts/companies/{id}"
             ))
@@ -523,6 +549,18 @@ pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
         }
     });
     let snap = detail_resource.read_unchecked();
+    // MAPPS-357: the fetched company is this edit page's primary resource. A
+    // failed load while the server is flagged down is an outage, not a missing
+    // record - render the honest unavailable state instead of "Could not load
+    // company" (which is kept below for a 4xx while still reachable). The
+    // Save submit is gated by `can_mutate` inside `CompanyForm`.
+    let fetch_failed = matches!(*snap, Some(None));
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Edit Company".to_string() }
+        };
+    }
     rsx! {
         AppLayout { title: "Edit Company",
             PageHeader { title: "Edit Company" }
@@ -731,6 +769,10 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     };
 
     let navigator = use_navigator();
+    // MAPPS-357: block the Create / Save submit while the server is
+    // unreachable so a write cannot silently fail (edits are discarded, not
+    // queued). Reactive: re-enables on reconnect.
+    let can_mutate = crate::hooks::use_can_mutate();
     let submit_label = match &mode {
         CompanyFormMode::Create => "Create Company",
         CompanyFormMode::Edit { .. } => "Save Changes",
@@ -1036,6 +1078,9 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         r#type: "submit",
                         variant: ButtonVariant::Primary,
                         loading: *is_submitting.read(),
+                        // MAPPS-357: block the submit while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                         "{submit_label}"
                     }
                 }
@@ -1251,10 +1296,15 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     let company_id_for_edit = company_id_str.clone();
     let company_id_for_delete = company_id_str.clone();
 
+    // MAPPS-357: the company record is this detail page's primary resource
+    // (the child-list resources below are secondary and keep degrading to
+    // their own empty/error cards). Subscribe to reachability so it
+    // auto-refetches on reconnect.
     let company_resource = use_resource(move || {
         let id = company_id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<CompanyDetail>(&format!(
                 "/contacts/companies/{id}"
             ))
@@ -1395,6 +1445,8 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     let edit_id = company_id_for_edit.clone();
     let delete_id = company_id_for_delete.clone();
     let mut confirming_delete = use_signal(|| false);
+    // MAPPS-357: gate the destructive Delete while the server is unreachable.
+    let can_mutate = crate::hooks::use_can_mutate();
     let on_confirm_delete = move |_: ()| {
         if *deleting.read() {
             return;
@@ -1413,6 +1465,18 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
             confirming_delete.set(false);
         });
     };
+
+    // MAPPS-357: a failed load of the primary company while the server is
+    // flagged down is an outage, not a missing record - render the honest
+    // unavailable state instead of "Could not load company" (kept below for a
+    // 4xx while still reachable).
+    let fetch_failed = matches!(*company_snapshot, Some(None));
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Company".to_string() }
+        };
+    }
 
     rsx! {
         AppLayout { title: "{header_title}",
@@ -1461,6 +1525,9 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                     Button {
                         variant: ButtonVariant::Danger,
                         loading: *deleting.read(),
+                        // MAPPS-357: block delete while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                         onclick: move |_| {
                             if !*deleting.read() {
                                 confirming_delete.set(true);
@@ -1765,6 +1832,9 @@ fn RowActions(
     let mut open = use_signal(|| false);
     let mut confirming = use_signal(|| false);
     let mut deleting = use_signal(|| false);
+    // MAPPS-357: gate the row Delete while the server is unreachable. Edit is
+    // pure navigation and stays enabled.
+    let can_mutate = crate::hooks::use_can_mutate();
 
     // Keep the trigger visible while its menu is open; otherwise reveal it only
     // on row hover (or keyboard focus within the cell, for accessibility).
@@ -1828,7 +1898,10 @@ fn RowActions(
                     }
                     button {
                         r#type: "button",
-                        class: "px-3 py-1.5 text-left text-sm text-red-600 dark:text-red-400 hover:bg-surface-2",
+                        class: "px-3 py-1.5 text-left text-sm text-red-600 dark:text-red-400 hover:bg-surface-2 disabled:opacity-50 disabled:cursor-not-allowed",
+                        // MAPPS-357: block delete while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                         onclick: move |e: MouseEvent| {
                             e.stop_propagation();
                             open.set(false);
@@ -1991,6 +2064,8 @@ fn AddContactModal(
     let mut selected_name = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-357: block the attach write while the server is unreachable.
+    let can_mutate = crate::hooks::use_can_mutate();
 
     let new_href = format!(
         "/contacts/new?company_id={}&company_name={}",
@@ -2068,6 +2143,9 @@ fn AddContactModal(
                 Button {
                     variant: ButtonVariant::Primary,
                     loading: saving(),
+                    // MAPPS-357: block attach while the server is down.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't attach while the server is unreachable".to_string()),
                     onclick: on_attach,
                     "Attach Contact"
                 }
@@ -2333,6 +2411,9 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
     let mut tz_err = use_signal(String::new);
     let mut postal_err = use_signal(String::new);
     let mut country_err = use_signal(String::new);
+    // MAPPS-357: block the site create / save / delete writes while the server
+    // is unreachable. Reactive: re-enables on reconnect.
+    let can_mutate = crate::hooks::use_can_mutate();
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -2464,6 +2545,9 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
             Button {
                 variant: ButtonVariant::Danger,
                 loading: *deleting.read(),
+                // MAPPS-357: block delete while the server is down.
+                disabled: !can_mutate,
+                title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                 onclick: handle_delete,
                 "Delete"
             }
@@ -2477,6 +2561,9 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
         Button {
             variant: ButtonVariant::Primary,
             loading: *saving.read(),
+            // MAPPS-357: block save while the server is down.
+            disabled: !can_mutate,
+            title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
             onclick: handle_save,
             if is_edit { "Save Changes" } else { "Create Site" }
         }
@@ -3222,6 +3309,9 @@ pub fn ContactListPage() -> Element {
         let current_page = (*page.read()).max(1);
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-357: subscribe to reachability so the list auto-refetches
+            // the instant the server comes back (paired with the recovery poll).
+            let _reachable = crate::hooks::use_server_reachable();
             let token = crate::hooks::fetch::api::current_access_token()?;
             let mut path = format!("/contacts/contacts?page={current_page}&per_page={PER_PAGE}");
             // MAPPS-249: scope to one company when a context card's "View All"
@@ -3258,6 +3348,21 @@ pub fn ContactListPage() -> Element {
         _ => (Vec::new(), 0),
     };
     let has_filters = !search_text.is_empty() || !type_text.is_empty() || !portal_text.is_empty();
+
+    // MAPPS-357: `contacts_resource` is this page's primary resource. It stays
+    // a hand-rolled `use_resource` (rather than `use_remote_resource`) because
+    // the page needs the loading / failed / `meta.total` distinction from the
+    // `Option<PaginatedContacts>` envelope (which is not `Default`). A failed
+    // load while the server is flagged down is an outage, not an empty list:
+    // render the honest unavailable state instead of an empty contacts table.
+    // A 4xx while still reachable keeps the inline banner below. There are no
+    // write controls on this page (New = nav, Clear filters = filter reset).
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Contacts".to_string() }
+        };
+    }
 
     rsx! {
         AppLayout { title: "Contacts",
@@ -3469,6 +3574,11 @@ fn ContactRow(props: ContactRowProps) -> Element {
 /// to fill in the contact's own fields.
 #[component]
 pub fn ContactNewPage() -> Element {
+    // MAPPS-357: N/A for a ContentUnavailable state - this page fetches no
+    // primary entity (it is a blank create form; the company prefill below is
+    // read from the URL, not the server). The one write control (the Create
+    // submit) is disabled while the server is down inside `ContactForm`, which
+    // owns the button and is shared with the edit page.
     // Resolve the prefill from window.location.search. We could
     // route through Dioxus' Route enum but that would require turning
     // the query into a typed param and refactoring every
@@ -3568,6 +3678,9 @@ pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
         let id = id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-357: subscribe to reachability so the edited entity
+            // auto-refetches once the server comes back.
+            let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<ContactEditPayload>(&format!(
                 "/contacts/contacts/{id}"
             ))
@@ -3576,6 +3689,18 @@ pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
         }
     });
     let snap = detail.read_unchecked();
+    // MAPPS-357: the fetched contact is this edit page's primary resource. A
+    // failed load while the server is flagged down is an outage, not a missing
+    // record - render the honest unavailable state instead of "Could not load
+    // contact" (kept below for a 4xx while still reachable). The Save submit is
+    // gated by `can_mutate` inside `ContactForm`.
+    let fetch_failed = matches!(*snap, Some(None));
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Edit Contact".to_string() }
+        };
+    }
     rsx! {
         AppLayout { title: "Edit Contact",
             PageHeader { title: "Edit Contact" }
@@ -3731,6 +3856,9 @@ fn ContactForm(props: ContactFormProps) -> Element {
     ];
 
     let navigator = use_navigator();
+    // MAPPS-357: block the Create / Save submit while the server is
+    // unreachable. Reactive: re-enables on reconnect.
+    let can_mutate = crate::hooks::use_can_mutate();
     let submit_label = match &mode {
         ContactFormMode::Create => "Create Contact",
         ContactFormMode::Edit { .. } => "Save Changes",
@@ -4038,6 +4166,9 @@ fn ContactForm(props: ContactFormProps) -> Element {
                         r#type: "submit",
                         variant: ButtonVariant::Primary,
                         loading: *is_submitting.read(),
+                        // MAPPS-357: block the submit while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                         "{submit_label}"
                     }
                 }
@@ -4062,10 +4193,14 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     let id_for_delete = contact_id_str.clone();
     let id_for_portal = contact_id_str.clone();
 
+    // MAPPS-357: the contact record is this detail page's primary resource
+    // (the tickets list below is secondary and keeps degrading to its own
+    // card). Subscribe to reachability so it auto-refetches on reconnect.
     let mut contact = use_resource(move || {
         let id = id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<ContactDetail>(&format!(
                 "/contacts/contacts/{id}"
             ))
@@ -4104,6 +4239,8 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     let edit_id = id_for_edit.clone();
     let delete_id = id_for_delete.clone();
     let mut confirming_delete = use_signal(|| false);
+    // MAPPS-357: gate the destructive Delete while the server is unreachable.
+    let can_mutate = crate::hooks::use_can_mutate();
     let on_confirm_delete = move |_: ()| {
         if *deleting.read() {
             return;
@@ -4122,6 +4259,18 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
             confirming_delete.set(false);
         });
     };
+
+    // MAPPS-357: a failed load of the primary contact while the server is
+    // flagged down is an outage, not a missing record - render the honest
+    // unavailable state instead of "Could not load contact" (kept below for a
+    // 4xx while still reachable).
+    let fetch_failed = matches!(*snap, Some(None));
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Contact".to_string() }
+        };
+    }
 
     rsx! {
         AppLayout { title: "{header_title}",
@@ -4150,6 +4299,9 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                     Button {
                         variant: ButtonVariant::Danger,
                         loading: *deleting.read(),
+                        // MAPPS-357: block delete while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                         onclick: move |_| {
                             if !*deleting.read() {
                                 confirming_delete.set(true);
@@ -4412,6 +4564,9 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
     let is_portal_user = props.is_portal_user;
     let mut toggling = props.toggling;
     let on_change = props.on_change;
+    // MAPPS-357: block the portal grant / revoke writes while the server is
+    // unreachable. Reactive: re-enables on reconnect.
+    let can_mutate = crate::hooks::use_can_mutate();
     rsx! {
         Card { title: "Portal Access",
             if is_portal_user {
@@ -4426,6 +4581,9 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                     Button {
                         variant: ButtonVariant::Secondary,
                         loading: *toggling.read(),
+                        // MAPPS-357: block revoke while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't change portal access while the server is unreachable".to_string()),
                         onclick: move |_| {
                             let id = contact_id.clone();
                             toggling.set(true);
@@ -4452,6 +4610,9 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                     Button {
                         variant: ButtonVariant::Primary,
                         loading: *toggling.read(),
+                        // MAPPS-357: block grant while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't change portal access while the server is unreachable".to_string()),
                         onclick: move |_| {
                             let id = contact_id.clone();
                             toggling.set(true);

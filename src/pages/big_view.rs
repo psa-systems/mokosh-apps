@@ -150,21 +150,44 @@ pub fn BigTicketsPage() -> Element {
     let status_filter = crate::utils::url::current_query_param("status").unwrap_or_default();
     let priority_filter = crate::utils::url::current_query_param("priority").unwrap_or_default();
 
-    let resource = use_resource(move || async move {
+    // MAPPS-357: the ticket list is this kiosk's PRIMARY resource - if it
+    // fails the board has no content. Route it through `use_remote_resource`
+    // so a failed fetch during an outage is preserved instead of swallowed to
+    // an empty `Vec` that reads as "no open tickets" (dangerously reassuring
+    // on a NOC wall). The hook already subscribes to reachability +
+    // `active_tenant_generation`, so we drop the explicit `_gen` line but keep
+    // the periodic-tick read (the hook does not know about it) and hand back
+    // the raw `Result` (no `.ok()/.unwrap_or_default()`).
+    let tickets_data = crate::hooks::use_remote_resource(move || async move {
         // Subscribe to the tick so Dioxus re-fetches on every interval
         // firing. The value is otherwise unused.
         let _ = *tick.read();
-        let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_authed::<Paginated<BigTicketRow>>(
             "/tickets?per_page=50&sort=-updated_at",
         )
         .await
-        .ok()
         .map(|p| p.data)
-        .unwrap_or_default()
     });
 
-    let tickets = resource.read_unchecked().clone().unwrap_or_default();
+    // MAPPS-357: on outage, swap the ticket grid for an honest "server down"
+    // panel. This is a chrome-less kiosk (BigLayout, not AppLayout), so the
+    // shared `ContentUnavailable` - which mounts AppLayout's sidebar / top bar
+    // - would be wrong here; render the notice inside the same BigLayout so the
+    // title strip + clock stay put. `use_remote_resource` auto-refetches on
+    // reconnect, so the live grid returns on its own with no operator action.
+    if tickets_data.is_unavailable() {
+        return rsx! {
+            BigLayout { title: "Tickets - Live Queue".to_string(),
+                div { class: "py-16 text-center",
+                    p { class: "text-3xl font-semibold text-content", "Server unreachable" }
+                    p { class: "mt-3 text-xl text-muted",
+                        "This board will refresh on its own once the connection is back."
+                    }
+                }
+            }
+        };
+    }
+    let tickets = tickets_data.value_or_default();
     let filtered: Vec<BigTicketRow> = tickets
         .into_iter()
         .filter(|t| {
@@ -243,6 +266,10 @@ fn BigTicketCard(props: BigTicketCardProps) -> Element {
 pub fn BigDispatchPage() -> Element {
     let refresh_secs = read_refresh_seconds();
     let _tick = use_periodic_tick(refresh_secs);
+    // MAPPS-357: N/A here. This page fetches nothing of its own; it embeds
+    // `crate::pages::calendar::DispatchBoardPage`, which owns the data fetch
+    // and therefore the outage state. The unavailable retrofit belongs in
+    // calendar.rs, not in this wrapper (out of scope for this one-file task).
     // The existing DispatchBoardPage already owns the per-technician
     // swimlane render; embed it inside the BigLayout chrome with a
     // larger title strip. The board itself reads the day from the
@@ -265,6 +292,10 @@ pub fn BigDispatchPage() -> Element {
 pub fn BigCalendarPage() -> Element {
     let refresh_secs = read_refresh_seconds();
     let _tick = use_periodic_tick(refresh_secs);
+    // MAPPS-357: N/A here. Like BigDispatchPage, this fetches nothing of its
+    // own; it embeds `crate::pages::calendar::CalendarPage`, which owns the
+    // data fetch and its own outage state. The unavailable retrofit belongs in
+    // calendar.rs, not in this wrapper (out of scope for this one-file task).
     rsx! {
         BigLayout { title: "Calendar - This Week".to_string(),
             crate::pages::calendar::CalendarPage {}

@@ -49,18 +49,36 @@ struct UpdateDashboardBody {
 #[component]
 pub fn SavedDashboardsPage() -> Element {
     let mut version = use_signal(|| 0u32);
-    let rows_resource = use_resource(move || async move {
+    // MAPPS-357: primary resource -> explicit unavailable state on outage.
+    // Refetch stays driven by the `version` bump after each mutation (the
+    // closure reads it, keeping the existing tenant + version subscriptions);
+    // use_remote_resource additionally auto-refetches on reconnect and on org
+    // switch. A failed load while the server is down now renders
+    // ContentUnavailable instead of a misleading "No saved dashboards" empty.
+    let rows_resource = crate::hooks::use_remote_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _ = version.read();
-        crate::hooks::fetch::api::get_authed::<Vec<SavedDashboard>>("/dashboards")
-            .await
-            .unwrap_or_default()
+        crate::hooks::fetch::api::get_authed::<Vec<SavedDashboard>>("/dashboards").await
     });
-    let rows = rows_resource.read_unchecked().clone().unwrap_or_default();
 
     let mut show_create = use_signal(|| false);
     let mut new_name = use_signal(String::new);
     let mut new_is_default = use_signal(|| false);
+
+    // MAPPS-357: writes (create / pin default / delete) are blocked while the
+    // server is unreachable; `can_mutate` disables their buttons below.
+    let can_mutate = crate::hooks::use_can_mutate();
+
+    // MAPPS-357: early return placed AFTER every use_* hook so hook order is
+    // preserved (rules of hooks). A fetch that fails while the server is still
+    // reachable (a 4xx) degrades to an empty list and keeps the normal
+    // empty-state; only a real outage swaps in ContentUnavailable.
+    if rows_resource.is_unavailable() {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Dashboards".to_string() }
+        };
+    }
+    let rows = rows_resource.value_or_default();
 
     let on_pin_default = move |id: Uuid| {
         spawn(async move {
@@ -144,6 +162,9 @@ pub fn SavedDashboardsPage() -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
+                        // MAPPS-357: block the create entry point while down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't create a dashboard while the server is unreachable".to_string()),
                         onclick: move |_| show_create.set(true),
                         "New dashboard"
                     }
@@ -196,12 +217,18 @@ pub fn SavedDashboardsPage() -> Element {
                                                     if !row_default {
                                                         Button {
                                                             variant: ButtonVariant::Secondary,
+                                                            // MAPPS-357: block pin while down.
+                                                            disabled: !can_mutate,
+                                                            title: (!can_mutate).then(|| "Can't change the default while the server is unreachable".to_string()),
                                                             onclick: move |_| on_pin(id),
                                                             "Pin default"
                                                         }
                                                     }
                                                     Button {
                                                         variant: ButtonVariant::Danger,
+                                                        // MAPPS-357: block delete while down.
+                                                        disabled: !can_mutate,
+                                                        title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                                                         onclick: move |_| on_del(id),
                                                         "Delete"
                                                     }
@@ -246,6 +273,9 @@ pub fn SavedDashboardsPage() -> Element {
                         }
                         Button {
                             variant: ButtonVariant::Primary,
+                            // MAPPS-357: block submit while the server is down.
+                            disabled: !can_mutate,
+                            title: (!can_mutate).then(|| "Can't create a dashboard while the server is unreachable".to_string()),
                             onclick: on_create_submit,
                             "Create"
                         }
@@ -263,4 +293,68 @@ pub fn SavedDashboardsPage() -> Element {
 #[allow(dead_code)]
 fn _layout_anchor(d: &SavedDashboard) -> &serde_json::Value {
     &d.layout
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hooks::{classify_remote, RemoteData};
+
+    // MAPPS-357: the saved-dashboards list is this page's PRIMARY resource,
+    // loaded through `use_remote_resource`, which routes its outcome through
+    // the pure `classify_remote`. This exercises the full server-down ->
+    // reconnect sequence for that concrete resource type, extending the
+    // coverage pattern from `hooks/remote_data.rs` onto a retrofitted page
+    // (the MAPPS-357 acceptance criterion) so a regression that reintroduced
+    // the `.ok().unwrap_or_default()` swallow (empty list during an outage)
+    // would fail here.
+    fn sample_row() -> SavedDashboard {
+        let epoch = DateTime::<Utc>::from_timestamp(0, 0).expect("valid epoch");
+        SavedDashboard {
+            id: Uuid::nil(),
+            name: "Ops".to_string(),
+            layout: serde_json::Value::Null,
+            is_default: false,
+            created_at: epoch,
+            updated_at: epoch,
+        }
+    }
+
+    #[test]
+    fn saved_dashboards_down_then_reconnect() {
+        // 1. In flight while the server is already down -> Loading (the banner
+        //    shows; no misleading "No saved dashboards" empty body yet).
+        let loading: Option<Result<Vec<SavedDashboard>, String>> = None;
+        assert!(classify_remote(loading, false).is_loading());
+
+        // 2. Fetch failed while down -> Unavailable, so the page renders
+        //    ContentUnavailable instead of an empty list that reads like a
+        //    brand-new tenant with no dashboards.
+        let failed: Option<Result<Vec<SavedDashboard>, String>> =
+            Some(Err("failed to fetch".to_string()));
+        assert!(classify_remote(failed, false).is_unavailable());
+
+        // 3. Recovery poll flips reachable=true, the resource re-runs (it
+        //    subscribes to SERVER_REACHABLE) and succeeds -> Ready with the
+        //    real rows, so the list repopulates on its own.
+        let recovered = Some(Ok(vec![sample_row()]));
+        match classify_remote(recovered, true) {
+            RemoteData::Ready(rows) => assert_eq!(rows.len(), 1),
+            _ => panic!("expected Ready after reconnect"),
+        }
+    }
+
+    #[test]
+    fn reachable_4xx_degrades_to_empty_not_outage() {
+        // A failure while the server is still reachable (a 4xx / decode error)
+        // must NOT show the outage state (it would never clear via the
+        // reconnect poll); it degrades to an empty list exactly like the old
+        // `.unwrap_or_default()`, so the normal empty-state renders.
+        let forbidden: Option<Result<Vec<SavedDashboard>, String>> =
+            Some(Err("403 forbidden".to_string()));
+        match classify_remote(forbidden, true) {
+            RemoteData::Ready(rows) => assert!(rows.is_empty()),
+            _ => panic!("expected Ready(empty) for a reachable 4xx"),
+        }
+    }
 }

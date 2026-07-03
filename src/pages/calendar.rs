@@ -677,6 +677,9 @@ pub fn CalendarPage() -> Element {
 
     let mut appts_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the calendar auto-refetches
+        // the instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         #[cfg(feature = "web")]
         {
             // Emit the UTC offset as `Z`, not `+00:00`. A literal `+`
@@ -708,6 +711,20 @@ pub fn CalendarPage() -> Element {
         Some(Ok(list)) => list.clone(),
         _ => Vec::new(),
     };
+
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty calendar - render the honest unavailable state (which keeps
+    // the nav + banner) instead of an empty grid. A fetch that fails while the
+    // server is still reachable (a 4xx) keeps the inline banner below. Writes
+    // are blocked while down; `can_mutate` disables the New Appointment button
+    // and the create/edit modal's Save + Delete.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Calendar".to_string() }
+        };
+    }
 
     let header_label = {
         let d = active_date();
@@ -763,6 +780,9 @@ pub fn CalendarPage() -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
+                        // MAPPS-357: block creating an appointment while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't create an appointment while the server is unreachable".to_string()),
                         onclick: move |_| form_state.set(Some(None)),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Appointment"
@@ -1499,6 +1519,10 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
     // default the assignee on a new appointment.
     let auth = crate::hooks::use_auth();
     let signed_in_user_id = auth.read().user.as_ref().map(|u| u.id);
+    // MAPPS-357: gate the write actions (Save / Delete) on server reachability.
+    // The modal is reachable from an appointment click even during an outage,
+    // so the actual mutating buttons carry the guard, mirroring approvals.rs.
+    let can_mutate = crate::hooks::use_can_mutate();
 
     let existing = props.existing.clone();
     let is_edit = existing.is_some();
@@ -1903,6 +1927,9 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
             Button {
                 variant: ButtonVariant::Danger,
                 loading: *deleting.read(),
+                // MAPPS-357: block delete while the server is unreachable.
+                disabled: !can_mutate,
+                title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                 onclick: handle_delete,
                 "Delete"
             }
@@ -1917,6 +1944,9 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
             Button {
                 variant: ButtonVariant::Primary,
                 loading: *saving.read(),
+                // MAPPS-357: block save (create/update) while the server is unreachable.
+                disabled: !can_mutate,
+                title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                 onclick: handle_save,
                 if is_edit { "Save Changes" } else { "Create Appointment" }
             }
@@ -2254,6 +2284,9 @@ pub fn DispatchBoardPage() -> Element {
 
     let mut dispatch_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the board auto-refetches the
+        // instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         // Read the `active_day` + `view` signals INSIDE the resource closure
         // so the resource subscribes to them and refetches when the
         // next/previous/Today/view controls change the range. Computing
@@ -2315,6 +2348,19 @@ pub fn DispatchBoardPage() -> Element {
         _ => None,
     };
 
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty board - render the honest unavailable state instead of an
+    // empty timeline. A fetch that fails while still reachable (a 4xx) keeps
+    // the inline banner below. Writes are blocked while down; `can_mutate`
+    // disables the Schedule Appointment button and the modal's Save + Delete.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Dispatch Board".to_string() }
+        };
+    }
+
     // MAPPS-280: title reflects the active view's range.
     let title = match *view.read() {
         CalendarView::Day => day.format("%A, %B %-d, %Y").to_string(),
@@ -2338,6 +2384,9 @@ pub fn DispatchBoardPage() -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
+                        // MAPPS-357: block scheduling while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't schedule an appointment while the server is unreachable".to_string()),
                         onclick: move |_| form_state.set(Some(None)),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "Schedule Appointment"
@@ -2757,10 +2806,50 @@ pub fn SchedulingTemplatesPage() -> Element {
     // editing that template (mirrors the appointment form's `form_state`).
     let mut form_state = use_signal(|| None::<Option<SchedulingTemplateResponse>>);
 
-    let mut templates_resource = use_templates_resource(None);
+    // MAPPS-357: primary resource. This is a hand-rolled `use_resource` (not the
+    // shared `use_templates_resource`, which degrades a failed load to an empty
+    // vec) because the list must tell "no templates" apart from "server down" to
+    // render ContentUnavailable, and because the create/edit/delete flows call
+    // `.restart()`. The fetcher keeps `.ok()` (NOT `.unwrap_or_default()`) so a
+    // failed load stays distinguishable, and subscribes to reachability so the
+    // list auto-refetches on reconnect.
+    let mut templates_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _reachable = crate::hooks::use_server_reachable();
+        #[cfg(feature = "web")]
+        {
+            crate::hooks::fetch::api::get_authed::<PaginatedTemplates>(
+                "/scheduling-templates?per_page=100",
+            )
+            .await
+            .map(|p| p.data)
+            .ok()
+        }
+        #[cfg(not(feature = "web"))]
+        {
+            Some(Vec::<SchedulingTemplateResponse>::new())
+        }
+    });
     let snapshot = templates_resource.read_unchecked();
     let is_loading = snapshot.is_none();
-    let templates: Vec<SchedulingTemplateResponse> = snapshot.clone().unwrap_or_default();
+    let fetch_failed = matches!(*snapshot, Some(None));
+    let templates: Vec<SchedulingTemplateResponse> = match &*snapshot {
+        Some(Some(v)) => v.clone(),
+        _ => Vec::new(),
+    };
+
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty template list - render the honest unavailable state instead.
+    // A fetch that fails while still reachable (a 4xx) keeps the empty state
+    // below. Writes are blocked while down; `can_mutate` disables the New
+    // Template buttons and the create/edit modal's Save + Delete.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Scheduling Templates".to_string() }
+        };
+    }
 
     rsx! {
         AppLayout { title: "Scheduling Templates",
@@ -2770,6 +2859,9 @@ pub fn SchedulingTemplatesPage() -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
+                        // MAPPS-357: block creating a template while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't create a template while the server is unreachable".to_string()),
                         onclick: move |_| form_state.set(Some(None)),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Template"
@@ -2789,6 +2881,9 @@ pub fn SchedulingTemplatesPage() -> Element {
                             actions: rsx! {
                                 Button {
                                     variant: ButtonVariant::Primary,
+                                    // MAPPS-357: block creating a template while the server is down.
+                                    disabled: !can_mutate,
+                                    title: (!can_mutate).then(|| "Can't create a template while the server is unreachable".to_string()),
                                     onclick: move |_| form_state.set(Some(None)),
                                     PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                                     "New Template"
@@ -2861,6 +2956,10 @@ struct TemplateFormModalProps {
 
 #[component]
 fn TemplateFormModal(props: TemplateFormModalProps) -> Element {
+    // MAPPS-357: gate the write actions (Save / Delete) on server reachability,
+    // mirroring the appointment form. The modal opens from the Edit button even
+    // during an outage, so the mutating buttons carry the guard.
+    let can_mutate = crate::hooks::use_can_mutate();
     let existing = props.existing.clone();
     let is_edit = existing.is_some();
     let modal_title = if is_edit {
@@ -3066,6 +3165,9 @@ fn TemplateFormModal(props: TemplateFormModalProps) -> Element {
             Button {
                 variant: ButtonVariant::Danger,
                 loading: *deleting.read(),
+                // MAPPS-357: block delete while the server is unreachable.
+                disabled: !can_mutate,
+                title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                 onclick: handle_delete,
                 "Delete"
             }
@@ -3079,6 +3181,9 @@ fn TemplateFormModal(props: TemplateFormModalProps) -> Element {
         Button {
             variant: ButtonVariant::Primary,
             loading: *saving.read(),
+            // MAPPS-357: block save (create/update) while the server is unreachable.
+            disabled: !can_mutate,
+            title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
             onclick: handle_save,
             if is_edit { "Save Changes" } else { "Create Template" }
         }

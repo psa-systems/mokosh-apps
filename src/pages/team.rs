@@ -58,18 +58,25 @@ pub fn TeamPage() -> Element {
     let mut email_error = use_signal(String::new);
 
     // Pending invitations for the active tenant. Re-fetches on tenant switch.
+    // MAPPS-357: this is the page's primary resource. It keeps a hand-rolled
+    // `use_resource` (rather than `use_remote_resource`) because the invite /
+    // revoke flows call `invites.restart()`, and it subscribes to reachability
+    // so the roster auto-refetches on reconnect. The fetcher keeps `.ok()`
+    // (NOT `.unwrap_or_default()`) so a failed load stays distinguishable from
+    // an empty roster, letting the outage render `ContentUnavailable` below.
     let mut invites = use_resource(|| async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _reachable = crate::hooks::use_server_reachable();
         #[cfg(feature = "web")]
         {
             crate::hooks::fetch::api::get_authed::<PaginatedInvitations>("/invitations")
                 .await
                 .map(|p| p.data)
-                .unwrap_or_default()
+                .ok()
         }
         #[cfg(not(feature = "web"))]
         {
-            Vec::<RemoteInvitation>::new()
+            Some(Vec::<RemoteInvitation>::new())
         }
     });
 
@@ -144,7 +151,24 @@ pub fn TeamPage() -> Element {
 
     let snapshot = invites.read_unchecked();
     let is_loading = snapshot.is_none();
-    let rows = snapshot.as_ref().cloned().unwrap_or_default();
+    let fetch_failed = matches!(*snapshot, Some(None));
+    let rows = match &*snapshot {
+        Some(Some(v)) => v.clone(),
+        _ => Vec::new(),
+    };
+
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty roster - render the honest unavailable state (which keeps
+    // the nav + banner) instead of an empty invitations table. A fetch that
+    // fails while still reachable (a 4xx) keeps the normal empty-state below.
+    // Writes are blocked while down; `can_mutate` disables the buttons.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Team".to_string() }
+        };
+    }
 
     // PMS-369: the Revoke button used to fire DELETE /invitations/{id}
     // on first click with no confirmation, so a misclick on the row
@@ -199,7 +223,9 @@ pub fn TeamPage() -> Element {
                             variant: ButtonVariant::Primary,
                             r#type: "submit".to_string(),
                             loading: is_submitting(),
-                            disabled: is_submitting(),
+                            // MAPPS-357: block invites while the server is down.
+                            disabled: is_submitting() || !can_mutate,
+                            title: (!can_mutate).then(|| "Can't send an invite while the server is unreachable".to_string()),
                             "Send invite"
                         }
                     }
@@ -307,6 +333,9 @@ pub fn TeamPage() -> Element {
                                         TableCell {
                                             Button {
                                                 variant: ButtonVariant::Secondary,
+                                                // MAPPS-357: block revoke while the server is down.
+                                                disabled: !can_mutate,
+                                                title: (!can_mutate).then(|| "Can't revoke while the server is unreachable".to_string()),
                                                 onclick: move |_| {
                                                     pending_revoke.set(Some((inv.id, inv.email.clone())));
                                                 },

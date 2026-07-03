@@ -204,6 +204,9 @@ pub fn ProfilePage() -> Element {
     // future regression is observable from the page itself.
     let me_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the profile auto-refetches
+        // the instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         #[cfg(feature = "web")]
         {
             crate::hooks::fetch::api::get_authed_typed::<MeResponse>("/auth/me").await
@@ -217,6 +220,23 @@ pub fn ProfilePage() -> Element {
     });
 
     let snap = me_resource.read_unchecked();
+
+    // MAPPS-357: /auth/me is this page's PRIMARY resource (the fetched entity
+    // the personal-info form edits). A failed load while the server is flagged
+    // down is an outage, not a real profile error - render the honest
+    // unavailable state (which keeps the nav + banner) instead of the inline
+    // "Could not load your profile" error card below. A fetch that fails while
+    // the server is still reachable (a 4xx) keeps the MAPPS-331 error banner
+    // with its concrete detail. This early return sits AFTER the only hook in
+    // this body (`me_resource`) so hook order is preserved.
+    let fetch_failed = matches!(&*snap, Some(Err(_)));
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Profile".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "Profile",
             PageHeader {
@@ -379,6 +399,11 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
     let mut error = use_signal(String::new);
     let mut saved = use_signal(|| false);
 
+    // MAPPS-357: block the profile PUT while the server is unreachable so a
+    // Save cannot silently fail (edits are discarded, not queued). Reactive:
+    // the button re-enables itself on reconnect.
+    let can_mutate = crate::hooks::use_can_mutate();
+
     let handle_save = move |_| {
         if saving() {
             return;
@@ -485,7 +510,8 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
                     Button {
                         variant: ButtonVariant::Primary,
                         onclick: handle_save,
-                        disabled: saving(),
+                        disabled: saving() || !can_mutate,
+                        title: (!can_mutate).then(|| "Can't save changes while the server is unreachable".to_string()),
                         if saving() { "Saving..." } else { "Save changes" }
                     }
                 }
