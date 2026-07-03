@@ -377,6 +377,74 @@ pub fn use_token_refresh() {
     });
 }
 
+/// MAPPS-355: proactive auth heartbeat. Mount once at the app root
+/// (alongside [`use_token_refresh`]). Every 30 seconds while the user is
+/// signed in AND the tab is visible AND the account is not already flagged
+/// deleted, fires an authed `GET /api/v1/auth/me`. On a 410 response the
+/// shared fetch layer's `handle_response` already calls
+/// [`crate::hooks::fetch::note_account_deleted`], which flips the
+/// [`crate::hooks::fetch::ACCOUNT_DELETED`] `GlobalSignal` and pops the
+/// `AccountDeletedOverlay` sitting at `AppLayout` root. So the hook itself
+/// discards the response - it only needs to fire the request.
+///
+/// Without this loop the SPA only discovers a soft-delete when the user
+/// happens to touch a page that fetches: a user idle on the dashboard
+/// after their Bunyip account was deleted could stare at stale UI for up
+/// to the at+jwt TTL (15 min) before any request fired. 30s cadence puts
+/// the "you were signed out" overlay in front of them fast without
+/// meaningful cost - ~120 requests/hour per active tab, cheaper than the
+/// token-refresh loop above.
+///
+/// Skipped when:
+/// - no access token in the holder (unauthenticated / booting),
+/// - `document.visibilityState == 'hidden'` (backgrounded tab),
+/// - `ACCOUNT_DELETED` is already set (overlay is up, no point poking).
+pub fn use_auth_heartbeat() {
+    use_future(move || async move {
+        loop {
+            #[cfg(feature = "web")]
+            gloo_timers::future::TimeoutFuture::new(30_000).await;
+
+            #[cfg(feature = "web")]
+            {
+                if *crate::hooks::fetch::ACCOUNT_DELETED.peek() {
+                    continue;
+                }
+                if crate::hooks::fetch::api::current_access_token().is_none() {
+                    continue;
+                }
+                if tab_is_hidden() {
+                    continue;
+                }
+                // Fire and discard. The fetch layer handles the 410 case
+                // (flips ACCOUNT_DELETED); 401 / 200 / network errors are
+                // no-ops here because the token-refresh loop above and the
+                // per-page fetches already handle those paths.
+                let _ = crate::hooks::fetch::api::get_authed_typed::<serde_json::Value>("/auth/me")
+                    .await;
+            }
+        }
+    });
+}
+
+/// Read `document.visibilityState`. Returns `true` when the tab is hidden
+/// (backgrounded, minimised, on another tab), so the heartbeat above skips
+/// its request. Non-`web` builds report the tab as visible so the same
+/// call site type-checks under `cargo check` without the `web` feature.
+#[cfg(feature = "web")]
+fn tab_is_hidden() -> bool {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .map(|d| d.visibility_state() == web_sys::VisibilityState::Hidden)
+        .unwrap_or(false)
+}
+
+#[cfg(not(feature = "web"))]
+#[allow(dead_code)]
+fn tab_is_hidden() -> bool {
+    false
+}
+
 /// Pull the authoritative current user from mokosh-server
 /// `GET /api/v1/auth/me` and merge fresh fields onto `auth.user`.
 ///
