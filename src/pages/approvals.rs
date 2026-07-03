@@ -66,6 +66,9 @@ pub fn ApprovalsPage() -> Element {
 
     let mut pending_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-351: subscribe to reachability so the queue auto-refetches
+        // the instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         let _v = version.read();
         crate::hooks::fetch::api::get_authed::<Vec<PendingApproval>>("/approvals/pending")
             .await
@@ -79,6 +82,20 @@ pub fn ApprovalsPage() -> Element {
     };
     let loading = snap.is_none();
     let fetch_failed = matches!(*snap, Some(None));
+
+    // MAPPS-351: a failed load while the server is flagged down is an
+    // outage, not an empty queue - show the honest unavailable state (which
+    // keeps the nav + banner and offers the dashboard) instead of the
+    // generic "could not load" line. A fetch that fails while the server is
+    // still reachable (a 4xx) keeps the inline message below. Writes are
+    // blocked while down; `can_mutate` disables the decision buttons.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "My Approvals".to_string() }
+        };
+    }
 
     let decide = move |id: Uuid, decision: &'static str| {
         spawn(async move {
@@ -213,13 +230,26 @@ pub fn ApprovalsPage() -> Element {
                                             }
                                         }
                                         div { class: "flex items-center gap-2",
+                                            // MAPPS-351: block decisions while the server is
+                                            // unreachable, with an explanatory tooltip, so a
+                                            // click cannot silently fail (edits are discarded,
+                                            // not queued - hold-and-replay is scaffolded in
+                                            // crate::hooks::edit_queue for the local-first epic).
+                                            if !can_mutate {
+                                                span { class: "text-xs text-muted self-center mr-1",
+                                                    "Server unreachable" }
+                                            }
                                             Button {
                                                 variant: ButtonVariant::Secondary,
+                                                disabled: !can_mutate,
+                                                title: (!can_mutate).then(|| "Can't record a decision while the server is unreachable".to_string()),
                                                 onclick: move |_| decide(row_id, "reject"),
                                                 "Reject"
                                             }
                                             Button {
                                                 variant: ButtonVariant::Primary,
+                                                disabled: !can_mutate,
+                                                title: (!can_mutate).then(|| "Can't record a decision while the server is unreachable".to_string()),
                                                 onclick: move |_| decide(row_id, "approve"),
                                                 "Approve"
                                             }

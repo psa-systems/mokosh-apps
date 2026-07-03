@@ -44,6 +44,27 @@ pub fn use_server_reachable() -> bool {
     true
 }
 
+/// Whether the app may currently send a *mutating* request (create /
+/// update / delete). The inverse of "server down" (MAPPS-351): while
+/// mokosh-server is unreachable we disable Save/submit at the button so
+/// the user gets immediate, honest "can't save right now" feedback
+/// instead of a write that silently fails and reads as data loss.
+///
+/// Reading it subscribes the caller, so a disabled Save button re-enables
+/// on its own the instant the MAPPS-333 recovery poll flips the flag back.
+/// When the local-first epic lands, the guard flips from "block" to
+/// "enqueue" (see [`crate::hooks::edit_queue`]).
+#[cfg(feature = "web")]
+pub fn use_can_mutate() -> bool {
+    use_server_reachable()
+}
+
+/// Non-web stub: no fetch layer, so writes are always permitted.
+#[cfg(not(feature = "web"))]
+pub fn use_can_mutate() -> bool {
+    true
+}
+
 /// Mount once at the `App` root. Drives the recovery poll: idle (no
 /// network) while reachable, polling `/ready` on an interval while down.
 ///
@@ -71,6 +92,14 @@ pub fn use_server_status_monitor() {
             // schedules the re-run; this just exits the loop promptly once
             // the server is back.
             if *crate::hooks::fetch::SERVER_REACHABLE.peek() {
+                // RECONNECT TRANSITION (MAPPS-351). The server just came
+                // back. Pages auto-refetch on their own because their
+                // `use_remote_resource` subscribes to SERVER_REACHABLE.
+                // When the local-first epic lands, drain any edits the
+                // user made while offline here - the queue and drain are
+                // already scaffolded in `crate::hooks::edit_queue`:
+                //
+                //   crate::hooks::edit_queue::replay_pending_edits().await;
                 return;
             }
         }
