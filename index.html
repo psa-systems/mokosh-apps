@@ -16,20 +16,18 @@
     <!-- PWA manifest (declares icon-192/512 + maskable) -->
     <link rel="manifest" href="/manifest.webmanifest">
 
-    <!-- Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <!-- Fonts: Inter + JetBrains Mono stay first in --font-sans / --font-mono
+         (see assets/styles.css), with a system-ui fallback chain that every OS
+         provides out of the box. Google Fonts is intentionally NOT loaded: the
+         SPA's CSP `style-src 'self' 'unsafe-inline'` refuses external
+         stylesheets, so the previous <link rel="stylesheet" href="fonts.googleapis.com/...">
+         was blocked at runtime anyway. If we later want Inter shipped for real,
+         self-host it under assets/fonts/ (MAPPS-356). -->
 
-    <!-- Dark mode detection -->
-    <script>
-        // Check for dark mode preference
-        if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-            document.documentElement.classList.add('dark');
-        } else {
-            document.documentElement.classList.remove('dark');
-        }
-    </script>
+    <!-- MAPPS-356: FOUC-prevention theme applier. External same-origin file
+         because the CSP `script-src 'self' 'wasm-unsafe-eval'` refuses inline
+         script execution. The WASM app takes over the theme once it boots. -->
+    <script src="/assets/theme-init.js"></script>
 </head>
 <body>
     <!-- App root -->
