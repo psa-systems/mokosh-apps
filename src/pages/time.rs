@@ -171,6 +171,9 @@ fn work_item_label(e: &RemoteTimeEntry) -> String {
 pub fn TimeEntryListPage() -> Element {
     let mut entries_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the list auto-refetches the
+        // instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimeEntry>>("/time-entries")
             .await
             .ok()
@@ -206,6 +209,17 @@ pub fn TimeEntryListPage() -> Element {
     let is_loading = snapshot.is_none();
     let load_failed = matches!(&snapshot, Some(None));
     let entries: Vec<RemoteTimeEntry> = snapshot.flatten().unwrap_or_default();
+
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty list - render the honest unavailable state (which keeps the
+    // nav + banner) instead of an empty time-entry table. A fetch that fails
+    // while still reachable (a 4xx) keeps the inline notice + empty state below.
+    let reachable = crate::hooks::use_server_reachable();
+    if load_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Time Entries".to_string() }
+        };
+    }
 
     // Stat cards computed from the fetched entries (no hardcoded totals).
     let today = Utc::now().date_naive();
@@ -622,6 +636,14 @@ pub fn TimeEntryNewPage() -> Element {
         ""
     };
 
+    // MAPPS-357: N/A for ContentUnavailable - this is a write (create) form, not
+    // a data-display page. The tickets / projects / work-types / tasks resources
+    // above are all SECONDARY lookups that degrade to empty dropdowns, so there
+    // is no primary resource whose absence means "no meaningful content". We only
+    // gate the write: block the submit while the server is unreachable so a click
+    // can't silently fail (`can_mutate` re-enables itself on reconnect).
+    let can_mutate = crate::hooks::use_can_mutate();
+
     rsx! {
         AppLayout { title: "Log Time",
             PageHeader { title: "Log Time", subtitle: "Record time spent on work" }
@@ -928,6 +950,9 @@ pub fn TimeEntryNewPage() -> Element {
                             r#type: "submit",
                             variant: ButtonVariant::Primary,
                             loading: *is_submitting.read(),
+                            // MAPPS-357: block submit while the server is down.
+                            disabled: !can_mutate,
+                            title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                             "Save Time Entry"
                         }
                     }
@@ -958,6 +983,9 @@ pub fn TimesheetsPage() -> Element {
     // `week_start`/`auth` inside makes the resource re-run when they change.
     let entries_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the week auto-refetches when
+        // the server returns (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         let start = week_start();
         let end = start + Duration::days(6);
         let user_id = auth.read().user.as_ref().map(|u| u.id)?;
@@ -1013,6 +1041,19 @@ pub fn TimesheetsPage() -> Element {
     let is_loading = snapshot.is_none();
     let load_failed = matches!(&snapshot, Some(None));
     let entries: Vec<RemoteTimeEntry> = snapshot.flatten().unwrap_or_default();
+
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty week - render the honest unavailable state (keeping the nav
+    // + banner) instead of an empty timesheet grid. A fetch that fails while
+    // still reachable keeps the inline "Could not load" row below. Writes are
+    // blocked while down; `can_mutate` disables Submit / Withdraw.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if load_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Timesheets".to_string() }
+        };
+    }
 
     let start = week_start();
     let end = start + Duration::days(6);
@@ -1125,6 +1166,9 @@ pub fn TimesheetsPage() -> Element {
                             Button {
                                 variant: ButtonVariant::Secondary,
                                 loading: withdrawing,
+                                // MAPPS-357: block withdraw while the server is down.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't withdraw while the server is unreachable".to_string()),
                                 onclick: move |_| {
                                     action_msg.set(String::new());
                                     action_err.set(String::new());
@@ -1173,11 +1217,14 @@ pub fn TimesheetsPage() -> Element {
                             div { class: "flex flex-col items-end gap-1",
                                 Button {
                                     variant: ButtonVariant::Primary,
-                                    disabled: already_approved || !has_entries,
+                                    // MAPPS-357: also block while the server is down.
+                                    disabled: already_approved || !has_entries || !can_mutate,
                                     title: if already_approved {
                                         Some("This timesheet has already been approved.".to_string())
                                     } else if !has_entries {
                                         Some("No time logged this week yet.".to_string())
+                                    } else if !can_mutate {
+                                        Some("Can't submit while the server is unreachable".to_string())
                                     } else {
                                         None
                                     },
@@ -1452,9 +1499,14 @@ pub fn TimesheetsPage() -> Element {
                             Button {
                                 variant: ButtonVariant::Primary,
                                 loading: submitting,
-                                disabled: !certified(),
-                                title: (!certified())
-                                    .then(|| "Check the certification box to submit.".to_string()),
+                                // MAPPS-357: also block while the server is down.
+                                disabled: !certified() || !can_mutate,
+                                title: if !can_mutate {
+                                    Some("Can't submit while the server is unreachable".to_string())
+                                } else {
+                                    (!certified())
+                                        .then(|| "Check the certification box to submit.".to_string())
+                                },
                                 onclick: do_submit,
                                 "Submit for Approval"
                             }
@@ -1584,6 +1636,9 @@ pub fn TimesheetApprovalsPage() -> Element {
     // fetch for them entirely (the gate below renders a notice instead).
     let summaries_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the queue auto-refetches when
+        // the server returns (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         let can = auth
             .read()
             .user
@@ -1663,6 +1718,19 @@ pub fn TimesheetApprovalsPage() -> Element {
     let is_loading = snapshot.is_none();
     let load_failed = matches!(&snapshot, Some(None));
     let summaries: Vec<ApprovalSummary> = snapshot.flatten().unwrap_or_default();
+
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty queue - render the honest unavailable state (keeping the nav
+    // + banner) instead of an empty approvals table. A fetch that fails while
+    // still reachable keeps the inline "Could not load" row below. Writes are
+    // blocked while down; `can_mutate` disables Approve / Reject.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if load_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Timesheet Approvals & History".to_string() }
+        };
+    }
 
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
     let name_of = |uid: uuid::Uuid| -> String {
@@ -1929,7 +1997,9 @@ pub fn TimesheetApprovalsPage() -> Element {
                                                     div { class: "flex justify-end gap-2",
                                                         Button {
                                                             variant: ButtonVariant::Secondary,
-                                                            disabled: row_busy,
+                                                            // MAPPS-357: also block while the server is down.
+                                                            disabled: row_busy || !can_mutate,
+                                                            title: (!can_mutate).then(|| "Can't reject while the server is unreachable".to_string()),
                                                             onclick: move |_| {
                                                                 action_msg.set(String::new());
                                                                 action_err.set(String::new());
@@ -1941,7 +2011,9 @@ pub fn TimesheetApprovalsPage() -> Element {
                                                         Button {
                                                             variant: ButtonVariant::Primary,
                                                             loading: approving_id == Some(uid),
-                                                            disabled: row_busy,
+                                                            // MAPPS-357: also block while the server is down.
+                                                            disabled: row_busy || !can_mutate,
+                                                            title: (!can_mutate).then(|| "Can't approve while the server is unreachable".to_string()),
                                                             onclick: move |_| {
                                                                 action_msg.set(String::new());
                                                                 action_err.set(String::new());
@@ -2053,9 +2125,14 @@ pub fn TimesheetApprovalsPage() -> Element {
                             Button {
                                 variant: ButtonVariant::Danger,
                                 loading: rejecting,
-                                disabled: reason_empty,
-                                title: reason_empty
-                                    .then(|| "Enter a reason to reject this timesheet.".to_string()),
+                                // MAPPS-357: also block while the server is down.
+                                disabled: reason_empty || !can_mutate,
+                                title: if !can_mutate {
+                                    Some("Can't reject while the server is unreachable".to_string())
+                                } else {
+                                    reason_empty
+                                        .then(|| "Enter a reason to reject this timesheet.".to_string())
+                                },
                                 onclick: do_reject,
                                 "Reject Timesheet"
                             }
@@ -2260,6 +2337,13 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
         });
     };
 
+    // MAPPS-357: block save / delete while the server is unreachable so a click
+    // can't silently fail. This modal is opened from TimeEntryListPage, whose
+    // primary-resource outage state renders ContentUnavailable; this component
+    // is a write surface with no primary resource of its own, so it only gates
+    // the writes (`can_mutate` re-enables itself on reconnect).
+    let can_mutate = crate::hooks::use_can_mutate();
+
     rsx! {
         Modal {
             open: true,
@@ -2270,6 +2354,9 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
                 Button {
                     variant: ButtonVariant::Danger,
                     loading: *deleting.read(),
+                    // MAPPS-357: block delete while the server is down.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                     onclick: handle_delete,
                     "Delete"
                 }
@@ -2282,6 +2369,9 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
                 Button {
                     variant: ButtonVariant::Primary,
                     loading: *saving.read(),
+                    // MAPPS-357: block save while the server is down.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                     onclick: handle_save,
                     "Save Changes"
                 }

@@ -125,6 +125,16 @@ fn StatusRow(label: String, value: String) -> Element {
 }
 
 /// System Status page.
+///
+/// MAPPS-357: N/A for the `use_remote_resource`/`ContentUnavailable`
+/// retrofit. This is the diagnostics page that *reports* connectivity, so it
+/// must render precisely when the server is down (swapping in
+/// `ContentUnavailable` would hide the very "API server: Unreachable" signal
+/// the page exists to show). It already preserves each probe as an explicit
+/// `Result` (never `.ok().unwrap_or_default()`) and renders honest per-card
+/// error states, so the "outage renders as empty/default content" lie this
+/// issue targets cannot occur here. The Refresh button re-probes (a read),
+/// not a write, so there is no mutating control to gate on `use_can_mutate`.
 #[component]
 pub fn SystemStatusPage() -> Element {
     let mut report = use_resource(|| async move {

@@ -255,6 +255,9 @@ pub fn KBHomePage() -> Element {
 
     let mut categories_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the category grid (this
+        // landing page's primary content) auto-refetches on reconnect.
+        let _reachable = crate::hooks::use_server_reachable();
         let token = crate::hooks::fetch::api::current_access_token()?;
         crate::hooks::fetch::api::get_with_auth::<Paginated<KbCategory>>(
             "/kb/categories?page=1&per_page=100",
@@ -321,6 +324,23 @@ pub fn KBHomePage() -> Element {
         _ => Vec::new(),
     };
 
+    // MAPPS-357: the category grid is this landing page's PRIMARY content.
+    // A failed load while the server is flagged down is an outage, not an
+    // empty KB - render the honest unavailable state (which keeps the nav +
+    // banner) instead of an empty category grid. A 4xx while still reachable
+    // keeps the normal empty-state below. Recent articles + top-driving are
+    // SECONDARY widgets that keep degrading to their own inline messages.
+    // Writes are blocked while down; `can_mutate` disables the create / edit /
+    // delete category controls.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    let categories_failed = matches!(*categories_snapshot, Some(None));
+    if categories_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Knowledge Base".to_string() }
+        };
+    }
+
     // Submitting the home search jumps to the full article list, which
     // owns the live `?q=` filter against the server. The typed term is
     // forwarded via the route's `?q=` query so the list opens pre-filtered.
@@ -342,6 +362,9 @@ pub fn KBHomePage() -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Secondary,
+                        // MAPPS-357: block category creation while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't create a category while the server is unreachable".to_string()),
                         onclick: move |_| category_form.set(Some(CategoryEdit::New)),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Category"
@@ -391,6 +414,7 @@ pub fn KBHomePage() -> Element {
                         CategoryCard {
                             key: "{category.id}",
                             category: category.clone(),
+                            can_mutate,
                             on_edit: move |c: KbCategory| category_form.set(Some(CategoryEdit::Existing(c))),
                             on_delete: move |c: KbCategory| {
                                 delete_error.set(String::new());
@@ -545,6 +569,9 @@ enum CategoryEdit {
 #[derive(Props, Clone, PartialEq)]
 struct CategoryCardProps {
     category: KbCategory,
+    /// MAPPS-357: false while the server is unreachable, so the edit / delete
+    /// affordances (which open mutating flows) disable.
+    can_mutate: bool,
     on_edit: EventHandler<KbCategory>,
     on_delete: EventHandler<KbCategory>,
 }
@@ -557,6 +584,7 @@ fn CategoryCard(props: CategoryCardProps) -> Element {
     let description = props.category.description.clone().unwrap_or_default();
     let edit_target = props.category.clone();
     let delete_target = props.category.clone();
+    let can_mutate = props.can_mutate;
     // Clicking the card body lands on the article list pre-filtered to this
     // category: the id rides the route's `?category=` query so the list
     // pre-selects the dropdown and fetches `GET /kb/articles?category_id=...`.
@@ -572,6 +600,8 @@ fn CategoryCard(props: CategoryCardProps) -> Element {
                     class: "p-1 rounded text-subtle hover:text-accent hover:bg-surface-2",
                     title: "Edit category",
                     "aria-label": "Edit category",
+                    // MAPPS-357: block edit while the server is unreachable.
+                    disabled: !can_mutate,
                     onclick: move |_| props.on_edit.call(edit_target.clone()),
                     PencilIcon { size: IconSize::Small }
                 }
@@ -580,6 +610,8 @@ fn CategoryCard(props: CategoryCardProps) -> Element {
                     class: "p-1 rounded text-subtle hover:text-red-600 hover:bg-surface-2",
                     title: "Delete category",
                     "aria-label": "Delete category",
+                    // MAPPS-357: block delete while the server is unreachable.
+                    disabled: !can_mutate,
                     onclick: move |_| props.on_delete.call(delete_target.clone()),
                     TrashIcon { size: IconSize::Small }
                 }
@@ -738,6 +770,9 @@ pub fn KBArticleListPage(
         let current_page = (*page.read()).max(1);
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-357: subscribe to reachability so the article list (this
+            // page's primary resource) auto-refetches on reconnect.
+            let _reachable = crate::hooks::use_server_reachable();
             let token = crate::hooks::fetch::api::current_access_token()?;
             let (page_param, per_page) = if tag.is_empty() {
                 (current_page, PER_PAGE)
@@ -769,6 +804,20 @@ pub fn KBArticleListPage(
     let resource_snapshot = articles_resource.read_unchecked();
     let is_loading = resource_snapshot.is_none();
     let fetch_failed = matches!(*resource_snapshot, Some(None));
+
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty list - render the honest unavailable state (which keeps the
+    // nav + banner) instead of an empty articles table. A 4xx while still
+    // reachable keeps the inline "Could not load articles" banner + empty-state
+    // below. (This page has no write controls of its own; New Article is a
+    // navigation link.) Kept as a use_resource handle rather than
+    // use_remote_resource so the reachable-failure banner is preserved.
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Articles".to_string() }
+        };
+    }
     let (fetched_rows, fetched_total): (Vec<KbArticle>, u64) = match &*resource_snapshot {
         Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
         _ => (Vec::new(), 0),
@@ -1037,6 +1086,9 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     // though the URL changed (MAPPS-155).
     let mut article_resource = use_resource(use_reactive!(|id_for_article| async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the article (this detail
+        // page's primary resource) auto-refetches on reconnect.
+        let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_authed::<KbArticle>(&format!("/kb/articles/{id_for_article}"))
             .await
             .ok()
@@ -1134,6 +1186,22 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         Some(Some(a)) => a.title.clone(),
         _ => "Article".to_string(),
     };
+
+    // MAPPS-357: the fetched article is this detail page's PRIMARY resource.
+    // A failed load while the server is flagged down is an outage, not a
+    // missing article - render the honest unavailable state (which keeps the
+    // nav + banner). A 4xx/404 while still reachable keeps the "Could not load
+    // article" arm below. Categories + tree rail + versions are SECONDARY and
+    // degrade to their own inline messages. Writes are blocked while down;
+    // `can_mutate` disables the delete / rating / restore controls.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    let article_fetch_failed = matches!(*article_snapshot, Some(None));
+    if article_fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: header_title.clone() }
+        };
+    }
 
     let title_for_dialog = match &*article_snapshot {
         Some(Some(a)) => a.title.clone(),
@@ -1295,7 +1363,9 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                         // landing.
                                         Button {
                                             variant: ButtonVariant::Danger,
-                                            disabled: delete_busy(),
+                                            // MAPPS-357: block delete while the server is unreachable.
+                                            disabled: delete_busy() || !can_mutate,
+                                            title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                                             onclick: move |_| {
                                                 delete_error.set(String::new());
                                                 confirming_delete.set(true);
@@ -1340,6 +1410,8 @@ fn VersionHistoryCard(
 ) -> Element {
     let snap = versions_resource.read_unchecked();
     let mut restoring = use_signal(|| None::<i32>);
+    // MAPPS-357: block version restore while the server is unreachable.
+    let can_mutate = crate::hooks::use_can_mutate();
 
     rsx! {
         div { class: "rounded border border-line",
@@ -1374,7 +1446,9 @@ fn VersionHistoryCard(
                                                 span { class: "font-medium text-content", "v{n}" }
                                                 button {
                                                     class: "text-accent hover:opacity-90 disabled:opacity-50",
-                                                    disabled: *restoring.read() == Some(n),
+                                                    // MAPPS-357: block restore while the server is unreachable.
+                                                    disabled: *restoring.read() == Some(n) || !can_mutate,
+                                                    title: (!can_mutate).then(|| "Can't restore while the server is unreachable".to_string()),
                                                     onclick: move |_| {
                                                         if restoring.read().is_some() { return; }
                                                         restoring.set(Some(n));
@@ -1435,6 +1509,11 @@ enum ArticleFormMode {
 /// New article page.
 #[component]
 pub fn KBArticleNewPage() -> Element {
+    // MAPPS-357: N/A for a ContentUnavailable swap - this page fetches no
+    // primary resource of its own (it is a static wrapper around the create
+    // form). ArticleForm owns the only mutation (Publish) and disables it via
+    // `can_mutate`; its category dropdown is a secondary lookup that degrades
+    // to "Uncategorized".
     rsx! {
         AppLayout { title: "New Article",
             PageHeader { title: "New Article", subtitle: "Create a new knowledge base article" }
@@ -1464,12 +1543,30 @@ pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
         let id = id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-357: subscribe to reachability so the article (this edit
+            // page's primary resource) auto-refetches on reconnect.
+            let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<KbArticle>(&format!("/kb/articles/{id}"))
                 .await
                 .ok()
         }
     });
     let snap = article_resource.read_unchecked();
+
+    // MAPPS-357: the fetched article is this edit page's PRIMARY resource. A
+    // failed load while the server is flagged down is an outage, not a missing
+    // article - render the honest unavailable state. A 4xx/404 while still
+    // reachable keeps the "Could not load article" arm below. The category
+    // dropdown inside ArticleForm is a SECONDARY lookup that degrades to
+    // "Uncategorized"; ArticleForm disables its own submit via `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    let edit_fetch_failed = matches!(*snap, Some(None));
+    if edit_fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Edit Article".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "Edit Article",
             PageHeader { title: "Edit Article" }
@@ -1598,6 +1695,8 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     // typing a new title never clobbers an existing URL slug.
     let mut slug_touched = use_signal(|| is_edit);
     let submit_label = if is_edit { "Save Changes" } else { "Publish" };
+    // MAPPS-357: block create / update while the server is unreachable.
+    let can_mutate = crate::hooks::use_can_mutate();
 
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
@@ -1822,6 +1921,9 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                         r#type: "submit",
                         variant: ButtonVariant::Primary,
                         loading: *is_submitting.read(),
+                        // MAPPS-357: block submit while the server is unreachable.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                         "{submit_label}"
                     }
                 }
@@ -1929,6 +2031,8 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
         "New Category"
     };
     let submit_label = if is_edit { "Save Changes" } else { "Create" };
+    // MAPPS-357: block create / update while the server is unreachable.
+    let can_mutate = crate::hooks::use_can_mutate();
 
     let on_saved = props.on_saved;
     let handle_submit = move |e: FormEvent| {
@@ -2121,6 +2225,9 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
                         r#type: "submit",
                         variant: ButtonVariant::Primary,
                         loading: *is_submitting.read(),
+                        // MAPPS-357: block submit while the server is unreachable.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                         "{submit_label}"
                     }
                 }
@@ -2229,6 +2336,8 @@ fn RatingBar(
     let mut counts = counts;
     let mut my_vote = my_vote;
     let mut busy = use_signal(|| false);
+    // MAPPS-357: block voting while the server is unreachable.
+    let can_mutate = crate::hooks::use_can_mutate();
     let (h, n) = counts();
     let active_vote = my_vote();
     let id_h = article_id.clone();
@@ -2252,7 +2361,8 @@ fn RatingBar(
         div { class: "flex items-center gap-3 text-sm",
             button {
                 class: "{helpful_class}",
-                disabled: busy(),
+                disabled: busy() || !can_mutate,
+                title: (!can_mutate).then(|| "Can't vote while the server is unreachable".to_string()),
                 onclick: move |_| {
                     if busy() { return; }
                     busy.set(true);
@@ -2282,7 +2392,8 @@ fn RatingBar(
             }
             button {
                 class: "{not_helpful_class}",
-                disabled: busy(),
+                disabled: busy() || !can_mutate,
+                title: (!can_mutate).then(|| "Can't vote while the server is unreachable".to_string()),
                 onclick: move |_| {
                     if busy() { return; }
                     busy.set(true);

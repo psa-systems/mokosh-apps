@@ -82,6 +82,9 @@ fn AdminOnlyNotice(title: String) -> Element {
 /// same `ThemePicker` the top-bar swatch modal uses.
 #[component]
 pub fn AppearanceSettingsPage() -> Element {
+    // MAPPS-357: N/A - per-user appearance (theme + accent) has no server-backed
+    // resource; the ThemePicker persists to the account with no page fetch that
+    // an outage could blank, so there is no unavailable state to render.
     rsx! {
         AppLayout { title: "Appearance",
             PageHeader {
@@ -106,6 +109,8 @@ pub fn AppearanceSettingsPage() -> Element {
 /// `prefs.rs` (through the `tv_view` hook), mirroring the theme precedent.
 #[component]
 pub fn TvViewSettingsPage() -> Element {
+    // MAPPS-357: N/A - TV-view prefs are browser-local (prefs.rs), not fetched
+    // from the server, so this page has no remote resource an outage can blank.
     let mut enabled = use_signal(crate::hooks::tv_view::is_enabled);
     let mut team = use_signal(crate::hooks::tv_view::selected_team);
 
@@ -446,6 +451,9 @@ fn surfaces_in_group(
 /// flattens to matching leaf cards across every group (MAPPS-258).
 #[component]
 pub fn SettingsHomePage() -> Element {
+    // MAPPS-357: N/A - the hub index is driven by the static SETTINGS_SURFACES
+    // taxonomy plus a local search/advanced toggle, with no server fetch that an
+    // outage could blank, so there is no unavailable state to render.
     let mut query = use_signal(String::new);
     let mut show_advanced = use_signal(|| crate::utils::prefs::get_bool(PREF_SHOW_ADVANCED, false));
 
@@ -722,6 +730,8 @@ struct GroupStyle {
 /// `/settings/group/service-types` - Service & Asset Types landing.
 #[component]
 pub fn ServiceTypesGroupPage() -> Element {
+    // MAPPS-357: N/A - static group landing (card list from the taxonomy), no
+    // server resource to fail.
     rsx! {
         SettingsGroupLanding { group: SettingsGroupKey::ServiceTypes }
     }
@@ -730,6 +740,8 @@ pub fn ServiceTypesGroupPage() -> Element {
 /// `/settings/group/billing` - Billing & SLA landing.
 #[component]
 pub fn BillingGroupPage() -> Element {
+    // MAPPS-357: N/A - static group landing (card list from the taxonomy), no
+    // server resource to fail.
     rsx! {
         SettingsGroupLanding { group: SettingsGroupKey::Billing }
     }
@@ -738,6 +750,8 @@ pub fn BillingGroupPage() -> Element {
 /// `/settings/group/tickets` - Tickets landing.
 #[component]
 pub fn TicketsGroupPage() -> Element {
+    // MAPPS-357: N/A - static group landing (card list from the taxonomy), no
+    // server resource to fail.
     rsx! {
         SettingsGroupLanding { group: SettingsGroupKey::Tickets }
     }
@@ -746,6 +760,8 @@ pub fn TicketsGroupPage() -> Element {
 /// `/settings/group/integrations` - Integrations landing.
 #[component]
 pub fn IntegrationsGroupPage() -> Element {
+    // MAPPS-357: N/A - static group landing (card list from the taxonomy), no
+    // server resource to fail.
     rsx! {
         SettingsGroupLanding { group: SettingsGroupKey::Integrations }
     }
@@ -835,6 +851,9 @@ pub fn SchedulingSettingsPage() -> Element {
 
     let resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the setting auto-refetches the
+        // instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         #[cfg(feature = "web")]
         {
             // A missing setting (404) is the unconfigured state, not an
@@ -862,6 +881,19 @@ pub fn SchedulingSettingsPage() -> Element {
     });
 
     let snap = resource.read_unchecked();
+
+    // MAPPS-357: a load failure while the server is flagged down is an outage,
+    // not a real error - render the honest unavailable state instead of the
+    // generic "could not load" card. A failure while still reachable keeps the
+    // error card below. The write control lives in the child form, disabled via
+    // `use_can_mutate` there.
+    let reachable = crate::hooks::use_server_reachable();
+    if matches!(*snap, Some(None)) && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Scheduling".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "Scheduling",
             PageHeader {
@@ -899,6 +931,8 @@ fn StandardDueDateForm(initial: u32) -> Element {
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
     let mut saved = use_signal(|| false);
+    // MAPPS-357: gate the Save control on server reachability.
+    let can_mutate = crate::hooks::use_can_mutate();
 
     let handle_save = move |_| {
         if *saving.read() {
@@ -977,6 +1011,8 @@ fn StandardDueDateForm(initial: u32) -> Element {
                     Button {
                         variant: ButtonVariant::Primary,
                         loading: *saving.read(),
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                         onclick: handle_save,
                         "Save Changes"
                     }
@@ -1010,6 +1046,9 @@ pub fn MaxHoursPerDaySettingsPage() -> Element {
 
     let resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the setting auto-refetches the
+        // instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         #[cfg(feature = "web")]
         {
             // A missing setting (404) is the unconfigured state, not an
@@ -1037,6 +1076,19 @@ pub fn MaxHoursPerDaySettingsPage() -> Element {
     });
 
     let snap = resource.read_unchecked();
+
+    // MAPPS-357: a load failure while the server is flagged down is an outage,
+    // not a real error - render the honest unavailable state instead of the
+    // generic "could not load" card. A failure while still reachable keeps the
+    // error card below. The write control lives in the child form, disabled via
+    // `use_can_mutate` there.
+    let reachable = crate::hooks::use_server_reachable();
+    if matches!(*snap, Some(None)) && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Time Tracking".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "Time Tracking",
             PageHeader {
@@ -1073,6 +1125,8 @@ fn MaxHoursPerDayForm(initial: u32) -> Element {
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
     let mut saved = use_signal(|| false);
+    // MAPPS-357: gate the Save control on server reachability.
+    let can_mutate = crate::hooks::use_can_mutate();
 
     let handle_save = move |_| {
         if *saving.read() {
@@ -1151,6 +1205,8 @@ fn MaxHoursPerDayForm(initial: u32) -> Element {
                     Button {
                         variant: ButtonVariant::Primary,
                         loading: *saving.read(),
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                         onclick: handle_save,
                         "Save Changes"
                     }
@@ -1194,6 +1250,9 @@ pub fn WorkTypesSettingsPage() -> Element {
 
     let mut resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the list auto-refetches the
+        // instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         let path = format!("/work-types?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeRow>>(&path)
             .await
@@ -1208,6 +1267,18 @@ pub fn WorkTypesSettingsPage() -> Element {
         _ => (Vec::new(), 0),
     };
 
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty list - render the honest unavailable state (keeps the nav +
+    // banner) instead of an empty table. A 4xx while still reachable keeps the
+    // LoadError line below. Writes are blocked while down via `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Work Types".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "Work Types",
             PageHeader {
@@ -1219,6 +1290,9 @@ pub fn WorkTypesSettingsPage() -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
+                        // MAPPS-357: block creates while the server is unreachable.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
                         onclick: move |_| editing.set(Some(WorkTypeFormState::new())),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Work Type"
@@ -1521,6 +1595,9 @@ pub fn TaskStatusesSettingsPage() -> Element {
 
     let mut resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the list auto-refetches the
+        // instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         let path = format!("/task-statuses?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TaskStatusRow>>(&path)
             .await
@@ -1535,6 +1612,18 @@ pub fn TaskStatusesSettingsPage() -> Element {
         _ => (Vec::new(), 0),
     };
 
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty list - render the honest unavailable state (keeps the nav +
+    // banner) instead of an empty table. A 4xx while still reachable keeps the
+    // LoadError line below. Writes are blocked while down via `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Task Statuses".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "Task Statuses",
             PageHeader {
@@ -1546,6 +1635,9 @@ pub fn TaskStatusesSettingsPage() -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
+                        // MAPPS-357: block creates while the server is unreachable.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
                         onclick: move |_| editing.set(Some(TaskStatusFormState::new())),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Status"
@@ -1820,6 +1912,9 @@ pub fn AssetTypesSettingsPage() -> Element {
 
     let mut resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the list auto-refetches the
+        // instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         let path = format!("/asset-types?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<AssetTypeRow>>(&path)
             .await
@@ -1834,6 +1929,18 @@ pub fn AssetTypesSettingsPage() -> Element {
         _ => (Vec::new(), 0),
     };
 
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty list - render the honest unavailable state (keeps the nav +
+    // banner) instead of an empty table. A 4xx while still reachable keeps the
+    // LoadError line below. Writes are blocked while down via `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Asset Types".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "Asset Types",
             PageHeader {
@@ -1845,6 +1952,9 @@ pub fn AssetTypesSettingsPage() -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
+                        // MAPPS-357: block creates while the server is unreachable.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
                         onclick: move |_| editing.set(Some(AssetTypeFormState::new())),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Asset Type"
@@ -2118,6 +2228,9 @@ pub fn CompanyIndustriesSettingsPage() -> Element {
 
     let mut resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the list auto-refetches the
+        // instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         let path = format!("/contacts/company-industries?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<CompanyIndustryRow>>(&path)
             .await
@@ -2132,6 +2245,18 @@ pub fn CompanyIndustriesSettingsPage() -> Element {
         _ => (Vec::new(), 0),
     };
 
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty list - render the honest unavailable state (keeps the nav +
+    // banner) instead of an empty table. A 4xx while still reachable keeps the
+    // LoadError line below. Writes are blocked while down via `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Company Industries".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "Company Industries",
             PageHeader {
@@ -2143,6 +2268,9 @@ pub fn CompanyIndustriesSettingsPage() -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
+                        // MAPPS-357: block creates while the server is unreachable.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
                         onclick: move |_| editing.set(Some(CompanyIndustryFormState::new())),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Industry"
@@ -2378,6 +2506,9 @@ pub fn ProjectTypesSettingsPage() -> Element {
 
     let mut resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the list auto-refetches the
+        // instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         let path = format!("/project-types?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<ProjectTypeRow>>(&path)
             .await
@@ -2392,6 +2523,18 @@ pub fn ProjectTypesSettingsPage() -> Element {
         _ => (Vec::new(), 0),
     };
 
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty list - render the honest unavailable state (keeps the nav +
+    // banner) instead of an empty table. A 4xx while still reachable keeps the
+    // LoadError line below. Writes are blocked while down via `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Project Types".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "Project Types",
             PageHeader {
@@ -2403,6 +2546,9 @@ pub fn ProjectTypesSettingsPage() -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
+                        // MAPPS-357: block creates while the server is unreachable.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
                         onclick: move |_| editing.set(Some(ProjectTypeFormState::new())),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Project Type"
@@ -2686,6 +2832,9 @@ pub fn PaymentTermsSettingsPage() -> Element {
 
     let mut resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the list auto-refetches the
+        // instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         let path = format!("/payment-terms?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<PaymentTermRow>>(&path)
             .await
@@ -2700,6 +2849,18 @@ pub fn PaymentTermsSettingsPage() -> Element {
         _ => (Vec::new(), 0),
     };
 
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty list - render the honest unavailable state (keeps the nav +
+    // banner) instead of an empty table. A 4xx while still reachable keeps the
+    // LoadError line below. Writes are blocked while down via `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Payment Terms".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "Payment Terms",
             PageHeader {
@@ -2711,6 +2872,9 @@ pub fn PaymentTermsSettingsPage() -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
+                        // MAPPS-357: block creates while the server is unreachable.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
                         onclick: move |_| editing.set(Some(PaymentTermFormState::new())),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Payment Term"
@@ -2975,6 +3139,9 @@ pub fn TicketStatusesSettingsPage() -> Element {
 
     let mut resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the list auto-refetches the
+        // instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         let path = format!("/tickets/statuses?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TicketStatusRow>>(&path)
             .await
@@ -2989,6 +3156,18 @@ pub fn TicketStatusesSettingsPage() -> Element {
         _ => (Vec::new(), 0),
     };
 
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty list - render the honest unavailable state (keeps the nav +
+    // banner) instead of an empty table. A 4xx while still reachable keeps the
+    // LoadError line below. Writes are blocked while down via `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Ticket Statuses".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "Ticket Statuses",
             PageHeader {
@@ -3000,6 +3179,9 @@ pub fn TicketStatusesSettingsPage() -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
+                        // MAPPS-357: block creates while the server is unreachable.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
                         onclick: move |_| editing.set(Some(TicketStatusFormState::new())),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Status"
@@ -3289,6 +3471,9 @@ pub fn TicketPrioritiesSettingsPage() -> Element {
 
     let mut resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the list auto-refetches the
+        // instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         let path = format!("/tickets/priorities?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TicketPriorityRow>>(&path)
             .await
@@ -3303,6 +3488,18 @@ pub fn TicketPrioritiesSettingsPage() -> Element {
         _ => (Vec::new(), 0),
     };
 
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty list - render the honest unavailable state (keeps the nav +
+    // banner) instead of an empty table. A 4xx while still reachable keeps the
+    // LoadError line below. Writes are blocked while down via `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Ticket Priorities".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "Ticket Priorities",
             PageHeader {
@@ -3314,6 +3511,9 @@ pub fn TicketPrioritiesSettingsPage() -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
+                        // MAPPS-357: block creates while the server is unreachable.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
                         onclick: move |_| editing.set(Some(TicketPriorityFormState::new())),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Priority"
@@ -3618,6 +3818,9 @@ pub fn TicketTypesSettingsPage() -> Element {
 
     let mut resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the list auto-refetches the
+        // instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         let path = format!("/tickets/types?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TicketTypeRow>>(&path)
             .await
@@ -3632,6 +3835,18 @@ pub fn TicketTypesSettingsPage() -> Element {
         _ => (Vec::new(), 0),
     };
 
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty list - render the honest unavailable state (keeps the nav +
+    // banner) instead of an empty table. A 4xx while still reachable keeps the
+    // LoadError line below. Writes are blocked while down via `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Ticket Types".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "Ticket Types",
             PageHeader {
@@ -3643,6 +3858,9 @@ pub fn TicketTypesSettingsPage() -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
+                        // MAPPS-357: block creates while the server is unreachable.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
                         onclick: move |_| editing.set(Some(TicketTypeFormState::new())),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Type"
@@ -3918,6 +4136,9 @@ pub fn TicketQueuesSettingsPage() -> Element {
 
     let mut resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the list auto-refetches the
+        // instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         let path = format!("/tickets/queues?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TicketQueueRow>>(&path)
             .await
@@ -3932,6 +4153,18 @@ pub fn TicketQueuesSettingsPage() -> Element {
         _ => (Vec::new(), 0),
     };
 
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty list - render the honest unavailable state (keeps the nav +
+    // banner) instead of an empty table. A 4xx while still reachable keeps the
+    // LoadError line below. Writes are blocked while down via `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Ticket Queues".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "Ticket Queues",
             PageHeader {
@@ -3943,6 +4176,9 @@ pub fn TicketQueuesSettingsPage() -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
+                        // MAPPS-357: block creates while the server is unreachable.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
                         onclick: move |_| editing.set(Some(TicketQueueFormState::new())),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Queue"
@@ -4237,6 +4473,9 @@ pub fn TicketCategoriesSettingsPage() -> Element {
 
     let mut resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the list auto-refetches the
+        // instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         let path = format!("/tickets/categories?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<TicketCategoryRow>>(&path)
             .await
@@ -4249,6 +4488,10 @@ pub fn TicketCategoriesSettingsPage() -> Element {
     // beyond that are not expected for a single tenant.
     let mut all_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: secondary lookup (parent-name resolution + parent picker);
+        // subscribe so it also repopulates on reconnect. It still degrades to
+        // an empty set on failure - the primary resource drives the outage view.
+        let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_authed::<Paginated<TicketCategoryRow>>(
             "/tickets/categories?per_page=100",
         )
@@ -4265,6 +4508,18 @@ pub fn TicketCategoriesSettingsPage() -> Element {
         Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
         _ => (Vec::new(), 0),
     };
+
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty list - render the honest unavailable state (keeps the nav +
+    // banner) instead of an empty table. A 4xx while still reachable keeps the
+    // LoadError line below. Writes are blocked while down via `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Ticket Categories".to_string() }
+        };
+    }
 
     // Resolve parent names for the table, and feed the parent picker,
     // from the full set rather than just the current page.
@@ -4287,6 +4542,9 @@ pub fn TicketCategoriesSettingsPage() -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
+                        // MAPPS-357: block creates while the server is unreachable.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
                         onclick: move |_| editing.set(Some(TicketCategoryFormState::new())),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Category"
@@ -4655,6 +4913,9 @@ pub fn RmmConnectionsSettingsPage() -> Element {
 
     let mut resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the list auto-refetches the
+        // instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         let path = format!("/rmm/connections?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<RmmConnectionRow>>(&path)
             .await
@@ -4669,6 +4930,18 @@ pub fn RmmConnectionsSettingsPage() -> Element {
         _ => (Vec::new(), 0),
     };
 
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty list - render the honest unavailable state (keeps the nav +
+    // banner) instead of an empty table. A 4xx while still reachable keeps the
+    // LoadError line below. Writes are blocked while down via `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "RMM Connections".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "RMM Connections",
             PageHeader {
@@ -4680,6 +4953,9 @@ pub fn RmmConnectionsSettingsPage() -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
+                        // MAPPS-357: block creates while the server is unreachable.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
                         onclick: move |_| editing.set(Some(RmmConnectionFormState::new())),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Connection"
@@ -4824,6 +5100,9 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
     let mut testing = use_signal(|| false);
     // (reachable, message) of the most recent test, or None when untested.
     let mut test_result = use_signal(|| None::<(bool, String)>);
+    // MAPPS-357: the reachability test POSTs to the server, so gate it (and the
+    // save/delete buttons the shared SettingFormModal owns) on can_mutate.
+    let can_mutate = crate::hooks::use_can_mutate();
 
     let onclose = props.onclose;
     let onsaved = props.onsaved;
@@ -5073,6 +5352,8 @@ fn RmmConnectionFormModal(props: RmmConnectionFormModalProps) -> Element {
                     Button {
                         variant: ButtonVariant::Secondary,
                         loading: *testing.read(),
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't test while the server is unreachable".to_string()),
                         onclick: handle_test,
                         "Test connection"
                     }
@@ -5126,6 +5407,10 @@ pub fn RmmDeviceMappingsSettingsPage() -> Element {
     // column label.
     let conns_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: secondary lookup for connection labels + the create
+        // dropdown; subscribe so it repopulates on reconnect. It degrades to an
+        // empty set on failure - the primary resource drives the outage view.
+        let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_authed::<Paginated<RmmConnectionRow>>(
             "/rmm/connections?page=1&per_page=100",
         )
@@ -5141,6 +5426,9 @@ pub fn RmmDeviceMappingsSettingsPage() -> Element {
 
     let mut resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the list auto-refetches the
+        // instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         let path = format!("/rmm/device-mappings?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<RmmDeviceMappingRow>>(&path)
             .await
@@ -5154,6 +5442,18 @@ pub fn RmmDeviceMappingsSettingsPage() -> Element {
         Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
         _ => (Vec::new(), 0),
     };
+
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty list - render the honest unavailable state (keeps the nav +
+    // banner) instead of an empty table. A 4xx while still reachable keeps the
+    // LoadError line below. Writes are blocked while down via `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "RMM Device Mappings".to_string() }
+        };
+    }
 
     let conn_label = |id: Option<Uuid>| -> String {
         match id {
@@ -5185,9 +5485,14 @@ pub fn RmmDeviceMappingsSettingsPage() -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
-                        disabled: no_connections,
-                        title: no_connections
-                            .then(|| "Add an RMM connection first, then map its devices here.".to_string()),
+                        // MAPPS-357: also block creates while the server is unreachable.
+                        disabled: no_connections || !can_mutate,
+                        title: if !can_mutate {
+                            Some("Can't do this while the server is unreachable".to_string())
+                        } else {
+                            no_connections
+                                .then(|| "Add an RMM connection first, then map its devices here.".to_string())
+                        },
                         onclick: move |_| creating.set(true),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Mapping"
@@ -5266,6 +5571,9 @@ pub fn RmmDeviceMappingsSettingsPage() -> Element {
                                                     variant: ButtonVariant::Danger,
                                                     size: crate::components::ButtonSize::Small,
                                                     loading: is_deleting,
+                                                    // MAPPS-357: block deletes while the server is unreachable.
+                                                    disabled: !can_mutate,
+                                                    title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                                                     onclick: move |_| {
                                                         if deleting_id.read().is_some() {
                                                             return;
@@ -5510,6 +5818,10 @@ pub fn RmmAlertRulesSettingsPage() -> Element {
 
     let conns_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: secondary lookup for connection labels + the create
+        // dropdown; subscribe so it repopulates on reconnect. It degrades to an
+        // empty set on failure - the primary resource drives the outage view.
+        let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_authed::<Paginated<RmmConnectionRow>>(
             "/rmm/connections?page=1&per_page=100",
         )
@@ -5525,6 +5837,9 @@ pub fn RmmAlertRulesSettingsPage() -> Element {
 
     let mut resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the list auto-refetches the
+        // instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         let path = format!("/rmm/alert-rules?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_authed::<Paginated<RmmAlertRuleRow>>(&path)
             .await
@@ -5538,6 +5853,18 @@ pub fn RmmAlertRulesSettingsPage() -> Element {
         Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
         _ => (Vec::new(), 0),
     };
+
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty list - render the honest unavailable state (keeps the nav +
+    // banner) instead of an empty table. A 4xx while still reachable keeps the
+    // LoadError line below. Writes are blocked while down via `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "RMM Alert Rules".to_string() }
+        };
+    }
 
     let conn_label = |id: Option<Uuid>| -> String {
         match id {
@@ -5569,9 +5896,14 @@ pub fn RmmAlertRulesSettingsPage() -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
-                        disabled: no_connections,
-                        title: no_connections
-                            .then(|| "Add an RMM connection first, then define alert rules for it.".to_string()),
+                        // MAPPS-357: also block creates while the server is unreachable.
+                        disabled: no_connections || !can_mutate,
+                        title: if !can_mutate {
+                            Some("Can't do this while the server is unreachable".to_string())
+                        } else {
+                            no_connections
+                                .then(|| "Add an RMM connection first, then define alert rules for it.".to_string())
+                        },
                         onclick: move |_| creating.set(true),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Alert Rule"
@@ -5654,6 +5986,9 @@ pub fn RmmAlertRulesSettingsPage() -> Element {
                                                     variant: ButtonVariant::Danger,
                                                     size: crate::components::ButtonSize::Small,
                                                     loading: is_deleting,
+                                                    // MAPPS-357: block deletes while the server is unreachable.
+                                                    disabled: !can_mutate,
+                                                    title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                                                     onclick: move |_| {
                                                         if deleting_id.read().is_some() {
                                                             return;

@@ -9,9 +9,45 @@ use crate::components::{
 };
 use crate::Route;
 
+/// MAPPS-357: portal-native "server unreachable" body.
+///
+/// The shared [`crate::components::ContentUnavailable`] mounts the internal
+/// agent `AppLayout` (sidebar + admin nav), which would leak internal chrome
+/// to a portal (client) user during an outage. This mirrors its copy and
+/// self-healing posture but stays inside [`PortalLayout`] so the client-facing
+/// header/footer are preserved. Like its sibling it is non-blocking: the page
+/// re-runs and repopulates on its own once the MAPPS-333 recovery poll flips
+/// the reachability flag back (the resource subscribes to it).
+#[component]
+fn PortalUnavailable(title: String) -> Element {
+    rsx! {
+        PortalLayout { title: "{title}",
+            Card {
+                div {
+                    role: "status",
+                    aria_live: "polite",
+                    class: "py-12 px-6 mx-auto flex max-w-md flex-col items-center text-center",
+                    h3 { class: "text-base font-medium text-content", "Can't load this page" }
+                    p { class: "mt-2 text-sm text-muted",
+                        "The server is unreachable. This page will refresh on its own once the connection is back."
+                    }
+                    Link {
+                        to: Route::PortalHome {},
+                        class: "mt-6 inline-flex items-center rounded-md bg-surface-2 px-3 py-2 text-sm font-medium text-content hover:opacity-90",
+                        "Go to portal home"
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Portal home page
 #[component]
 pub fn PortalHomePage() -> Element {
+    // MAPPS-357: N/A because this page fetches nothing. Every stat, ticket,
+    // and invoice below is static demo copy, so there is no primary resource
+    // that could fail during an outage and no mutating control to disable.
     rsx! {
         PortalLayout { title: "Home",
             // Welcome section
@@ -191,6 +227,10 @@ fn PortalInvoiceItem(props: PortalInvoiceItemProps) -> Element {
 /// Portal ticket list page
 #[component]
 pub fn PortalTicketListPage() -> Element {
+    // MAPPS-357: N/A because the ticket rows below are static demo data (no
+    // fetch), so there is no primary resource to gate on an outage. The "New
+    // Ticket" control is a plain navigation Link, not a mutation, so it stays
+    // enabled.
     rsx! {
         // Title is rendered once below alongside the "New Ticket"
         // action button (P1-10 dedup).
@@ -284,6 +324,9 @@ fn PortalTicketRow(props: PortalTicketRowProps) -> Element {
 /// Portal new ticket page
 #[component]
 pub fn PortalTicketNewPage() -> Element {
+    // MAPPS-357: N/A because this is a static "coming soon" page. It has no
+    // fetch and no working submit (the form was removed), so there is no
+    // primary resource to gate and no mutating control to disable.
     rsx! {
         // P1-10 dedup: title rendered once below.
         PortalLayout {
@@ -352,6 +395,9 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
         let id = id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-357: subscribe to reachability so the ticket auto-refetches
+            // the instant the server comes back (paired with the recovery poll).
+            let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<PortalTicketDetail>(&format!(
                 "/portal/tickets/{id}"
             ))
@@ -361,10 +407,24 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
     });
 
     let snap = ticket_resource.read_unchecked();
+    // `Some(None)` = fetch failed; `Some(Some(_))` = loaded; `None` = loading.
+    let fetch_failed = matches!(*snap, Some(None));
     let header_title = match &*snap {
         Some(Some(t)) if !t.ticket_number.is_empty() => format!("Ticket {}", t.ticket_number),
         _ => format!("Ticket {}", props.id),
     };
+
+    // MAPPS-357: the ticket is this page's PRIMARY resource. A failed load
+    // while the server is flagged down is an outage, not a missing ticket, so
+    // render the honest unavailable state (which keeps the nav + banner)
+    // instead of the "Could not load ticket" card. A 4xx that fails while the
+    // server is still reachable keeps that inline card below.
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
+        return rsx! {
+            PortalUnavailable { title: header_title.clone() }
+        };
+    }
 
     rsx! {
         PortalLayout { title: "{header_title}",
@@ -491,6 +551,9 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
     let mut notes_resource = use_resource(use_reactive!(|id_for_fetch| async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _v = version.read();
+        // MAPPS-357: subscribe to reachability so the thread auto-refetches
+        // the instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_authed::<crate::utils::Paginated<PortalNote>>(&format!(
             "/portal/tickets/{id_for_fetch}/notes?page=1&per_page=200"
         ))
@@ -507,6 +570,13 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
     };
     let loading = snap.is_none();
     let fetch_failed = matches!(*snap, Some(None));
+
+    // MAPPS-357: block the reply POST while the server is unreachable so a
+    // click cannot silently fail. This is a comments panel embedded in the
+    // ticket detail page, so its notes fetch stays a secondary resource (it
+    // degrades to the inline "Could not load comments" line rather than
+    // swapping the whole page to ContentUnavailable).
+    let can_mutate = crate::hooks::use_can_mutate();
 
     let handle_submit = move |_| {
         if *submitting.read() {
@@ -615,7 +685,9 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
                 div { class: "mt-3 flex justify-end",
                     Button {
                         variant: ButtonVariant::Primary,
-                        disabled: *submitting.read(),
+                        // MAPPS-357: also disabled while the server is unreachable.
+                        disabled: *submitting.read() || !can_mutate,
+                        title: (!can_mutate).then(|| "Can't send a reply while the server is unreachable".to_string()),
                         onclick: handle_submit,
                         if *submitting.read() { "Sending..." } else { "Send Reply" }
                     }
@@ -628,6 +700,9 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
 /// Portal invoice list page
 #[component]
 pub fn PortalInvoiceListPage() -> Element {
+    // MAPPS-357: N/A because the invoice rows below are static demo data (no
+    // fetch), so there is no primary resource to gate on an outage. The "View"
+    // buttons are decorative (no onclick / no payment flow), not mutations.
     rsx! {
         // P1-10 dedup: title rendered once below.
         PortalLayout {
@@ -741,6 +816,9 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
         let id = id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-357: subscribe to reachability so the invoice auto-refetches
+            // the instant the server comes back (paired with the recovery poll).
+            let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<PortalInvoiceDetail>(&format!(
                 "/portal/invoices/{id}"
             ))
@@ -750,12 +828,26 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
     });
 
     let snap = invoice_resource.read_unchecked();
+    // `Some(None)` = fetch failed; `Some(Some(_))` = loaded; `None` = loading.
+    let fetch_failed = matches!(*snap, Some(None));
     let header_title = match &*snap {
         Some(Some(inv)) if !inv.invoice_number.is_empty() => {
             format!("Invoice {}", inv.invoice_number)
         }
         _ => format!("Invoice {}", props.id),
     };
+
+    // MAPPS-357: the invoice is this page's PRIMARY resource. A failed load
+    // while the server is flagged down is an outage, not a missing invoice, so
+    // render the honest unavailable state (which keeps the nav + banner)
+    // instead of the "Could not load invoice" card. A 4xx that fails while the
+    // server is still reachable keeps that inline card below.
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
+        return rsx! {
+            PortalUnavailable { title: header_title.clone() }
+        };
+    }
 
     rsx! {
         PortalLayout { title: "{header_title}",
@@ -904,6 +996,9 @@ pub fn PortalKBPage() -> Element {
 
     let feed_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the feed auto-refetches the
+        // instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         crate::hooks::fetch::api::get_authed::<PortalKbFeed>("/portal/kb?page=1&per_page=100")
             .await
             .ok()
@@ -912,6 +1007,19 @@ pub fn PortalKBPage() -> Element {
     let snap = feed_resource.read_unchecked();
     let is_loading = snap.is_none();
     let fetch_failed = matches!(*snap, Some(None));
+
+    // MAPPS-357: the article feed is this page's PRIMARY resource. A failed
+    // load while the server is flagged down is an outage, not an empty KB, so
+    // render the honest unavailable state (which keeps the nav + banner)
+    // instead of "No articles available yet." A 4xx that fails while the
+    // server is still reachable keeps the inline "Could not load articles"
+    // message below. The search box is a client-side filter, not a mutation.
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
+        return rsx! {
+            PortalUnavailable { title: "Knowledge Base".to_string() }
+        };
+    }
 
     let search_text = search.read().trim().to_lowercase();
     let articles: Vec<PortalKbArticle> = match &*snap {

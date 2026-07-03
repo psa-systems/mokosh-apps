@@ -442,7 +442,12 @@ pub fn ProjectListPage() -> Element {
 
     // MAPPS-249: scope to one company when a context card's "View All" passes
     // `?company_id=<uuid>`.
-    let projects_resource = use_resource(|| async {
+    // MAPPS-357: `/projects` is this page's PRIMARY resource; via
+    // use_remote_resource a failed load while the server is down renders the
+    // honest unavailable state below instead of an empty grid with zero stat
+    // counts, and auto-refetches on reconnect. The query-param subscription
+    // stays inside the fetcher.
+    let projects_resource = crate::hooks::use_remote_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let mut path = String::from("/projects");
         if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
@@ -450,9 +455,11 @@ pub fn ProjectListPage() -> Element {
         }
         crate::hooks::fetch::api::get_authed::<Paginated<RemoteProject>>(&path)
             .await
-            .ok()
             .map(|p| p.data)
     });
+    // Company names are a SECONDARY lookup: a missing list just renders
+    // "Unknown company", so it keeps degrading to a default rather than
+    // gating the whole page on an outage.
     let companies_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_authed::<Paginated<CompanyOption>>("/contacts/companies")
@@ -462,11 +469,15 @@ pub fn ProjectListPage() -> Element {
             .unwrap_or_default()
     });
 
-    let snapshot = projects_resource.read_unchecked().clone();
-    // `None` while loading; `Some(None)` on fetch failure; `Some(Some(rows))`.
-    let is_loading = snapshot.is_none();
-    let load_failed = matches!(&snapshot, Some(None));
-    let projects: Vec<RemoteProject> = snapshot.flatten().unwrap_or_default();
+    // MAPPS-357: primary resource unavailable (failed while the server is
+    // flagged down) -> explicit outage body. Placed after every hook.
+    if projects_resource.is_unavailable() {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Projects".to_string() }
+        };
+    }
+    let is_loading = projects_resource.is_loading();
+    let projects: Vec<RemoteProject> = projects_resource.value_or_default();
     let companies = companies_resource
         .read_unchecked()
         .clone()
@@ -573,12 +584,6 @@ pub fn ProjectListPage() -> Element {
                 // PMS-353: card-grid skeleton matching the populated layout,
                 // instead of a bare "Loading projects…" line.
                 crate::components::CardGridSkeleton {}
-            } else if load_failed {
-                Card {
-                    p { class: "text-sm text-yellow-600 dark:text-yellow-400",
-                        "Could not load projects from the server."
-                    }
-                }
             } else if filtered.is_empty() {
                 if projects.is_empty() {
                     crate::components::EmptyState {
@@ -731,6 +736,12 @@ pub fn ProjectNewPage() -> Element {
             None
         };
 
+    // MAPPS-357: N/A because this is a blank create form with no PRIMARY
+    // fetched entity to gate on. `users_resource` below is a SECONDARY
+    // dropdown lookup (Project Manager options) that keeps degrading to a
+    // default. There is no honest "content" to swap for ContentUnavailable;
+    // instead the write control (Create Project) is disabled while the
+    // server is unreachable.
     // PMS-361: users list for the Project Manager Select. Same endpoint
     // and shape the Edit modal uses on the detail page.
     let users_resource = use_resource(|| async {
@@ -760,6 +771,8 @@ pub fn ProjectNewPage() -> Element {
     ];
 
     let err = error.read().clone();
+    // MAPPS-357: block the create submit while the server is unreachable.
+    let can_mutate = crate::hooks::use_can_mutate();
 
     rsx! {
         AppLayout { title: "New Project",
@@ -1048,6 +1061,9 @@ pub fn ProjectNewPage() -> Element {
                             r#type: "submit",
                             variant: ButtonVariant::Primary,
                             loading: *is_submitting.read(),
+                            // MAPPS-357: no writes while the server is down.
+                            disabled: !can_mutate,
+                            title: (!can_mutate).then(|| "Can't create a project while the server is unreachable".to_string()),
                             "Create Project"
                         }
                     }
@@ -1066,10 +1082,17 @@ pub struct ProjectDetailPageProps {
 #[component]
 pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
     let id_for_project = props.id.clone();
+    // MAPPS-357: the fetched project is this detail page's PRIMARY resource
+    // (tasks / statuses / users / history are secondary lookups that keep
+    // degrading to defaults). Kept as a hand-rolled use_resource because the
+    // edit / checklist flows call `.restart()`; `.ok()` preserves a failed
+    // load so an outage renders ContentUnavailable instead of a blank detail.
+    // Subscribe to reachability so it auto-refetches on reconnect.
     let project_resource = use_resource(move || {
         let id = id_for_project.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<RemoteProject>(&format!("/projects/{id}"))
                 .await
                 .ok()
@@ -1145,6 +1168,9 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
 
     let snapshot = project_resource.read_unchecked().clone();
     let is_loading = snapshot.is_none();
+    // MAPPS-357: `Some(None)` means the project fetch failed (distinct from
+    // `None` still-loading). Used for the outage early return after all hooks.
+    let fetch_failed = matches!(&snapshot, Some(None));
     let project = snapshot.flatten();
     // MAPPS-245: a cancelled project does not accept new items. Gate the
     // add-task control once the project has loaded, using the same literal
@@ -1255,6 +1281,19 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         None => "Project".to_string(),
     };
 
+    // MAPPS-357: primary resource failed while the server is flagged down ->
+    // honest outage body (keeps nav + banner) instead of the "could not load"
+    // card. Placed after every hook so the hook order stays fixed. A failure
+    // while still reachable (a 4xx) keeps the inline card below. `can_mutate`
+    // disables the Add Task / Edit / Delete / save controls while down.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: header_title.clone() }
+        };
+    }
+
     // Progress from task completion (per-tenant statuses flag the "done"
     // columns via is_completed).
     let total_tasks = tasks.len();
@@ -1306,9 +1345,12 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                         // MAPPS-245: disable on a cancelled project so the Add
                         // Task modal cannot be opened; the native tooltip and the
                         // banner below explain why (MAPPS-217 pattern).
-                        disabled: is_cancelled,
+                        // MAPPS-357: also disable while the server is unreachable.
+                        disabled: is_cancelled || !can_mutate,
                         title: if is_cancelled {
                             Some("This project is cancelled and does not accept new tasks.".to_string())
+                        } else if !can_mutate {
+                            Some("Can't add a task while the server is unreachable".to_string())
                         } else {
                             None
                         },
@@ -1325,6 +1367,9 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                     if let Some(p) = project.clone() {
                         Button {
                             variant: ButtonVariant::Secondary,
+                            // MAPPS-357: no edits while the server is down.
+                            disabled: !can_mutate,
+                            title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
                             onclick: move |_| {
                                 pe_name.set(p.name.clone());
                                 pe_description.set(p.description.clone().unwrap_or_default());
@@ -1351,6 +1396,9 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                     Button {
                         variant: ButtonVariant::Danger,
                         loading: *deleting.read(),
+                        // MAPPS-357: no deletes while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                         onclick: move |_| {
                             if !*deleting.read() {
                                 confirming_delete.set(true);
@@ -1409,7 +1457,10 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                             rsx! {
                                                 crate::components::Markdown {
                                                     content: d,
-                                                    interactive: true,
+                                                    // MAPPS-357: toggling a checklist item persists a
+                                                    // PUT, so make the checkboxes non-interactive while
+                                                    // the server is unreachable (no silent failed write).
+                                                    interactive: can_mutate,
                                                     on_toggle: move |i: usize| {
                                                         let Some(new_desc) =
                                                             crate::utils::markdown::toggle_task(&d_src, i)
@@ -1637,6 +1688,9 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                     Button {
                         variant: ButtonVariant::Primary,
                         loading: *t_submitting.read(),
+                        // MAPPS-357: no task creation while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't create a task while the server is unreachable".to_string()),
                         onclick: move |_| {
                             t_error.set(String::new());
                             // PMS-518: validate Title + Status through the shared
@@ -1933,6 +1987,9 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                             Button {
                                 variant: ButtonVariant::Primary,
                                 loading: pe_submitting(),
+                                // MAPPS-357: no save while the server is down.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                                 onclick: on_save,
                                 "Save Changes"
                             }
@@ -2046,10 +2103,17 @@ pub struct ProjectTasksPageProps {
 #[component]
 pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
     let id_for_tasks = props.id.clone();
+    // MAPPS-357: the task list is this page's PRIMARY resource (statuses /
+    // users are secondary lookups that keep degrading to defaults). Kept as a
+    // hand-rolled use_resource because TaskEditModal's onsaved/ondeleted call
+    // `.restart()`; `.ok()` preserves a failed load so an outage renders
+    // ContentUnavailable instead of an empty task table. Subscribe to
+    // reachability so it auto-refetches on reconnect.
     let mut tasks_resource = use_resource(move || {
         let id = id_for_tasks.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<Paginated<RemoteTask>>(&format!(
                 "/projects/{id}/tasks"
             ))
@@ -2088,6 +2152,19 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
 
     // MAPPS-165: click-to-edit a task via the shared modal.
     let mut selected_task = use_signal(|| None::<RemoteTask>);
+
+    // MAPPS-357: a failed task load while the server is flagged down is an
+    // outage, not an empty project - render the honest unavailable state
+    // (which keeps nav + banner) instead of an empty table. A failure while
+    // still reachable (a 4xx) keeps the inline "Could not load tasks" row
+    // below. Placed after every hook so the hook order stays fixed. Task
+    // edits are gated inside TaskEditModal via its own `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    if load_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Project Tasks".to_string() }
+        };
+    }
 
     rsx! {
         AppLayout { title: "Project Tasks",
@@ -2224,6 +2301,12 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
     let onclose = props.onclose;
     let onsaved = props.onsaved;
     let ondeleted = props.ondeleted;
+
+    // MAPPS-357: this shared modal is opened from both the project detail and
+    // tasks pages; gate its Save / Delete writes on reachability so a task
+    // edit cannot be submitted into a downed server. History is a secondary
+    // lookup that keeps degrading to a default.
+    let can_mutate = crate::hooks::use_can_mutate();
 
     let mut te_title = use_signal(|| task.title.clone());
     let mut te_description = use_signal(|| task.description.clone().unwrap_or_default());
@@ -2411,6 +2494,9 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                 Button {
                     variant: ButtonVariant::Danger,
                     loading: te_deleting(),
+                    // MAPPS-357: no deletes while the server is down.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                     onclick: move |_| {
                         if !te_deleting() {
                             confirming_delete.set(true);
@@ -2426,6 +2512,9 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
                 Button {
                     variant: ButtonVariant::Primary,
                     loading: te_submitting(),
+                    // MAPPS-357: no save while the server is down.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                     onclick: on_save,
                     "Save Changes"
                 }

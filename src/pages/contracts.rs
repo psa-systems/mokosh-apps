@@ -184,6 +184,9 @@ pub fn ContractListPage() -> Element {
             // F1: subscribe to the active-tenant generation so an org
             // switch re-runs this resource.
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-357: subscribe to reachability so the list auto-refetches
+            // on reconnect and a failed load can render ContentUnavailable.
+            let _reachable = crate::hooks::use_server_reachable();
             let token = crate::hooks::fetch::api::current_access_token()?;
             let mut path = format!("/contracts?page={current_page}&per_page={PER_PAGE}");
             if !company.is_empty() {
@@ -212,6 +215,20 @@ pub fn ContractListPage() -> Element {
         _ => (Vec::new(), 0),
     };
     let has_filters = !company_text.is_empty() || !status_text.is_empty() || !type_text.is_empty();
+
+    // MAPPS-357: the contract list (GET /contracts) is this page's primary
+    // resource. A failed load while the server is flagged down is an outage,
+    // not an empty list - render the honest unavailable state instead of an
+    // empty table. A 4xx while still reachable keeps the inline banner below.
+    // (No direct create/update/delete controls live on this page: New
+    // Contract / Rate Cards are navigation and Clear filters is a filter
+    // reset, so there is nothing here to gate on `can_mutate`.)
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Contracts".to_string() }
+        };
+    }
 
     rsx! {
         AppLayout { title: "Contracts",
@@ -463,12 +480,25 @@ pub fn ContractEditPage(props: ContractEditPageProps) -> Element {
         let id = id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-357: re-run on reconnect so the outage state self-heals.
+            let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<ContractResponse>(&format!("/contracts/{id}"))
                 .await
                 .ok()
         }
     });
     let snap = detail_resource.read_unchecked();
+    // MAPPS-357: the fetched contract is this edit page's primary resource. A
+    // load failure while the server is unreachable is an outage, not a missing
+    // contract - render ContentUnavailable rather than the "Could not load"
+    // card below (that stays for a 4xx while still reachable).
+    let reachable = crate::hooks::use_server_reachable();
+    let fetch_failed = matches!(*snap, Some(None));
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Edit Contract".to_string() }
+        };
+    }
     rsx! {
         AppLayout { title: "Edit Contract",
             PageHeader { title: "Edit Contract" }
@@ -1065,6 +1095,11 @@ fn ContractForm(props: ContractFormProps) -> Element {
         });
     };
 
+    // MAPPS-357: block the create/save submit while the server is unreachable
+    // so a write cannot silently fail (edits are discarded, not queued). The
+    // read subscribes this form so the button re-enables on reconnect.
+    let can_mutate = crate::hooks::use_can_mutate();
+
     // PMS-352 AC3: feed the create-flow CompanyPicker its "already selected"
     // state. Some(id) renders the selected-chip view; a non-UUID (empty)
     // renders the search dropdown.
@@ -1340,6 +1375,9 @@ fn ContractForm(props: ContractFormProps) -> Element {
                         r#type: "submit",
                         variant: ButtonVariant::Primary,
                         loading: *is_submitting.read(),
+                        // MAPPS-357: disable while the server is unreachable.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                         "{submit_label}"
                     }
                 }
@@ -1427,6 +1465,8 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
         let id = id_for_contract.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-357: re-run on reconnect so the outage state self-heals.
+            let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<ContractResponse>(&format!("/contracts/{id}"))
                 .await
                 .ok()
@@ -1469,6 +1509,22 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
     let mut confirming_delete = use_signal(|| false);
     let edit_id = id_for_edit.clone();
     let delete_id = id_for_delete.clone();
+
+    // MAPPS-357: the fetched contract is this detail page's primary resource.
+    // A load failure while the server is unreachable is an outage, not a
+    // missing contract - render ContentUnavailable instead of the "Could not
+    // load" card. `can_mutate` gates the write controls (Delete here, plus the
+    // Add/Edit affordances in the line-item and hour-balance cards) so they
+    // disable during the reachable-flips-false window before the resource
+    // re-runs and swaps in the outage body.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    let fetch_failed = matches!(*contract_snapshot, Some(None));
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Contract".to_string() }
+        };
+    }
 
     let on_confirm_delete = move |_: ()| {
         if *deleting.read() {
@@ -1533,6 +1589,9 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                     Button {
                         variant: ButtonVariant::Danger,
                         loading: *deleting.read(),
+                        // MAPPS-357: block delete while the server is unreachable.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                         onclick: move |_| {
                             if !*deleting.read() {
                                 confirming_delete.set(true);
@@ -1614,8 +1673,8 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
                                     }
                                 }
 
-                                ContractItemsCard { items_resource, editing_item }
-                                ContractHourBalanceCard { balance_resource, items_resource }
+                                ContractItemsCard { items_resource, editing_item, can_mutate }
+                                ContractHourBalanceCard { balance_resource, items_resource, can_mutate }
                             }
 
                             div { class: "space-y-6",
@@ -1670,6 +1729,9 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
 fn ContractItemsCard(
     items_resource: Resource<Option<Paginated<ContractItemResponse>>>,
     editing_item: Signal<Option<ContractItemFormState>>,
+    // MAPPS-357: false while the server is unreachable, so the Add Item
+    // affordance (which opens a POST/PUT/DELETE modal) disables.
+    can_mutate: bool,
 ) -> Element {
     let mut editing_item = editing_item;
     let snap = items_resource.read_unchecked();
@@ -1685,6 +1747,9 @@ fn ContractItemsCard(
             actions: rsx! {
                 Button {
                     variant: ButtonVariant::Primary,
+                    // MAPPS-357: block while the server is unreachable.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't add a line item while the server is unreachable".to_string()),
                     onclick: move |_| editing_item.set(Some(ContractItemFormState::new(next_sort_order))),
                     PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                     "Add Item"
@@ -2082,6 +2147,9 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
 fn ContractHourBalanceCard(
     balance_resource: Resource<Option<Paginated<ContractHourBalanceResponse>>>,
     items_resource: Resource<Option<Paginated<ContractItemResponse>>>,
+    // MAPPS-357: false while the server is unreachable, so the Edit Allotment
+    // affordance (which PUTs the block-hours item) disables.
+    can_mutate: bool,
 ) -> Element {
     // MAPPS-255: rebind so a successful allotment edit can refresh both the
     // balance display and the items table.
@@ -2123,6 +2191,9 @@ fn ContractHourBalanceCard(
         rsx! {
             Button {
                 variant: ButtonVariant::Secondary,
+                // MAPPS-357: block while the server is unreachable.
+                disabled: !can_mutate,
+                title: (!can_mutate).then(|| "Can't edit the allotment while the server is unreachable".to_string()),
                 onclick: move |_| editing_allotment.set(block_item.clone()),
                 "Edit Allotment"
             }
@@ -2390,6 +2461,9 @@ pub fn RateCardListPage(
 
     let mut rate_cards_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the list auto-refetches on
+        // reconnect and a failed load can render ContentUnavailable.
+        let _reachable = crate::hooks::use_server_reachable();
         let token = crate::hooks::fetch::api::current_access_token()?;
         let path = format!("/rate-cards?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_with_auth::<Paginated<RateCardResponse>>(&path, &token)
@@ -2405,6 +2479,19 @@ pub fn RateCardListPage(
         _ => (Vec::new(), 0),
     };
 
+    // MAPPS-357: the rate-card list (GET /rate-cards) is this page's primary
+    // resource. A failed load while the server is flagged down is an outage,
+    // not an empty list - render ContentUnavailable rather than an empty
+    // table (the inline banner below stays for a 4xx while still reachable).
+    // `can_mutate` gates the New Rate Card affordances.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Rate Cards".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "Rate Cards",
             PageHeader {
@@ -2418,6 +2505,9 @@ pub fn RateCardListPage(
                     if can_edit {
                         Button {
                             variant: ButtonVariant::Primary,
+                            // MAPPS-357: block while the server is unreachable.
+                            disabled: !can_mutate,
+                            title: (!can_mutate).then(|| "Can't create a rate card while the server is unreachable".to_string()),
                             onclick: move |_| editing.set(Some(RateCardFormState::new())),
                             PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                             "New Rate Card"
@@ -2459,6 +2549,9 @@ pub fn RateCardListPage(
                             actions: can_edit.then(|| rsx! {
                                 Button {
                                     variant: ButtonVariant::Primary,
+                                    // MAPPS-357: block while the server is unreachable.
+                                    disabled: !can_mutate,
+                                    title: (!can_mutate).then(|| "Can't create a rate card while the server is unreachable".to_string()),
                                     onclick: move |_| editing.set(Some(RateCardFormState::new())),
                                     PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                                     "New Rate Card"
@@ -2561,6 +2654,8 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
         let id = id_for_card.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-357: re-run on reconnect so the outage state self-heals.
+            let _reachable = crate::hooks::use_server_reachable();
             let resp = crate::hooks::fetch::api::get_authed::<Paginated<RateCardResponse>>(
                 "/rate-cards?page=1&per_page=100",
             )
@@ -2619,6 +2714,22 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
         _ => Vec::new(),
     };
 
+    // MAPPS-357: the fetched rate card is this detail page's primary resource.
+    // While the server is unreachable the card lookup can only resolve to
+    // Some(None) by way of a failed GET (a genuine "card not in the list"
+    // requires a successful fetch), so that pairing is an outage - render
+    // ContentUnavailable rather than the "Could not load" card below. A
+    // Some(None) while still reachable is the real not-found and keeps the
+    // existing branch. `can_mutate` gates the Edit Card / Add Rate controls.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    let fetch_failed = matches!(*card_snapshot, Some(None));
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Rate Card".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "{header_title}",
             PageHeader {
@@ -2646,6 +2757,9 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
                         if let Some(state) = card_for_edit.clone() {
                             Button {
                                 variant: ButtonVariant::Secondary,
+                                // MAPPS-357: block while the server is unreachable.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
                                 onclick: move |_| editing_card.set(Some(state.clone())),
                                 "Edit Card"
                             }
@@ -2699,6 +2813,7 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
                             RateCardItemsCard {
                                 items_resource,
                                 can_edit,
+                                can_mutate,
                                 work_types: work_types.clone(),
                                 editing_item,
                             }
@@ -2746,6 +2861,9 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
 fn RateCardItemsCard(
     items_resource: Resource<Option<Paginated<RateCardItemResponse>>>,
     can_edit: bool,
+    // MAPPS-357: false while the server is unreachable, so the Add Rate
+    // affordance (which POSTs a rate) disables on top of the can_add gate.
+    can_mutate: bool,
     work_types: Vec<WorkTypeOpt>,
     editing_item: Signal<Option<RateCardItemFormState>>,
 ) -> Element {
@@ -2782,8 +2900,15 @@ fn RateCardItemsCard(
                     div { class: "flex flex-col items-end gap-1",
                         Button {
                             variant: ButtonVariant::Primary,
-                            disabled: !can_add,
-                            title: if can_add { None } else { Some(disabled_reason.to_string()) },
+                            // MAPPS-357: also block while the server is unreachable.
+                            disabled: !can_add || !can_mutate,
+                            title: if !can_mutate {
+                                Some("Can't add a rate while the server is unreachable".to_string())
+                            } else if can_add {
+                                None
+                            } else {
+                                Some(disabled_reason.to_string())
+                            },
                             onclick: move |_| editing_item.set(Some(RateCardItemFormState::new())),
                             PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                             "Add Rate"

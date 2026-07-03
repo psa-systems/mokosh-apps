@@ -282,6 +282,9 @@ pub fn InvoiceListPage() -> Element {
         let status = status_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-357: subscribe to reachability so the list auto-refetches
+            // the instant the server comes back (paired with the recovery poll).
+            let _reachable = crate::hooks::use_server_reachable();
             let token = crate::hooks::fetch::api::current_access_token()?;
             let mut path = format!("/invoices?page={current_page}&per_page={PER_PAGE}");
             // `company` is a UUID filter (`InvoiceFilter.company_id`). Only
@@ -305,6 +308,18 @@ pub fn InvoiceListPage() -> Element {
         Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
         _ => (Vec::new(), 0),
     };
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty list - render the honest unavailable state (which keeps the
+    // nav + banner) instead of an empty invoices table. A fetch that fails while
+    // still reachable (a 4xx) keeps the inline banner below. This page's only
+    // controls are navigation Links + filters (no inline mutations), so no
+    // `can_mutate` gating is needed here.
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Invoices".to_string() }
+        };
+    }
     let has_filters = !company_text.is_empty() || !status_text.is_empty();
 
     rsx! {
@@ -581,6 +596,9 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         let id = id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-357: subscribe to reachability so the invoice auto-refetches
+            // the instant the server comes back (paired with the recovery poll).
+            let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<InvoiceDetail>(&format!("/invoices/{id}"))
                 .await
                 .ok()
@@ -666,6 +684,21 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         });
     };
 
+    // MAPPS-357: primary resource is the fetched invoice (`/invoices/{id}`). A
+    // failed load while the server is flagged down is an outage, not a missing
+    // invoice - render the honest unavailable state (keeps nav + banner). A
+    // failure while still reachable (a 404 / 4xx) keeps the inline "Could not
+    // load invoice" card below. Writes (Edit / Send / Record Payment / Void)
+    // are blocked while down via `can_mutate`.
+    let fetch_failed = matches!(*snap, Some(None));
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Invoice".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "{header_title}",
             crate::components::ConfirmDialog {
@@ -689,6 +722,9 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                     if editable {
                         Button {
                             variant: ButtonVariant::Secondary,
+                            // MAPPS-357: block edits while the server is down.
+                            disabled: !can_mutate,
+                            title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
                             onclick: move |_| {
                                 action_error.set(String::new());
                                 show_edit.set(true);
@@ -698,6 +734,9 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                         Button {
                             variant: ButtonVariant::Primary,
                             loading: *busy.read(),
+                            // MAPPS-357: block sending while the server is down.
+                            disabled: !can_mutate,
+                            title: (!can_mutate).then(|| "Can't send while the server is unreachable".to_string()),
                             onclick: move |_| {
                                 if *busy.read() {
                                     return;
@@ -729,6 +768,9 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                     if collectible {
                         Button {
                             variant: ButtonVariant::Secondary,
+                            // MAPPS-357: block recording a payment while down.
+                            disabled: !can_mutate,
+                            title: (!can_mutate).then(|| "Can't record a payment while the server is unreachable".to_string()),
                             onclick: move |_| {
                                 action_error.set(String::new());
                                 show_payment.set(true);
@@ -740,7 +782,9 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                         Button {
                             variant: ButtonVariant::Danger,
                             loading: *busy.read(),
+                            // MAPPS-357: block voiding while the server is down.
                             // PMS-580: clarify that Void is the pre-send back-out.
+                            disabled: !can_mutate,
                             title: "Voids this draft invoice and keeps it on record. Once an invoice is sent it can no longer be voided.".to_string(),
                             onclick: move |_| {
                                 if !*busy.read() {
@@ -1074,6 +1118,12 @@ pub fn InvoiceNewPage() -> Element {
     });
 
     let navigator = use_navigator();
+    // MAPPS-357: this is a create form, not a data-driven view - there is no
+    // primary fetched entity whose failure would blank the page, so no
+    // ContentUnavailable is warranted (the tax-rate list is a secondary lookup
+    // that degrades to an empty dropdown). We still block the write controls
+    // (Create / Generate) while the server is unreachable via `can_mutate`.
+    let can_mutate = crate::hooks::use_can_mutate();
 
     // Manual create: POST /invoices with a single service line.
     let handle_create = move |e: FormEvent| {
@@ -1459,6 +1509,9 @@ pub fn InvoiceNewPage() -> Element {
                             r#type: "button",
                             variant: ButtonVariant::Secondary,
                             loading: *is_generating.read(),
+                            // MAPPS-357: block generation while the server is down.
+                            disabled: !can_mutate,
+                            title: (!can_mutate).then(|| "Can't generate an invoice while the server is unreachable".to_string()),
                             onclick: handle_generate,
                             "Generate from Time Entries"
                         }
@@ -1466,6 +1519,9 @@ pub fn InvoiceNewPage() -> Element {
                             r#type: "submit",
                             variant: ButtonVariant::Primary,
                             loading: *is_submitting.read(),
+                            // MAPPS-357: block creation while the server is down.
+                            disabled: !can_mutate,
+                            title: (!can_mutate).then(|| "Can't create an invoice while the server is unreachable".to_string()),
                             "Create Invoice"
                         }
                     }
@@ -1532,6 +1588,9 @@ pub fn PaymentListPage() -> Element {
         let _reload = reload_token;
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-357: subscribe to reachability so the list auto-refetches
+            // the instant the server comes back (paired with the recovery poll).
+            let _reachable = crate::hooks::use_server_reachable();
             let token = crate::hooks::fetch::api::current_access_token()?;
             let path = format!("/payments?page={current_page}&per_page={PER_PAGE}");
             crate::hooks::fetch::api::get_with_auth::<Paginated<RemotePayment>>(&path, &token)
@@ -1548,6 +1607,18 @@ pub fn PaymentListPage() -> Element {
         _ => (Vec::new(), 0),
     };
 
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty ledger - render the honest unavailable state instead of an
+    // empty payments table. A failure while still reachable (a 4xx) keeps the
+    // inline banner below. Writes are blocked while down via `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Payments".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "Payments",
             PageHeader {
@@ -1556,6 +1627,9 @@ pub fn PaymentListPage() -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Primary,
+                        // MAPPS-357: block recording a payment while down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't record a payment while the server is unreachable".to_string()),
                         onclick: move |_| recording.set(true),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "Record Payment"
@@ -1599,6 +1673,9 @@ pub fn PaymentListPage() -> Element {
                             actions: rsx! {
                                 Button {
                                     variant: ButtonVariant::Primary,
+                                    // MAPPS-357: block recording a payment while down.
+                                    disabled: !can_mutate,
+                                    title: (!can_mutate).then(|| "Can't record a payment while the server is unreachable".to_string()),
                                     onclick: move |_| recording.set(true),
                                     PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                                     "Record Payment"
@@ -1681,6 +1758,8 @@ struct PaymentRowProps {
 fn PaymentRow(props: PaymentRowProps) -> Element {
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-357: block edit / delete on this row while the server is down.
+    let can_mutate = crate::hooks::use_can_mutate();
     let on_edit = props.on_edit;
     let on_deleted = props.on_deleted;
     let delete_id = props.id.clone();
@@ -1754,13 +1833,16 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
                 div { class: "inline-flex gap-2",
                     Button {
                         variant: ButtonVariant::Secondary,
-                        disabled: *deleting.read(),
+                        disabled: *deleting.read() || !can_mutate,
+                        title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
                         onclick: move |_| on_edit.call(()),
                         "Edit"
                     }
                     Button {
                         variant: ButtonVariant::Danger,
                         loading: *deleting.read(),
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                         onclick: move |_| {
                             if !*deleting.read() {
                                 confirming_delete.set(true);
@@ -1872,6 +1954,8 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
     let mut notes = use_signal(|| props.notes.clone());
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-357: block the save while the server is unreachable.
+    let can_mutate = crate::hooks::use_can_mutate();
     // Per-field inline validation errors (MAPPS-215): shown beneath the field
     // they belong to instead of collapsing into the single form-level banner.
     let mut amount_err = use_signal(String::new);
@@ -2070,6 +2154,9 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
         Button {
             variant: ButtonVariant::Primary,
             loading: *saving.read(),
+            // MAPPS-357: block the save while the server is unreachable.
+            disabled: !can_mutate,
+            title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
             onclick: handle_save,
             if is_edit { "Save Changes" } else { "Record Payment" }
         }
@@ -2255,6 +2342,8 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
     let mut discount_amount = use_signal(|| props.discount_amount.clone());
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-357: block the save while the server is unreachable.
+    let can_mutate = crate::hooks::use_can_mutate();
     // PMS-518: per-field inline slots for the required dates (previously a single
     // shared banner). Line-item errors live on each `EditableLine` row.
     let mut invoice_date_err = use_signal(String::new);
@@ -2463,6 +2552,9 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
         Button {
             variant: ButtonVariant::Primary,
             loading: *saving.read(),
+            // MAPPS-357: block the save while the server is unreachable.
+            disabled: !can_mutate,
+            title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
             onclick: handle_save,
             "Save"
         }
@@ -2715,6 +2807,9 @@ pub fn TaxRateListPage() -> Element {
     let current_page = (*page.read()).max(1);
     let mut tax_rates_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the list auto-refetches the
+        // instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         let token = crate::hooks::fetch::api::current_access_token()?;
         let path = format!("/tax-rates?page={current_page}&per_page={PER_PAGE}");
         crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteTaxRate>>(&path, &token)
@@ -2730,6 +2825,18 @@ pub fn TaxRateListPage() -> Element {
         _ => (Vec::new(), 0),
     };
 
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty list - render the honest unavailable state instead of an
+    // empty tax-rate table. A failure while still reachable (a 4xx) keeps the
+    // inline banner below. Writes are blocked while down via `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Tax Rates".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "Tax Rates",
             PageHeader {
@@ -2742,6 +2849,9 @@ pub fn TaxRateListPage() -> Element {
                     }
                     Button {
                         variant: ButtonVariant::Primary,
+                        // MAPPS-357: block creating a tax rate while down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't add a tax rate while the server is unreachable".to_string()),
                         onclick: move |_| editing.set(Some(TaxRateFormState::new())),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "New Tax Rate"
@@ -2782,6 +2892,9 @@ pub fn TaxRateListPage() -> Element {
                             actions: rsx! {
                                 Button {
                                     variant: ButtonVariant::Primary,
+                                    // MAPPS-357: block creating a tax rate while down.
+                                    disabled: !can_mutate,
+                                    title: (!can_mutate).then(|| "Can't add a tax rate while the server is unreachable".to_string()),
                                     onclick: move |_| editing.set(Some(TaxRateFormState::new())),
                                     PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                                     "New Tax Rate"
@@ -2896,6 +3009,8 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-357: block save / delete while the server is unreachable.
+    let can_mutate = crate::hooks::use_can_mutate();
     // PMS-518: per-field inline slots, previously presence-only on the banner.
     let mut name_err = use_signal(String::new);
     let mut rate_err = use_signal(String::new);
@@ -3011,6 +3126,9 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
             Button {
                 variant: ButtonVariant::Danger,
                 loading: *deleting.read(),
+                // MAPPS-357: block the delete while the server is unreachable.
+                disabled: !can_mutate,
+                title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                 onclick: handle_delete,
                 "Delete"
             }
@@ -3024,6 +3142,9 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
         Button {
             variant: ButtonVariant::Primary,
             loading: *saving.read(),
+            // MAPPS-357: block the save while the server is unreachable.
+            disabled: !can_mutate,
+            title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
             onclick: handle_save,
             if is_edit { "Save Changes" } else { "Create Tax Rate" }
         }
@@ -3165,6 +3286,9 @@ pub fn PaymentGatewayConfigPage() -> Element {
 
     let mut gateways_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        // MAPPS-357: subscribe to reachability so the list auto-refetches the
+        // instant the server comes back (paired with the recovery poll).
+        let _reachable = crate::hooks::use_server_reachable();
         let token = crate::hooks::fetch::api::current_access_token()?;
         // One row per provider; a single page covers every configured
         // gateway.
@@ -3184,6 +3308,18 @@ pub fn PaymentGatewayConfigPage() -> Element {
         _ => Vec::new(),
     };
 
+    // MAPPS-357: a failed load while the server is flagged down is an outage,
+    // not an empty config - render the honest unavailable state instead of an
+    // empty gateway table. A failure while still reachable (a 4xx) keeps the
+    // inline banner below. Writes are blocked while down via `can_mutate`.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Payment Gateways".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "Payment Gateways",
             PageHeader {
@@ -3196,6 +3332,9 @@ pub fn PaymentGatewayConfigPage() -> Element {
                     }
                     Button {
                         variant: ButtonVariant::Primary,
+                        // MAPPS-357: block configuring a gateway while down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't configure a gateway while the server is unreachable".to_string()),
                         onclick: move |_| editing.set(Some(GatewayFormState::new())),
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "Configure Gateway"
@@ -3229,6 +3368,9 @@ pub fn PaymentGatewayConfigPage() -> Element {
                             actions: rsx! {
                                 Button {
                                     variant: ButtonVariant::Primary,
+                                    // MAPPS-357: block configuring a gateway while down.
+                                    disabled: !can_mutate,
+                                    title: (!can_mutate).then(|| "Can't configure a gateway while the server is unreachable".to_string()),
                                     onclick: move |_| editing.set(Some(GatewayFormState::new())),
                                     PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
                                     "Configure Gateway"
@@ -3356,6 +3498,8 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-357: block save / remove while the server is unreachable.
+    let can_mutate = crate::hooks::use_can_mutate();
     // PMS-518: inline slot for the JSON config field, previously banner-only.
     let mut config_err = use_signal(String::new);
 
@@ -3451,6 +3595,9 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
             Button {
                 variant: ButtonVariant::Danger,
                 loading: *deleting.read(),
+                // MAPPS-357: block the remove while the server is unreachable.
+                disabled: !can_mutate,
+                title: (!can_mutate).then(|| "Can't remove while the server is unreachable".to_string()),
                 onclick: handle_delete,
                 "Remove"
             }
@@ -3464,6 +3611,9 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
         Button {
             variant: ButtonVariant::Primary,
             loading: *saving.read(),
+            // MAPPS-357: block the save while the server is unreachable.
+            disabled: !can_mutate,
+            title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
             onclick: handle_save,
             "Save Gateway"
         }

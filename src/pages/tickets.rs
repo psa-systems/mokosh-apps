@@ -518,9 +518,13 @@ pub fn TicketListPage() -> Element {
     // `?company_id=<uuid>`. When present, scope the fetch to that company so the
     // list shows only its tickets and every row stays inside the same company.
     let mut tickets_resource = use_resource(|| async {
+        // MAPPS-357: subscribe to reachability so the list auto-refetches the
+        // instant the server returns, and so a failed load stays distinguishable
+        // from an empty one (the third tuple element records the failure).
+        let _reachable = crate::hooks::use_server_reachable();
         let token = match crate::hooks::fetch::api::current_access_token() {
             Some(t) => t,
-            None => return (Vec::<RemoteTicket>::new(), TicketSource::Demo),
+            None => return (Vec::<RemoteTicket>::new(), TicketSource::Demo, false),
         };
         let mut path = String::from("/tickets");
         if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
@@ -529,17 +533,34 @@ pub fn TicketListPage() -> Element {
         match crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteTicket>>(&path, &token)
             .await
         {
-            Ok(page) => (page.data, TicketSource::Backend),
-            Err(_) => (Vec::new(), TicketSource::Demo),
+            Ok(page) => (page.data, TicketSource::Backend, false),
+            // MAPPS-357: keep the demo fallback for a 4xx while reachable, but
+            // flag the failure so an outage (failed while unreachable) can render
+            // ContentUnavailable below instead of a misleading demo list.
+            Err(_) => (Vec::new(), TicketSource::Demo, true),
         }
     });
 
     let resource_snapshot = tickets_resource.read_unchecked();
     let is_loading = resource_snapshot.is_none();
-    let (remote_tickets, source) = match &*resource_snapshot {
-        Some((rows, source)) => (rows.clone(), *source),
-        None => (Vec::new(), TicketSource::Demo),
+    let (remote_tickets, source, fetch_failed) = match &*resource_snapshot {
+        Some((rows, source, failed)) => (rows.clone(), *source, *failed),
+        None => (Vec::new(), TicketSource::Demo, false),
     };
+
+    // MAPPS-357: the ticket list is this page's PRIMARY resource. A failed load
+    // while the server is flagged down is an outage, not an empty/demo list, so
+    // render the honest unavailable state (which keeps the nav + banner) instead
+    // of demo rows. A fetch that fails while the server is still reachable (a
+    // 4xx) keeps the demo-rows fallback below. Writes are blocked while down;
+    // `can_mutate` disables the bulk-delete control.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Tickets".to_string() }
+        };
+    }
 
     // Apply search + status/priority filters to the loaded set client-side.
     // The controls previously only updated signals and never narrowed the
@@ -697,7 +718,9 @@ pub fn TicketListPage() -> Element {
                 label: "ticket".to_string(),
                 Button {
                     variant: ButtonVariant::Danger,
-                    disabled: bulk_delete_running(),
+                    // MAPPS-357: block bulk delete while the server is unreachable.
+                    disabled: bulk_delete_running() || !can_mutate,
+                    title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                     onclick: move |_| {
                         // MAPPS-310: stash the snapshot + open the
                         // confirmation dialog. The actual delete fanout
@@ -1096,6 +1119,13 @@ fn read_kb_prefill_from_url() -> KbArticlePrefill {
 }
 
 /// New ticket page
+///
+/// MAPPS-357: this is a create form, so there is no primary *entity* resource
+/// whose failure means "no content" - the only fetches (types / categories /
+/// users / priorities) are SECONDARY dropdown lookups that keep degrading to a
+/// default. So the page does not swap in `ContentUnavailable`; instead the form
+/// stays mounted (the user can keep composing) and the Create submit is disabled
+/// while the server is unreachable so a write cannot silently fail.
 #[component]
 pub fn TicketNewPage() -> Element {
     // MAPPS-207: seed the company from the URL when linked from a company.
@@ -1475,6 +1505,9 @@ pub fn TicketNewPage() -> Element {
             None
         };
 
+    // MAPPS-357: gate the create submit while the server is unreachable.
+    let can_mutate = crate::hooks::use_can_mutate();
+
     rsx! {
         AppLayout { title: "New Ticket",
             PageHeader {
@@ -1688,6 +1721,9 @@ pub fn TicketNewPage() -> Element {
                             r#type: "submit",
                             variant: ButtonVariant::Primary,
                             loading: *is_submitting.read(),
+                            // MAPPS-357: block create while the server is unreachable.
+                            disabled: !can_mutate,
+                            title: (!can_mutate).then(|| "Can't create a ticket while the server is unreachable".to_string()),
                             "Create Ticket"
                         }
                     }
@@ -1725,6 +1761,11 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
         let id = id_for_ticket.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-357: the ticket entity is this page's PRIMARY resource.
+            // Subscribe to reachability so it auto-refetches on reconnect, and
+            // keep `.ok()` (Option) so a failed load stays distinguishable from
+            // a real "ticket not found" 404.
+            let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<RemoteTicketDetail>(&format!("/tickets/{id}"))
                 .await
                 .ok()
@@ -1838,6 +1879,20 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let ticket_snapshot = ticket_resource.read_unchecked().clone();
     let ticket_fetch_failed = matches!(ticket_snapshot, Some(None));
     let ticket = ticket_snapshot.flatten();
+    // MAPPS-357: split the failed-fetch case. A failure while the server is
+    // flagged down is an outage - render the honest ContentUnavailable state
+    // (which keeps the nav + banner and auto-recovers on reconnect) instead of
+    // the misleading "Ticket not found". A failure while the server is still
+    // reachable is a real 404 (deleted / cross-tenant / bad link) and keeps the
+    // existing not-found body below. Writes are blocked while down; `can_mutate`
+    // disables every mutating control on the page.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if ticket_fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Ticket".to_string() }
+        };
+    }
     if ticket_fetch_failed {
         return rsx! {
             AppLayout { title: "Ticket not found",
@@ -1929,6 +1984,9 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                 actions: rsx! {
                     Button {
                         variant: ButtonVariant::Secondary,
+                        // MAPPS-357: block adding a note while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't add a note while the server is unreachable".to_string()),
                         onclick: move |_| {
                             note_error.set(String::new());
                             show_note_modal.set(true);
@@ -1948,7 +2006,9 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     // the pattern on Company / Contract / Asset detail.
                     Button {
                         variant: ButtonVariant::Danger,
-                        disabled: deleting_ticket(),
+                        // MAPPS-357: block delete while the server is unreachable.
+                        disabled: deleting_ticket() || !can_mutate,
+                        title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                         onclick: move |_| {
                             delete_ticket_error.set(String::new());
                             confirming_ticket_delete.set(true);
@@ -2058,6 +2118,9 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                     Some(rsx! {
                                         Button {
                                             variant: ButtonVariant::Secondary,
+                                            // MAPPS-357: block the edit modal while the server is down.
+                                            disabled: !can_mutate,
+                                            title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
                                             onclick: open_edit,
                                             PencilIcon { size: IconSize::Small, class: "mr-1.5".to_string() }
                                             "Edit"
@@ -2077,7 +2140,12 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                             rsx! {
                                                 crate::components::Markdown {
                                                     content: desc.clone(),
-                                                    interactive: true,
+                                                    // MAPPS-357: task-list checkboxes PUT on
+                                                    // toggle, so drop interactivity while the
+                                                    // server is unreachable (on_toggle is a
+                                                    // no-op when not interactive) to block the
+                                                    // silent-fail write.
+                                                    interactive: can_mutate,
                                                     on_toggle: move |i: usize| {
                                                         let Some(new_desc) =
                                                             crate::utils::markdown::toggle_task(&desc_src, i)
@@ -2225,6 +2293,8 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                                     label: "",
                                                     options: status_options,
                                                     value: current_status,
+                                                    // MAPPS-357: this Select PUTs on change; block it while down.
+                                                    disabled: !can_mutate,
                                                     onchange,
                                                 }
                                             },
@@ -2285,6 +2355,8 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                                     label: "",
                                                     options: priority_options,
                                                     value: current_priority,
+                                                    // MAPPS-357: this Select PUTs on change; block it while down.
+                                                    disabled: !can_mutate,
                                                     onchange,
                                                 }
                                             },
@@ -2357,6 +2429,8 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                                     label: "",
                                                     options: user_options,
                                                     value: current_assignee,
+                                                    // MAPPS-357: this Select PUTs on change; block it while down.
+                                                    disabled: !can_mutate,
                                                     onchange,
                                                 }
                                             },
@@ -2415,6 +2489,14 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                         DetailItem {
                                             label: "Asset",
                                             value: rsx! {
+                                                // MAPPS-357: the AssetPicker PUTs on
+                                                // select/clear but exposes no `disabled`
+                                                // prop, so it cannot be gated from this
+                                                // file (unlike the Selects above). A write
+                                                // it fires while down surfaces the inline
+                                                // "Could not update asset" error rather
+                                                // than silently succeeding; gating it needs
+                                                // a `disabled` prop on the shared component.
                                                 crate::components::AssetPicker {
                                                     // PMS-344 follow-up
                                                     // (layout): suppress
@@ -2649,6 +2731,9 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                             Button {
                                 variant: ButtonVariant::Primary,
                                 loading: e_submitting(),
+                                // MAPPS-357: block the save PUT while the server is down.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                                 onclick: on_save,
                                 "Save Changes"
                             }
@@ -2704,6 +2789,9 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     Button {
                         variant: ButtonVariant::Primary,
                         loading: *note_submitting.read(),
+                        // MAPPS-357: block the add-note POST while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't add a note while the server is unreachable".to_string()),
                         onclick: move |_| {
                             note_error.set(String::new());
                             // PMS-518: validate the required Content through the
@@ -2956,6 +3044,14 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
     let fetch_failed = matches!(*snap, Some(None));
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
 
+    // MAPPS-357: this is a SECONDARY section embedded in the ticket-detail page,
+    // not a routed page - the parent already swaps in ContentUnavailable when the
+    // ticket entity fails to load, so a failed approvals fetch keeps its inline
+    // "could not load" message rather than blanking the page. But its write
+    // controls (Request approval) still get disabled while the server is down so
+    // a request cannot silently fail.
+    let can_mutate = crate::hooks::use_can_mutate();
+
     let ticket_for_submit = props.ticket_id.clone();
     let on_submit = move |_| {
         let user_id = approver_user_id.read().trim().to_string();
@@ -3038,6 +3134,9 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
             div { class: "flex justify-end mb-3",
                 Button {
                     variant: ButtonVariant::Primary,
+                    // MAPPS-357: block requesting an approval while the server is down.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't request an approval while the server is unreachable".to_string()),
                     onclick: move |_| show_request.set(true),
                     "Request approval"
                 }
@@ -3123,6 +3222,9 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
                 Button {
                     variant: ButtonVariant::Primary,
                     loading: *request_submitting.read(),
+                    // MAPPS-357: block the approval-request POST while the server is down.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't request an approval while the server is unreachable".to_string()),
                     onclick: on_submit,
                     "Request"
                 }

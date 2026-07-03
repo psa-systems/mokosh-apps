@@ -396,8 +396,15 @@ pub fn AssetListPage() -> Element {
 
     // MAPPS-249: scope to one company when a context card's "View All" passes
     // `?company_id=<uuid>`.
+    // MAPPS-357: primary resource. Kept as a hand-rolled `use_resource` (not
+    // `use_remote_resource`) because the bulk edit / delete flows call
+    // `assets_resource.restart()`. The fetcher keeps `.ok()` (NOT
+    // `.unwrap_or_default()`) so a failed load stays distinguishable from an
+    // empty list, letting the outage render ContentUnavailable below, and it
+    // subscribes to reachability so the list auto-refetches on reconnect.
     let mut assets_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _reachable = crate::hooks::use_server_reachable();
         let mut path = String::from("/assets");
         if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
             path.push_str(&format!("?company_id={company_id}"));
@@ -433,6 +440,19 @@ pub fn AssetListPage() -> Element {
         .read_unchecked()
         .clone()
         .unwrap_or_default();
+
+    // MAPPS-357: a failed primary load while the server is flagged down is an
+    // outage, not an empty CMDB - render the honest unavailable state (which
+    // keeps the nav + banner) instead of an empty assets table. A fetch that
+    // fails while still reachable (a 4xx) keeps the inline "Could not load"
+    // notice below. `can_mutate` disables the bulk write controls while down.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if load_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Assets".to_string() }
+        };
+    }
 
     let type_name = |id: &Option<uuid::Uuid>| -> String {
         id.and_then(|tid| types.iter().find(|t| t.id == tid))
@@ -504,6 +524,9 @@ pub fn AssetListPage() -> Element {
                 label: "asset".to_string(),
                 Button {
                     variant: ButtonVariant::Primary,
+                    // MAPPS-357: block bulk edit while the server is down.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't bulk edit while the server is unreachable".to_string()),
                     onclick: move |_| {
                         // Reset per-open form state.
                         bulk_change_status.set(false);
@@ -517,7 +540,9 @@ pub fn AssetListPage() -> Element {
                 }
                 Button {
                     variant: ButtonVariant::Danger,
-                    disabled: bulk_delete_running(),
+                    // MAPPS-357: block bulk delete while the server is down.
+                    disabled: bulk_delete_running() || !can_mutate,
+                    title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                     onclick: move |_| {
                         let ids: Vec<String> = selection.read().iter().cloned().collect();
                         if !ids.is_empty() {
@@ -705,7 +730,9 @@ pub fn AssetListPage() -> Element {
                                 }
                                 Button {
                                     variant: ButtonVariant::Primary,
-                                    disabled: bulk_submitting(),
+                                    // MAPPS-357: block the bulk PUT while the server is down.
+                                    disabled: bulk_submitting() || !can_mutate,
+                                    title: (!can_mutate).then(|| "Can't apply changes while the server is unreachable".to_string()),
                                     onclick: move |_| {
                                         // Validate that at least one field is being changed.
                                         if !bulk_change_status() && !bulk_change_company() {
@@ -940,6 +967,14 @@ pub fn AssetNewPage() -> Element {
         };
 
     let err = error.read().clone();
+
+    // MAPPS-357: this is a create form, so it has no primary data resource to
+    // gate a ContentUnavailable state on - `types_resource` is a secondary
+    // dropdown lookup that degrades to its default (an empty type list) on
+    // failure. During an outage the form still renders; only the Create submit
+    // is blocked via `can_mutate` so a POST is not attempted against a server
+    // that is known to be unreachable.
+    let can_mutate = crate::hooks::use_can_mutate();
 
     rsx! {
         AppLayout { title: "New Asset",
@@ -1207,6 +1242,9 @@ pub fn AssetNewPage() -> Element {
                             r#type: "submit",
                             variant: ButtonVariant::Primary,
                             loading: *is_submitting.read(),
+                            // MAPPS-357: block create while the server is down.
+                            disabled: !can_mutate,
+                            title: (!can_mutate).then(|| "Can't create an asset while the server is unreachable".to_string()),
                             "Create Asset"
                         }
                     }
@@ -1224,11 +1262,18 @@ pub struct AssetDetailPageProps {
 
 #[component]
 pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
+    // MAPPS-357: primary resource - the fetched asset entity. Kept as a
+    // hand-rolled `use_resource` (not `use_remote_resource`) because the edit /
+    // delete flows call `asset_resource.restart()`. The fetcher keeps `.ok()`
+    // (NOT a default) so a failed load stays distinguishable from a real asset,
+    // letting the outage render ContentUnavailable below, and it subscribes to
+    // reachability so the entity auto-refetches on reconnect.
     let id_for_asset = props.id.clone();
     let asset_resource = use_resource(move || {
         let id = id_for_asset.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
             crate::hooks::fetch::api::get_authed::<RemoteAsset>(&format!("/assets/{id}"))
                 .await
                 .ok()
@@ -1437,6 +1482,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
 
     let snapshot = asset_resource.read_unchecked().clone();
     let is_loading = snapshot.is_none();
+    // MAPPS-357: the primary asset fetch resolved but failed (Some(None)),
+    // distinct from still-loading (None) and from a real asset (Some(Some)).
+    let fetch_failed = matches!(&snapshot, Some(None));
     let asset = snapshot.flatten();
     let relationships = rel_resource.read_unchecked().clone().unwrap_or_default();
     let config_items = cfg_resource.read_unchecked().clone().unwrap_or_default();
@@ -1500,6 +1548,19 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         None => "Asset".to_string(),
     };
 
+    // MAPPS-357: a failed primary load while the server is flagged down is an
+    // outage, not a missing asset - render the honest unavailable state (which
+    // keeps the nav + banner) instead of the "Could not load this asset"
+    // notice. A fetch that fails while still reachable (a 404 / 4xx) keeps that
+    // inline notice below. `can_mutate` disables the write controls while down.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Asset".to_string() }
+        };
+    }
+
     rsx! {
         AppLayout { title: "{header_title}",
             crate::components::ConfirmDialog {
@@ -1524,6 +1585,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     Button {
                         variant: ButtonVariant::Danger,
                         loading: *deleting.read(),
+                        // MAPPS-357: block delete while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
                         onclick: move |_| {
                             if !*deleting.read() {
                                 confirming_delete.set(true);
@@ -1617,6 +1681,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     actions: rsx! {
                                         Button {
                                             variant: ButtonVariant::Secondary,
+                                            // MAPPS-357: block edit while the server is down.
+                                            disabled: !can_mutate,
+                                            title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
                                             onclick: open_edit,
                                             PencilIcon { size: IconSize::Small, class: "mr-1.5".to_string() }
                                             "Edit"
@@ -1848,6 +1915,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     actions: rsx! {
                                         Button {
                                             variant: ButtonVariant::Secondary,
+                                            // MAPPS-357: block adding a credential while the server is down.
+                                            disabled: !can_mutate,
+                                            title: (!can_mutate).then(|| "Can't add a credential while the server is unreachable".to_string()),
                                             onclick: move |_| {
                                                 nc_name.set(String::new());
                                                 nc_type.set(String::new());
@@ -1900,6 +1970,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                                                     }
                                                                     Button {
                                                                         variant: ButtonVariant::Danger,
+                                                                        // MAPPS-357: block credential removal while the server is down.
+                                                                        disabled: !can_mutate,
+                                                                        title: (!can_mutate).then(|| "Can't remove a credential while the server is unreachable".to_string()),
                                                                         onclick: move |_| confirming_cred_delete.set(Some(crid)),
                                                                         TrashIcon { size: IconSize::Small }
                                                                     }
@@ -2241,7 +2314,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                             }
                             Button {
                                 variant: ButtonVariant::Primary,
-                                disabled: e_submitting(),
+                                // MAPPS-357: block the save PUT while the server is down.
+                                disabled: e_submitting() || !can_mutate,
+                                title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                                 onclick: on_save,
                                 if e_submitting() { "Saving…" } else { "Save Changes" }
                             }
@@ -2595,7 +2670,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                             }
                             Button {
                                 variant: ButtonVariant::Primary,
-                                disabled: nc_submitting(),
+                                // MAPPS-357: block the credential POST while the server is down.
+                                disabled: nc_submitting() || !can_mutate,
+                                title: (!can_mutate).then(|| "Can't add a credential while the server is unreachable".to_string()),
                                 onclick: on_add_cred,
                                 if nc_submitting() { "Saving…" } else { "Add Credential" }
                             }
