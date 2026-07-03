@@ -2,10 +2,10 @@
 
 use dioxus::prelude::*;
 use mokosh_apps::hooks::{
-    use_apply_theme, use_auth_provider, use_bfcache_invalidator, use_current_user_loader,
-    use_memberships_loader, use_server_status_monitor, use_sidebar_collapsed_provider,
-    use_sidebar_provider, use_sidebar_scroll_provider, use_theme_sync, use_token_refresh,
-    use_update_check, use_version_cache_provider,
+    use_apply_theme, use_auth_heartbeat, use_auth_provider, use_bfcache_invalidator,
+    use_current_user_loader, use_memberships_loader, use_server_status_monitor,
+    use_sidebar_collapsed_provider, use_sidebar_provider, use_sidebar_scroll_provider,
+    use_theme_sync, use_token_refresh, use_update_check, use_version_cache_provider,
 };
 use mokosh_apps::Route;
 
@@ -52,6 +52,12 @@ fn App() -> Element {
     // the user is not signed in. Mounted once at the app root so it
     // keeps running across navigations.
     use_token_refresh();
+    // MAPPS-355: proactive 30s /auth/me heartbeat. On a 410
+    // (ACCOUNT_DELETED) from mokosh-server the shared fetch layer flips
+    // the ACCOUNT_DELETED GlobalSignal and the terminal overlay pops
+    // within one interval, even if the user is idle on a page that does
+    // not otherwise poll.
+    use_auth_heartbeat();
     // Load /v1/auth/memberships after sign-in so AuthContext.memberships
     // is populated for the tenant switcher.
     use_memberships_loader();

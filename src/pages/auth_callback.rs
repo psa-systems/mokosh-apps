@@ -163,10 +163,32 @@ pub fn AuthCallbackPage() -> Element {
         }
     });
 
+    // MAPPS-355: `storage:` errors (missing pending flow, expired flow) are the
+    // common "opened /auth/callback in a new tab / refreshed after MAPPS-336
+    // stripped the query" cases. Nothing an operator needs to look at: just
+    // start a fresh login. Auto-navigate to `/login` (which kicks
+    // `start_login`) so the user does not sit on a red "Sign-in failed" wall.
+    // CSRF / replay / config errors keep the manual screen because they can
+    // indicate a real problem that a silent retry would loop on.
+    let is_retriable = error_msg
+        .read()
+        .as_ref()
+        .is_some_and(|e| e.starts_with("storage:"));
+    #[cfg(feature = "web")]
+    use_effect(move || {
+        if is_retriable {
+            if let Some(win) = web_sys::window() {
+                let _ = win.location().replace("/login");
+            }
+        }
+    });
+
     rsx! {
         div { class: "min-h-screen flex items-center justify-center",
             div { class: "text-center space-y-4",
-                if let Some(err) = error_msg.read().as_ref() {
+                if is_retriable {
+                    h1 { class: "text-xl", "Signing you in..." }
+                } else if let Some(err) = error_msg.read().as_ref() {
                     h1 { class: "text-xl font-semibold text-red-600", "Sign-in failed" }
                     p { class: "text-content", "{err}" }
                     a { href: "/login", class: "text-accent underline", "Try again" }

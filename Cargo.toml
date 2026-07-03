@@ -118,6 +118,8 @@ features = [
     "Performance",
     # MAPPS-292: unsaved-changes guard listens on window's `beforeunload`.
     "BeforeUnloadEvent",
+    # MAPPS-355: auth heartbeat skips its request when the tab is hidden.
+    "VisibilityState",
 ]
 
 [profile.release]
