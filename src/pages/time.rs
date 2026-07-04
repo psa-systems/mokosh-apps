@@ -49,6 +49,14 @@ struct RemoteTimeEntry {
     is_billable: bool,
     #[serde(default)]
     billing_status: String,
+    // MAPPS-340: creation / last-edit timestamps (server `TimeEntryResponse`
+    // always carries them; `Option` tolerates an older server that omits
+    // them). The approvals history derives a "Logged" event from `created_at`
+    // and a "Edited" event when `updated_at` is strictly later.
+    #[serde(default)]
+    created_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    updated_at: Option<DateTime<Utc>>,
 }
 
 /// Per-key tenant setting response (`GET /settings/...`). Only `value` is
@@ -1596,6 +1604,170 @@ impl ApprovalUser {
     }
 }
 
+// ============================================================================
+// MAPPS-340: reviewable submit / change / approve / reject history.
+//
+// A timesheet is a week aggregation over `time_entries`, so its history is
+// composed client-side from data the server already exposes: each entry's
+// `created_at` (a "Logged" event) and `updated_at` (an "Edited" event when it
+// is strictly later), plus the week's rolled-up approve/reject decision. No new
+// endpoint is needed - the reviewable sequence falls out of the existing
+// `/time-entries` and `/timesheets` responses.
+// ============================================================================
+
+/// One event in a timesheet's reviewable history.
+#[derive(Clone, Debug, PartialEq)]
+struct HistoryEvent {
+    at: DateTime<Utc>,
+    kind: HistoryKind,
+    /// Who performed the action (the employee for log/edit events, the
+    /// approver for the decision event).
+    actor: String,
+    /// Short human description: the work item for a log/edit event, the
+    /// rejection reason (if any) for a decision event.
+    detail: String,
+    /// Duration in minutes for a `Logged` event, so the view can render the
+    /// hours in the user's format. `None` for edit/decision events. Kept as
+    /// raw minutes (not a formatted string) so this builder stays free of the
+    /// localStorage-backed duration-format pref and is unit-testable natively.
+    minutes: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HistoryKind {
+    Logged,
+    Edited,
+    Approved,
+    Rejected,
+}
+
+impl HistoryKind {
+    fn label(self) -> &'static str {
+        match self {
+            HistoryKind::Logged => "Logged",
+            HistoryKind::Edited => "Edited",
+            HistoryKind::Approved => "Approved",
+            HistoryKind::Rejected => "Rejected",
+        }
+    }
+
+    fn variant(self) -> BadgeVariant {
+        match self {
+            HistoryKind::Logged => BadgeVariant::Gray,
+            HistoryKind::Edited => BadgeVariant::Yellow,
+            HistoryKind::Approved => BadgeVariant::Green,
+            HistoryKind::Rejected => BadgeVariant::Red,
+        }
+    }
+}
+
+/// The week's rolled-up approve/reject decision, as the approvals summary
+/// already carries it. Fed into `build_timesheet_history` only when the week
+/// is actually decided.
+#[derive(Clone, Debug, PartialEq)]
+struct DecisionEvent {
+    /// "approved" | "rejected".
+    status: String,
+    at: DateTime<Utc>,
+    actor: String,
+    reason: Option<String>,
+}
+
+/// Build the chronological submit / change / approve / reject history for one
+/// timesheet week (MAPPS-340). Each entry contributes a `Logged` event at its
+/// `created_at` and, when `updated_at` is strictly later, an `Edited` event;
+/// the decision (if any) contributes the terminal `Approved`/`Rejected` event.
+/// Events are returned oldest-first so the reader follows the progression.
+fn build_timesheet_history(
+    entries: &[RemoteTimeEntry],
+    employee: &str,
+    decision: Option<DecisionEvent>,
+) -> Vec<HistoryEvent> {
+    let mut events: Vec<HistoryEvent> = Vec::new();
+    for e in entries {
+        let label = work_item_label(e);
+        if let Some(created) = e.created_at {
+            events.push(HistoryEvent {
+                at: created,
+                kind: HistoryKind::Logged,
+                actor: employee.to_string(),
+                detail: label.clone(),
+                minutes: Some(e.duration_minutes),
+            });
+        }
+        // An `updated_at` strictly after `created_at` means the entry was
+        // changed after it was first logged: surface that as a change event.
+        if let (Some(created), Some(updated)) = (e.created_at, e.updated_at) {
+            if updated > created {
+                events.push(HistoryEvent {
+                    at: updated,
+                    kind: HistoryKind::Edited,
+                    actor: employee.to_string(),
+                    detail: label,
+                    minutes: None,
+                });
+            }
+        }
+    }
+    if let Some(d) = decision {
+        let kind = if d.status == "rejected" {
+            HistoryKind::Rejected
+        } else {
+            HistoryKind::Approved
+        };
+        let detail = d
+            .reason
+            .map(|r| r.trim().to_string())
+            .filter(|r| !r.is_empty())
+            .unwrap_or_default();
+        events.push(HistoryEvent {
+            at: d.at,
+            kind,
+            actor: if d.actor.trim().is_empty() {
+                "Unknown reviewer".to_string()
+            } else {
+                d.actor
+            },
+            detail,
+            minutes: None,
+        });
+    }
+    // Stable oldest-first sort; equal timestamps keep insertion order (a
+    // entry's Logged before its Edited).
+    events.sort_by(|a, b| a.at.cmp(&b.at));
+    events
+}
+
+/// A tenant rounding rule (`GET /time-rounding-rules`), one of the applicable
+/// "timesheet rules" surfaced alongside the approvals history (MAPPS-340).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct RoundingRuleRow {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    increment_minutes: i32,
+    #[serde(default)]
+    rounding_method: String,
+    #[serde(default)]
+    minimum_minutes: i32,
+    #[serde(default)]
+    is_default: bool,
+}
+
+/// The row a manager clicked "History" on: the natural (user, week) key plus
+/// the decision fields already resolved for display (MAPPS-340).
+#[derive(Clone, Debug, PartialEq)]
+struct HistoryTarget {
+    uid: uuid::Uuid,
+    week: NaiveDate,
+    employee: String,
+    /// "pending" | "approved" | "rejected".
+    status: String,
+    decided_at: Option<DateTime<Utc>>,
+    decided_by: String,
+    rejection_reason: Option<String>,
+}
+
 /// Manager/admin timesheet approvals queue.
 #[component]
 pub fn TimesheetApprovalsPage() -> Element {
@@ -1622,6 +1794,8 @@ pub fn TimesheetApprovalsPage() -> Element {
     let mut reject_target = use_signal::<Option<(uuid::Uuid, NaiveDate, String)>>(|| None);
     let mut reject_reason = use_signal(String::new);
     let mut is_rejecting = use_signal(|| false);
+    // MAPPS-340: the row whose reviewable history modal is open (None = closed).
+    let mut history_target = use_signal::<Option<HistoryTarget>>(|| None);
 
     // PMS-506: status filter (default `pending` so the action queue stays
     // first-visit) + range mode toggle. `Range` mode swaps the single-week
@@ -1969,6 +2143,13 @@ pub fn TimesheetApprovalsPage() -> Element {
                                         .map(name_of)
                                         .unwrap_or_default();
                                     let rejection = s.rejection_reason.clone().unwrap_or_default();
+                                    // MAPPS-340: everything the History modal needs, cloned out
+                                    // of the row before it is moved into the button handler.
+                                    let name_for_history = name.clone();
+                                    let history_status = s.approval_status.clone();
+                                    let history_decided_at = s.decided_at;
+                                    let history_decided_by = decided_by_label.clone();
+                                    let history_reason = s.rejection_reason.clone();
                                     let row_key = format!("{uid}-{row_week}");
                                     rsx! {
                                         TableRow { key: "{row_key}",
@@ -1993,8 +2174,34 @@ pub fn TimesheetApprovalsPage() -> Element {
                                                 }
                                             }
                                             TableCell {
-                                                if row_pending {
-                                                    div { class: "flex justify-end gap-2",
+                                                div { class: "flex justify-end gap-2",
+                                                    // MAPPS-340: History opens the reviewable
+                                                    // submit/change/approve/reject timeline. It is a
+                                                    // read-only view, so it stays enabled while the
+                                                    // server is down (it fetches on open) and is
+                                                    // present on decided rows too, so an approved
+                                                    // timesheet's history stays reachable.
+                                                    Button {
+                                                        variant: ButtonVariant::Secondary,
+                                                        onclick: move |_| {
+                                                            action_msg.set(String::new());
+                                                            action_err.set(String::new());
+                                                            history_target
+                                                                .set(
+                                                                    Some(HistoryTarget {
+                                                                        uid,
+                                                                        week: row_week,
+                                                                        employee: name_for_history.clone(),
+                                                                        status: history_status.clone(),
+                                                                        decided_at: history_decided_at,
+                                                                        decided_by: history_decided_by.clone(),
+                                                                        rejection_reason: history_reason.clone(),
+                                                                    }),
+                                                                );
+                                                        },
+                                                        "History"
+                                                    }
+                                                    if row_pending {
                                                         Button {
                                                             variant: ButtonVariant::Secondary,
                                                             // MAPPS-357: also block while the server is down.
@@ -2149,6 +2356,239 @@ pub fn TimesheetApprovalsPage() -> Element {
                                 required: true,
                                 value: reject_reason.read().clone(),
                                 oninput: move |e: FormEvent| reject_reason.set(e.value()),
+                            }
+                        }
+                    }
+                }
+            }
+
+            // MAPPS-340: reviewable submit/change/approve/reject history for the
+            // clicked row. Mounted on demand so the entry + rules fetches only
+            // fire when a manager actually opens the timeline.
+            if let Some(t) = history_target.read().clone() {
+                TimesheetHistoryModal {
+                    uid: t.uid,
+                    week: t.week,
+                    employee: t.employee.clone(),
+                    status: t.status.clone(),
+                    decided_at: t.decided_at,
+                    decided_by: t.decided_by.clone(),
+                    rejection_reason: t.rejection_reason.clone(),
+                    onclose: move |_| history_target.set(None),
+                }
+            }
+        }
+    }
+}
+
+/// MAPPS-340: the reviewable-history modal for one (user, week) timesheet.
+/// Fetches the week's entries to derive the submit/change timeline, folds in
+/// the rolled-up decision, and shows the applicable timesheet rules (per-day
+/// hours cap + rounding rules) alongside it. Read-only: no writes here.
+#[derive(Props, Clone, PartialEq)]
+struct TimesheetHistoryModalProps {
+    uid: uuid::Uuid,
+    week: NaiveDate,
+    employee: String,
+    /// "pending" | "approved" | "rejected".
+    status: String,
+    decided_at: Option<DateTime<Utc>>,
+    decided_by: String,
+    rejection_reason: Option<String>,
+    onclose: EventHandler<()>,
+}
+
+#[component]
+fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
+    let uid = props.uid;
+    let week = props.week;
+    let employee = props.employee.clone();
+    let onclose = props.onclose;
+
+    // The week's entries drive the Logged/Edited events.
+    let entries_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let end = week + Duration::days(6);
+        let path =
+            format!("/time-entries?user_id={uid}&date_from={week}&date_to={end}&per_page=500");
+        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimeEntry>>(&path)
+            .await
+            .ok()
+            .map(|p| p.data)
+    });
+
+    // AC2: the applicable per-day max-hours cap (a JSON integer setting;
+    // MAPPS-244). A missing setting (404) simply omits the line.
+    let cap_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<SettingValueRow>(
+            "/settings/time_tracking/max_hours_per_day",
+        )
+        .await
+        .ok()
+        .and_then(|row| row.value.as_i64())
+        .filter(|h| (1..=24).contains(h))
+    });
+
+    // AC2: the tenant rounding rules. The endpoint returns a bare array today;
+    // decode to a Value first so a future paginated `{data:[...]}` shape is
+    // tolerated too. Any failure yields an empty list (the panel omits it).
+    let rules_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let v = crate::hooks::fetch::api::get_authed::<serde_json::Value>(
+            "/time-rounding-rules?per_page=100",
+        )
+        .await
+        .ok()?;
+        let arr = v
+            .get("data")
+            .and_then(|d| d.as_array())
+            .cloned()
+            .or_else(|| v.as_array().cloned())?;
+        Some(
+            arr.into_iter()
+                .filter_map(|item| serde_json::from_value::<RoundingRuleRow>(item).ok())
+                .collect::<Vec<_>>(),
+        )
+    });
+
+    let entries_snap = entries_resource.read_unchecked();
+    let entries_loading = entries_snap.is_none();
+    let entries_failed = matches!(&*entries_snap, Some(None));
+    let entries: Vec<RemoteTimeEntry> = match &*entries_snap {
+        Some(Some(v)) => v.clone(),
+        _ => Vec::new(),
+    };
+
+    // A decided week folds its approve/reject into the timeline; a pending
+    // week has no terminal event yet.
+    let decision = match props.status.as_str() {
+        "approved" | "rejected" => props.decided_at.map(|at| DecisionEvent {
+            status: props.status.clone(),
+            at,
+            actor: props.decided_by.clone(),
+            reason: props.rejection_reason.clone(),
+        }),
+        _ => None,
+    };
+    let events = build_timesheet_history(&entries, &employee, decision);
+
+    let cap = (*cap_resource.read_unchecked()).flatten();
+    let rules = rules_resource
+        .read_unchecked()
+        .clone()
+        .flatten()
+        .unwrap_or_default();
+    let week_label = week.format("%b %-d, %Y").to_string();
+
+    rsx! {
+        Modal {
+            open: true,
+            title: "Timesheet History",
+            size: crate::components::ModalSize::Large,
+            onclose: move |_| onclose.call(()),
+            footer: rsx! {
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| onclose.call(()),
+                    "Close"
+                }
+            },
+            div { class: "space-y-5",
+                p { class: "text-sm text-content",
+                    strong { "{employee}" }
+                    " - week of {week_label}"
+                }
+
+                // AC1: chronological submit/change/approve/reject timeline.
+                div {
+                    h3 { class: "text-sm font-semibold text-content mb-2", "History" }
+                    if entries_loading {
+                        p { class: "text-sm text-muted", "Loading history..." }
+                    } else {
+                        if entries_failed {
+                            p { class: "text-sm text-red-600 dark:text-red-400",
+                                "Could not load the week's entries; showing the decision only."
+                            }
+                        }
+                        if events.is_empty() {
+                            p { class: "text-sm text-muted italic",
+                                "No history recorded for this timesheet yet."
+                            }
+                        } else {
+                            ol { class: "space-y-3",
+                                for (i , ev) in events.iter().enumerate() {
+                                    {
+                                        let when = ev.at.format("%b %-d, %Y %H:%M UTC").to_string();
+                                        let kind = ev.kind;
+                                        let actor = ev.actor.clone();
+                                        // Fold the work item + (for a log event) the hours in
+                                        // the user's duration format into one detail string.
+                                        let detail = match ev.minutes {
+                                            Some(m) if !ev.detail.is_empty() => {
+                                                format!("{} ({})", ev.detail, fmt_hours(m))
+                                            }
+                                            Some(m) => fmt_hours(m),
+                                            None => ev.detail.clone(),
+                                        };
+                                        rsx! {
+                                            li { key: "{i}", class: "flex items-start gap-3",
+                                                Badge { variant: kind.variant(), "{kind.label()}" }
+                                                div { class: "min-w-0",
+                                                    p { class: "text-sm text-content",
+                                                        span { class: "font-medium", "{actor}" }
+                                                        if !detail.is_empty() {
+                                                            " - {detail}"
+                                                        }
+                                                    }
+                                                    p { class: "text-xs text-subtle", "{when}" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // AC2: applicable timesheet rules alongside the history.
+                div { class: "border-t border-line pt-4",
+                    h3 { class: "text-sm font-semibold text-content mb-2", "Timesheet rules" }
+                    if cap.is_none() && rules.is_empty() {
+                        p { class: "text-sm text-muted italic",
+                            "No timesheet rules configured for this tenant."
+                        }
+                    } else {
+                        ul { class: "space-y-1 text-sm text-muted",
+                            if let Some(h) = cap {
+                                li { "Maximum {h}h logged per day." }
+                            }
+                            for (i , r) in rules.iter().enumerate() {
+                                {
+                                    let default_marker = if r.is_default { " (default)" } else { "" };
+                                    let name = if r.name.trim().is_empty() {
+                                        "Rounding rule".to_string()
+                                    } else {
+                                        r.name.clone()
+                                    };
+                                    let method = if r.rounding_method.trim().is_empty() {
+                                        "nearest".to_string()
+                                    } else {
+                                        r.rounding_method.clone()
+                                    };
+                                    let inc = r.increment_minutes;
+                                    let min = r.minimum_minutes;
+                                    rsx! {
+                                        li { key: "rule-{i}",
+                                            "{name}{default_marker}: round {method} to {inc} min"
+                                            if min > 0 {
+                                                ", minimum {min} min"
+                                            }
+                                            "."
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -2486,6 +2926,8 @@ mod tests {
             notes: None,
             is_billable: false,
             billing_status: String::new(),
+            created_at: None,
+            updated_at: None,
         }
     }
 
@@ -2529,5 +2971,142 @@ mod tests {
             ..entry()
         };
         assert_eq!(work_item_label(&project), "Migration · Cutover");
+    }
+
+    // ---- MAPPS-340: reviewable history assembly ---------------------------
+
+    fn ts(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
+        NaiveDate::from_ymd_opt(y, mo, d)
+            .unwrap()
+            .and_hms_opt(h, mi, 0)
+            .unwrap()
+            .and_utc()
+    }
+
+    // A logged-then-approved timesheet yields two events, oldest-first, with
+    // the employee as the log actor and the reviewer on the decision.
+    #[test]
+    fn history_logs_then_approves_in_order() {
+        let e = RemoteTimeEntry {
+            created_at: Some(ts(2026, 6, 15, 9, 0)),
+            updated_at: Some(ts(2026, 6, 15, 9, 0)),
+            ..entry()
+        };
+        let decision = Some(DecisionEvent {
+            status: "approved".to_string(),
+            at: ts(2026, 6, 18, 14, 30),
+            actor: "Manager Meg".to_string(),
+            reason: None,
+        });
+        let h = build_timesheet_history(&[e], "Employee Ed", decision);
+        assert_eq!(h.len(), 2);
+        assert_eq!(h[0].kind, HistoryKind::Logged);
+        assert_eq!(h[0].actor, "Employee Ed");
+        // The log event carries the raw minutes for the view to format.
+        assert_eq!(h[0].minutes, Some(60));
+        assert_eq!(h[1].kind, HistoryKind::Approved);
+        assert_eq!(h[1].minutes, None);
+        assert_eq!(h[1].actor, "Manager Meg");
+        // Oldest-first.
+        assert!(h[0].at < h[1].at);
+    }
+
+    // An entry whose `updated_at` is strictly later than `created_at` emits a
+    // distinct "Edited" change event between the log and the decision.
+    #[test]
+    fn history_surfaces_an_edit_as_a_change_event() {
+        let e = RemoteTimeEntry {
+            created_at: Some(ts(2026, 6, 15, 9, 0)),
+            updated_at: Some(ts(2026, 6, 16, 11, 0)),
+            ..entry()
+        };
+        let decision = Some(DecisionEvent {
+            status: "rejected".to_string(),
+            at: ts(2026, 6, 17, 8, 0),
+            actor: "Manager Meg".to_string(),
+            reason: Some("Fix Tuesday".to_string()),
+        });
+        let h = build_timesheet_history(&[e], "Employee Ed", decision);
+        let kinds: Vec<HistoryKind> = h.iter().map(|ev| ev.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                HistoryKind::Logged,
+                HistoryKind::Edited,
+                HistoryKind::Rejected
+            ]
+        );
+        // The rejection reason rides along on the decision event's detail.
+        assert_eq!(h[2].detail, "Fix Tuesday");
+    }
+
+    // No edit event when the entry was never changed after logging.
+    #[test]
+    fn history_omits_edit_when_unchanged() {
+        let e = RemoteTimeEntry {
+            created_at: Some(ts(2026, 6, 15, 9, 0)),
+            updated_at: Some(ts(2026, 6, 15, 9, 0)),
+            ..entry()
+        };
+        let h = build_timesheet_history(&[e], "Ed", None);
+        assert_eq!(h.len(), 1);
+        assert_eq!(h[0].kind, HistoryKind::Logged);
+    }
+
+    // AC3: an approved timesheet's history still assembles (the decision
+    // event persists) even when the week's entries could not be loaded.
+    #[test]
+    fn history_survives_after_approval_with_no_entries() {
+        let decision = Some(DecisionEvent {
+            status: "approved".to_string(),
+            at: ts(2026, 6, 18, 14, 30),
+            actor: "Manager Meg".to_string(),
+            reason: None,
+        });
+        let h = build_timesheet_history(&[], "Ed", decision);
+        assert_eq!(h.len(), 1);
+        assert_eq!(h[0].kind, HistoryKind::Approved);
+    }
+
+    // A blank reviewer name degrades to a readable placeholder, never empty.
+    #[test]
+    fn history_decision_actor_falls_back_when_blank() {
+        let decision = Some(DecisionEvent {
+            status: "approved".to_string(),
+            at: ts(2026, 6, 18, 14, 30),
+            actor: "   ".to_string(),
+            reason: None,
+        });
+        let h = build_timesheet_history(&[], "Ed", decision);
+        assert_eq!(h[0].actor, "Unknown reviewer");
+    }
+
+    // Multiple entries sort into one interleaved oldest-first timeline.
+    #[test]
+    fn history_interleaves_multiple_entries_by_time() {
+        let a = RemoteTimeEntry {
+            created_at: Some(ts(2026, 6, 15, 9, 0)),
+            updated_at: Some(ts(2026, 6, 17, 9, 0)),
+            ..entry()
+        };
+        let b = RemoteTimeEntry {
+            created_at: Some(ts(2026, 6, 16, 9, 0)),
+            updated_at: Some(ts(2026, 6, 16, 9, 0)),
+            ..entry()
+        };
+        let h = build_timesheet_history(&[a, b], "Ed", None);
+        // a.created (15) < b.created (16) < a.updated (17)
+        let times: Vec<DateTime<Utc>> = h.iter().map(|ev| ev.at).collect();
+        assert_eq!(
+            times,
+            vec![
+                ts(2026, 6, 15, 9, 0),
+                ts(2026, 6, 16, 9, 0),
+                ts(2026, 6, 17, 9, 0)
+            ]
+        );
+        assert_eq!(h[0].kind, HistoryKind::Logged);
+        assert_eq!(h[1].kind, HistoryKind::Logged);
+        assert_eq!(h[2].kind, HistoryKind::Edited);
     }
 }
