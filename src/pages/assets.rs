@@ -87,6 +87,12 @@ struct CompanyOpt {
 
 #[derive(Clone, Debug, Deserialize)]
 struct RemoteRelationship {
+    // MAPPS-233: the relationship row's own id, needed to address it for
+    // `DELETE /asset-relationships/{id}` from the Remove control. Optional so a
+    // response that omits it simply renders without a Remove button rather than
+    // failing to deserialize the whole list.
+    #[serde(default)]
+    id: Option<uuid::Uuid>,
     #[serde(default)]
     child_asset_id: Option<uuid::Uuid>,
     #[serde(default)]
@@ -1461,6 +1467,26 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     let mut confirming_cred_delete = use_signal(|| Option::<uuid::Uuid>::None);
     let mut cred_deleting = use_signal(|| false);
 
+    // MAPPS-233: add/remove asset relationships. The server exposes create
+    // (`POST /assets/{id}/relationships`) and delete
+    // (`DELETE /asset-relationships/{id}`); there is no update endpoint, so a
+    // relationship is add/remove only (to change one, remove it and add a new
+    // one), mirroring the MAPPS-231 credentials flow. `rel_adding` drives the
+    // add modal; `confirming_rel_delete` holds the id of the relationship
+    // pending a delete confirmation.
+    let mut rel_adding = use_signal(|| false);
+    let mut nr_child_id = use_signal(String::new);
+    let mut nr_child_name = use_signal(String::new);
+    let mut nr_type = use_signal(String::new);
+    let mut nr_submitting = use_signal(|| false);
+    let mut nr_child_err = use_signal(String::new);
+    let mut nr_type_err = use_signal(String::new);
+    let mut nr_error = use_signal(String::new);
+    let id_for_rel_add = props.id.clone();
+
+    let mut confirming_rel_delete = use_signal(|| Option::<uuid::Uuid>::None);
+    let mut rel_deleting = use_signal(|| false);
+
     let on_confirm_delete = move |_: ()| {
         if *deleting.read() {
             return;
@@ -1783,26 +1809,60 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                     }
                                 }
 
-                                // Relationships
-                                Card { title: "Relationships",
+                                // Relationships (MAPPS-233: add/remove UI,
+                                // mirroring the Credentials card below).
+                                Card {
+                                    title: "Relationships",
+                                    actions: rsx! {
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            // MAPPS-357 parity: block adding while the server is down.
+                                            disabled: !can_mutate,
+                                            title: (!can_mutate).then(|| "Can't add a relationship while the server is unreachable".to_string()),
+                                            onclick: move |_| {
+                                                nr_child_id.set(String::new());
+                                                nr_child_name.set(String::new());
+                                                nr_type.set(String::new());
+                                                nr_child_err.set(String::new());
+                                                nr_type_err.set(String::new());
+                                                nr_error.set(String::new());
+                                                rel_adding.set(true);
+                                            },
+                                            PlusIcon { size: IconSize::Small, class: "mr-1.5".to_string() }
+                                            "Add"
+                                        }
+                                    },
                                     if relationships.is_empty() {
                                         p { class: "text-sm text-subtle italic", "No relationships." }
                                     } else {
                                         div { class: "space-y-2",
                                             for r in relationships.iter() {
                                                 {
+                                                    let rid = r.id;
                                                     let child = r
                                                         .child_asset_id
                                                         .map(|c| c.to_string())
                                                         .unwrap_or_default();
                                                     rsx! {
-                                                        div { class: "flex items-center justify-between p-2 bg-surface-2 rounded",
-                                                            Badge { variant: BadgeVariant::Blue, "{r.relationship_type}" }
-                                                            if !child.is_empty() {
-                                                                Link {
-                                                                    to: Route::AssetDetail { id: child.clone() },
-                                                                    class: "text-sm text-accent hover:opacity-90 font-mono",
-                                                                    "{child}"
+                                                        div { class: "flex items-center justify-between p-2 bg-surface-2 rounded gap-3",
+                                                            div { class: "flex items-center gap-2 min-w-0",
+                                                                Badge { variant: BadgeVariant::Blue, "{r.relationship_type}" }
+                                                                if !child.is_empty() {
+                                                                    Link {
+                                                                        to: Route::AssetDetail { id: child.clone() },
+                                                                        class: "text-sm text-accent hover:opacity-90 font-mono truncate",
+                                                                        "{child}"
+                                                                    }
+                                                                }
+                                                            }
+                                                            if let Some(rid) = rid {
+                                                                Button {
+                                                                    variant: ButtonVariant::Danger,
+                                                                    // MAPPS-357 parity: block removal while the server is down.
+                                                                    disabled: !can_mutate,
+                                                                    title: (!can_mutate).then(|| "Can't remove a relationship while the server is unreachable".to_string()),
+                                                                    onclick: move |_| confirming_rel_delete.set(Some(rid)),
+                                                                    TrashIcon { size: IconSize::Small }
                                                                 }
                                                             }
                                                         }
@@ -2745,6 +2805,195 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                                 label: "Notes",
                                 value: "{nc_notes}",
                                 oninput: move |e: FormEvent| nc_notes.set(e.value()),
+                            }
+                        }
+                    }
+                }
+            }
+
+            // MAPPS-233: confirm before removing a relationship, mirroring the
+            // credential Remove confirmation. The DELETE fires from `onconfirm`.
+            {
+                let mut rel_res = rel_resource;
+                let mut audit_res = audit_resource;
+                rsx! {
+                    crate::components::ConfirmDialog {
+                        open: confirming_rel_delete().is_some(),
+                        title: "Remove relationship".to_string(),
+                        message: "Remove this relationship? This cannot be undone."
+                            .to_string(),
+                        confirm_text: "Remove".to_string(),
+                        cancel_text: "Cancel".to_string(),
+                        destructive: true,
+                        loading: *rel_deleting.read(),
+                        onconfirm: move |_| {
+                            if *rel_deleting.read() {
+                                return;
+                            }
+                            let Some(rid) = confirming_rel_delete() else {
+                                return;
+                            };
+                            rel_deleting.set(true);
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    let path = format!("/asset-relationships/{rid}");
+                                    if crate::hooks::fetch::api::delete_authed(&path)
+                                        .await
+                                        .is_ok()
+                                    {
+                                        rel_res.restart();
+                                        audit_res.restart();
+                                    }
+                                }
+                                rel_deleting.set(false);
+                                confirming_rel_delete.set(None);
+                            });
+                        },
+                        oncancel: move |_| {
+                            if !*rel_deleting.read() {
+                                confirming_rel_delete.set(None);
+                            }
+                        },
+                    }
+                }
+            }
+
+            // MAPPS-233: add-relationship modal. POSTs to the relationships
+            // create endpoint, then refreshes the relationships list and audit
+            // log. The related (child) asset is picked via the shared
+            // AssetPicker; relationship_type is one of the server's known kinds
+            // ("contains" | "connected_to" | "depends_on" | "hosts").
+            {
+                let mut rel_res = rel_resource;
+                let mut audit_res = audit_resource;
+                let add_id = id_for_rel_add.clone();
+                let rel_type_opts = vec![
+                    SelectOption::new("", "Select a type"),
+                    SelectOption::new("depends_on", "Depends On"),
+                    SelectOption::new("hosts", "Hosts"),
+                    SelectOption::new("connected_to", "Connected To"),
+                    SelectOption::new("contains", "Contains"),
+                ];
+                let on_add_rel = move |_| {
+                    if nr_submitting() {
+                        return;
+                    }
+                    nr_child_err.set(String::new());
+                    nr_type_err.set(String::new());
+                    nr_error.set(String::new());
+                    let child = nr_child_id().trim().to_string();
+                    let rel_type = nr_type().trim().to_string();
+                    let mut blocked = false;
+                    if child.is_empty() {
+                        nr_child_err.set("Select an asset.".to_string());
+                        blocked = true;
+                    }
+                    if rel_type.is_empty() {
+                        nr_type_err.set("Select a type.".to_string());
+                        blocked = true;
+                    }
+                    if blocked {
+                        return;
+                    }
+                    let add_id = add_id.clone();
+                    nr_submitting.set(true);
+                    spawn(async move {
+                        #[cfg(feature = "web")]
+                        {
+                            let body = serde_json::json!({
+                                "child_asset_id": child,
+                                "relationship_type": rel_type,
+                            });
+                            match crate::hooks::fetch::api::post_authed_typed::<
+                                    serde_json::Value,
+                                    _,
+                                >(&format!("/assets/{add_id}/relationships"), &body)
+                                .await
+                            {
+                                Ok(_) => {
+                                    rel_adding.set(false);
+                                    rel_res.restart();
+                                    audit_res.restart();
+                                }
+                                Err(e) => {
+                                    // Route a server-flagged field validation
+                                    // message to its input; otherwise the banner.
+                                    if let Some(msg) = e.field_message("child_asset_id") {
+                                        nr_child_err.set(msg);
+                                    } else if let Some(msg) = e.field_message("relationship_type") {
+                                        nr_type_err.set(msg);
+                                    } else {
+                                        nr_error
+                                            .set(
+                                                format!("Could not add relationship: {}", e.user_message()),
+                                            );
+                                    }
+                                }
+                            }
+                        }
+                        nr_submitting.set(false);
+                    });
+                };
+                let child_selected = nr_child_id();
+                rsx! {
+                    Modal {
+                        open: rel_adding(),
+                        title: "Add Relationship",
+                        onclose: move |_| rel_adding.set(false),
+                        footer: rsx! {
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                onclick: move |_| rel_adding.set(false),
+                                "Cancel"
+                            }
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357 parity: block the POST while the server is down.
+                                disabled: nr_submitting() || !can_mutate,
+                                title: (!can_mutate).then(|| "Can't add a relationship while the server is unreachable".to_string()),
+                                onclick: on_add_rel,
+                                if nr_submitting() { "Saving…" } else { "Add Relationship" }
+                            }
+                        },
+                        div { class: "space-y-4",
+                            if !nr_error().is_empty() {
+                                p { class: "text-sm text-red-600 dark:text-red-400", "{nr_error}" }
+                            }
+                            // AssetPicker has no error prop, so surface the
+                            // child-asset error just below it (same convention as
+                            // the New Asset form's CompanyPicker).
+                            div { class: "space-y-1",
+                                crate::components::AssetPicker {
+                                    value: nr_child_name(),
+                                    selected_id: (!child_selected.is_empty()).then(|| child_selected.clone()),
+                                    label: "Related asset".to_string(),
+                                    required: true,
+                                    onselect: move |(id, name): (String, String)| {
+                                        nr_child_id.set(id);
+                                        nr_child_name.set(name);
+                                        nr_child_err.set(String::new());
+                                    },
+                                    onclear: move |_| {
+                                        nr_child_id.set(String::new());
+                                        nr_child_name.set(String::new());
+                                    },
+                                }
+                                if !nr_child_err().is_empty() {
+                                    p { class: "text-sm text-red-600 dark:text-red-400", "{nr_child_err}" }
+                                }
+                            }
+                            Select {
+                                name: "rel-type",
+                                label: "Relationship type".to_string(),
+                                options: rel_type_opts,
+                                required: true,
+                                error: nr_type_err(),
+                                value: nr_type(),
+                                onchange: move |e: FormEvent| {
+                                    nr_type_err.set(String::new());
+                                    nr_type.set(e.value());
+                                },
                             }
                         }
                     }
