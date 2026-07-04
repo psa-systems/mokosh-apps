@@ -253,8 +253,29 @@ fn restore_sidebar_scroll(top: i32) {
     }
 }
 
+/// MAPPS-358: while mokosh-server is unreachable, the sidebar collapses to
+/// just the Dashboard entry - every other destination renders the
+/// [`crate::components::ContentUnavailable`] "cannot connect" body during an
+/// outage, so offering their links only invites dead-end navigation. The
+/// Dashboard is the one coherent place to keep the user, matching the
+/// "return to dashboard" affordance on the outage page.
+///
+/// Returns whether the full section list (everything below the always-present
+/// Dashboard link) should render. Factored out as a pure function so the
+/// down / recovery transitions are unit-testable without a renderer, mirroring
+/// [`crate::hooks::classify_remote`].
+pub(crate) fn full_nav_visible(server_reachable: bool) -> bool {
+    server_reachable
+}
+
 #[component]
 fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
+    // MAPPS-358: reading the reachability flag subscribes this sidebar, so it
+    // collapses to Dashboard-only the instant the server goes down and
+    // restores every section the instant the MAPPS-333 recovery poll flips the
+    // flag back. `use_server_reachable` is `true` on non-web builds.
+    let show_full_nav = full_nav_visible(crate::hooks::use_server_reachable());
+
     // Admin-only nav (audit log, SLA management): rendered only for
     // admin/super_admin users (reactive on sign-in). The pages re-check
     // server-side, so this is a UX affordance, not a security boundary.
@@ -323,6 +344,12 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                 },
                 NavItem { to: Route::Dashboard {}, icon: rsx!(HomeIcon {}), label: "Dashboard", collapsed }
 
+            // MAPPS-358: every section below is hidden while the server is
+            // unreachable, leaving Dashboard as the only navigable
+            // destination. The links return the instant the recovery poll
+            // marks the server reachable again.
+            if show_full_nav {
+
             NavSection { title: "Service Desk", rail_collapsed: collapsed,
                 NavItem { to: Route::TicketList {}, icon: rsx!(TicketIcon {}), label: "Tickets", collapsed }
                 NavItem { to: Route::TimeEntryList {}, icon: rsx!(ClockIcon {}), label: "Time Entries", collapsed }
@@ -383,6 +410,8 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                     // MAPPS-169: single entry into the centralized Settings hub.
                     NavItem { to: Route::SettingsHome {}, icon: rsx!(CogIcon {}), label: "Settings", collapsed }
                 }
+            }
+
             }
 
             }
@@ -1286,5 +1315,32 @@ pub fn EmptyState(props: EmptyStateProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::full_nav_visible;
+
+    #[test]
+    fn sidebar_down_then_recovery_transition() {
+        // MAPPS-358 AC: cover the server-down and recovery transitions.
+        // 1. Healthy: the full navigation renders.
+        assert!(
+            full_nav_visible(true),
+            "reachable server must show the full sidebar"
+        );
+        // 2. Server goes down: every section below Dashboard is hidden, so
+        //    Dashboard is the only navigable destination.
+        assert!(
+            !full_nav_visible(false),
+            "unreachable server must collapse the sidebar to Dashboard-only"
+        );
+        // 3. Recovery poll marks the server reachable again: the full
+        //    navigation is restored (UI returns to normal).
+        assert!(
+            full_nav_visible(true),
+            "recovered server must restore the full sidebar"
+        );
     }
 }
