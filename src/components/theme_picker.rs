@@ -26,7 +26,13 @@ pub fn ThemePickerButton() -> Element {
     rsx! {
         button {
             r#type: "button",
-            class: "p-2 rounded-full text-gray-400 hover:text-white hover:bg-gray-700",
+            // MAPPS-359: use the shared surface/content tokens (matching the
+            // NotificationBell and other top-bar action buttons) instead of
+            // the old hardcoded `text-gray-400 hover:text-white
+            // hover:bg-gray-700`. That fixed dark-chrome palette did not
+            // follow the base mode, so the appearance/settings control read
+            // as a different color scheme from the rest of the top bar.
+            class: "p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2",
             aria_label: "Theme and appearance",
             title: "Appearance",
             // MAPPS-314: announce the dialog-opener semantics. Without

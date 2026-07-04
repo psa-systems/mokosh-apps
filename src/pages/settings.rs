@@ -576,51 +576,13 @@ pub fn SettingsHomePage() -> Element {
     }
 }
 
-/// Per-section color identity tying each Settings group to its
-/// corresponding left-nav area (MAPPS-257). Tailwind needs literal class
-/// names, so every arm spells the class out in full - the color name is
-/// never interpolated into a class string at runtime. Light- and
-/// dark-mode variants are supplied for each color so both modes keep
-/// adequate contrast.
-#[derive(Clone, Copy, PartialEq)]
-enum SectionColor {
-    /// Service & Asset Types -> Assets / Operations nav area.
-    Emerald,
-    /// Billing & SLA -> Contracts & Billing nav area.
-    Amber,
-    /// Tickets -> Service Desk (the existing active-nav accent hue).
-    Blue,
-    /// Integrations -> Admin nav area.
-    Violet,
-    /// Personalization -> per-user, not a nav domain, so it stands apart
-    /// in its own hue rather than borrowing a section color.
-    Rose,
-}
-
-impl SectionColor {
-    /// Heading tint, with a lighter dark-mode variant for contrast.
-    fn heading_class(self) -> &'static str {
-        match self {
-            SectionColor::Emerald => "text-emerald-600 dark:text-emerald-400",
-            SectionColor::Amber => "text-amber-600 dark:text-amber-400",
-            SectionColor::Blue => "text-blue-600 dark:text-blue-400",
-            SectionColor::Violet => "text-violet-600 dark:text-violet-400",
-            SectionColor::Rose => "text-rose-600 dark:text-rose-400",
-        }
-    }
-
-    /// Colored left-accent border for a card: base + same-family hover,
-    /// each with a lighter dark-mode variant.
-    fn card_border_class(self) -> &'static str {
-        match self {
-            SectionColor::Emerald => "border-l-emerald-500 hover:border-l-emerald-400 dark:border-l-emerald-400 dark:hover:border-l-emerald-300",
-            SectionColor::Amber => "border-l-amber-500 hover:border-l-amber-400 dark:border-l-amber-400 dark:hover:border-l-amber-300",
-            SectionColor::Blue => "border-l-blue-500 hover:border-l-blue-400 dark:border-l-blue-400 dark:hover:border-l-blue-300",
-            SectionColor::Violet => "border-l-violet-500 hover:border-l-violet-400 dark:border-l-violet-400 dark:hover:border-l-violet-300",
-            SectionColor::Rose => "border-l-rose-500 hover:border-l-rose-400 dark:border-l-rose-400 dark:hover:border-l-rose-300",
-        }
-    }
-}
+// MAPPS-359: `SectionColor` (the per-nav-area accent palette, originally
+// MAPPS-257) moved to `crate::modules::theme::sections` so the sidebar
+// categories and these Settings landings share one source of truth. The
+// Settings groups still map to the same five hues they always used
+// (Emerald/Amber/Blue/Violet/Rose via `SettingsGroupKey::color`); the four
+// hues added for the sidebar are simply unused here.
+use crate::modules::theme::SectionColor;
 
 /// Card grid columns. Prominent (content-heavy) groups get fewer, wider
 /// columns so each card claims more of the row; `items-stretch` keeps every
