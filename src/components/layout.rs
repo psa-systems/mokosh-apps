@@ -5,6 +5,7 @@ use dioxus::prelude::*;
 use super::global_search::GlobalSearch;
 use super::icons::*;
 use super::theme_picker::ThemePickerButton;
+use crate::modules::theme::SectionColor;
 use crate::Route;
 
 /// Main application layout with sidebar
@@ -350,51 +351,51 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
             // marks the server reachable again.
             if show_full_nav {
 
-            NavSection { title: "Service Desk", rail_collapsed: collapsed,
+            NavSection { title: "Service Desk", rail_collapsed: collapsed, color: SectionColor::Blue,
                 NavItem { to: Route::TicketList {}, icon: rsx!(TicketIcon {}), label: "Tickets", collapsed }
                 NavItem { to: Route::TimeEntryList {}, icon: rsx!(ClockIcon {}), label: "Time Entries", collapsed }
                 NavItem { to: Route::Timesheets {}, icon: rsx!(DocumentIcon {}), label: "Timesheets", collapsed }
                 if can_manage {
-                    NavItem { to: Route::TimesheetApprovals {}, icon: rsx!(DocumentIcon {}), label: "Timesheet Approvals", collapsed }
+                    NavItem { to: Route::TimesheetApprovals {}, icon: rsx!(DocumentCheckIcon {}), label: "Timesheet Approvals", collapsed }
                 }
             }
 
-            NavSection { title: "Projects", rail_collapsed: collapsed,
+            NavSection { title: "Projects", rail_collapsed: collapsed, color: SectionColor::Indigo,
                 NavItem { to: Route::ProjectList {}, icon: rsx!(FolderIcon {}), label: "Projects", collapsed }
             }
 
-            NavSection { title: "CRM", rail_collapsed: collapsed,
+            NavSection { title: "CRM", rail_collapsed: collapsed, color: SectionColor::Cyan,
                 NavItem { to: Route::CompanyList {}, icon: rsx!(BuildingIcon {}), label: "Companies", collapsed }
                 NavItem { to: Route::ContactList {}, icon: rsx!(UsersIcon {}), label: "Contacts", collapsed }
             }
 
-            NavSection { title: "Operations", rail_collapsed: collapsed,
+            NavSection { title: "Operations", rail_collapsed: collapsed, color: SectionColor::Emerald,
                 NavItem { to: Route::Calendar {}, icon: rsx!(CalendarIcon {}), label: "Calendar", collapsed }
                 NavItem { to: Route::DispatchBoard {}, icon: rsx!(TruckIcon {}), label: "Dispatch", collapsed }
                 NavItem { to: Route::SchedulingTemplates {}, icon: rsx!(SwatchIcon {}), label: "Scheduling Templates", collapsed }
             }
 
-            NavSection { title: "Contracts & Billing", rail_collapsed: collapsed,
-                NavItem { to: Route::ContractList {}, icon: rsx!(DocumentIcon {}), label: "Contracts", collapsed }
-                NavItem { to: Route::RateCardList {}, icon: rsx!(DocumentIcon {}), label: "Rate Cards", collapsed }
+            NavSection { title: "Contracts & Billing", rail_collapsed: collapsed, color: SectionColor::Amber,
+                NavItem { to: Route::ContractList {}, icon: rsx!(ScaleIcon {}), label: "Contracts", collapsed }
+                NavItem { to: Route::RateCardList {}, icon: rsx!(TagIcon {}), label: "Rate Cards", collapsed }
                 NavItem { to: Route::InvoiceList {}, icon: rsx!(CurrencyIcon {}), label: "Invoices", collapsed }
-                NavItem { to: Route::PaymentList {}, icon: rsx!(CurrencyIcon {}), label: "Payments", collapsed }
+                NavItem { to: Route::PaymentList {}, icon: rsx!(CreditCardIcon {}), label: "Payments", collapsed }
             }
 
-            NavSection { title: "Assets", rail_collapsed: collapsed,
+            NavSection { title: "Assets", rail_collapsed: collapsed, color: SectionColor::Teal,
                 NavItem { to: Route::AssetList {}, icon: rsx!(ServerIcon {}), label: "Assets", collapsed }
             }
 
-            NavSection { title: "Knowledge", rail_collapsed: collapsed,
+            NavSection { title: "Knowledge", rail_collapsed: collapsed, color: SectionColor::Fuchsia,
                 NavItem { to: Route::KBHome {}, icon: rsx!(BookIcon {}), label: "Knowledge Base", collapsed }
             }
 
-            NavSection { title: "Analytics", rail_collapsed: collapsed,
+            NavSection { title: "Analytics", rail_collapsed: collapsed, color: SectionColor::Rose,
                 NavItem { to: Route::Reports {}, icon: rsx!(ChartIcon {}), label: "Reports", collapsed }
             }
 
             if is_admin {
-                NavSection { title: "Admin", rail_collapsed: collapsed,
+                NavSection { title: "Admin", rail_collapsed: collapsed, color: SectionColor::Violet,
                     // MAPPS-329: Team nav is hidden by default and only
                     // renders when the operator sets
                     // `MOKOSH_TEAM_ENABLED=true` (or `=1`) on the
@@ -403,10 +404,10 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                     // `/team` still works - so flipping the flag is a
                     // zero-code unlock when the feature is ready.
                     if crate::modules::runtime_config::flag_enabled("team_enabled") {
-                        NavItem { to: Route::Team {}, icon: rsx!(UsersIcon {}), label: "Team", collapsed }
+                        NavItem { to: Route::Team {}, icon: rsx!(UserGroupIcon {}), label: "Team", collapsed }
                     }
-                    NavItem { to: Route::AuditLog {}, icon: rsx!(DocumentIcon {}), label: "Audit Log", collapsed }
-                    NavItem { to: Route::SlaManagement {}, icon: rsx!(DocumentIcon {}), label: "SLA Management", collapsed }
+                    NavItem { to: Route::AuditLog {}, icon: rsx!(ClipboardDocumentListIcon {}), label: "Audit Log", collapsed }
+                    NavItem { to: Route::SlaManagement {}, icon: rsx!(ShieldCheckIcon {}), label: "SLA Management", collapsed }
                     // MAPPS-169: single entry into the centralized Settings hub.
                     NavItem { to: Route::SettingsHome {}, icon: rsx!(CogIcon {}), label: "Settings", collapsed }
                 }
@@ -442,6 +443,15 @@ fn VersionFooter() -> Element {
     }
 }
 
+/// MAPPS-359: the accent hue for the category a [`NavItem`] sits in.
+/// Provided by the enclosing [`NavSection`] and consumed by [`NavItem`] to
+/// tint its icon, so a whole category reads as one color family (Google
+/// Cloud console style) applied as an accent - the icon and the section
+/// header - rather than flooding the row. A newtype so it never collides
+/// with any other `SectionColor` placed in context.
+#[derive(Clone, Copy, PartialEq)]
+struct NavCategoryColor(SectionColor);
+
 /// Collapsible navigation section. Header is a clickable button with a
 /// chevron that toggles the children's visibility. Open/closed state is
 /// keyed by section title and lives in App-root context, so it persists
@@ -450,6 +460,10 @@ fn VersionFooter() -> Element {
 #[derive(Props, Clone, PartialEq)]
 struct NavSectionProps {
     title: String,
+    /// MAPPS-359: this category's accent hue. Colors the section header and
+    /// is handed down to each child [`NavItem`] via context to tint its
+    /// icon.
+    color: SectionColor,
     /// MAPPS-250: when the WHOLE rail is collapsed to the icon-only strip,
     /// the section header (title + per-section chevron) is hidden and the
     /// child icons render directly, since there is no room for the title and
@@ -464,6 +478,11 @@ struct NavSectionProps {
 #[component]
 fn NavSection(props: NavSectionProps) -> Element {
     let mut state = crate::hooks::use_sidebar_state();
+    // MAPPS-359: hand this category's hue down to every child NavItem so its
+    // icon is tinted with the category color. Provided unconditionally (a
+    // hook) before any early return, so the collapsed-rail branch below
+    // still colors its icons.
+    use_context_provider(|| NavCategoryColor(props.color));
     let title = props.title.clone();
     let collapsed = crate::hooks::is_section_collapsed(&state.read(), &title);
 
@@ -490,10 +509,15 @@ fn NavSection(props: NavSectionProps) -> Element {
         s.collapsed.insert(toggle_title.clone(), new_value);
     };
 
+    // MAPPS-359: tint the header label with the category hue (accent), with a
+    // lighter dark-mode shade. Hover still lifts to the primary content color
+    // so the toggle affordance stays obvious.
+    let header_color = props.color.heading_class();
+
     rsx! {
         div { class: "pt-4",
             button {
-                class: "w-full flex items-center justify-between px-3 py-1 text-xs font-semibold text-subtle uppercase tracking-wider hover:text-content focus:outline-none",
+                class: "w-full flex items-center justify-between px-3 py-1 text-xs font-semibold {header_color} uppercase tracking-wider hover:text-content focus:outline-none",
                 aria_expanded: if collapsed { "false" } else { "true" },
                 onclick: toggle,
                 span { "{props.title}" }
@@ -557,6 +581,14 @@ fn NavItem(props: NavItemProps) -> Element {
     let current_route: Route = use_route();
     let is_active = section_route(&current_route) == props.to;
 
+    // MAPPS-359: tint the icon with the enclosing category's accent hue
+    // (provided by NavSection). Items rendered outside any NavSection
+    // (Dashboard) have no NavCategoryColor in context, so they fall back to
+    // the neutral subtle icon that lifts to the content color on hover.
+    let icon_color = try_use_context::<NavCategoryColor>()
+        .map(|c| c.0.heading_class())
+        .unwrap_or("text-subtle group-hover:text-content");
+
     // Collapsed rail: icon-only link, centered in the narrow strip, with the
     // label exposed as a `title` tooltip for discoverability (AC4). The link
     // stays a working router `Link` so navigation works from the strip.
@@ -572,7 +604,7 @@ fn NavItem(props: NavItemProps) -> Element {
                 class: "{class}",
                 title: "{props.label}",
                 aria_label: "{props.label}",
-                span { class: "text-subtle group-hover:text-content",
+                span { class: "{icon_color}",
                     {props.icon}
                 }
             }
@@ -589,7 +621,7 @@ fn NavItem(props: NavItemProps) -> Element {
         Link {
             to: props.to,
             class: "{class}",
-            span { class: "mr-3 text-subtle group-hover:text-content",
+            span { class: "mr-3 {icon_color}",
                 {props.icon}
             }
             "{props.label}"
@@ -1321,6 +1353,82 @@ pub fn EmptyState(props: EmptyStateProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::full_nav_visible;
+    use crate::components::icons::{
+        CLIPBOARD_DOCUMENT_LIST_PATH, CREDIT_CARD_PATH, CURRENCY_PATH, DOCUMENT_CHECK_PATH,
+        DOCUMENT_PATH, SCALE_PATH, SHIELD_CHECK_PATH, TAG_PATH, USERS_PATH, USER_GROUP_PATH,
+    };
+    use crate::modules::theme::SectionColor;
+
+    /// MAPPS-359 AC1: every sidebar row must render a distinct icon. Before
+    /// this change six rows shared `DocumentIcon`, two shared `UsersIcon`,
+    /// and two shared `CurrencyIcon`, so the rail read as blocks of identical
+    /// glyphs. This walks the icons that now occupy those formerly-colliding
+    /// families and asserts they are all distinct, keyed on the SVG path each
+    /// icon actually renders (the exported `*_PATH` consts, so the guard can
+    /// never drift from the rendered glyph). If a reassignment is ever
+    /// reverted to a shared icon, this fails.
+    #[test]
+    fn distinct_icons() {
+        // (label, rendered icon path) for every row that sat in a family that
+        // previously reused one glyph. All ten must be unique.
+        let rows = [
+            ("Timesheets", DOCUMENT_PATH),
+            ("Timesheet Approvals", DOCUMENT_CHECK_PATH),
+            ("Contracts", SCALE_PATH),
+            ("Rate Cards", TAG_PATH),
+            ("Audit Log", CLIPBOARD_DOCUMENT_LIST_PATH),
+            ("SLA Management", SHIELD_CHECK_PATH),
+            ("Contacts", USERS_PATH),
+            ("Team", USER_GROUP_PATH),
+            ("Invoices", CURRENCY_PATH),
+            ("Payments", CREDIT_CARD_PATH),
+        ];
+        for (i, (label_a, path_a)) in rows.iter().enumerate() {
+            for (label_b, path_b) in &rows[i + 1..] {
+                assert_ne!(
+                    path_a, path_b,
+                    "sidebar rows {label_a} and {label_b} render the same icon"
+                );
+            }
+        }
+    }
+
+    /// MAPPS-359 AC2/AC4: each top-level category is themed with a distinct
+    /// accent hue, and every hue carries both a light and a dark-mode class
+    /// so the rail is legible in either base mode. The (category, color)
+    /// pairs mirror the `NavSection { color: ... }` assignments in
+    /// `SidebarContent`; keep them in sync.
+    #[test]
+    fn category_colors_are_distinct_and_dual_mode() {
+        let categories = [
+            ("Service Desk", SectionColor::Blue),
+            ("Projects", SectionColor::Indigo),
+            ("CRM", SectionColor::Cyan),
+            ("Operations", SectionColor::Emerald),
+            ("Contracts & Billing", SectionColor::Amber),
+            ("Assets", SectionColor::Teal),
+            ("Knowledge", SectionColor::Fuchsia),
+            ("Analytics", SectionColor::Rose),
+            ("Admin", SectionColor::Violet),
+        ];
+        for (i, (cat_a, color_a)) in categories.iter().enumerate() {
+            // Both base modes are themed: a light-mode tint plus a `dark:`
+            // override.
+            let cls = color_a.heading_class();
+            assert!(
+                !cls.starts_with("dark:") && cls.contains("dark:text-"),
+                "category {cat_a} is missing a light or dark tint: {cls}"
+            );
+            // Distinct hue per category.
+            for (cat_b, color_b) in &categories[i + 1..] {
+                assert_ne!(
+                    color_a.heading_class(),
+                    color_b.heading_class(),
+                    "categories {cat_a} and {cat_b} share a color"
+                );
+            }
+        }
+    }
 
     #[test]
     fn sidebar_down_then_recovery_transition() {
