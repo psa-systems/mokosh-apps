@@ -244,7 +244,14 @@ create-release bump:
     let release_branch = $"release/($tag)"
 
     git checkout -b $release_branch
-    open Cargo.toml | update package.version $bare | to toml | collect | save --force Cargo.toml
+    # Bump only the `[package]` version line as text. `open Cargo.toml | update
+    # package.version | to toml` round-trips through nu's TOML serializer, which
+    # drops every comment, so it silently deleted the feature-flag / dependency
+    # rationale on the v0.6.0 release. `str replace` (first match) targets the
+    # package `version` line, which is the first `version = "..."` in the file.
+    let old_version_line = $"version = \"($cargo_version)\""
+    let new_version_line = $"version = \"($bare)\""
+    open --raw Cargo.toml | str replace $old_version_line $new_version_line | save --force Cargo.toml
     open package.json | update version $bare | save --force package.json
     git add Cargo.toml package.json
     git commit --signoff --message $"Release ($tag)"
