@@ -3414,7 +3414,7 @@ pub fn PaymentGatewayConfigPage() -> Element {
                                                 if configured {
                                                     Badge { variant: BadgeVariant::Green, "Configured" }
                                                 } else {
-                                                    Badge { variant: BadgeVariant::Gray, "Missing" }
+                                                    Badge { variant: BadgeVariant::Gray, "Not configured" }
                                                 }
                                             }
                                         }
@@ -3677,7 +3677,9 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                 }
                 div { class: "space-y-1",
                     div { class: "flex items-center gap-2",
-                        span { class: "block text-sm font-medium text-gray-700 dark:text-gray-300",
+                        label {
+                            r#for: "gateway_api_key",
+                            class: "block text-sm font-medium text-gray-700 dark:text-gray-300",
                             "API key"
                         }
                         if configured {
