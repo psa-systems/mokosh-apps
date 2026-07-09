@@ -3250,8 +3250,10 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
 // Payment gateway config
 // ============================================================================
 
-/// `PaymentGatewayConfigResponse`. `config` is arbitrary decrypted JSON;
-/// the view edits it as raw JSON text.
+/// `PaymentGatewayConfigResponse`. The secret is write-only (PMS-342): the
+/// server never returns the stored credential, only `configured` (whether a
+/// key is on file). MAPPS-363: the view enters the key masked and write-only,
+/// showing configured/not-configured rather than the plaintext.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct RemoteGateway {
     id: uuid::Uuid,
@@ -3262,7 +3264,7 @@ struct RemoteGateway {
     #[serde(default)]
     is_test_mode: bool,
     #[serde(default)]
-    config: serde_json::Value,
+    configured: bool,
 }
 
 /// Payment-gateway config view. GET `/payment-gateways` (paginated) and
@@ -3356,13 +3358,14 @@ pub fn PaymentGatewayConfigPage() -> Element {
                             TableHeader { "Provider" }
                             TableHeader { "Mode" }
                             TableHeader { "Active" }
+                            TableHeader { "Credentials" }
                         }
                     }
                     if is_loading {
-                        TableLoading { columns: 3, rows: 3 }
+                        TableLoading { columns: 4, rows: 3 }
                     } else if rows.is_empty() {
                         TableEmpty {
-                            columns: 3,
+                            columns: 4,
                             title: "No payment gateways yet".to_string(),
                             description: "Configure a gateway to accept online payments.".to_string(),
                             actions: rsx! {
@@ -3386,6 +3389,7 @@ pub fn PaymentGatewayConfigPage() -> Element {
                                     let provider_label = humanize_provider(&gateway.provider);
                                     let is_test = gateway.is_test_mode;
                                     let is_active = gateway.is_active;
+                                    let configured = gateway.configured;
                                     rsx! {
                                         TableRow { key: "{key}", clickable: true,
                                             onclick: move |_| editing.set(Some(edit_state.clone())),
@@ -3404,6 +3408,13 @@ pub fn PaymentGatewayConfigPage() -> Element {
                                                     Badge { variant: BadgeVariant::Green, "Active" }
                                                 } else {
                                                     Badge { variant: BadgeVariant::Gray, "Inactive" }
+                                                }
+                                            }
+                                            TableCell {
+                                                if configured {
+                                                    Badge { variant: BadgeVariant::Green, "Configured" }
+                                                } else {
+                                                    Badge { variant: BadgeVariant::Gray, "Not configured" }
                                                 }
                                             }
                                         }
@@ -3446,8 +3457,10 @@ struct GatewayFormState {
     provider: String,
     is_active: bool,
     is_test_mode: bool,
-    /// Pretty-printed JSON config for the textarea.
-    config_json: String,
+    /// Whether a secret is already stored server-side (MAPPS-363). Drives the
+    /// "Configured" badge and lets the key field be left blank on edit to keep
+    /// the existing secret.
+    configured: bool,
 }
 
 impl GatewayFormState {
@@ -3457,19 +3470,17 @@ impl GatewayFormState {
             provider: "stripe".to_string(),
             is_active: false,
             is_test_mode: true,
-            config_json: "{}".to_string(),
+            configured: false,
         }
     }
 
     fn from_existing(g: &RemoteGateway) -> Self {
-        let config_json =
-            serde_json::to_string_pretty(&g.config).unwrap_or_else(|_| "{}".to_string());
         Self {
             existing: true,
             provider: g.provider.clone(),
             is_active: g.is_active,
             is_test_mode: g.is_test_mode,
-            config_json,
+            configured: g.configured,
         }
     }
 }
@@ -3491,17 +3502,23 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
         "Configure Gateway"
     };
 
+    // Whether a secret is already stored (MAPPS-363): drives the status badge
+    // and lets the key field be left blank on edit to keep the existing secret.
+    let configured = initial.configured;
     let mut provider = use_signal(|| initial.provider.clone());
     let mut is_active = use_signal(|| initial.is_active);
     let mut is_test_mode = use_signal(|| initial.is_test_mode);
-    let mut config_json = use_signal(|| initial.config_json.clone());
+    // MAPPS-363: the API key is write-only. It always starts blank (the server
+    // never returns the stored secret); a blank value on save keeps the
+    // existing key.
+    let mut api_key = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
     // MAPPS-357: block save / remove while the server is unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
-    // PMS-518: inline slot for the JSON config field, previously banner-only.
-    let mut config_err = use_signal(String::new);
+    // Inline slot for the key field, routed off the form-level banner.
+    let mut key_err = use_signal(String::new);
 
     let provider_options = vec![
         SelectOption::new("stripe", "Stripe"),
@@ -3517,42 +3534,40 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
             return;
         }
         error.set(String::new());
-        config_err.set(String::new());
+        key_err.set(String::new());
 
-        // PMS-518: the config must be valid JSON (the server stores it
-        // encrypted). The parsed value is reused in the body, so keep the
-        // bespoke parse and route its failure to the field's own inline slot
-        // with focus-first instead of the form-level banner.
-        let mut guard = FormGuard::new();
-        let parsed_config: serde_json::Value = match serde_json::from_str(&config_json.read()) {
-            Ok(v) => v,
-            Err(e) => {
-                config_err.set(format!("Config must be valid JSON: {e}"));
-                guard.note_invalid(Some("gateway_config"));
-                serde_json::Value::Null
-            }
-        };
-        if guard.blocked() {
+        // MAPPS-363: the key is write-only. Send `config` only when the admin
+        // typed a key; a blank field keeps the existing secret (PMS-342
+        // omit-to-keep). A first-time gateway (no secret yet) must supply one -
+        // the server rejects a create with no `config` (400), so guard here for
+        // a field-level message instead.
+        let key = api_key.read().trim().to_string();
+        if key.is_empty() && !configured {
+            key_err.set("An API key is required to configure this gateway.".to_string());
             return;
         }
         saving.set(true);
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "provider": provider.read().clone(),
             "is_active": *is_active.read(),
             "is_test_mode": *is_test_mode.read(),
-            "config": parsed_config,
         });
+        if !key.is_empty() {
+            body["config"] = serde_json::json!({ "api_key": key });
+        }
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
+                match crate::hooks::fetch::api::put_authed_typed::<serde_json::Value, _>(
                     "/payment-gateways",
                     &body,
                 )
                 .await
                 {
                     Ok(_) => onsaved.call(()),
-                    Err(err) => error.set(format!("Could not save gateway: {err}")),
+                    Err(err) => {
+                        error.set(format!("Could not save gateway: {}", err.user_message()))
+                    }
                 }
             }
             saving.set(false);
@@ -3660,18 +3675,36 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                         is_test_mode.set(next);
                     },
                 }
-                crate::components::Textarea {
-                    name: "gateway_config",
-                    label: "Config (JSON)",
-                    placeholder: "{{ \"api_key\": \"...\" }}",
-                    rows: 8,
-                    help: "Provider credentials. Stored encrypted at rest.",
-                    error: config_err(),
-                    value: config_json.read().clone(),
-                    oninput: move |e: FormEvent| {
-                        config_err.set(String::new());
-                        config_json.set(e.value());
-                    },
+                div { class: "space-y-1",
+                    div { class: "flex items-center gap-2",
+                        label {
+                            r#for: "gateway_api_key",
+                            class: "block text-sm font-medium text-gray-700 dark:text-gray-300",
+                            "API key"
+                        }
+                        if configured {
+                            Badge { variant: BadgeVariant::Green, "Configured" }
+                        } else {
+                            Badge { variant: BadgeVariant::Gray, "Not configured" }
+                        }
+                    }
+                    crate::components::Input {
+                        name: "gateway_api_key",
+                        r#type: "password",
+                        placeholder: if configured {
+                            "Leave blank to keep the current key".to_string()
+                        } else {
+                            "Enter the provider API key".to_string()
+                        },
+                        required: !configured,
+                        help: "Stored encrypted at rest. It is write-only and never shown again.",
+                        error: key_err(),
+                        value: api_key.read().clone(),
+                        oninput: move |e: FormEvent| {
+                            key_err.set(String::new());
+                            api_key.set(e.value());
+                        },
+                    }
                 }
             }
         }
