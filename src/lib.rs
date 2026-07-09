@@ -519,6 +519,9 @@ pub enum Route {
     SettingsRmmDeviceMappings {},
     #[route("/settings/rmm/alert-rules")]
     SettingsRmmAlertRules {},
+    // MAPPS-364: admin-only tenant data import/export (server PMS-646).
+    #[route("/settings/import-export")]
+    SettingsImportExport {},
 
     // Mokosh-side profile. Edits the tenant-scoped fields on the
     // user row (name, title, phone, mobile, timezone). Cross-app
@@ -1054,6 +1057,11 @@ fn SettingsTaxRates() -> Element {
 #[component]
 fn SettingsGateways() -> Element {
     rsx! { billing::PaymentGatewayConfigPage {} }
+}
+
+#[component]
+fn SettingsImportExport() -> Element {
+    rsx! { settings::ImportExportSettingsPage {} }
 }
 
 // MAPPS-172 ticket lookup editors.

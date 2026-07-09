@@ -120,6 +120,12 @@ features = [
     "BeforeUnloadEvent",
     # MAPPS-355: auth heartbeat skips its request when the tab is hidden.
     "VisibilityState",
+    # MAPPS-364: client-side file download for the data export. A bearer-authed
+    # GET returns bytes that are wrapped in a Blob and saved via a synthesized
+    # anchor (Url::create_object_url_with_blob + HtmlAnchorElement::click).
+    "Blob",
+    "Url",
+    "HtmlAnchorElement",
 ]
 
 [profile.release]

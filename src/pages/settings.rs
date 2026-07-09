@@ -211,7 +211,9 @@ impl SettingsGroupKey {
                 "SLA, scheduling, time tracking, rate cards, taxes, gateways, and payment terms."
             }
             SettingsGroupKey::Tickets => "Statuses, priorities, types, queues, and categories.",
-            SettingsGroupKey::Integrations => "RMM connections, device mappings, and alert rules.",
+            SettingsGroupKey::Integrations => {
+                "RMM connections, device mappings, alert rules, and tenant data import/export."
+            }
         }
     }
 
@@ -431,6 +433,14 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         route: Route::SettingsRmmAlertRules {},
         title: "RMM Alert Rules",
         description: "Turn RMM alerts into tickets automatically.",
+        group: SettingsGroupKey::Integrations,
+        advanced: true,
+    },
+    SettingsSurface {
+        route: Route::SettingsImportExport {},
+        title: "Import & Export",
+        description:
+            "Download a snapshot of this tenant's data, or restore it from a previous export.",
         group: SettingsGroupKey::Integrations,
         advanced: true,
     },
@@ -726,6 +736,243 @@ pub fn IntegrationsGroupPage() -> Element {
     // server resource to fail.
     rsx! {
         SettingsGroupLanding { group: SettingsGroupKey::Integrations }
+    }
+}
+
+/// Per-table row-count summary returned by `POST /api/v1/data/import`
+/// (MAPPS-364). `imported` maps each restored table to the number of rows
+/// written; a `BTreeMap` so the summary renders in a stable, sorted order.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct ImportSummary {
+    #[serde(default)]
+    imported: std::collections::BTreeMap<String, i64>,
+}
+
+/// `/settings/import-export` (MAPPS-364, server PMS-646). Admin-only. Export
+/// downloads a JSON snapshot of the tenant's data; import wipes and replaces
+/// the tenant's data from a previously-exported file, gated behind a typed
+/// tenant-name confirmation that matches the backend `confirm` guard.
+#[component]
+pub fn ImportExportSettingsPage() -> Element {
+    if !use_is_admin() {
+        return rsx! { AdminOnlyNotice { title: "Import & Export" } };
+    }
+
+    // The import confirmation must equal the tenant's name (the backend compares
+    // `confirm` to `tenants.name`); use the active org name the user already
+    // sees in the org switcher.
+    let auth = crate::hooks::use_auth();
+    let tenant_name = auth
+        .read()
+        .active_org_name()
+        .map(str::to_string)
+        .unwrap_or_default();
+
+    rsx! {
+        AppLayout { title: "Import & Export",
+            PageHeader {
+                title: "Import & Export",
+                subtitle: "Download a snapshot of this tenant's data, or restore it from a previous export",
+                breadcrumbs: rsx! {
+                    SettingsBreadcrumb { current: Route::SettingsImportExport {} }
+                },
+            }
+            div { class: "space-y-6",
+                ExportPanel {}
+                ImportPanel { tenant_name }
+            }
+        }
+    }
+}
+
+#[component]
+fn ExportPanel() -> Element {
+    let mut downloading = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let on_download = move |_| {
+        if *downloading.read() {
+            return;
+        }
+        error.set(String::new());
+        downloading.set(true);
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match crate::hooks::fetch::api::get_authed_bytes("/data/export").await {
+                    Ok((bytes, filename)) => {
+                        let name = filename.unwrap_or_else(|| "mokosh-export.json".to_string());
+                        if let Err(e) = crate::utils::download::save_bytes_as_file(&bytes, &name) {
+                            error.set(format!("Fetched the export but could not save it: {e}"));
+                        }
+                    }
+                    Err(e) => error.set(format!("Could not export: {e}")),
+                }
+            }
+            downloading.set(false);
+        });
+    };
+
+    rsx! {
+        Card {
+            div { class: "space-y-3",
+                h3 { class: "text-base font-semibold text-content", "Export" }
+                p { class: "text-sm text-muted",
+                    "Download a JSON snapshot of all of this tenant's data. The file contains your records - store it somewhere safe."
+                }
+                if !error.read().is_empty() {
+                    div {
+                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                        "{error.read()}"
+                    }
+                }
+                Button {
+                    variant: ButtonVariant::Primary,
+                    loading: *downloading.read(),
+                    onclick: on_download,
+                    "Download export"
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn ImportPanel(tenant_name: String) -> Element {
+    let expected = tenant_name;
+    let mut confirm = use_signal(String::new);
+    let mut file_text = use_signal(|| None::<String>);
+    let mut file_name = use_signal(String::new);
+    let mut importing = use_signal(|| false);
+    let mut error = use_signal(String::new);
+    let mut summary = use_signal(|| None::<ImportSummary>);
+    // MAPPS-357: block the destructive write while the server is unreachable.
+    let can_mutate = crate::hooks::use_can_mutate();
+
+    let confirm_matches = !expected.is_empty() && confirm.read().trim() == expected.trim();
+    let has_file = file_text.read().is_some();
+    let can_import = confirm_matches && has_file && can_mutate && !*importing.read();
+
+    let on_import = move |_| {
+        if !can_import {
+            return;
+        }
+        error.set(String::new());
+        summary.set(None);
+        let Some(text) = file_text.read().clone() else {
+            return;
+        };
+        let export_json: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                error.set(format!("The selected file is not valid JSON: {e}"));
+                return;
+            }
+        };
+        let confirm_val = confirm.read().trim().to_string();
+        importing.set(true);
+        let body = serde_json::json!({ "confirm": confirm_val, "export": export_json });
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match crate::hooks::fetch::api::post_authed_typed::<ImportSummary, _>(
+                    "/data/import",
+                    &body,
+                )
+                .await
+                {
+                    Ok(s) => summary.set(Some(s)),
+                    Err(e) => error.set(format!("Import failed: {}", e.user_message())),
+                }
+            }
+            importing.set(false);
+        });
+    };
+
+    rsx! {
+        Card {
+            div { class: "space-y-4",
+                h3 { class: "text-base font-semibold text-content", "Import" }
+                div {
+                    class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                    strong { "This replaces all current data for this tenant." }
+                    " Importing wipes every existing record and restores from the uploaded file. This cannot be undone - export a fresh snapshot first."
+                }
+
+                div { class: "space-y-1",
+                    label {
+                        r#for: "import_file",
+                        class: "block text-sm font-medium text-gray-700 dark:text-gray-300",
+                        "Export file"
+                    }
+                    input {
+                        id: "import_file",
+                        r#type: "file",
+                        accept: "application/json,.json",
+                        class: "block w-full text-sm text-gray-700 dark:text-gray-300 file:mr-3 file:rounded-md file:border-0 file:bg-gray-100 dark:file:bg-gray-700 file:px-3 file:py-1.5 file:text-sm file:font-medium",
+                        onchange: move |evt: FormEvent| {
+                            error.set(String::new());
+                            summary.set(None);
+                            let Some(file) = evt.files().into_iter().next() else {
+                                return;
+                            };
+                            file_name.set(file.name());
+                            spawn(async move {
+                                match file.read_string().await {
+                                    Ok(text) => file_text.set(Some(text)),
+                                    Err(_) => {
+                                        error.set("Could not read the selected file.".to_string())
+                                    }
+                                }
+                            });
+                        },
+                    }
+                    if !file_name.read().is_empty() {
+                        p { class: "text-xs text-muted", "Selected: {file_name.read()}" }
+                    }
+                }
+
+                crate::components::Input {
+                    name: "import_confirm",
+                    label: "Type the tenant name to confirm",
+                    placeholder: expected.clone(),
+                    help: if expected.is_empty() {
+                        "No active tenant name is available; import is unavailable.".to_string()
+                    } else {
+                        format!("Type \"{expected}\" exactly to enable import.")
+                    },
+                    value: confirm.read().clone(),
+                    oninput: move |e: FormEvent| confirm.set(e.value()),
+                }
+
+                if !error.read().is_empty() {
+                    div {
+                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                        "{error.read()}"
+                    }
+                }
+
+                if let Some(s) = summary.read().clone() {
+                    div {
+                        class: "text-sm text-green-800 dark:text-green-300 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-900 rounded-md px-3 py-2 space-y-1",
+                        p { class: "font-medium", "Import complete." }
+                        ul { class: "list-disc pl-5",
+                            for (table , count) in s.imported.iter() {
+                                li { key: "{table}", "{table}: {count}" }
+                            }
+                        }
+                    }
+                }
+
+                Button {
+                    variant: ButtonVariant::Danger,
+                    disabled: !can_import,
+                    loading: *importing.read(),
+                    onclick: on_import,
+                    "Import and replace all data"
+                }
+            }
+        }
     }
 }
 

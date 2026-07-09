@@ -1,6 +1,7 @@
 //! Utility modules for the Mokosh platform
 
 pub mod datetime;
+pub mod download;
 pub mod duration;
 pub mod envelope;
 pub mod error;
