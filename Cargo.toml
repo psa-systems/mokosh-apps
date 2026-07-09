@@ -126,6 +126,10 @@ features = [
     "Blob",
     "Url",
     "HtmlAnchorElement",
+    # MAPPS-364: attach the download anchor to the DOM before clicking it
+    # (append_child / remove_child) so the download fires reliably across
+    # browsers, not only where a detached-anchor click is honored.
+    "Node",
 ]
 
 [profile.release]

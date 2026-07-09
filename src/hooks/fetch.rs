@@ -714,7 +714,14 @@ pub mod api {
         if let Some(t) = current_access_token() {
             req = req.header("Authorization", &format!("Bearer {t}"));
         }
-        let resp = req.send().await.map_err(|e| e.to_string())?;
+        let resp = req.send().await.map_err(|e| {
+            // Keep the server-reachable flag accurate on a transport failure,
+            // like the other helpers do via `network_err`.
+            super::note_transport_error();
+            e.to_string()
+        })?;
+        // Any response clears the "down" state (a 5xx re-flags it).
+        super::note_response_status(resp.status());
         if !resp.ok() {
             return Err(status_error(resp).await);
         }

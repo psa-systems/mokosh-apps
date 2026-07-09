@@ -31,7 +31,15 @@ pub fn save_bytes_as_file(bytes: &[u8], filename: &str) -> Result<(), String> {
         .map_err(|_| "download anchor cast failed".to_string())?;
     anchor.set_href(&url);
     anchor.set_download(filename);
+    // Attach the anchor (hidden) before clicking: a detached-anchor click is
+    // not honored in every browser. Remove it again afterwards.
+    let _ = anchor.style().set_property("display", "none");
+    let body = document
+        .body()
+        .ok_or_else(|| "no document body for the download".to_string())?;
+    let _ = body.append_child(&anchor);
     anchor.click();
+    let _ = body.remove_child(&anchor);
 
     // The browser has taken the blob into its download pipeline, so the object
     // URL can be released.

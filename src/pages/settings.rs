@@ -954,12 +954,25 @@ fn ImportPanel(tenant_name: String) -> Element {
 
                 if let Some(s) = summary.read().clone() {
                     div {
-                        class: "text-sm text-green-800 dark:text-green-300 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-900 rounded-md px-3 py-2 space-y-1",
+                        class: "text-sm text-green-800 dark:text-green-300 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-900 rounded-md px-3 py-2 space-y-2",
                         p { class: "font-medium", "Import complete." }
                         ul { class: "list-disc pl-5",
                             for (table , count) in s.imported.iter() {
                                 li { key: "{table}", "{table}: {count}" }
                             }
+                        }
+                        p {
+                            "Every record was replaced and re-keyed. Reload the app so the rest of the pages show the imported data."
+                        }
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            onclick: move |_| {
+                                #[cfg(feature = "web")]
+                                if let Some(w) = web_sys::window() {
+                                    let _ = w.location().reload();
+                                }
+                            },
+                            "Reload the app"
                         }
                     }
                 }
