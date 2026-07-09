@@ -703,6 +703,57 @@ pub mod api {
         handle_response(resp).await
     }
 
+    /// Bearer-authed GET that returns the raw response body plus the server's
+    /// `Content-Disposition` filename. Used for attachment downloads the SPA
+    /// cannot fetch through a plain `<a href>` because the bearer lives in WASM
+    /// memory rather than a cookie (the data export, MAPPS-364).
+    #[cfg(feature = "web")]
+    pub async fn get_authed_bytes(path: &str) -> Result<(Vec<u8>, Option<String>), String> {
+        let url = format!("{}{}", api_base(), path);
+        let mut req = Request::get(&url);
+        if let Some(t) = current_access_token() {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let resp = req.send().await.map_err(|e| {
+            // Keep the server-reachable flag accurate on a transport failure,
+            // like the other helpers do via `network_err`.
+            super::note_transport_error();
+            e.to_string()
+        })?;
+        // Any response clears the "down" state (a 5xx re-flags it).
+        super::note_response_status(resp.status());
+        if !resp.ok() {
+            return Err(status_error(resp).await);
+        }
+        let filename = resp
+            .headers()
+            .get("content-disposition")
+            .as_deref()
+            .and_then(content_disposition_filename);
+        let bytes = resp.binary().await.map_err(|e| e.to_string())?;
+        Ok((bytes, filename))
+    }
+
+    /// Extract the `filename="..."` value from a `Content-Disposition` header.
+    /// Only the simple quoted or unquoted `filename=` form is handled (no
+    /// RFC 5987 `filename*=`), which is all the export endpoint emits.
+    #[cfg(feature = "web")]
+    fn content_disposition_filename(header: &str) -> Option<String> {
+        let idx = header.to_ascii_lowercase().find("filename=")?;
+        let raw = header[idx + "filename=".len()..].trim();
+        let value = if let Some(rest) = raw.strip_prefix('"') {
+            rest.split('"').next().unwrap_or("")
+        } else {
+            raw.split(';').next().unwrap_or(raw).trim()
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        }
+    }
+
     #[cfg(feature = "web")]
     pub async fn post_authed_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,
