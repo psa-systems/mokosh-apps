@@ -466,6 +466,9 @@ pub enum Route {
     SettingsGroupTickets {},
     #[route("/settings/group/integrations")]
     SettingsGroupIntegrations {},
+    // MAPPS-364: Data (tenant import/export) group landing.
+    #[route("/settings/group/data")]
+    SettingsGroupData {},
     #[route("/settings/work-types")]
     SettingsWorkTypes {},
     #[route("/settings/task-statuses")]
@@ -987,6 +990,11 @@ fn SettingsGroupTickets() -> Element {
 #[component]
 fn SettingsGroupIntegrations() -> Element {
     rsx! { settings::IntegrationsGroupPage {} }
+}
+
+#[component]
+fn SettingsGroupData() -> Element {
+    rsx! { settings::DataGroupPage {} }
 }
 
 #[component]
