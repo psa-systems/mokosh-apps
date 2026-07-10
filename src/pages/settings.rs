@@ -461,7 +461,7 @@ fn surfaces_in_group(
 }
 
 /// `/settings` - the hub index. With no search query it shows the
-/// Personalization leaf plus the four nested group cards; typing a query
+/// Personalization leaf plus the nested group cards; typing a query
 /// flattens to matching leaf cards across every group (MAPPS-258).
 #[component]
 pub fn SettingsHomePage() -> Element {
