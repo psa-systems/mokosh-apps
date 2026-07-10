@@ -186,6 +186,7 @@ enum SettingsGroupKey {
     Billing,
     Tickets,
     Integrations,
+    Data,
 }
 
 impl SettingsGroupKey {
@@ -197,6 +198,7 @@ impl SettingsGroupKey {
             SettingsGroupKey::Billing => "Billing & SLA",
             SettingsGroupKey::Tickets => "Tickets",
             SettingsGroupKey::Integrations => "Integrations",
+            SettingsGroupKey::Data => "Data",
         }
     }
 
@@ -211,9 +213,8 @@ impl SettingsGroupKey {
                 "SLA, scheduling, time tracking, rate cards, taxes, gateways, and payment terms."
             }
             SettingsGroupKey::Tickets => "Statuses, priorities, types, queues, and categories.",
-            SettingsGroupKey::Integrations => {
-                "RMM connections, device mappings, alert rules, and tenant data import/export."
-            }
+            SettingsGroupKey::Integrations => "RMM connections, device mappings, and alert rules.",
+            SettingsGroupKey::Data => "Export and import this tenant's data.",
         }
     }
 
@@ -226,6 +227,7 @@ impl SettingsGroupKey {
             SettingsGroupKey::Billing => Some(Route::SettingsGroupBilling {}),
             SettingsGroupKey::Tickets => Some(Route::SettingsGroupTickets {}),
             SettingsGroupKey::Integrations => Some(Route::SettingsGroupIntegrations {}),
+            SettingsGroupKey::Data => Some(Route::SettingsGroupData {}),
         }
     }
 
@@ -238,6 +240,7 @@ impl SettingsGroupKey {
             SettingsGroupKey::Billing => SectionColor::Amber,
             SettingsGroupKey::Tickets => SectionColor::Blue,
             SettingsGroupKey::Integrations => SectionColor::Violet,
+            SettingsGroupKey::Data => SectionColor::Teal,
         }
     }
 
@@ -253,13 +256,14 @@ impl SettingsGroupKey {
     }
 }
 
-/// The four nested admin groups, in index display order. Personalization is
+/// The nested admin groups, in index display order. Personalization is
 /// rendered separately (it is a direct leaf, not a group card).
 const SETTINGS_GROUP_ORDER: &[SettingsGroupKey] = &[
     SettingsGroupKey::ServiceTypes,
     SettingsGroupKey::Billing,
     SettingsGroupKey::Tickets,
     SettingsGroupKey::Integrations,
+    SettingsGroupKey::Data,
 ];
 
 /// One configuration surface (a leaf settings page).
@@ -441,8 +445,8 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         title: "Import & Export",
         description:
             "Download a snapshot of this tenant's data, or restore it from a previous export.",
-        group: SettingsGroupKey::Integrations,
-        advanced: true,
+        group: SettingsGroupKey::Data,
+        advanced: false,
     },
 ];
 
@@ -457,7 +461,7 @@ fn surfaces_in_group(
 }
 
 /// `/settings` - the hub index. With no search query it shows the
-/// Personalization leaf plus the four nested group cards; typing a query
+/// Personalization leaf plus the nested group cards; typing a query
 /// flattens to matching leaf cards across every group (MAPPS-258).
 #[component]
 pub fn SettingsHomePage() -> Element {
@@ -736,6 +740,16 @@ pub fn IntegrationsGroupPage() -> Element {
     // server resource to fail.
     rsx! {
         SettingsGroupLanding { group: SettingsGroupKey::Integrations }
+    }
+}
+
+/// `/settings/group/data` - Data (import/export) landing (MAPPS-364).
+#[component]
+pub fn DataGroupPage() -> Element {
+    // MAPPS-357: N/A - static group landing (card list from the taxonomy), no
+    // server resource to fail.
+    rsx! {
+        SettingsGroupLanding { group: SettingsGroupKey::Data }
     }
 }
 
