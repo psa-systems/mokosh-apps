@@ -18,6 +18,10 @@
 //!    additional exposure compared to the alternative
 //!    (localStorage cross-tab leak, or background-refresh complexity
 //!    via `prompt=none`).
+//!
+//! The full accepted-risk decision (mitigations, the httpOnly-cookie BFF option,
+//! and why the refresh token lives in the browser) is recorded in
+//! `docs/oidc-token-storage.md` (MAPPS-362).
 
 const STATE_KEY: &str = "mokosh_oidc_flow_v1";
 const AUTH_KEY: &str = "mokosh_auth_bundle_v1";
