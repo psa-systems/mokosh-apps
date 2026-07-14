@@ -40,6 +40,17 @@ pub fn AuthGuard() -> Element {
         };
     }
     if !auth_state.is_authenticated() {
+        // MAPPS-368: a deployment with no OIDC issuer has no bunyip OP to
+        // redirect to, so send the user to the standalone username/password
+        // login form instead of a dead `/oauth2/authorize`.
+        if crate::modules::oidc::is_standalone() {
+            nav.replace(Route::Login {});
+            return rsx! {
+                div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
+                    "Redirecting to sign in..."
+                }
+            };
+        }
         // No local session. Kick off the OIDC code+PKCE flow ON THIS
         // ORIGIN so the PendingFlow (code_verifier + state + nonce)
         // lands in *this* SPA's sessionStorage and /auth/callback can
@@ -638,10 +649,20 @@ fn Home() -> Element {
 /// user landed on bunyip's dashboard with no way back to msp.
 #[component]
 fn Login() -> Element {
+    // MAPPS-368: no OIDC issuer configured -> present the standalone
+    // username/password form instead of the bunyip redirect. `is_standalone`
+    // is stable for the session (config is memoized), so the effect below is
+    // still called on every render and the hook order never changes.
+    let standalone = crate::modules::oidc::is_standalone();
     use_effect(move || {
-        let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
-        let _ = crate::modules::oidc::start_login(&cfg, "/dashboard");
+        if !standalone {
+            let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
+            let _ = crate::modules::oidc::start_login(&cfg, "/dashboard");
+        }
     });
+    if standalone {
+        return rsx! { crate::pages::login::StandaloneLogin {} };
+    }
     rsx! {
         div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
             "Signing you in..."

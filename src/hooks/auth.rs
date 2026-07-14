@@ -145,13 +145,17 @@ fn initial_auth_context() -> AuthContext {
             // gate trusts this synthesized user without a /me round-trip.
             server_loaded: true,
         },
-        _ => rehydrate_from_storage().unwrap_or_default(),
+        _ => rehydrate_from_storage()
+            .or_else(rehydrate_standalone)
+            .unwrap_or_default(),
     }
 }
 
 #[cfg(not(all(debug_assertions, feature = "dev_admin_bypass")))]
 fn initial_auth_context() -> AuthContext {
-    rehydrate_from_storage().unwrap_or_default()
+    rehydrate_from_storage()
+        .or_else(rehydrate_standalone)
+        .unwrap_or_default()
 }
 
 /// Pull a persisted token bundle out of `sessionStorage` and rebuild
@@ -230,6 +234,30 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
         memberships: Vec::new(),
         // MAPPS-317: false until the post-rehydrate /me fetch lands.
         // AuthGuard's onboarding gate trusts this flag; see lib.rs.
+        server_loaded: false,
+    })
+}
+
+/// MAPPS-368: rehydrate a standalone (non-OIDC) session persisted by the login
+/// form. Unlike [`rehydrate_from_storage`] there is no id_token to rebuild the
+/// user from, so the stored `CurrentUser` is used directly; the post-boot `/me`
+/// loader reconciles it within a tick. Returns `None` when no standalone
+/// session is stored, so the caller falls through to the OIDC path / default.
+fn rehydrate_standalone() -> Option<AuthContext> {
+    use crate::modules::oidc::storage::load_standalone;
+
+    let stored = load_standalone()?;
+    let active_tenant_id = Some(stored.user.tenant_id);
+    crate::hooks::fetch::api::set_access_token(Some(stored.access_token.clone()));
+    Some(AuthContext {
+        user: Some(stored.user),
+        is_loading: false,
+        error: None,
+        // No OIDC tokens in a standalone session; the refresh hook no-ops.
+        tokens: None,
+        active_tenant_id,
+        memberships: Vec::new(),
+        // /me reconciles the authoritative user on the next tick.
         server_loaded: false,
     })
 }
@@ -482,10 +510,25 @@ async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
     fn default_true_me() -> bool {
         true
     }
-    let me = match crate::hooks::fetch::api::get_authed::<MeBody>("/auth/me").await {
+    let me = match crate::hooks::fetch::api::get_authed_typed::<MeBody>("/auth/me").await {
         Ok(m) => m,
+        // MAPPS-368: a 401 with no refreshable token is an expired standalone
+        // session. The OIDC path renews via its refresh hook and keeps
+        // `tokens = Some`, so its 401s are handled there, not here. Standalone
+        // has no refresh, so clear the session and drop to unauthenticated;
+        // AuthGuard then routes to the login form, instead of leaving the app
+        // stuck "logged in" with a dead token that 401s every request.
+        Err(crate::hooks::fetch::api::ApiError::Status { code: 401, .. }) => {
+            let standalone_session = auth.read().tokens.is_none();
+            if standalone_session {
+                crate::modules::oidc::storage::clear_auth();
+                crate::hooks::fetch::api::set_access_token(None);
+                *auth.write() = AuthContext::default();
+            }
+            return;
+        }
         Err(e) => {
-            tracing::warn!("/api/v1/auth/me failed; keeping cached user: {e}");
+            tracing::warn!("/api/v1/auth/me failed; keeping cached user: {e:?}");
             return;
         }
     };

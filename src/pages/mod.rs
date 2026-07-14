@@ -24,6 +24,7 @@ pub mod dashboards;
 pub mod dashboards_view;
 pub mod home;
 pub mod knowledge_base;
+pub mod login;
 pub mod not_found;
 pub mod onboarding;
 pub mod portal;

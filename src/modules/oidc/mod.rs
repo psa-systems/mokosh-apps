@@ -27,6 +27,15 @@ pub mod storage;
 pub mod tokens;
 
 pub use config::OidcConfig;
+
+/// MAPPS-368: true when no OIDC issuer is configured for this deployment, so
+/// the SPA presents standalone username/password login (against mokosh-server's
+/// `/api/v1/auth/login`) instead of the bunyip OIDC redirect. Convenience
+/// wrapper over [`OidcConfig::has_issuer`] for the login trigger sites.
+pub fn is_standalone() -> bool {
+    !OidcConfig::for_current_origin().has_issuer()
+}
+
 pub use flow::{
     classify_return_to, complete_login, current_return_to, issuer_get_authed, issuer_post_authed,
     refresh_tokens, revoke_refresh_token, snapshot_initial_search, start_login, FlowError,

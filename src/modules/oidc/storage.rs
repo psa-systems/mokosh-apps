@@ -53,6 +53,46 @@ pub fn clear_auth() {
     if let Ok(storage) = session_storage() {
         let _ = storage.remove_item(AUTH_KEY);
     }
+    // MAPPS-368: also drop any standalone (non-OIDC) session so logout is
+    // complete regardless of which path signed the user in; otherwise the
+    // stored standalone session would rehydrate the user right after logout.
+    clear_standalone();
+}
+
+/// MAPPS-368: standalone (non-OIDC) session key. Kept separate from `AUTH_KEY`
+/// so the two rehydrate paths never collide.
+const STANDALONE_KEY: &str = "mokosh_standalone_session_v1";
+
+/// MAPPS-368: a persisted standalone username/password session. Unlike
+/// [`StoredTokens`] there is no `id_token` to rebuild the user from, so the
+/// `CurrentUser` view model is stored directly alongside the tokens. Rehydrated
+/// at boot by `crate::hooks::auth`.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct StandaloneSession {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+    pub user: crate::CurrentUser,
+}
+
+pub fn save_standalone(s: &StandaloneSession) {
+    if let Ok(storage) = session_storage() {
+        if let Ok(json) = serde_json::to_string(s) {
+            let _ = storage.set_item(STANDALONE_KEY, &json);
+        }
+    }
+}
+
+pub fn load_standalone() -> Option<StandaloneSession> {
+    let storage = session_storage().ok()?;
+    let raw = storage.get_item(STANDALONE_KEY).ok().flatten()?;
+    serde_json::from_str(&raw).ok()
+}
+
+pub fn clear_standalone() {
+    if let Ok(storage) = session_storage() {
+        let _ = storage.remove_item(STANDALONE_KEY);
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
