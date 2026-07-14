@@ -24,7 +24,11 @@ impl OidcConfig {
         Self {
             issuer: match option_env!("MOKOSH_OIDC_ISSUER") {
                 Some(s) => s,
-                None => "http://localhost:8080",
+                // MAPPS-368: empty by default. A deploy with no OIDC issuer
+                // (no runtime injection, non-`msp.` host) then resolves to an
+                // empty issuer, which flips the SPA to standalone
+                // username/password login instead of a dead `/oauth2/authorize`.
+                None => "",
             },
             client_id: match option_env!("MOKOSH_OIDC_CLIENT_ID") {
                 Some(s) => s,
@@ -86,10 +90,12 @@ impl OidcConfig {
     /// issuer `https://api.<tld>` (bunyip-api) and hub `https://<tld>`
     /// (bunyip-web), so one SPA image targets staging and prod identically.
     ///
-    /// Consequence (confirmed MAPPS-138): mokosh-server's own
-    /// `/api/v1/auth/*` surface (LoginRequest/LoginResponse/
-    /// RefreshTokenResponse) is intentionally NOT consumed by this SPA. It
-    /// is backend-only; this client authenticates exclusively via bunyip.
+    /// Consequence (confirmed MAPPS-138): when an OIDC issuer IS configured,
+    /// mokosh-server's own `/api/v1/auth/*` surface is not consumed by this
+    /// SPA; the client authenticates via bunyip. MAPPS-368 adds the exception:
+    /// when no issuer resolves (`has_issuer()` is false), the SPA falls back to
+    /// mokosh-server's `/api/v1/auth/login` for standalone username/password
+    /// sign-in.
     fn resolve() -> Self {
         let mut cfg = Self::from_env();
 
@@ -133,6 +139,15 @@ impl OidcConfig {
 
     pub fn hub_url(&self, path: &str) -> String {
         format!("{}{}", self.hub_base_url.trim_end_matches('/'), path)
+    }
+
+    /// MAPPS-368: whether a real OIDC issuer is configured (runtime-injected
+    /// via `window.__MOKOSH_CONFIG__.oidc_issuer`, or `msp.<tld>`-host-derived).
+    /// When this is false the deployment has no bunyip OP, and the SPA falls
+    /// back to standalone username/password login against mokosh-server's
+    /// `/api/v1/auth/login` instead of redirecting to `/oauth2/authorize`.
+    pub fn has_issuer(&self) -> bool {
+        !self.issuer.trim().is_empty()
     }
 
     /// Resolve the redirect_uri. Falls back to `<origin>/auth/callback`

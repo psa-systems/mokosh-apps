@@ -773,6 +773,26 @@ pub mod api {
         handle_response(resp).await
     }
 
+    /// MAPPS-368: unauthed typed POST, for the standalone login form. Same as
+    /// [`post_authed_typed`] but sends no bearer (the user is not signed in
+    /// yet), so the caller can inspect `ApiError::Status { code, .. }` and map
+    /// 401 -> "invalid credentials" / 429 -> "too many attempts".
+    #[cfg(feature = "web")]
+    pub async fn post_typed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::post(&url)
+            .header("Content-Type", "application/json")
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
     #[cfg(feature = "web")]
     pub async fn put_authed_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,
