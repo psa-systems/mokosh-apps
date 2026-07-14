@@ -27,6 +27,10 @@ struct LoginBody {
     email: String,
     password: String,
     remember_me: bool,
+    /// MAPPS-368: the TOTP / recovery code, sent on the second step after a
+    /// first attempt reported `mfa_required`. Omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mfa_code: Option<String>,
 }
 
 /// The fields of mokosh-server's `LoginResponse` this SPA consumes. Unknown
@@ -52,6 +56,10 @@ pub fn StandaloneLogin() -> Element {
     let mut password = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-368: the TOTP field + prompt are revealed after the first attempt
+    // reports `mfa_required`; the second submit resends with the code.
+    let mut mfa_code = use_signal(String::new);
+    let mut mfa_needed = use_signal(|| false);
 
     let mut handle_submit = move |_| {
         if saving() {
@@ -63,6 +71,8 @@ pub fn StandaloneLogin() -> Element {
             error.set("Enter your email and password.".to_string());
             return;
         }
+        let code = mfa_code.read().trim().to_string();
+        let mfa = if code.is_empty() { None } else { Some(code) };
         saving.set(true);
         error.set(String::new());
 
@@ -74,15 +84,17 @@ pub fn StandaloneLogin() -> Element {
                     email: em.clone(),
                     password: pw.clone(),
                     remember_me: false,
+                    mfa_code: mfa.clone(),
                 };
                 match crate::hooks::fetch::api::post_typed::<LoginResp, _>("/auth/login", &body)
                     .await
                 {
+                    // MFA enrolled but no valid code yet: reveal the code field
+                    // and prompt. The next submit resends with `mfa_code`.
                     Ok(resp) if resp.mfa_required => {
-                        error.set(
-                            "Two-factor accounts must sign in through your identity provider."
-                                .to_string(),
-                        );
+                        mfa_needed.set(true);
+                        error
+                            .set("Enter the 6-digit code from your authenticator app.".to_string());
                     }
                     Ok(resp) => match resp.user {
                         Some(user) => {
@@ -132,7 +144,7 @@ pub fn StandaloneLogin() -> Element {
             }
             #[cfg(not(feature = "web"))]
             {
-                let _ = (em, pw);
+                let _ = (em, pw, mfa);
             }
             saving.set(false);
         });
@@ -180,6 +192,20 @@ pub fn StandaloneLogin() -> Element {
                                 error.set(String::new());
                                 password.set(e.value());
                             },
+                        }
+
+                        if mfa_needed() {
+                            Input {
+                                name: "mfa_code",
+                                label: "Authentication code",
+                                r#type: "text".to_string(),
+                                value: mfa_code(),
+                                disabled: saving(),
+                                oninput: move |e: FormEvent| {
+                                    error.set(String::new());
+                                    mfa_code.set(e.value());
+                                },
+                            }
                         }
 
                         if !error().is_empty() {

@@ -510,10 +510,25 @@ async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
     fn default_true_me() -> bool {
         true
     }
-    let me = match crate::hooks::fetch::api::get_authed::<MeBody>("/auth/me").await {
+    let me = match crate::hooks::fetch::api::get_authed_typed::<MeBody>("/auth/me").await {
         Ok(m) => m,
+        // MAPPS-368: a 401 with no refreshable token is an expired standalone
+        // session. The OIDC path renews via its refresh hook and keeps
+        // `tokens = Some`, so its 401s are handled there, not here. Standalone
+        // has no refresh, so clear the session and drop to unauthenticated;
+        // AuthGuard then routes to the login form, instead of leaving the app
+        // stuck "logged in" with a dead token that 401s every request.
+        Err(crate::hooks::fetch::api::ApiError::Status { code: 401, .. }) => {
+            let standalone_session = auth.read().tokens.is_none();
+            if standalone_session {
+                crate::modules::oidc::storage::clear_auth();
+                crate::hooks::fetch::api::set_access_token(None);
+                *auth.write() = AuthContext::default();
+            }
+            return;
+        }
         Err(e) => {
-            tracing::warn!("/api/v1/auth/me failed; keeping cached user: {e}");
+            tracing::warn!("/api/v1/auth/me failed; keeping cached user: {e:?}");
             return;
         }
     };
