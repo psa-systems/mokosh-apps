@@ -53,13 +53,25 @@ pub struct VersionPair {
 }
 
 impl VersionPair {
-    /// True when `latest` is known and differs from `running`. Both
-    /// sides have already been normalised by the deserialiser so a
-    /// plain string compare is correct.
+    /// True only when `latest` is a strictly newer release than
+    /// `running` by semver (major, minor, patch) ordering.
+    ///
+    /// Returns false when `latest` is equal, older, absent, or when
+    /// either side fails to parse. The previous implementation compared
+    /// the two strings for inequality, which had no direction and no
+    /// numeric ordering: a client bundle *ahead* of the server (e.g.
+    /// after a www-only patch hotfix, where mokosh-www is 0.7.1 while
+    /// mokosh-server is still 0.7.0) rendered a bogus "0.7.1 -> 0.7.0"
+    /// downgrade prompt, and multi-digit fields mis-ordered (`0.7.10`
+    /// sorts below `0.7.9` lexically). MAPPS-370.
     pub fn update_available(&self) -> bool {
-        self.latest
-            .as_ref()
-            .is_some_and(|latest| latest != &self.running)
+        match (
+            parse_semver(&self.running),
+            self.latest.as_deref().and_then(parse_semver),
+        ) {
+            (Some(running), Some(latest)) => latest > running,
+            _ => false,
+        }
     }
 }
 
@@ -108,6 +120,25 @@ fn normalise_semver(s: String) -> String {
     }
 }
 
+/// Parse a normalised `MAJOR.MINOR.PATCH` release string into a
+/// comparable tuple. Returns `None` unless it is exactly three
+/// dot-separated non-negative integers: our release tags are plain
+/// `X.Y.Z`, so anything else (two components, a git-describe suffix, a
+/// non-numeric field) is treated as unparseable, which
+/// [`VersionPair::update_available`] reads as "no update" rather than
+/// risking a wrong prompt. Input is already `v`-stripped by the
+/// deserialiser.
+fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = s.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
 fn deserialize_semver<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
@@ -139,24 +170,39 @@ mod tests {
     }
 
     #[test]
-    fn update_available_pure_equality() {
-        let pair = VersionPair {
-            running: "0.2.0".to_string(),
-            latest: Some("0.2.0".to_string()),
+    fn update_available_uses_semver_ordering() {
+        let pair = |running: &str, latest: Option<&str>| VersionPair {
+            running: running.to_string(),
+            latest: latest.map(str::to_string),
         };
-        assert!(!pair.update_available());
 
-        let pair = VersionPair {
-            running: "0.2.0".to_string(),
-            latest: Some("0.3.0".to_string()),
-        };
-        assert!(pair.update_available());
+        // Equal: no update.
+        assert!(!pair("0.2.0", Some("0.2.0")).update_available());
+        // Strictly newer latest: update.
+        assert!(pair("0.2.0", Some("0.3.0")).update_available());
+        // MAPPS-370: latest OLDER than running (client ahead of the
+        // server) must NOT prompt - this was the "0.7.1 -> 0.7.0"
+        // downgrade bug from the www-only patch hotfix.
+        assert!(!pair("0.7.1", Some("0.7.0")).update_available());
+        // Multi-digit ordering: 10 > 9 (string compare got this backwards).
+        assert!(pair("0.7.9", Some("0.7.10")).update_available());
+        assert!(!pair("0.7.10", Some("0.7.9")).update_available());
+        // Unknown latest: no update.
+        assert!(!pair("0.2.0", None).update_available());
+        // Unparseable either side: fail closed, no update.
+        assert!(!pair("0.2.0", Some("not-a-version")).update_available());
+        assert!(!pair("0.2", Some("0.3.0")).update_available());
+    }
 
-        let pair = VersionPair {
-            running: "0.2.0".to_string(),
-            latest: None,
-        };
-        assert!(!pair.update_available());
+    #[test]
+    fn parse_semver_accepts_plain_xyz_only() {
+        assert_eq!(parse_semver("0.7.10"), Some((0, 7, 10)));
+        assert_eq!(parse_semver("1.2.3"), Some((1, 2, 3)));
+        assert_eq!(parse_semver("0.7"), None); // too few components
+        assert_eq!(parse_semver("0.7.1.2"), None); // too many components
+        assert_eq!(parse_semver("0.7.x"), None); // non-numeric field
+        assert_eq!(parse_semver("v0.7.1"), None); // not yet v-stripped
+        assert_eq!(parse_semver(""), None);
     }
 
     #[test]
