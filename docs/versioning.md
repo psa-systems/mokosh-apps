@@ -81,10 +81,25 @@ pairs it with the SPA's own `CARGO_PKG_VERSION`:
 
 - `client.running` = the SPA bundle's `CARGO_PKG_VERSION`.
 - `client.latest` = the server's running version (the client and server
-  images are released together, so the server's version is the version
-  the matching client bundle should also be on).
-- When they differ, the banner tells the admin to bump the image
-  tag(s) in `compose.yml` and re-pull.
+  images normally release together, so the server's version is the
+  version the matching client bundle should also be on).
+- The banner compares `client.running` (bundle) against `client.latest`
+  (server) by semver (major, minor, patch) and shows one of two
+  messages:
+  - **Client behind** (`latest` strictly newer than `running`,
+    `update_available()`): the loaded bundle is stale (cached copy, or
+    the client image was not pulled). "Update available" prompts the
+    admin to bump the image tag(s) in `compose.yml` and re-pull.
+  - **Server behind** (`running` strictly newer than `latest`,
+    `running_ahead()`): the client bundle is *ahead* of the server,
+    e.g. after a www-only patch hotfix (mokosh-www 0.7.1 while
+    mokosh-server stays 0.7.0). "Server needs updating" prompts the
+    admin to upgrade the **server** image; it clears once the server
+    catches up.
+  Equal, unknown, or unparseable versions show nothing. Each side is
+  parsed to `(u64, u64, u64)` rather than string-compared, so
+  multi-digit fields order correctly (`0.7.10` > `0.7.9`) and an older
+  `latest` never triggers a backwards prompt. See MAPPS-370.
 
 The **target** of this comparison is the server named by
 `MOKOSH_API_BASE` (set per-container via
