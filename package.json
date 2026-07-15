@@ -1,6 +1,6 @@
 {
   "name": "mokosh-platform",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "private": true,
   "scripts": {
     "build:css": "bun x @tailwindcss/cli -i ./input.css -o ./assets/styles.css --minify",
