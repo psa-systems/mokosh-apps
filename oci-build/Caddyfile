@@ -30,17 +30,24 @@
         # start and are therefore unknown at build time. Hardcoding a strict
         # connect-src would break sign-in. The residual risk (a permissive
         # connect-src) was reviewed and risk-accepted in the 2026-06-25 security audit.
-        # MAPPS-338: full content CSP from runtime env. Caddy expands
-        # {$VAR:-default} at startup, so the value reflects MOKOSH_API_BASE
-        # / MOKOSH_OIDC_ISSUER without rebuilding the image. Both default
-        # to empty (covers dev + the host-prefix-derivation fallback the
-        # SPA carries); when empty the CSP collapses to `'self'` for that
-        # source, which is correct for the same-origin case. `'wasm-unsafe-eval'`
-        # is required because Dioxus boots through `WebAssembly.instantiate`
-        # in a code path Chromium's strict CSP enforces against;
-        # `'unsafe-inline'` on style-src covers Tailwind's small inline
-        # `style="..."` usages.
-        Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' {$MOKOSH_API_BASE:-} {$MOKOSH_OIDC_ISSUER:-}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+        # MAPPS-338 / MAPPS-369: full content CSP from runtime env. connect-src
+        # must allow the API and OIDC ORIGINS (scheme://host[:port]) so every
+        # sub-path matches; a source that carries a path (e.g. ".../api/v1") is
+        # a CSP exact-path match and would block every real API call. So
+        # entrypoint.sh derives MOKOSH_API_ORIGIN / MOKOSH_OIDC_ORIGIN from the
+        # operator's MOKOSH_API_BASE / MOKOSH_OIDC_ISSUER and exports them;
+        # Caddy expands `{$VAR:}` (empty default - note the single colon; `:-`
+        # would default to a literal "-") at config load. An empty origin drops
+        # out, leaving 'self' for the same-origin dev case (relative
+        # `/api/v1`). The canonical `msp.<tld>` deploy is cross-origin (SPA
+        # `msp.<tld>` calls API `api.msp.<tld>`), so it must set MOKOSH_API_BASE
+        # (its entrypoint does) for that origin to be allowed here; relying on
+        # the SPA's runtime host-prefix derivation alone would leave connect-src
+        # without the API origin. `'wasm-unsafe-eval'` is required because Dioxus boots through
+        # `WebAssembly.instantiate` in a code path Chromium's strict CSP
+        # enforces against; `'unsafe-inline'` on style-src covers Tailwind's
+        # small inline `style="..."` usages.
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' {$MOKOSH_API_ORIGIN:} {$MOKOSH_OIDC_ORIGIN:}; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
         X-Frame-Options "DENY"
         X-Content-Type-Options "nosniff"
         Referrer-Policy "strict-origin-when-cross-origin"
