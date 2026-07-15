@@ -253,7 +253,18 @@ create-release bump:
     let new_version_line = $"version = \"($bare)\""
     open --raw Cargo.toml | str replace $old_version_line $new_version_line | save --force Cargo.toml
     open package.json | update version $bare | save --force package.json
-    git add Cargo.toml package.json
+    # MAPPS-371 (ports PMS-642): sync Cargo.lock to the bumped version so the
+    # lock never drifts from Cargo.toml. Without this a `--locked` build fails,
+    # every subsequent build re-dirties the lock (masking real lock changes in
+    # diffs), and the dirty tree aborts the next `create-release`. Dev boxes
+    # have no host cargo, so run the one cargo step in the rust-builder image
+    # (the same invocation the `pre-commit` recipe uses). `--workspace` limits
+    # the change to the workspace members' own versions - no transitive churn.
+    let img = "{{ dev_image }}"
+    let user_name = (^whoami | str trim)
+    let target_vol = $"dev-mokosh-apps-target-($user_name)"
+    ^docker run --rm --volume $"($env.PWD):/build" --workdir /build --volume $"($target_vol):/cargo-target" --env CARGO_TARGET_DIR=/cargo-target --volume dev-mokosh-apps-cargo-registry:/usr/local/cargo/registry $img cargo update --workspace
+    git add Cargo.toml package.json Cargo.lock
     git commit --signoff --message $"Release ($tag)"
 
     # Push release branch
