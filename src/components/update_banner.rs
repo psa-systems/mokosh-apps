@@ -138,7 +138,8 @@ pub fn UpdateBanner() -> Element {
     }
 
     let derive_state = |v: &SystemVersion| -> BannerState {
-        let has_update = v.server.update_available() || v.client.update_available();
+        let has_update =
+            v.server.update_available() || v.client.update_available() || v.client.running_ahead();
         let dismissed = *dismissed_local.read() || is_dismissed(&dismissal_key(v));
         if has_update && !dismissed {
             BannerState::Show(v.clone())
@@ -177,14 +178,18 @@ pub fn UpdateBanner() -> Element {
             // animates; `overflow-hidden` clips its content as it collapses.
             div { class: "overflow-hidden",
                 {match state {
-                    // `VersionPair::update_available()` only returns true
-                    // when `latest` is `Some`, so the unwraps here are
-                    // unreachable; they avoid carrying owned `String`s
-                    // into the rsx! closures just to please the borrow
-                    // checker.
+                    // `update_available()` / `running_ahead()` both only
+                    // return true when `latest` is `Some` and parses, so the
+                    // unwraps here are unreachable; they avoid carrying owned
+                    // `String`s into the rsx! closures just to please the
+                    // borrow checker.
                     BannerState::Show(v) => {
                         let server_update = v.server.update_available();
                         let client_update = v.client.update_available();
+                        // MAPPS-370: the loaded client bundle is newer than the
+                        // server it talks to, so the server image lags. Distinct
+                        // message and remediation from the client-stale case.
+                        let server_behind = v.client.running_ahead();
                         let client_running = v.client.running.clone();
                         let client_latest =
                             v.client.latest.clone().unwrap_or_else(|| "unknown".to_string());
@@ -198,20 +203,33 @@ pub fn UpdateBanner() -> Element {
                                 div {
                                     class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex items-center justify-between gap-4 text-sm",
                                     div { class: "flex-1",
-                                        span { class: "font-medium", "Update available." }
-                                        " "
-                                        if client_update {
-                                            span { "Client: {client_running} → {client_latest}. " }
-                                        }
-                                        if server_update {
-                                            span { "Server: {server_running} → {server_latest}. " }
-                                        }
-                                        span { class: "text-amber-700 dark:text-amber-300",
-                                            "Bump the tag(s) in your compose.yml and run "
-                                            code { class: "px-1 py-0.5 bg-amber-100 dark:bg-amber-900/50 rounded text-xs",
-                                                "docker compose pull && docker compose up --detach"
+                                        if client_update || server_update {
+                                            span { class: "font-medium", "Update available." }
+                                            " "
+                                            if client_update {
+                                                span { "Client: {client_running} → {client_latest}. " }
                                             }
-                                            " on the host to apply."
+                                            if server_update {
+                                                span { "Server: {server_running} → {server_latest}. " }
+                                            }
+                                            span { class: "text-amber-700 dark:text-amber-300",
+                                                "Bump the tag(s) in your compose.yml and run "
+                                                code { class: "px-1 py-0.5 bg-amber-100 dark:bg-amber-900/50 rounded text-xs",
+                                                    "docker compose pull && docker compose up --detach"
+                                                }
+                                                " on the host to apply."
+                                            }
+                                        } else if server_behind {
+                                            span { class: "font-medium", "Server needs updating." }
+                                            " "
+                                            span { "The client bundle ({client_running}) is newer than the server ({client_latest}). " }
+                                            span { class: "text-amber-700 dark:text-amber-300",
+                                                "Upgrade the server image: bump its tag in your compose.yml and run "
+                                                code { class: "px-1 py-0.5 bg-amber-100 dark:bg-amber-900/50 rounded text-xs",
+                                                    "docker compose pull && docker compose up --detach"
+                                                }
+                                                " on the host."
+                                            }
                                         }
                                     }
                                     button {

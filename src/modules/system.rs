@@ -73,6 +73,23 @@ impl VersionPair {
             _ => false,
         }
     }
+
+    /// True only when `running` is a strictly newer release than
+    /// `latest` - the inverse of [`update_available`]. For the client
+    /// pair this means the loaded bundle is ahead of the server it is
+    /// talking to: the server image lags and should be upgraded. Same
+    /// parse / fail-closed rules as `update_available` (equal, absent,
+    /// or unparseable -> false), so the two are mutually exclusive.
+    /// MAPPS-370.
+    pub fn running_ahead(&self) -> bool {
+        match (
+            parse_semver(&self.running),
+            self.latest.as_deref().and_then(parse_semver),
+        ) {
+            (Some(running), Some(latest)) => running > latest,
+            _ => false,
+        }
+    }
 }
 
 /// Full "what's running vs what's available" picture, assembled by
@@ -192,6 +209,32 @@ mod tests {
         // Unparseable either side: fail closed, no update.
         assert!(!pair("0.2.0", Some("not-a-version")).update_available());
         assert!(!pair("0.2", Some("0.3.0")).update_available());
+    }
+
+    #[test]
+    fn running_ahead_detects_bundle_newer_than_server() {
+        let pair = |running: &str, latest: Option<&str>| VersionPair {
+            running: running.to_string(),
+            latest: latest.map(str::to_string),
+        };
+
+        // Bundle newer than the server it talks to (server behind): true.
+        assert!(pair("0.7.1", Some("0.7.0")).running_ahead());
+        // Bundle older (client behind): false.
+        assert!(!pair("0.7.0", Some("0.7.1")).running_ahead());
+        // Equal: false.
+        assert!(!pair("0.7.0", Some("0.7.0")).running_ahead());
+        // Multi-digit ordering: 0.7.10 is ahead of 0.7.9.
+        assert!(pair("0.7.10", Some("0.7.9")).running_ahead());
+        // Unknown / malformed latest: fail closed.
+        assert!(!pair("0.7.1", None).running_ahead());
+        assert!(!pair("0.7.1", Some("not-a-version")).running_ahead());
+
+        // `running_ahead` and `update_available` are mutually exclusive.
+        let server_behind = pair("0.7.1", Some("0.7.0"));
+        assert!(server_behind.running_ahead() && !server_behind.update_available());
+        let client_behind = pair("0.7.0", Some("0.7.1"));
+        assert!(client_behind.update_available() && !client_behind.running_ahead());
     }
 
     #[test]
