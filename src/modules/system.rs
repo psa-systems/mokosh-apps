@@ -53,40 +53,37 @@ pub struct VersionPair {
 }
 
 impl VersionPair {
-    /// True only when `latest` is a strictly newer release than
-    /// `running` by semver (major, minor, patch) ordering.
+    /// True only when `latest` is a newer **release line** than `running`
+    /// - a strictly greater `(major, minor)`, patch ignored.
     ///
-    /// Returns false when `latest` is equal, older, absent, or when
-    /// either side fails to parse. The previous implementation compared
-    /// the two strings for inequality, which had no direction and no
-    /// numeric ordering: a client bundle *ahead* of the server (e.g.
-    /// after a www-only patch hotfix, where mokosh-www is 0.7.1 while
-    /// mokosh-server is still 0.7.0) rendered a bogus "0.7.1 -> 0.7.0"
-    /// downgrade prompt, and multi-digit fields mis-ordered (`0.7.10`
-    /// sorts below `0.7.9` lexically). MAPPS-370.
+    /// Skew is judged at minor granularity because mokosh-www and
+    /// mokosh-server ship patch hotfixes independently (a www-only 0.7.2
+    /// against a 0.7.0 API is expected and fine), so only a differing
+    /// major/minor is a real mismatch. Returns false when the two share a
+    /// release line (any patch delta), when `latest` is older, absent, or
+    /// when either side fails to parse. MAPPS-370, MAPPS-372.
     pub fn update_available(&self) -> bool {
         match (
             parse_semver(&self.running),
             self.latest.as_deref().and_then(parse_semver),
         ) {
-            (Some(running), Some(latest)) => latest > running,
+            (Some(running), Some(latest)) => major_minor(latest) > major_minor(running),
             _ => false,
         }
     }
 
-    /// True only when `running` is a strictly newer release than
-    /// `latest` - the inverse of [`update_available`]. For the client
-    /// pair this means the loaded bundle is ahead of the server it is
-    /// talking to: the server image lags and should be upgraded. Same
-    /// parse / fail-closed rules as `update_available` (equal, absent,
-    /// or unparseable -> false), so the two are mutually exclusive.
-    /// MAPPS-370.
+    /// True only when `running` is a newer release line than `latest`
+    /// (strictly greater `(major, minor)`, patch ignored) - the inverse of
+    /// [`update_available`]. For the client pair this means the loaded
+    /// bundle is a minor ahead of the server it talks to: the server image
+    /// lags and should be upgraded. Same minor-granularity, fail-closed
+    /// rules, so the two are mutually exclusive. MAPPS-370, MAPPS-372.
     pub fn running_ahead(&self) -> bool {
         match (
             parse_semver(&self.running),
             self.latest.as_deref().and_then(parse_semver),
         ) {
-            (Some(running), Some(latest)) => running > latest,
+            (Some(running), Some(latest)) => major_minor(running) > major_minor(latest),
             _ => false,
         }
     }
@@ -116,10 +113,11 @@ pub async fn get_version() -> Result<SystemVersion, String> {
             running: server_running.clone(),
             latest: None,
         },
-        // The matching client bundle should be on the same version the
-        // server runs (the two images are released together), so treat
-        // the server's version as the client's "latest": a bundle that
-        // differs is stale and flags an update.
+        // The matching client bundle tracks the server's minor release
+        // line (the two share a major.minor; patch hotfixes ship
+        // independently), so treat the server's version as the client's
+        // "latest": a bundle on an older minor is stale and flags an
+        // update. MAPPS-372.
         client: VersionPair {
             running: env!("CARGO_PKG_VERSION").to_string(),
             latest: Some(server_running),
@@ -156,6 +154,14 @@ fn parse_semver(s: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
+/// The `(major, minor)` release line of a parsed semver. Skew between the API
+/// and the SPA is judged at this granularity: the two images ship patch
+/// hotfixes independently, so a differing patch is not a mismatch - only a
+/// differing major/minor is. MAPPS-372.
+fn major_minor((major, minor, _patch): (u64, u64, u64)) -> (u64, u64) {
+    (major, minor)
+}
+
 fn deserialize_semver<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
@@ -187,54 +193,60 @@ mod tests {
     }
 
     #[test]
-    fn update_available_uses_semver_ordering() {
+    fn update_available_uses_minor_ordering() {
         let pair = |running: &str, latest: Option<&str>| VersionPair {
             running: running.to_string(),
             latest: latest.map(str::to_string),
         };
 
-        // Equal: no update.
-        assert!(!pair("0.2.0", Some("0.2.0")).update_available());
-        // Strictly newer latest: update.
-        assert!(pair("0.2.0", Some("0.3.0")).update_available());
-        // MAPPS-370: latest OLDER than running (client ahead of the
-        // server) must NOT prompt - this was the "0.7.1 -> 0.7.0"
-        // downgrade bug from the www-only patch hotfix.
-        assert!(!pair("0.7.1", Some("0.7.0")).update_available());
-        // Multi-digit ordering: 10 > 9 (string compare got this backwards).
-        assert!(pair("0.7.9", Some("0.7.10")).update_available());
-        assert!(!pair("0.7.10", Some("0.7.9")).update_available());
-        // Unknown latest: no update.
+        // Same release line, any patch delta in either direction: no update.
+        assert!(!pair("0.7.0", Some("0.7.0")).update_available());
+        assert!(!pair("0.7.0", Some("0.7.9")).update_available());
+        // MAPPS-372: a patch-newer server is not an update (a 0.7.2 client on a
+        // 0.7.0 API is the same 0.7 line).
+        assert!(!pair("0.7.2", Some("0.7.0")).update_available());
+        // Newer minor on the server: client behind -> update.
+        assert!(pair("0.7.5", Some("0.8.0")).update_available());
+        // Older minor on the server: not an update (that is server-behind).
+        assert!(!pair("0.8.0", Some("0.7.9")).update_available());
+        // Multi-digit minor orders numerically: 0.10 > 0.7.
+        assert!(pair("0.7.0", Some("0.10.0")).update_available());
+        // Unknown latest / unparseable either side: fail closed, no update.
         assert!(!pair("0.2.0", None).update_available());
-        // Unparseable either side: fail closed, no update.
         assert!(!pair("0.2.0", Some("not-a-version")).update_available());
         assert!(!pair("0.2", Some("0.3.0")).update_available());
     }
 
     #[test]
-    fn running_ahead_detects_bundle_newer_than_server() {
+    fn running_ahead_detects_minor_ahead_of_server() {
         let pair = |running: &str, latest: Option<&str>| VersionPair {
             running: running.to_string(),
             latest: latest.map(str::to_string),
         };
 
-        // Bundle newer than the server it talks to (server behind): true.
-        assert!(pair("0.7.1", Some("0.7.0")).running_ahead());
-        // Bundle older (client behind): false.
-        assert!(!pair("0.7.0", Some("0.7.1")).running_ahead());
-        // Equal: false.
+        // Bundle a minor ahead of the server (server behind): true.
+        assert!(pair("0.8.0", Some("0.7.0")).running_ahead());
+        // Multi-digit minor orders numerically (0.10 > 0.7).
+        assert!(pair("0.10.0", Some("0.7.9")).running_ahead());
+        // MAPPS-372: a patch ahead within the same minor is NOT server-behind
+        // (a 0.7.2 client on a 0.7.0 API is fine).
+        assert!(!pair("0.7.2", Some("0.7.0")).running_ahead());
+        assert!(!pair("0.7.10", Some("0.7.9")).running_ahead());
+        // Bundle on an older or equal minor: false.
+        assert!(!pair("0.7.0", Some("0.8.0")).running_ahead());
         assert!(!pair("0.7.0", Some("0.7.0")).running_ahead());
-        // Multi-digit ordering: 0.7.10 is ahead of 0.7.9.
-        assert!(pair("0.7.10", Some("0.7.9")).running_ahead());
         // Unknown / malformed latest: fail closed.
-        assert!(!pair("0.7.1", None).running_ahead());
-        assert!(!pair("0.7.1", Some("not-a-version")).running_ahead());
+        assert!(!pair("0.8.0", None).running_ahead());
+        assert!(!pair("0.8.0", Some("not-a-version")).running_ahead());
 
-        // `running_ahead` and `update_available` are mutually exclusive.
-        let server_behind = pair("0.7.1", Some("0.7.0"));
+        // `running_ahead` and `update_available` are mutually exclusive, and a
+        // same-minor patch delta triggers neither.
+        let server_behind = pair("0.8.0", Some("0.7.0"));
         assert!(server_behind.running_ahead() && !server_behind.update_available());
-        let client_behind = pair("0.7.0", Some("0.7.1"));
+        let client_behind = pair("0.7.0", Some("0.8.0"));
         assert!(client_behind.update_available() && !client_behind.running_ahead());
+        let same_line = pair("0.7.2", Some("0.7.0"));
+        assert!(!same_line.running_ahead() && !same_line.update_available());
     }
 
     #[test]
