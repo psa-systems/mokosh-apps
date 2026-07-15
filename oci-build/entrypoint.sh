@@ -40,6 +40,25 @@ emit_field() {
     fi
 }
 
+# MAPPS-369: reduce a URL to its origin (scheme://host[:port]), dropping any
+# path/query. The Caddy CSP connect-src must be origin-scoped: a source that
+# keeps a path (e.g. ".../api/v1") is an exact-path match and blocks every API
+# sub-path (/api/v1/auth/login, ...). A relative or empty value yields empty -
+# the request is same-origin and already covered by connect-src 'self'.
+origin_of() {
+    case "$1" in
+        *://*)
+            scheme=${1%%://*}
+            rest=${1#*://}
+            printf '%s://%s' "$scheme" "${rest%%/*}"
+            ;;
+        *)
+            # relative path or empty: same-origin, 'self' covers it
+            :
+            ;;
+    esac
+}
+
 if ! {
     echo "// Generated at container start by oci-build/entrypoint.sh."
     echo "// Operators override these via env vars on the mokosh-www container."
@@ -87,5 +106,12 @@ if ! grep -q -F "$INCLUDE_TAG" "$INDEX"; then
         echo "[entrypoint] WARN: could not patch ${INDEX} (read-only fs?); SPA will fall back to compile-time config" >&2
     fi
 fi
+
+# MAPPS-369: derive origin-scoped CSP sources from the operator-facing base
+# URLs and export them so the Caddyfile's connect-src (read by the `caddy run`
+# exec'd below) allows the API / OIDC origins without their paths.
+MOKOSH_API_ORIGIN="$(origin_of "${MOKOSH_API_BASE:-}")"
+MOKOSH_OIDC_ORIGIN="$(origin_of "${MOKOSH_OIDC_ISSUER:-}")"
+export MOKOSH_API_ORIGIN MOKOSH_OIDC_ORIGIN
 
 exec "$@"
