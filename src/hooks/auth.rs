@@ -405,6 +405,100 @@ pub fn use_token_refresh() {
     });
 }
 
+/// MAPPS-374: silent refresh for STANDALONE (non-OIDC) sessions - the mirror of
+/// [`use_token_refresh`] for the legacy mokosh-server email+password path.
+/// Standalone sessions live in sessionStorage under `STANDALONE_KEY` with
+/// `AuthContext.tokens = None`, so the OIDC loop above skips them (its snapshot
+/// short-circuits on `tokens = None`). Without this loop the ~1h standalone
+/// access token simply expired and the next 401 dropped the user to /login
+/// (MAPPS-368). Mounted once at the app root alongside [`use_token_refresh`].
+///
+/// Each tick reloads the persisted session (so a login or logout in this tab is
+/// picked up) and, once the access token is within 60s of expiry, rotates it via
+/// `POST /api/v1/auth/refresh`, persisting the new tokens back to sessionStorage
+/// and the fetch access-token holder. On any refresh failure the session is
+/// cleared and the browser is sent to /login, matching the OIDC error branch and
+/// the MAPPS-368 standalone-401 clear.
+pub fn use_standalone_token_refresh() {
+    let mut auth = use_auth();
+
+    use_future(move || async move {
+        loop {
+            #[cfg(feature = "web")]
+            gloo_timers::future::TimeoutFuture::new(30_000).await;
+
+            // Reload the persisted session each tick so a login or logout in
+            // this tab is seen. No standalone session -> nothing to do (the OIDC
+            // loop above owns OIDC sessions).
+            let session = match crate::modules::oidc::storage::load_standalone() {
+                Some(s) => s,
+                None => continue,
+            };
+            // A standalone session with no refresh token cannot be renewed;
+            // leave it to expire rather than spin on it every tick.
+            let refresh = match session.refresh_token.clone() {
+                Some(rt) => rt,
+                None => continue,
+            };
+
+            // Refresh window: 60s before expiry. If a backgrounded tab sailed
+            // past it (throttled timers), refresh now - same policy as the OIDC
+            // loop above.
+            let now = chrono::Utc::now();
+            if session.expires_at - now > chrono::Duration::seconds(60) {
+                continue;
+            }
+
+            #[derive(serde::Serialize)]
+            struct RefreshReq {
+                refresh_token: String,
+            }
+            #[derive(serde::Deserialize)]
+            struct RefreshResp {
+                access_token: String,
+                refresh_token: String,
+                expires_at: chrono::DateTime<chrono::Utc>,
+            }
+
+            match crate::hooks::fetch::api::post_typed::<RefreshResp, _>(
+                "/auth/refresh",
+                &RefreshReq {
+                    refresh_token: refresh,
+                },
+            )
+            .await
+            {
+                Ok(resp) => {
+                    crate::hooks::fetch::api::set_access_token(Some(resp.access_token.clone()));
+                    crate::modules::oidc::storage::save_standalone(
+                        &crate::modules::oidc::storage::StandaloneSession {
+                            access_token: resp.access_token,
+                            refresh_token: Some(resp.refresh_token),
+                            expires_at: resp.expires_at,
+                            user: session.user,
+                        },
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("standalone token refresh failed; signing out: {e:?}");
+                    {
+                        let mut a = auth.write();
+                        a.user = None;
+                        a.tokens = None;
+                    }
+                    crate::modules::oidc::storage::clear_standalone();
+                    crate::hooks::fetch::api::set_access_token(None);
+                    // Hard redirect (mirrors use_token_refresh): this hook is
+                    // mounted above the Router, so use_navigator is unavailable.
+                    if let Some(win) = web_sys::window() {
+                        let _ = win.location().set_href("/login");
+                    }
+                }
+            }
+        }
+    });
+}
+
 /// MAPPS-355: proactive auth heartbeat. Mount once at the app root
 /// (alongside [`use_token_refresh`]). Every 30 seconds while the user is
 /// signed in AND the tab is visible AND the account is not already flagged

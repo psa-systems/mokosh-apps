@@ -5,7 +5,8 @@ use mokosh_apps::hooks::{
     use_apply_theme, use_auth_heartbeat, use_auth_provider, use_bfcache_invalidator,
     use_current_user_loader, use_memberships_loader, use_server_status_monitor,
     use_sidebar_collapsed_provider, use_sidebar_provider, use_sidebar_scroll_provider,
-    use_theme_sync, use_token_refresh, use_update_check, use_version_cache_provider,
+    use_standalone_token_refresh, use_theme_sync, use_token_refresh, use_update_check,
+    use_version_cache_provider,
 };
 use mokosh_apps::Route;
 
@@ -52,6 +53,10 @@ fn App() -> Element {
     // the user is not signed in. Mounted once at the app root so it
     // keeps running across navigations.
     use_token_refresh();
+    // MAPPS-374: the standalone (legacy email+password) twin of the loop above.
+    // Keeps a standalone session alive past its ~1h access-token expiry via
+    // POST /api/v1/auth/refresh; no-op for OIDC sessions.
+    use_standalone_token_refresh();
     // MAPPS-355: proactive 30s /auth/me heartbeat. On a 410
     // (ACCOUNT_DELETED) from mokosh-server the shared fetch layer flips
     // the ACCOUNT_DELETED GlobalSignal and the terminal overlay pops
