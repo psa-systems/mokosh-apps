@@ -371,6 +371,19 @@ pub enum Route {
     BigCalendar {},
 
     // Contracts
+    // Quotes (PMS-675): the sales document that precedes a Project.
+    #[route("/quotes")]
+    QuoteList {},
+
+    #[route("/quotes/new")]
+    QuoteNew {},
+
+    #[route("/quotes/:id")]
+    QuoteDetail { id: String },
+
+    #[route("/quotes/:id/edit")]
+    QuoteEdit { id: String },
+
     #[route("/contracts")]
     ContractList {},
 
@@ -586,6 +599,12 @@ pub enum Route {
 
     #[route("/portal/tickets/:id")]
     PortalTicketDetail { id: String },
+
+    #[route("/portal/quotes")]
+    PortalQuoteList {},
+
+    #[route("/portal/quotes/:id")]
+    PortalQuoteDetail { id: String },
 
     #[route("/portal/invoices")]
     PortalInvoiceList {},
@@ -854,6 +873,26 @@ fn BigDispatch() -> Element {
 #[component]
 fn BigCalendar() -> Element {
     rsx! { big_view::BigCalendarPage {} }
+}
+
+#[component]
+fn QuoteList() -> Element {
+    rsx! { quotes::QuoteListPage {} }
+}
+
+#[component]
+fn QuoteNew() -> Element {
+    rsx! { quotes::QuoteNewPage {} }
+}
+
+#[component]
+fn QuoteDetail(id: String) -> Element {
+    rsx! { quotes::QuoteDetailPage { id } }
+}
+
+#[component]
+fn QuoteEdit(id: String) -> Element {
+    rsx! { quotes::QuoteEditPage { id } }
 }
 
 #[component]
@@ -1184,6 +1223,16 @@ fn PortalTicketNew() -> Element {
 #[component]
 fn PortalTicketDetail(id: String) -> Element {
     rsx! { portal::PortalTicketDetailPage { id } }
+}
+
+#[component]
+fn PortalQuoteList() -> Element {
+    rsx! { portal::PortalQuoteListPage {} }
+}
+
+#[component]
+fn PortalQuoteDetail(id: String) -> Element {
+    rsx! { portal::PortalQuoteDetailPage { id } }
 }
 
 #[component]

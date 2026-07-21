@@ -2197,7 +2197,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     // component owns its own fetch, modal state, and refresh
                     // cycle; rendered above the activity timeline so the
                     // open approval requests are immediately visible.
-                    ApprovalsSection { ticket_id: props.id.clone() }
+                    ApprovalsSection { entity_id: props.id.clone() }
 
                     // Activity timeline (real ticket notes; there is no audit
                     // feed yet, so status / assignment events do not appear).
@@ -2998,9 +2998,20 @@ struct UserPickerRow {
     email: String,
 }
 
+/// PMS-675: the approvals surface is polymorphic server-side
+/// (`target` = ticket | change_request | quote | time_entry), so this
+/// section is parameterised by entity rather than forked per entity.
+/// The defaults keep it a drop-in for its original ticket call site.
 #[derive(Props, Clone, PartialEq)]
 pub struct ApprovalsSectionProps {
-    pub ticket_id: String,
+    /// The parent entity's id.
+    pub entity_id: String,
+    /// URL segment the approvals hang off: `tickets`, `quotes`, ...
+    #[props(default = "tickets".to_string())]
+    pub entity_segment: String,
+    /// Noun used in the empty / error copy ("this ticket", "this quote").
+    #[props(default = "ticket".to_string())]
+    pub entity_noun: String,
 }
 
 #[component]
@@ -3013,14 +3024,16 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
     let mut request_submitting = use_signal(|| false);
     let mut request_error = use_signal(String::new);
 
-    let id_for_list = props.ticket_id.clone();
+    let id_for_list = props.entity_id.clone();
+    let segment_for_list = props.entity_segment.clone();
     let approvals_resource = use_resource(move || {
         let id = id_for_list.clone();
+        let segment = segment_for_list.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let _v = version.read();
             crate::hooks::fetch::api::get_authed::<Vec<TicketApprovalRow>>(&format!(
-                "/tickets/{id}/approvals"
+                "/{segment}/{id}/approvals"
             ))
             .await
             .ok()
@@ -3052,7 +3065,8 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
     // a request cannot silently fail.
     let can_mutate = crate::hooks::use_can_mutate();
 
-    let ticket_for_submit = props.ticket_id.clone();
+    let ticket_for_submit = props.entity_id.clone();
+    let segment_for_submit = props.entity_segment.clone();
     let on_submit = move |_| {
         let user_id = approver_user_id.read().trim().to_string();
         let role = approver_role.read().trim().to_string();
@@ -3075,6 +3089,10 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
             return;
         }
         let ticket = ticket_for_submit.clone();
+        // Cloned per invocation, like `ticket` above: the closure is an
+        // `onclick` handler and must stay `FnMut`, so it cannot move the
+        // captured segment out of itself.
+        let segment = segment_for_submit.clone();
         request_submitting.set(true);
         request_error.set(String::new());
         spawn(async move {
@@ -3095,7 +3113,7 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
             }
             let json = serde_json::Value::Object(body);
             match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
-                &format!("/tickets/{ticket}/approvals"),
+                &format!("/{segment}/{ticket}/approvals"),
                 &json,
             )
             .await
@@ -3144,9 +3162,9 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
             if loading {
                 p { class: "text-sm text-subtle italic", "Loading approvals..." }
             } else if fetch_failed {
-                p { class: "text-sm text-red-600 dark:text-red-300", "Could not load approvals for this ticket." }
+                p { class: "text-sm text-red-600 dark:text-red-300", "Could not load approvals for this {props.entity_noun}." }
             } else if rows.is_empty() {
-                p { class: "text-sm text-subtle italic", "No approvals requested on this ticket yet." }
+                p { class: "text-sm text-subtle italic", "No approvals requested on this {props.entity_noun} yet." }
             } else {
                 ul { class: "space-y-3",
                     for row in rows.iter().cloned() {

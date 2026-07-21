@@ -377,6 +377,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
 
             NavSection { title: "Contracts & Billing", rail_collapsed: collapsed, color: SectionColor::Amber,
                 NavItem { to: Route::ContractList {}, icon: rsx!(ScaleIcon {}), label: "Contracts", collapsed }
+                NavItem { to: Route::QuoteList {}, icon: rsx!(DocumentIcon {}), label: "Quotes", collapsed }
                 NavItem { to: Route::RateCardList {}, icon: rsx!(TagIcon {}), label: "Rate Cards", collapsed }
                 NavItem { to: Route::InvoiceList {}, icon: rsx!(CurrencyIcon {}), label: "Invoices", collapsed }
                 NavItem { to: Route::PaymentList {}, icon: rsx!(CreditCardIcon {}), label: "Payments", collapsed }
@@ -561,6 +562,10 @@ fn section_route(route: &Route) -> Route {
         Route::CompanyDetail { .. } => Route::CompanyList {},
         Route::ContactDetail { .. } => Route::ContactList {},
         Route::ContractDetail { .. } => Route::ContractList {},
+        // Quote detail / editor keep the Quotes item highlighted.
+        Route::QuoteDetail { .. } => Route::QuoteList {},
+        Route::QuoteEdit { .. } => Route::QuoteList {},
+        Route::QuoteNew { .. } => Route::QuoteList {},
         Route::RateCardDetail { .. } => Route::RateCardList {},
         // `/rate-cards/new` renders the list page with the create modal open,
         // so it stays under the Rate Cards section (MAPPS-217).
