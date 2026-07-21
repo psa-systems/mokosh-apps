@@ -8,6 +8,7 @@ pub mod contacts;
 pub mod contracts;
 pub mod kb;
 pub mod oidc;
+pub mod quotes;
 pub mod runtime_config;
 pub mod sla;
 pub mod system;
