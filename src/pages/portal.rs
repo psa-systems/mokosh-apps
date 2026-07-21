@@ -1108,3 +1108,357 @@ fn PortalArticleItem(props: PortalArticleItemProps) -> Element {
         }
     }
 }
+
+// ============================================================================
+// PMS-675: client quote sign-off.
+//
+// The client-facing half of the PMS-673 flow. Reads are already scoped
+// server-side to the signed-in contact's company and to quotes that were
+// actually issued, so this surface does no filtering of its own; anything
+// it can fetch, it is allowed to show.
+// ============================================================================
+
+use crate::modules::quotes::{status as quote_status, PortalQuoteDecisionRequest, QuoteResponse};
+use crate::utils::money::format_money;
+use crate::utils::Paginated;
+
+/// Colour for a client-facing quote status. Narrower than the staff
+/// palette because the internal states never reach the portal.
+fn portal_quote_variant(status: &str) -> BadgeVariant {
+    match status {
+        "sent" => BadgeVariant::Orange,
+        "accepted" => BadgeVariant::Green,
+        "declined" => BadgeVariant::Red,
+        "expired" => BadgeVariant::Gray,
+        "converted" => BadgeVariant::Purple,
+        _ => BadgeVariant::Gray,
+    }
+}
+
+#[component]
+pub fn PortalQuoteListPage() -> Element {
+    let quotes_resource = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _reachable = crate::hooks::use_server_reachable();
+        crate::hooks::fetch::api::get_authed::<Paginated<QuoteResponse>>(
+            "/portal/quotes?page=1&per_page=50",
+        )
+        .await
+        .ok()
+    });
+
+    let snap = quotes_resource.read_unchecked();
+    let loading = snap.is_none();
+    let fetch_failed = matches!(*snap, Some(None));
+    let rows: Vec<QuoteResponse> = match &*snap {
+        Some(Some(resp)) => resp.data.clone(),
+        _ => Vec::new(),
+    };
+
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
+        return rsx! { PortalUnavailable { title: "Quotes".to_string() } };
+    }
+
+    rsx! {
+        PortalLayout { title: "Quotes",
+            div { class: "mb-6",
+                h1 { class: "text-2xl font-semibold text-content", "Quotes" }
+                p { class: "text-sm text-subtle mt-1",
+                    "Quotes we have sent you, and what you decided."
+                }
+            }
+
+            if fetch_failed {
+                Card {
+                    p { class: "text-sm text-red-600 dark:text-red-300",
+                        "Could not load your quotes. Refresh the page to retry."
+                    }
+                }
+            } else if loading {
+                Card { p { class: "text-sm text-subtle italic", "Loading quotes..." } }
+            } else if rows.is_empty() {
+                Card {
+                    p { class: "text-sm text-subtle italic",
+                        "You have no quotes yet. When we send one, it will appear here."
+                    }
+                }
+            } else {
+                Card {
+                    Table {
+                        TableHead {
+                            TableRow {
+                                TableHeader { "Quote" }
+                                TableHeader { "Total" }
+                                TableHeader { "Valid until" }
+                                TableHeader { "Status" }
+                            }
+                        }
+                        TableBody {
+                            for quote in rows.iter().cloned() {
+                                TableRow { key: "{quote.id}",
+                                    TableCell {
+                                        Link {
+                                            to: Route::PortalQuoteDetail { id: quote.id.to_string() },
+                                            class: "text-accent hover:opacity-90",
+                                            "{quote.quote_number.clone().unwrap_or_else(|| \"Quote\".to_string())}"
+                                        }
+                                        div { class: "text-xs text-subtle", "{quote.title}" }
+                                    }
+                                    TableCell { class: "font-medium", "{format_money(quote.total)}" }
+                                    TableCell {
+                                        "{quote.valid_until.map(|d| d.format(\"%b %-d, %Y\").to_string()).unwrap_or_else(|| \"No expiry\".to_string())}"
+                                    }
+                                    TableCell {
+                                        Badge { variant: portal_quote_variant(&quote.status),
+                                            "{quote_status::label(&quote.status)}"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+pub struct PortalQuoteDetailPageProps {
+    pub id: String,
+}
+
+#[component]
+pub fn PortalQuoteDetailPage(props: PortalQuoteDetailPageProps) -> Element {
+    let mut version = use_signal(|| 0u32);
+    let mut notes = use_signal(String::new);
+    let mut error = use_signal(String::new);
+    let mut submitting = use_signal(|| false);
+    // Accepting is a commercial commitment the client cannot take back
+    // from here, so it goes through an explicit confirm step rather than
+    // firing on the first click.
+    let mut confirming = use_signal(|| Option::<bool>::None);
+
+    let id_for_resource = props.id.clone();
+    let quote_resource = use_resource(move || {
+        let id = id_for_resource.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
+            let _v = version.read();
+            crate::hooks::fetch::api::get_authed::<QuoteResponse>(&format!("/portal/quotes/{id}"))
+                .await
+                .ok()
+        }
+    });
+
+    let snap = quote_resource.read_unchecked();
+    let loading = snap.is_none();
+    let fetch_failed = matches!(*snap, Some(None));
+    let quote: Option<QuoteResponse> = match &*snap {
+        Some(Some(q)) => Some(q.clone()),
+        _ => None,
+    };
+
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
+        return rsx! { PortalUnavailable { title: "Quote".to_string() } };
+    }
+
+    let quote_id = props.id.clone();
+    let mut decide = move |accept: bool| {
+        let qid = quote_id.clone();
+        let note_text = notes.read().trim().to_string();
+        submitting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            let action = if accept { "accept" } else { "decline" };
+            let body = PortalQuoteDecisionRequest {
+                notes: (!note_text.is_empty()).then_some(note_text),
+            };
+            match crate::hooks::fetch::api::post_authed::<QuoteResponse, _>(
+                &format!("/portal/quotes/{qid}/{action}"),
+                &body,
+            )
+            .await
+            {
+                Ok(_) => {
+                    crate::hooks::toast::push_toast(
+                        crate::components::AlertType::Success,
+                        if accept {
+                            "Quote accepted"
+                        } else {
+                            "Quote declined"
+                        },
+                    );
+                    confirming.set(None);
+                    version += 1;
+                }
+                Err(e) => error.set(format!("Could not record your decision: {e}")),
+            }
+            submitting.set(false);
+        });
+    };
+
+    rsx! {
+        PortalLayout { title: "Quote",
+            div { class: "mb-6",
+                Link {
+                    to: Route::PortalQuoteList {},
+                    class: "text-sm text-accent hover:opacity-90",
+                    "Back to quotes"
+                }
+            }
+
+            if fetch_failed {
+                Card {
+                    p { class: "text-sm text-red-600 dark:text-red-300",
+                        "Could not load this quote."
+                    }
+                }
+            } else if loading {
+                Card { p { class: "text-sm text-subtle italic", "Loading quote..." } }
+            } else if let Some(q) = quote.clone() {
+                {
+                    let st = q.status.clone();
+                    let awaiting = quote_status::awaiting_client(&st);
+                    rsx! {
+                        Card { class: "mb-6",
+                            div { class: "flex items-start justify-between gap-4 mb-4",
+                                div {
+                                    h1 { class: "text-xl font-semibold text-content",
+                                        "{q.quote_number.clone().unwrap_or_else(|| \"Quote\".to_string())}"
+                                    }
+                                    p { class: "text-sm text-subtle", "{q.title}" }
+                                }
+                                Badge { variant: portal_quote_variant(&st),
+                                    "{quote_status::label(&st)}"
+                                }
+                            }
+
+                            if let Some(desc) = q.description.clone().filter(|s| !s.is_empty()) {
+                                p { class: "text-sm whitespace-pre-wrap mb-4", "{desc}" }
+                            }
+
+                            Table {
+                                TableHead {
+                                    TableRow {
+                                        TableHeader { "Description" }
+                                        TableHeader { "Qty" }
+                                        TableHeader { "Unit price" }
+                                        TableHeader { "Total" }
+                                    }
+                                }
+                                TableBody {
+                                    for line in q.lines.clone().unwrap_or_default() {
+                                        TableRow { key: "{line.id}",
+                                            TableCell { "{line.description}" }
+                                            TableCell { "{line.quantity}" }
+                                            TableCell { "{format_money(line.unit_price)}" }
+                                            TableCell { class: "font-medium", "{format_money(line.total)}" }
+                                        }
+                                    }
+                                }
+                            }
+
+                            div { class: "mt-4 flex flex-col items-end gap-1 text-sm",
+                                div { "Subtotal: " span { class: "font-medium", "{format_money(q.subtotal)}" } }
+                                div { "Tax: " span { class: "font-medium", "{format_money(q.tax_amount)}" } }
+                                div { class: "text-base",
+                                    "Total: " span { class: "font-semibold", "{format_money(q.total)}" }
+                                }
+                            }
+
+                            if let Some(valid) = q.valid_until {
+                                p { class: "mt-3 text-xs text-subtle",
+                                    "Valid until {valid.format(\"%b %-d, %Y\")}."
+                                }
+                            }
+                        }
+
+                        if awaiting {
+                            Card { title: "Your decision",
+                                if !error.read().is_empty() {
+                                    p { class: "mb-3 text-sm text-red-600 dark:text-red-300", "{error}" }
+                                }
+                                textarea {
+                                    class: "w-full rounded-md border border-default bg-surface p-2 text-sm",
+                                    rows: 3,
+                                    placeholder: "Anything you want to add (optional)",
+                                    value: "{notes}",
+                                    oninput: move |e| notes.set(e.value()),
+                                }
+                                match *confirming.read() {
+                                    None => rsx! {
+                                        div { class: "mt-3 flex gap-2",
+                                            Button {
+                                                variant: ButtonVariant::Primary,
+                                                disabled: *submitting.read(),
+                                                onclick: move |_| confirming.set(Some(true)),
+                                                "Accept quote"
+                                            }
+                                            Button {
+                                                variant: ButtonVariant::Secondary,
+                                                disabled: *submitting.read(),
+                                                onclick: move |_| confirming.set(Some(false)),
+                                                "Decline"
+                                            }
+                                        }
+                                    },
+                                    Some(accept) => rsx! {
+                                        div { class: "mt-3",
+                                            p { class: "text-sm mb-2",
+                                                if accept {
+                                                    "Accepting this quote authorises the work at this price. This cannot be undone here."
+                                                } else {
+                                                    "Decline this quote? You can talk to us if you would like it revised."
+                                                }
+                                            }
+                                            div { class: "flex gap-2",
+                                                Button {
+                                                    variant: if accept { ButtonVariant::Primary } else { ButtonVariant::Danger },
+                                                    disabled: *submitting.read(),
+                                                    onclick: move |_| decide(accept),
+                                                    if accept { "Yes, accept" } else { "Yes, decline" }
+                                                }
+                                                Button {
+                                                    variant: ButtonVariant::Secondary,
+                                                    disabled: *submitting.read(),
+                                                    onclick: move |_| confirming.set(None),
+                                                    "Go back"
+                                                }
+                                            }
+                                        }
+                                    },
+                                }
+                            }
+                        } else {
+                            // Decided, expired, or already converted: show the
+                            // outcome rather than controls that would 409.
+                            Card { title: "Status",
+                                p { class: "text-sm",
+                                    match st.as_str() {
+                                        "accepted" => "You accepted this quote. We will be in touch about scheduling the work.",
+                                        "declined" => "You declined this quote.",
+                                        "expired" => "This quote passed its valid-until date. Contact us if you would still like to go ahead.",
+                                        "converted" => "This quote has been turned into a project and the work is underway.",
+                                        _ => "No action is needed from you right now.",
+                                    }
+                                }
+                                if let Some(when) = q.decided_at {
+                                    p { class: "mt-1 text-xs text-subtle",
+                                        "Decided {when.format(\"%b %-d, %Y\")}."
+                                    }
+                                }
+                                if let Some(n) = q.decision_notes.clone().filter(|s| !s.is_empty()) {
+                                    p { class: "mt-2 text-sm", "Your note: {n}" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
