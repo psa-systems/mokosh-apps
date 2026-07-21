@@ -30,6 +30,7 @@ pub mod onboarding;
 pub mod portal;
 pub mod profile;
 pub mod projects;
+pub mod quotes;
 pub mod reports;
 pub mod settings;
 pub mod sla;
