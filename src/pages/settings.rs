@@ -833,7 +833,7 @@ fn ExportPanel() -> Element {
             div { class: "space-y-3",
                 h3 { class: "text-base font-semibold text-content", "Export" }
                 p { class: "text-sm text-muted",
-                    "Download a JSON snapshot of all of this tenant's data. The file contains your records - store it somewhere safe."
+                    "Download a JSON snapshot of all of this tenant's data. The file contains your records. Store it somewhere safe."
                 }
                 if !error.read().is_empty() {
                     div {
@@ -911,14 +911,14 @@ fn ImportPanel(tenant_name: String) -> Element {
                 div {
                     class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
                     strong { "This replaces all current data for this tenant." }
-                    " Importing wipes every existing record and restores from the uploaded file. This cannot be undone - export a fresh snapshot first."
+                    " Importing wipes every existing record and restores from the uploaded file. This cannot be undone. Export a fresh snapshot first."
                 }
 
                 div { class: "space-y-1",
                     label {
                         r#for: "import_file",
                         class: "block text-sm font-medium text-gray-700 dark:text-gray-300",
-                        "Export file"
+                        "Import file"
                     }
                     input {
                         id: "import_file",
