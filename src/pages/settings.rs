@@ -792,6 +792,7 @@ pub fn ImportExportSettingsPage() -> Element {
                 },
             }
             div { class: "space-y-6",
+                SeedDemoPanel {}
                 ExportPanel {}
                 ImportPanel { tenant_name }
             }
@@ -997,6 +998,89 @@ fn ImportPanel(tenant_name: String) -> Element {
                     loading: *importing.read(),
                     onclick: on_import,
                     "Import and replace all data"
+                }
+            }
+        }
+    }
+}
+
+/// Response from `POST /api/v1/data/seed-demo` (PMS-679). `seeded` is `false`
+/// (not an error) when the tenant already had data and nothing was loaded.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct SeedDemoResult {
+    #[serde(default)]
+    seeded: bool,
+    #[serde(default)]
+    message: String,
+}
+
+/// Additive "Load demo data" panel (PMS-679, server `/data/seed-demo`). Loads
+/// the built-in sample dataset into an empty tenant so a fresh account can be
+/// explored; refuses (without wiping) when the tenant already has data.
+#[component]
+fn SeedDemoPanel() -> Element {
+    let mut loading = use_signal(|| false);
+    let mut error = use_signal(String::new);
+    let mut result = use_signal(|| None::<SeedDemoResult>);
+    // MAPPS-357: block the write while the server is unreachable.
+    let can_mutate = crate::hooks::use_can_mutate();
+
+    let on_load = move |_| {
+        if *loading.read() || !can_mutate {
+            return;
+        }
+        error.set(String::new());
+        result.set(None);
+        loading.set(true);
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match crate::hooks::fetch::api::post_authed_typed::<SeedDemoResult, _>(
+                    "/data/seed-demo",
+                    &serde_json::json!({}),
+                )
+                .await
+                {
+                    Ok(r) => result.set(Some(r)),
+                    Err(e) => error.set(format!("Could not load demo data: {}", e.user_message())),
+                }
+            }
+            loading.set(false);
+        });
+    };
+
+    rsx! {
+        Card {
+            div { class: "space-y-3",
+                h3 { class: "text-base font-semibold text-content", "Load demo data" }
+                p { class: "text-sm text-muted",
+                    "Populate this tenant with a small sample dataset (a company, two contacts, and a few tickets) so you can explore Mokosh. This only loads into an empty tenant - it never overwrites existing data."
+                }
+                if !error.read().is_empty() {
+                    div {
+                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                        "{error.read()}"
+                    }
+                }
+                if let Some(r) = result.read().clone() {
+                    if r.seeded {
+                        div {
+                            class: "text-sm text-green-800 dark:text-green-300 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-900 rounded-md px-3 py-2",
+                            "{r.message}"
+                        }
+                    } else {
+                        div {
+                            class: "text-sm text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
+                            "{r.message}"
+                        }
+                    }
+                }
+                Button {
+                    variant: ButtonVariant::Primary,
+                    disabled: !can_mutate,
+                    loading: *loading.read(),
+                    onclick: on_load,
+                    "Load demo data"
                 }
             }
         }
