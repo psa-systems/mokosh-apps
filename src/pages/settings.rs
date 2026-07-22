@@ -1054,7 +1054,7 @@ fn SeedDemoPanel() -> Element {
             div { class: "space-y-3",
                 h3 { class: "text-base font-semibold text-content", "Load demo data" }
                 p { class: "text-sm text-muted",
-                    "Populate this tenant with a small sample dataset (a company, two contacts, and a few tickets) so you can explore Mokosh. This only loads into an empty tenant - it never overwrites existing data."
+                    "Populate this tenant with a small sample dataset (a company, two contacts, and a few tickets) so you can explore Mokosh. This only loads into an empty tenant. It never overwrites existing data."
                 }
                 if !error.read().is_empty() {
                     div {
