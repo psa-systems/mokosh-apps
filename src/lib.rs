@@ -13,6 +13,11 @@ pub mod utils;
 pub use modules::auth::CurrentUser;
 pub use utils::error::{AppError, AppResult};
 
+// MAPPS-366: the persistent app shell, referenced by the `#[layout(AppShell)]`
+// attribute inside the `Route` enum below, so it must be in scope here (the
+// `Routable` derive expands the attribute at the enum site).
+use components::AppShell;
+
 /// Layout component that gates all authenticated routes (declared
 /// here, before the `Route` enum, because the `Routable` derive
 /// expands the `#[layout(AuthGuard)]` reference at the enum site
@@ -251,23 +256,48 @@ pub enum Route {
     // ======================================================================
     #[layout(AuthGuard)]
 
+      // ==================================================================
+      // MAPPS-366: chromeless authenticated routes. These render full-screen
+      // WITHOUT the AppShell chrome (no TopBar / Sidebar / banners), so they
+      // sit directly under AuthGuard, BEFORE the AppShell layout opens below.
+      // ==================================================================
+
       // Forced-onboarding for new Bunyip-JIT users. Sits inside
       // AuthGuard (the user MUST be authenticated to reach it) but
       // the guard exempts it from its own redirect; see the
-      // pathname check in AuthGuard above.
+      // pathname check in AuthGuard above. Full-screen, no chrome.
       #[route("/onboarding/profile")]
       Onboarding {},
+
+      // MAPPS-256: full-screen, team-scoped wall-monitor "TV view" of the
+      // dashboard. Renders WITHOUT chrome so no TopBar / Sidebar / banners /
+      // ToastRoot appear over the bare table.
+      #[route("/dashboard/tv")]
+      DashboardTv {},
+
+      // MAPPS-302: NOC "Big View" kiosk routes - no sidebar or top bar, larger
+      // typography, auto-refresh tick. Moved up here (out of the chrome group)
+      // for MAPPS-366 so they stay outside the AppShell layout.
+      #[route("/big/tickets")]
+      BigTickets {},
+
+      #[route("/big/dispatch")]
+      BigDispatch {},
+
+      #[route("/big/calendar")]
+      BigCalendar {},
+
+    // ====================================================================
+    // MAPPS-366: everything below runs inside the persistent AppShell layout
+    // (TopBar + Sidebar + banners + ToastRoot). The shell stays mounted across
+    // navigation; only the routed subtree swaps through its Outlet, so the
+    // user<->admin dashboard switch no longer blanks the screen.
+    // ====================================================================
+    #[layout(AppShell)]
 
       // Dashboard
       #[route("/dashboard")]
       Dashboard {},
-
-      // MAPPS-256: full-screen, team-scoped wall-monitor "TV view" of the
-      // dashboard. Inside AuthGuard like every authenticated route, but the
-      // page renders WITHOUT `AppLayout` so no TopBar / Sidebar / banners /
-      // ToastRoot chrome appears over the bare table.
-      #[route("/dashboard/tv")]
-      DashboardTv {},
 
       // PMS-453: per-user saved dashboards (Phase 1: management surface).
       #[route("/dashboards")]
@@ -356,19 +386,10 @@ pub enum Route {
     #[route("/scheduling-templates")]
     SchedulingTemplates {},
 
-    // MAPPS-302: NOC "Big View" routes. Kiosk-friendly variants of the
-    // tickets queue, the dispatch board, and the calendar - no sidebar
-    // or top bar, larger typography, auto-refresh tick. Operators
-    // bookmark these on a wall-mounted screen via the `?refresh=` and
-    // `?status=` / `?priority=` query params.
-    #[route("/big/tickets")]
-    BigTickets {},
-
-    #[route("/big/dispatch")]
-    BigDispatch {},
-
-    #[route("/big/calendar")]
-    BigCalendar {},
+    // MAPPS-302 "Big View" kiosk routes moved up under AuthGuard (chromeless)
+    // for MAPPS-366; see the top of the authenticated block. Operators still
+    // bookmark them on a wall screen with the `?refresh=` / `?status=` /
+    // `?priority=` query params.
 
     // Contracts
     // Quotes (PMS-675): the sales document that precedes a Project.
@@ -581,6 +602,11 @@ pub enum Route {
     #[cfg(feature = "multi-tenant")]
     #[route("/admin/tenants")]
     TenantManagement {},
+
+    // MAPPS-366: close the AppShell layout. Every route above (from Dashboard
+    // down) renders inside the persistent shell; the chromeless routes at the
+    // top of the AuthGuard block and the portal routes below do not.
+    #[end_layout]
 
     // End of AuthGuard scope. Portal routes have their own layout and
     // auth model (client portal vs internal tools); the catch-all 404

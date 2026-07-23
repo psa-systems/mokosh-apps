@@ -23,7 +23,9 @@
 use dioxus::prelude::*;
 use serde::Deserialize;
 
-use crate::components::{AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, PageHeader};
+use crate::components::{
+    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, PageHeader,
+};
 
 /// Server build info (`GET /api/v1/version`). Mirrors mokosh-server's
 /// `VersionInfo`; fields not rendered are dropped at deserialise time.
@@ -137,6 +139,7 @@ fn StatusRow(label: String, value: String) -> Element {
 /// not a write, so there is no mutating control to gate on `use_can_mutate`.
 #[component]
 pub fn SystemStatusPage() -> Element {
+    use_page_title("System Status");
     let mut report = use_resource(|| async move {
         let server = probe_server_version().await;
         let readiness = probe_readiness().await;
@@ -165,102 +168,100 @@ pub fn SystemStatusPage() -> Element {
     let hub_url = cfg.hub_url("/");
 
     rsx! {
-        AppLayout { title: "System Status",
-            PageHeader {
-                title: "System Status",
-                subtitle: "Build versions and live health of the Mokosh client and API.",
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Secondary,
-                        onclick: move |_| report.restart(),
-                        "Refresh"
-                    }
-                },
+        PageHeader {
+            title: "System Status",
+            subtitle: "Build versions and live health of the Mokosh client and API.",
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| report.restart(),
+                    "Refresh"
+                }
+            },
+        }
+
+        div { class: "grid grid-cols-1 gap-5 lg:grid-cols-2",
+
+            // Client build (always available, no network).
+            Card {
+                div { class: "flex items-center justify-between mb-3",
+                    h3 { class: "text-base font-semibold text-content","Client build" }
+                    Badge { variant: BadgeVariant::Green, "Running" }
+                }
+                StatusRow { label: "Version".to_string(), value: VERSION.to_string() }
+                StatusRow { label: "Commit".to_string(), value: GIT_HASH.to_string() }
+                StatusRow { label: "Built".to_string(), value: BUILD_DATE.to_string() }
             }
 
-            div { class: "grid grid-cols-1 gap-5 lg:grid-cols-2",
-
-                // Client build (always available, no network).
-                Card {
-                    div { class: "flex items-center justify-between mb-3",
-                        h3 { class: "text-base font-semibold text-content","Client build" }
-                        Badge { variant: BadgeVariant::Green, "Running" }
-                    }
-                    StatusRow { label: "Version".to_string(), value: VERSION.to_string() }
-                    StatusRow { label: "Commit".to_string(), value: GIT_HASH.to_string() }
-                    StatusRow { label: "Built".to_string(), value: BUILD_DATE.to_string() }
-                }
-
-                // API server reachability + server build.
-                Card {
-                    div { class: "flex items-center justify-between mb-3",
-                        h3 { class: "text-base font-semibold text-content","API server" }
-                        if loading {
-                            Badge { variant: BadgeVariant::Gray, "Checking..." }
-                        } else if matches!(&snapshot, Some(r) if r.server.is_ok()) {
-                            Badge { variant: BadgeVariant::Green, "Operational" }
-                        } else {
-                            Badge { variant: BadgeVariant::Red, "Unreachable" }
-                        }
-                    }
-                    match snapshot.as_ref().map(|r| &r.server) {
-                        None => rsx! {
-                            p { class: "text-sm text-muted", "Checking the API server..." }
-                        },
-                        Some(Ok(v)) => rsx! {
-                            StatusRow { label: "Version".to_string(), value: v.version.clone() }
-                            StatusRow { label: "Release".to_string(), value: v.git_describe.clone() }
-                            StatusRow { label: "Commit".to_string(), value: v.git_hash.clone() }
-                            StatusRow { label: "Built".to_string(), value: v.build_date.clone() }
-                        },
-                        Some(Err(e)) => rsx! {
-                            p { class: "text-sm text-red-600 dark:text-red-400",
-                                "Could not reach the API server: {e}"
-                            }
-                        },
+            // API server reachability + server build.
+            Card {
+                div { class: "flex items-center justify-between mb-3",
+                    h3 { class: "text-base font-semibold text-content","API server" }
+                    if loading {
+                        Badge { variant: BadgeVariant::Gray, "Checking..." }
+                    } else if matches!(&snapshot, Some(r) if r.server.is_ok()) {
+                        Badge { variant: BadgeVariant::Green, "Operational" }
+                    } else {
+                        Badge { variant: BadgeVariant::Red, "Unreachable" }
                     }
                 }
-
-                // Dependency readiness breakdown.
-                Card {
-                    div { class: "flex items-center justify-between mb-3",
-                        h3 { class: "text-base font-semibold text-content","Dependencies" }
-                        match snapshot.as_ref().map(|r| &r.readiness) {
-                            None => rsx! { Badge { variant: BadgeVariant::Gray, "Checking..." } },
-                            Some(Ok(r)) if r.status == "ready" => rsx! { Badge { variant: BadgeVariant::Green, "Ready" } },
-                            Some(Ok(_)) => rsx! { Badge { variant: BadgeVariant::Yellow, "Degraded" } },
-                            Some(Err(_)) => rsx! { Badge { variant: BadgeVariant::Red, "Unknown" } },
+                match snapshot.as_ref().map(|r| &r.server) {
+                    None => rsx! {
+                        p { class: "text-sm text-muted", "Checking the API server..." }
+                    },
+                    Some(Ok(v)) => rsx! {
+                        StatusRow { label: "Version".to_string(), value: v.version.clone() }
+                        StatusRow { label: "Release".to_string(), value: v.git_describe.clone() }
+                        StatusRow { label: "Commit".to_string(), value: v.git_hash.clone() }
+                        StatusRow { label: "Built".to_string(), value: v.build_date.clone() }
+                    },
+                    Some(Err(e)) => rsx! {
+                        p { class: "text-sm text-red-600 dark:text-red-400",
+                            "Could not reach the API server: {e}"
                         }
-                    }
+                    },
+                }
+            }
+
+            // Dependency readiness breakdown.
+            Card {
+                div { class: "flex items-center justify-between mb-3",
+                    h3 { class: "text-base font-semibold text-content","Dependencies" }
                     match snapshot.as_ref().map(|r| &r.readiness) {
-                        None => rsx! {
-                            p { class: "text-sm text-muted", "Checking dependencies..." }
-                        },
-                        Some(Ok(r)) => rsx! {
-                            div { class: "flex items-center justify-between py-2 border-b border-line",
-                                span { class: "text-sm text-muted", "Database" }
-                                {check_badge(&r.checks.db)}
-                            }
-                            div { class: "flex items-center justify-between py-2",
-                                span { class: "text-sm text-muted", "Infisical" }
-                                {check_badge(&r.checks.infisical)}
-                            }
-                        },
-                        Some(Err(e)) => rsx! {
-                            p { class: "text-sm text-red-600 dark:text-red-400",
-                                "Could not read readiness: {e}"
-                            }
-                        },
+                        None => rsx! { Badge { variant: BadgeVariant::Gray, "Checking..." } },
+                        Some(Ok(r)) if r.status == "ready" => rsx! { Badge { variant: BadgeVariant::Green, "Ready" } },
+                        Some(Ok(_)) => rsx! { Badge { variant: BadgeVariant::Yellow, "Degraded" } },
+                        Some(Err(_)) => rsx! { Badge { variant: BadgeVariant::Red, "Unknown" } },
                     }
                 }
-
-                // Resolved runtime endpoints.
-                Card {
-                    h3 { class: "text-base font-semibold text-content mb-3", "Connection" }
-                    StatusRow { label: "API base".to_string(), value: api_base }
-                    StatusRow { label: "OIDC issuer".to_string(), value: issuer }
-                    StatusRow { label: "Hub".to_string(), value: hub_url }
+                match snapshot.as_ref().map(|r| &r.readiness) {
+                    None => rsx! {
+                        p { class: "text-sm text-muted", "Checking dependencies..." }
+                    },
+                    Some(Ok(r)) => rsx! {
+                        div { class: "flex items-center justify-between py-2 border-b border-line",
+                            span { class: "text-sm text-muted", "Database" }
+                            {check_badge(&r.checks.db)}
+                        }
+                        div { class: "flex items-center justify-between py-2",
+                            span { class: "text-sm text-muted", "Infisical" }
+                            {check_badge(&r.checks.infisical)}
+                        }
+                    },
+                    Some(Err(e)) => rsx! {
+                        p { class: "text-sm text-red-600 dark:text-red-400",
+                            "Could not read readiness: {e}"
+                        }
+                    },
                 }
+            }
+
+            // Resolved runtime endpoints.
+            Card {
+                h3 { class: "text-base font-semibold text-content mb-3", "Connection" }
+                StatusRow { label: "API base".to_string(), value: api_base }
+                StatusRow { label: "OIDC issuer".to_string(), value: issuer }
+                StatusRow { label: "Hub".to_string(), value: hub_url }
             }
         }
     }

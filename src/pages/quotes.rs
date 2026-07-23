@@ -24,9 +24,9 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, Input, Modal,
-    ModalSize, PageHeader, PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty,
-    TableHead, TableHeader, TableLoading, TableRow, Textarea,
+    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, Input,
+    Modal, ModalSize, PageHeader, PlusIcon, Select, SelectOption, Table, TableBody, TableCell,
+    TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea,
 };
 use crate::hooks::use_can_mutate;
 use crate::modules::quotes::{
@@ -118,6 +118,7 @@ fn permission_required() -> Element {
 
 #[component]
 pub fn QuoteListPage() -> Element {
+    use_page_title("Quotes");
     if !use_can_manage_billing() {
         return permission_required();
     }
@@ -202,133 +203,131 @@ pub fn QuoteListPage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Quotes",
-            PageHeader {
-                title: "Quotes",
-                subtitle: "Scope and price work, get it signed off, turn it into a project",
-                actions: rsx! {
-                    Link {
-                        to: Route::QuoteNew {},
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                            "New Quote"
-                        }
+        PageHeader {
+            title: "Quotes",
+            subtitle: "Scope and price work, get it signed off, turn it into a project",
+            actions: rsx! {
+                Link {
+                    to: Route::QuoteNew {},
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "New Quote"
                     }
-                },
-            }
+                }
+            },
+        }
 
-            Card { class: "mb-6",
-                div { class: "flex flex-col sm:flex-row gap-4",
-                    div { class: "flex-1",
-                        Select {
-                            name: "company",
-                            options: company_options,
-                            value: company_filter.read().clone(),
-                            onchange: move |e: FormEvent| {
-                                company_filter.set(e.value());
-                                page.set(1);
-                            },
-                        }
-                    }
+        Card { class: "mb-6",
+            div { class: "flex flex-col sm:flex-row gap-4",
+                div { class: "flex-1",
                     Select {
-                        name: "status",
-                        options: status_options,
-                        value: status_filter.read().clone(),
+                        name: "company",
+                        options: company_options,
+                        value: company_filter.read().clone(),
                         onchange: move |e: FormEvent| {
-                            status_filter.set(e.value());
+                            company_filter.set(e.value());
                             page.set(1);
                         },
                     }
                 }
-            }
-
-            if fetch_failed {
-                div {
-                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                    "Could not load quotes. Refresh the page to retry."
+                Select {
+                    name: "status",
+                    options: status_options,
+                    value: status_filter.read().clone(),
+                    onchange: move |e: FormEvent| {
+                        status_filter.set(e.value());
+                        page.set(1);
+                    },
                 }
             }
+        }
 
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 6,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Quote" }
-                            TableHeader { "Client" }
-                            TableHeader { "Total" }
-                            TableHeader { "Valid until" }
-                            TableHeader { "Status" }
-                            TableHeader { "Created" }
-                        }
+        if fetch_failed {
+            div {
+                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                "Could not load quotes. Refresh the page to retry."
+            }
+        }
+
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 6,
+            onpagechange: move |p| page.set(p),
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Quote" }
+                        TableHeader { "Client" }
+                        TableHeader { "Total" }
+                        TableHeader { "Valid until" }
+                        TableHeader { "Status" }
+                        TableHeader { "Created" }
                     }
-                    if is_loading {
-                        TableLoading { columns: 6, rows: 5 }
-                    } else if page_rows.is_empty() {
-                        if has_filters {
-                            TableEmpty {
-                                columns: 6,
-                                title: "No quotes match your filters".to_string(),
-                                description: "Adjust the filters above, or clear them to see every quote again."
-                                    .to_string(),
-                                actions: rsx! {
-                                    Button {
-                                        variant: ButtonVariant::Secondary,
-                                        onclick: move |_| {
-                                            company_filter.set(String::new());
-                                            status_filter.set(String::new());
-                                        },
-                                        "Clear filters"
-                                    }
-                                },
-                            }
-                        } else {
-                            TableEmpty {
-                                columns: 6,
-                                title: "No quotes yet".to_string(),
-                                description: "Create a quote to scope and price work before it starts."
-                                    .to_string(),
-                                actions: rsx! {
-                                    Link {
-                                        to: Route::QuoteNew {},
-                                        Button {
-                                            variant: ButtonVariant::Primary,
-                                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                            "New Quote"
-                                        }
-                                    }
-                                },
-                            }
+                }
+                if is_loading {
+                    TableLoading { columns: 6, rows: 5 }
+                } else if page_rows.is_empty() {
+                    if has_filters {
+                        TableEmpty {
+                            columns: 6,
+                            title: "No quotes match your filters".to_string(),
+                            description: "Adjust the filters above, or clear them to see every quote again."
+                                .to_string(),
+                            actions: rsx! {
+                                Button {
+                                    variant: ButtonVariant::Secondary,
+                                    onclick: move |_| {
+                                        company_filter.set(String::new());
+                                        status_filter.set(String::new());
+                                    },
+                                    "Clear filters"
+                                }
+                            },
                         }
                     } else {
-                        TableBody {
-                            for quote in page_rows.iter().cloned() {
-                                QuoteRow {
-                                    key: "{quote.id}",
-                                    id: quote.id.to_string(),
-                                    number: quote
-                                        .quote_number
-                                        .clone()
-                                        .unwrap_or_else(|| "-".to_string()),
-                                    title: quote.title.clone(),
-                                    company: quote
-                                        .company_name
-                                        .clone()
-                                        .unwrap_or_else(|| "-".to_string()),
-                                    total: format_money(quote.total),
-                                    valid_until: quote
-                                        .valid_until
-                                        .map(|d| d.format("%b %-d, %Y").to_string())
-                                        .unwrap_or_else(|| "No expiry".to_string()),
-                                    status: quote.status.clone(),
-                                    created: quote.created_at.format("%b %-d, %Y").to_string(),
+                        TableEmpty {
+                            columns: 6,
+                            title: "No quotes yet".to_string(),
+                            description: "Create a quote to scope and price work before it starts."
+                                .to_string(),
+                            actions: rsx! {
+                                Link {
+                                    to: Route::QuoteNew {},
+                                    Button {
+                                        variant: ButtonVariant::Primary,
+                                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                        "New Quote"
+                                    }
                                 }
+                            },
+                        }
+                    }
+                } else {
+                    TableBody {
+                        for quote in page_rows.iter().cloned() {
+                            QuoteRow {
+                                key: "{quote.id}",
+                                id: quote.id.to_string(),
+                                number: quote
+                                    .quote_number
+                                    .clone()
+                                    .unwrap_or_else(|| "-".to_string()),
+                                title: quote.title.clone(),
+                                company: quote
+                                    .company_name
+                                    .clone()
+                                    .unwrap_or_else(|| "-".to_string()),
+                                total: format_money(quote.total),
+                                valid_until: quote
+                                    .valid_until
+                                    .map(|d| d.format("%b %-d, %Y").to_string())
+                                    .unwrap_or_else(|| "No expiry".to_string()),
+                                status: quote.status.clone(),
+                                created: quote.created_at.format("%b %-d, %Y").to_string(),
                             }
                         }
                     }
@@ -381,6 +380,7 @@ fn QuoteRow(props: QuoteRowProps) -> Element {
 
 #[component]
 pub fn QuoteDetailPage(id: String) -> Element {
+    use_page_title("Quote");
     if !use_can_manage_billing() {
         return permission_required();
     }
@@ -422,237 +422,235 @@ pub fn QuoteDetailPage(id: String) -> Element {
     let can_mutate = use_can_mutate();
 
     rsx! {
-        AppLayout { title: "Quote",
-            if loading {
-                Card { p { class: "text-sm text-subtle italic", "Loading quote..." } }
-            } else if let Some(q) = quote.clone() {
-                {
-                    let st = q.status.clone();
-                    let quote_id = q.id.to_string();
-                    // Every control is gated on the same predicate the
-                    // server enforces, so a disabled button means "not in
-                    // this state" rather than "this might 409".
-                    let can_edit = status::allows_content_edit(&st) && can_mutate;
-                    rsx! {
-                        PageHeader {
-                            title: q.quote_number.clone().unwrap_or_else(|| "Quote".to_string()),
-                            subtitle: q.title.clone(),
-                            actions: rsx! {
+        if loading {
+            Card { p { class: "text-sm text-subtle italic", "Loading quote..." } }
+        } else if let Some(q) = quote.clone() {
+            {
+                let st = q.status.clone();
+                let quote_id = q.id.to_string();
+                // Every control is gated on the same predicate the
+                // server enforces, so a disabled button means "not in
+                // this state" rather than "this might 409".
+                let can_edit = status::allows_content_edit(&st) && can_mutate;
+                rsx! {
+                    PageHeader {
+                        title: q.quote_number.clone().unwrap_or_else(|| "Quote".to_string()),
+                        subtitle: q.title.clone(),
+                        actions: rsx! {
+                            Link {
+                                to: Route::QuoteList {},
+                                Button { variant: ButtonVariant::Secondary, "Back to Quotes" }
+                            }
+                            if can_edit {
                                 Link {
-                                    to: Route::QuoteList {},
-                                    Button { variant: ButtonVariant::Secondary, "Back to Quotes" }
+                                    to: Route::QuoteEdit { id: quote_id.clone() },
+                                    Button { variant: ButtonVariant::Secondary, "Edit" }
                                 }
-                                if can_edit {
-                                    Link {
-                                        to: Route::QuoteEdit { id: quote_id.clone() },
-                                        Button { variant: ButtonVariant::Secondary, "Edit" }
-                                    }
-                                }
-                            },
-                        }
-
-                        if !action_error.read().is_empty() {
-                            div {
-                                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                                "{action_error}"
                             }
+                        },
+                    }
+
+                    if !action_error.read().is_empty() {
+                        div {
+                            class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                            "{action_error}"
                         }
+                    }
 
-                        div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
-                            div { class: "lg:col-span-2 space-y-6",
-                                Card { title: "Scope",
-                                    div { class: "flex items-center gap-2 mb-3",
-                                        Badge { variant: quote_status_variant(&st), "{status::label(&st)}" }
-                                        span { class: "text-xs text-subtle", "{status_explainer(&st)}" }
-                                    }
-                                    if let Some(summary) = q.summary.clone().filter(|s| !s.is_empty()) {
-                                        p { class: "text-sm font-medium mb-2", "{summary}" }
-                                    }
-                                    if let Some(desc) = q.description.clone().filter(|s| !s.is_empty()) {
-                                        p { class: "text-sm whitespace-pre-wrap", "{desc}" }
-                                    } else {
-                                        p { class: "text-sm text-subtle italic", "No scope description." }
-                                    }
+                    div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
+                        div { class: "lg:col-span-2 space-y-6",
+                            Card { title: "Scope",
+                                div { class: "flex items-center gap-2 mb-3",
+                                    Badge { variant: quote_status_variant(&st), "{status::label(&st)}" }
+                                    span { class: "text-xs text-subtle", "{status_explainer(&st)}" }
                                 }
-
-                                Card { title: "Line items",
-                                    Table {
-                                        TableHead {
-                                            TableRow {
-                                                TableHeader { "Description" }
-                                                TableHeader { "Type" }
-                                                TableHeader { "Qty" }
-                                                TableHeader { "Unit price" }
-                                                TableHeader { "Total" }
-                                            }
-                                        }
-                                        TableBody {
-                                            for line in q.lines.clone().unwrap_or_default() {
-                                                TableRow { key: "{line.id}",
-                                                    TableCell { "{line.description}" }
-                                                    TableCell { class: "text-subtle", "{line.line_type}" }
-                                                    TableCell { "{line.quantity}" }
-                                                    TableCell { "{format_money(line.unit_price)}" }
-                                                    TableCell { class: "font-medium", "{format_money(line.total)}" }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    if q.lines.clone().unwrap_or_default().is_empty() {
-                                        p { class: "text-sm text-subtle italic mt-2", "No line items on this quote." }
-                                    }
-                                    div { class: "mt-4 flex flex-col items-end gap-1 text-sm",
-                                        div { "Subtotal: " span { class: "font-medium", "{format_money(q.subtotal)}" } }
-                                        div { "Tax: " span { class: "font-medium", "{format_money(q.tax_amount)}" } }
-                                        div { class: "text-base",
-                                            "Total: " span { class: "font-semibold", "{format_money(q.total)}" }
-                                        }
-                                    }
+                                if let Some(summary) = q.summary.clone().filter(|s| !s.is_empty()) {
+                                    p { class: "text-sm font-medium mb-2", "{summary}" }
                                 }
-
-                                // Internal sign-off runs on the shared
-                                // polymorphic approvals surface; this is the
-                                // same component the ticket detail uses,
-                                // pointed at the quote target.
-                                crate::pages::tickets::ApprovalsSection {
-                                    entity_id: quote_id.clone(),
-                                    entity_segment: "quotes".to_string(),
-                                    entity_noun: "quote".to_string(),
+                                if let Some(desc) = q.description.clone().filter(|s| !s.is_empty()) {
+                                    p { class: "text-sm whitespace-pre-wrap", "{desc}" }
+                                } else {
+                                    p { class: "text-sm text-subtle italic", "No scope description." }
                                 }
                             }
 
-                            div { class: "space-y-6",
-                                Card { title: "Details",
-                                    dl { class: "space-y-2 text-sm",
-                                        div { dt { class: "text-subtle", "Client" } dd { "{q.company_name.clone().unwrap_or_else(|| \"-\".to_string())}" } }
+                            Card { title: "Line items",
+                                Table {
+                                    TableHead {
+                                        TableRow {
+                                            TableHeader { "Description" }
+                                            TableHeader { "Type" }
+                                            TableHeader { "Qty" }
+                                            TableHeader { "Unit price" }
+                                            TableHeader { "Total" }
+                                        }
+                                    }
+                                    TableBody {
+                                        for line in q.lines.clone().unwrap_or_default() {
+                                            TableRow { key: "{line.id}",
+                                                TableCell { "{line.description}" }
+                                                TableCell { class: "text-subtle", "{line.line_type}" }
+                                                TableCell { "{line.quantity}" }
+                                                TableCell { "{format_money(line.unit_price)}" }
+                                                TableCell { class: "font-medium", "{format_money(line.total)}" }
+                                            }
+                                        }
+                                    }
+                                }
+                                if q.lines.clone().unwrap_or_default().is_empty() {
+                                    p { class: "text-sm text-subtle italic mt-2", "No line items on this quote." }
+                                }
+                                div { class: "mt-4 flex flex-col items-end gap-1 text-sm",
+                                    div { "Subtotal: " span { class: "font-medium", "{format_money(q.subtotal)}" } }
+                                    div { "Tax: " span { class: "font-medium", "{format_money(q.tax_amount)}" } }
+                                    div { class: "text-base",
+                                        "Total: " span { class: "font-semibold", "{format_money(q.total)}" }
+                                    }
+                                }
+                            }
+
+                            // Internal sign-off runs on the shared
+                            // polymorphic approvals surface; this is the
+                            // same component the ticket detail uses,
+                            // pointed at the quote target.
+                            crate::pages::tickets::ApprovalsSection {
+                                entity_id: quote_id.clone(),
+                                entity_segment: "quotes".to_string(),
+                                entity_noun: "quote".to_string(),
+                            }
+                        }
+
+                        div { class: "space-y-6",
+                            Card { title: "Details",
+                                dl { class: "space-y-2 text-sm",
+                                    div { dt { class: "text-subtle", "Client" } dd { "{q.company_name.clone().unwrap_or_else(|| \"-\".to_string())}" } }
+                                    div {
+                                        dt { class: "text-subtle", "Valid until" }
+                                        dd {
+                                            "{q.valid_until.map(|d| d.format(\"%b %-d, %Y\").to_string()).unwrap_or_else(|| \"No expiry\".to_string())}"
+                                        }
+                                    }
+                                    if let Some(sent) = q.sent_at {
+                                        div { dt { class: "text-subtle", "Sent" } dd { "{sent.format(\"%b %-d, %Y\")}" } }
+                                    }
+                                    if let Some(decided) = q.decided_at {
                                         div {
-                                            dt { class: "text-subtle", "Valid until" }
+                                            dt { class: "text-subtle", "Client decided" }
+                                            dd { "{decided.format(\"%b %-d, %Y\")}" }
+                                        }
+                                    }
+                                    if let Some(notes) = q.decision_notes.clone().filter(|s| !s.is_empty()) {
+                                        div { dt { class: "text-subtle", "Client notes" } dd { "{notes}" } }
+                                    }
+                                    if let Some(project_id) = q.converted_project_id {
+                                        div {
+                                            dt { class: "text-subtle", "Project" }
                                             dd {
-                                                "{q.valid_until.map(|d| d.format(\"%b %-d, %Y\").to_string()).unwrap_or_else(|| \"No expiry\".to_string())}"
-                                            }
-                                        }
-                                        if let Some(sent) = q.sent_at {
-                                            div { dt { class: "text-subtle", "Sent" } dd { "{sent.format(\"%b %-d, %Y\")}" } }
-                                        }
-                                        if let Some(decided) = q.decided_at {
-                                            div {
-                                                dt { class: "text-subtle", "Client decided" }
-                                                dd { "{decided.format(\"%b %-d, %Y\")}" }
-                                            }
-                                        }
-                                        if let Some(notes) = q.decision_notes.clone().filter(|s| !s.is_empty()) {
-                                            div { dt { class: "text-subtle", "Client notes" } dd { "{notes}" } }
-                                        }
-                                        if let Some(project_id) = q.converted_project_id {
-                                            div {
-                                                dt { class: "text-subtle", "Project" }
-                                                dd {
-                                                    Link {
-                                                        to: Route::ProjectDetail { id: project_id.to_string() },
-                                                        class: "text-primary hover:underline",
-                                                        "View project"
-                                                    }
+                                                Link {
+                                                    to: Route::ProjectDetail { id: project_id.to_string() },
+                                                    class: "text-primary hover:underline",
+                                                    "View project"
                                                 }
                                             }
                                         }
                                     }
                                 }
+                            }
 
-                                Card { title: "Actions",
-                                    div { class: "flex flex-col gap-2",
-                                        if status::can_submit(&st) {
-                                            Button {
-                                                variant: ButtonVariant::Secondary,
-                                                disabled: !can_mutate || *busy.read(),
-                                                onclick: {
-                                                    let qid = quote_id.clone();
-                                                    move |_| {
-                                                        set_status(qid.clone(), "submitted", version, busy, action_error);
-                                                    }
-                                                },
-                                                "Submit for approval"
-                                            }
+                            Card { title: "Actions",
+                                div { class: "flex flex-col gap-2",
+                                    if status::can_submit(&st) {
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            disabled: !can_mutate || *busy.read(),
+                                            onclick: {
+                                                let qid = quote_id.clone();
+                                                move |_| {
+                                                    set_status(qid.clone(), "submitted", version, busy, action_error);
+                                                }
+                                            },
+                                            "Submit for approval"
                                         }
-                                        if status::can_approve(&st) {
-                                            Button {
-                                                variant: ButtonVariant::Primary,
-                                                disabled: !can_mutate || *busy.read(),
-                                                onclick: {
-                                                    let qid = quote_id.clone();
-                                                    move |_| {
-                                                        set_status(qid.clone(), "approved", version, busy, action_error);
-                                                    }
-                                                },
-                                                "Mark approved"
-                                            }
-                                            Button {
-                                                variant: ButtonVariant::Secondary,
-                                                disabled: !can_mutate || *busy.read(),
-                                                onclick: {
-                                                    let qid = quote_id.clone();
-                                                    move |_| {
-                                                        set_status(qid.clone(), "rejected", version, busy, action_error);
-                                                    }
-                                                },
-                                                "Reject"
-                                            }
+                                    }
+                                    if status::can_approve(&st) {
+                                        Button {
+                                            variant: ButtonVariant::Primary,
+                                            disabled: !can_mutate || *busy.read(),
+                                            onclick: {
+                                                let qid = quote_id.clone();
+                                                move |_| {
+                                                    set_status(qid.clone(), "approved", version, busy, action_error);
+                                                }
+                                            },
+                                            "Mark approved"
                                         }
-                                        if status::can_send(&st) {
-                                            Button {
-                                                variant: ButtonVariant::Primary,
-                                                disabled: !can_mutate || *busy.read(),
-                                                onclick: {
-                                                    let qid = quote_id.clone();
-                                                    move |_| {
-                                                        send_quote(qid.clone(), version, busy, action_error);
-                                                    }
-                                                },
-                                                "Send to client"
-                                            }
-                                            p { class: "text-xs text-subtle",
-                                                "Emails the billing contact a link to accept or decline."
-                                            }
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            disabled: !can_mutate || *busy.read(),
+                                            onclick: {
+                                                let qid = quote_id.clone();
+                                                move |_| {
+                                                    set_status(qid.clone(), "rejected", version, busy, action_error);
+                                                }
+                                            },
+                                            "Reject"
                                         }
-                                        if status::awaiting_client(&st) {
-                                            p { class: "text-xs text-subtle",
-                                                "Waiting on the client. Their decision arrives through the portal."
-                                            }
+                                    }
+                                    if status::can_send(&st) {
+                                        Button {
+                                            variant: ButtonVariant::Primary,
+                                            disabled: !can_mutate || *busy.read(),
+                                            onclick: {
+                                                let qid = quote_id.clone();
+                                                move |_| {
+                                                    send_quote(qid.clone(), version, busy, action_error);
+                                                }
+                                            },
+                                            "Send to client"
                                         }
-                                        if status::can_convert(&st) {
-                                            Button {
-                                                variant: ButtonVariant::Primary,
-                                                disabled: !can_mutate || *busy.read(),
-                                                onclick: move |_| show_convert.set(true),
-                                                "Convert to project"
-                                            }
+                                        p { class: "text-xs text-subtle",
+                                            "Emails the billing contact a link to accept or decline."
                                         }
-                                        if status::can_cancel(&st) {
-                                            Button {
-                                                variant: ButtonVariant::Danger,
-                                                disabled: !can_mutate || *busy.read(),
-                                                onclick: {
-                                                    let qid = quote_id.clone();
-                                                    move |_| {
-                                                        cancel_quote(qid.clone(), version, busy, action_error);
-                                                    }
-                                                },
-                                                "Cancel quote"
-                                            }
+                                    }
+                                    if status::awaiting_client(&st) {
+                                        p { class: "text-xs text-subtle",
+                                            "Waiting on the client. Their decision arrives through the portal."
+                                        }
+                                    }
+                                    if status::can_convert(&st) {
+                                        Button {
+                                            variant: ButtonVariant::Primary,
+                                            disabled: !can_mutate || *busy.read(),
+                                            onclick: move |_| show_convert.set(true),
+                                            "Convert to project"
+                                        }
+                                    }
+                                    if status::can_cancel(&st) {
+                                        Button {
+                                            variant: ButtonVariant::Danger,
+                                            disabled: !can_mutate || *busy.read(),
+                                            onclick: {
+                                                let qid = quote_id.clone();
+                                                move |_| {
+                                                    cancel_quote(qid.clone(), version, busy, action_error);
+                                                }
+                                            },
+                                            "Cancel quote"
                                         }
                                     }
                                 }
                             }
                         }
+                    }
 
-                        ConvertQuoteModal {
-                            open: *show_convert.read(),
-                            quote_id: quote_id.clone(),
-                            onclose: move |_| show_convert.set(false),
-                            onconverted: move |_| {
-                                show_convert.set(false);
-                                version += 1;
-                            },
-                        }
+                    ConvertQuoteModal {
+                        open: *show_convert.read(),
+                        quote_id: quote_id.clone(),
+                        onclose: move |_| show_convert.set(false),
+                        onconverted: move |_| {
+                            show_convert.set(false);
+                            version += 1;
+                        },
                     }
                 }
             }
@@ -935,6 +933,8 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
     let navigator = use_navigator();
     let editing = props.quote_id.clone();
     let is_edit = editing.is_some();
+    let title = if is_edit { "Edit Quote" } else { "New Quote" };
+    use_page_title(title);
 
     let mut company_id = use_signal(String::new);
     let mut company_name = use_signal(String::new);
@@ -1111,209 +1111,207 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
     };
 
     rsx! {
-        AppLayout { title: if is_edit { "Edit Quote" } else { "New Quote" },
-            PageHeader {
-                title: if is_edit { "Edit Quote" } else { "New Quote" },
-                subtitle: "Scope the work and price it. Totals are calculated from the line items.",
-            }
+        PageHeader {
+            title: if is_edit { "Edit Quote" } else { "New Quote" },
+            subtitle: "Scope the work and price it. Totals are calculated from the line items.",
+        }
 
-            if !error.read().is_empty() {
+        if !error.read().is_empty() {
+            div {
+                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                "{error}"
+            }
+        }
+
+        Card { class: "mb-6", title: "Details",
+            div { class: "grid grid-cols-1 md:grid-cols-2 gap-4",
                 div {
-                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                    "{error}"
-                }
-            }
-
-            Card { class: "mb-6", title: "Details",
-                div { class: "grid grid-cols-1 md:grid-cols-2 gap-4",
-                    div {
-                        // The client cannot change after creation: the
-                        // quote's identity as "for this customer" is what
-                        // the portal scopes on.
-                        if is_edit {
-                            Input {
-                                name: "company",
-                                label: "Client",
-                                value: company_name.read().clone(),
-                                disabled: true,
-                            }
-                        } else {
-                            crate::components::CompanyPicker {
-                                value: company_name.read().clone(),
-                                selected_id: (!company_id.read().is_empty())
-                                    .then(|| company_id.read().clone()),
-                                required: true,
-                                error: company_error.read().clone(),
-                                onselect: move |(id, name): (String, String)| {
-                                    company_id.set(id);
-                                    company_name.set(name);
-                                    company_error.set(String::new());
-                                },
-                                onclear: move |_| {
-                                    company_id.set(String::new());
-                                    company_name.set(String::new());
-                                },
-                            }
-                        }
-                    }
-                    Input {
-                        name: "valid_until",
-                        label: "Valid until",
-                        r#type: "date".to_string(),
-                        value: valid_until.read().clone(),
-                        oninput: move |e: FormEvent| valid_until.set(e.value()),
-                    }
-                }
-                Input {
-                    name: "title",
-                    label: "Title",
-                    value: title.read().clone(),
-                    rules: vec![Rule::Required, Rule::MaxLen(255)],
-                    maxlength: 255,
-                    oninput: move |e: FormEvent| title.set(e.value()),
-                }
-                Input {
-                    name: "summary",
-                    label: "Summary",
-                    value: summary.read().clone(),
-                    rules: vec![Rule::MaxLen(2000)],
-                    oninput: move |e: FormEvent| summary.set(e.value()),
-                }
-                Textarea {
-                    name: "description",
-                    label: "Scope of work",
-                    rows: 6,
-                    value: description.read().clone(),
-                    oninput: move |e: FormEvent| description.set(e.value()),
-                }
-            }
-
-            Card { class: "mb-6", title: "Line items",
-                div { class: "space-y-3",
-                    for (idx, line) in lines.read().clone().into_iter().enumerate() {
-                        div { key: "{idx}", class: "grid grid-cols-1 md:grid-cols-12 gap-2 items-end",
-                            div { class: "md:col-span-5",
-                                Input {
-                                    name: "description-{idx}",
-                                    label: "Description",
-                                    value: line.description.clone(),
-                                    oninput: move |e: FormEvent| {
-                                        let mut current = lines.read().clone();
-                                        if let Some(l) = current.get_mut(idx) {
-                                            l.description = e.value();
-                                        }
-                                        lines.set(current);
-                                    },
-                                }
-                            }
-                            div { class: "md:col-span-2",
-                                Select {
-                                    name: "line_type-{idx}",
-                                    label: "Type",
-                                    options: line_type_options.clone(),
-                                    value: line.line_type.clone(),
-                                    onchange: move |e: FormEvent| {
-                                        let mut current = lines.read().clone();
-                                        if let Some(l) = current.get_mut(idx) {
-                                            l.line_type = e.value();
-                                        }
-                                        lines.set(current);
-                                    },
-                                }
-                            }
-                            div { class: "md:col-span-2",
-                                Input {
-                                    name: "quantity-{idx}",
-                                    label: "Qty",
-                                    r#type: "number".to_string(),
-                                    step: "0.01".to_string(),
-                                    value: line.quantity.clone(),
-                                    oninput: move |e: FormEvent| {
-                                        let mut current = lines.read().clone();
-                                        if let Some(l) = current.get_mut(idx) {
-                                            l.quantity = e.value();
-                                        }
-                                        lines.set(current);
-                                    },
-                                }
-                            }
-                            div { class: "md:col-span-2",
-                                Input {
-                                    name: "unit_price-{idx}",
-                                    label: "Unit price",
-                                    r#type: "number".to_string(),
-                                    step: "0.01".to_string(),
-                                    value: line.unit_price.clone(),
-                                    oninput: move |e: FormEvent| {
-                                        let mut current = lines.read().clone();
-                                        if let Some(l) = current.get_mut(idx) {
-                                            l.unit_price = e.value();
-                                        }
-                                        lines.set(current);
-                                    },
-                                }
-                            }
-                            div { class: "md:col-span-1",
-                                Button {
-                                    variant: ButtonVariant::Secondary,
-                                    onclick: move |_| {
-                                        let mut current = lines.read().clone();
-                                        if current.len() > 1 {
-                                            current.remove(idx);
-                                            lines.set(current);
-                                        }
-                                    },
-                                    "Remove"
-                                }
-                            }
-                        }
-                    }
-                }
-                div { class: "mt-3",
-                    Button {
-                        variant: ButtonVariant::Secondary,
-                        onclick: move |_| {
-                            let mut current = lines.read().clone();
-                            current.push(DraftLine::new());
-                            lines.set(current);
-                        },
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "Add line"
-                    }
-                }
-
-                div { class: "mt-4 flex flex-col items-end gap-2 text-sm",
-                    div { class: "w-40",
+                    // The client cannot change after creation: the
+                    // quote's identity as "for this customer" is what
+                    // the portal scopes on.
+                    if is_edit {
                         Input {
-                            name: "tax_amount",
-                            label: "Tax",
-                            r#type: "number".to_string(),
-                            step: "0.01".to_string(),
-                            value: tax_amount.read().clone(),
-                            oninput: move |e: FormEvent| tax_amount.set(e.value()),
+                            name: "company",
+                            label: "Client",
+                            value: company_name.read().clone(),
+                            disabled: true,
+                        }
+                    } else {
+                        crate::components::CompanyPicker {
+                            value: company_name.read().clone(),
+                            selected_id: (!company_id.read().is_empty())
+                                .then(|| company_id.read().clone()),
+                            required: true,
+                            error: company_error.read().clone(),
+                            onselect: move |(id, name): (String, String)| {
+                                company_id.set(id);
+                                company_name.set(name);
+                                company_error.set(String::new());
+                            },
+                            onclear: move |_| {
+                                company_id.set(String::new());
+                                company_name.set(String::new());
+                            },
                         }
                     }
-                    // Preview only: the server is the source of truth and
-                    // recomputes from the saved lines.
-                    div { "Subtotal: " span { class: "font-medium", "{format_money(subtotal_preview)}" } }
-                    div { class: "text-base",
-                        "Total: " span { class: "font-semibold", "{format_money(total_preview)}" }
+                }
+                Input {
+                    name: "valid_until",
+                    label: "Valid until",
+                    r#type: "date".to_string(),
+                    value: valid_until.read().clone(),
+                    oninput: move |e: FormEvent| valid_until.set(e.value()),
+                }
+            }
+            Input {
+                name: "title",
+                label: "Title",
+                value: title.read().clone(),
+                rules: vec![Rule::Required, Rule::MaxLen(255)],
+                maxlength: 255,
+                oninput: move |e: FormEvent| title.set(e.value()),
+            }
+            Input {
+                name: "summary",
+                label: "Summary",
+                value: summary.read().clone(),
+                rules: vec![Rule::MaxLen(2000)],
+                oninput: move |e: FormEvent| summary.set(e.value()),
+            }
+            Textarea {
+                name: "description",
+                label: "Scope of work",
+                rows: 6,
+                value: description.read().clone(),
+                oninput: move |e: FormEvent| description.set(e.value()),
+            }
+        }
+
+        Card { class: "mb-6", title: "Line items",
+            div { class: "space-y-3",
+                for (idx, line) in lines.read().clone().into_iter().enumerate() {
+                    div { key: "{idx}", class: "grid grid-cols-1 md:grid-cols-12 gap-2 items-end",
+                        div { class: "md:col-span-5",
+                            Input {
+                                name: "description-{idx}",
+                                label: "Description",
+                                value: line.description.clone(),
+                                oninput: move |e: FormEvent| {
+                                    let mut current = lines.read().clone();
+                                    if let Some(l) = current.get_mut(idx) {
+                                        l.description = e.value();
+                                    }
+                                    lines.set(current);
+                                },
+                            }
+                        }
+                        div { class: "md:col-span-2",
+                            Select {
+                                name: "line_type-{idx}",
+                                label: "Type",
+                                options: line_type_options.clone(),
+                                value: line.line_type.clone(),
+                                onchange: move |e: FormEvent| {
+                                    let mut current = lines.read().clone();
+                                    if let Some(l) = current.get_mut(idx) {
+                                        l.line_type = e.value();
+                                    }
+                                    lines.set(current);
+                                },
+                            }
+                        }
+                        div { class: "md:col-span-2",
+                            Input {
+                                name: "quantity-{idx}",
+                                label: "Qty",
+                                r#type: "number".to_string(),
+                                step: "0.01".to_string(),
+                                value: line.quantity.clone(),
+                                oninput: move |e: FormEvent| {
+                                    let mut current = lines.read().clone();
+                                    if let Some(l) = current.get_mut(idx) {
+                                        l.quantity = e.value();
+                                    }
+                                    lines.set(current);
+                                },
+                            }
+                        }
+                        div { class: "md:col-span-2",
+                            Input {
+                                name: "unit_price-{idx}",
+                                label: "Unit price",
+                                r#type: "number".to_string(),
+                                step: "0.01".to_string(),
+                                value: line.unit_price.clone(),
+                                oninput: move |e: FormEvent| {
+                                    let mut current = lines.read().clone();
+                                    if let Some(l) = current.get_mut(idx) {
+                                        l.unit_price = e.value();
+                                    }
+                                    lines.set(current);
+                                },
+                            }
+                        }
+                        div { class: "md:col-span-1",
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                onclick: move |_| {
+                                    let mut current = lines.read().clone();
+                                    if current.len() > 1 {
+                                        current.remove(idx);
+                                        lines.set(current);
+                                    }
+                                },
+                                "Remove"
+                            }
+                        }
                     }
-                    p { class: "text-xs text-subtle", "Calculated on save." }
+                }
+            }
+            div { class: "mt-3",
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| {
+                        let mut current = lines.read().clone();
+                        current.push(DraftLine::new());
+                        lines.set(current);
+                    },
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "Add line"
                 }
             }
 
-            div { class: "flex justify-end gap-2",
-                Link {
-                    to: Route::QuoteList {},
-                    Button { variant: ButtonVariant::Secondary, "Cancel" }
+            div { class: "mt-4 flex flex-col items-end gap-2 text-sm",
+                div { class: "w-40",
+                    Input {
+                        name: "tax_amount",
+                        label: "Tax",
+                        r#type: "number".to_string(),
+                        step: "0.01".to_string(),
+                        value: tax_amount.read().clone(),
+                        oninput: move |e: FormEvent| tax_amount.set(e.value()),
+                    }
                 }
-                Button {
-                    variant: ButtonVariant::Primary,
-                    disabled: *submitting.read(),
-                    onclick: on_submit,
-                    "Save quote"
+                // Preview only: the server is the source of truth and
+                // recomputes from the saved lines.
+                div { "Subtotal: " span { class: "font-medium", "{format_money(subtotal_preview)}" } }
+                div { class: "text-base",
+                    "Total: " span { class: "font-semibold", "{format_money(total_preview)}" }
                 }
+                p { class: "text-xs text-subtle", "Calculated on save." }
+            }
+        }
+
+        div { class: "flex justify-end gap-2",
+            Link {
+                to: Route::QuoteList {},
+                Button { variant: ButtonVariant::Secondary, "Cancel" }
+            }
+            Button {
+                variant: ButtonVariant::Primary,
+                disabled: *submitting.read(),
+                onclick: on_submit,
+                "Save quote"
             }
         }
     }

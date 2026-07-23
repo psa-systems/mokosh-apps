@@ -127,7 +127,10 @@ pub fn classify_remote<T: Default>(
 ///     crate::hooks::fetch::api::get_authed::<DashboardReport>("/reports/dashboard").await
 /// });
 /// if report.is_unavailable() {
-///     return rsx! { AppLayout { title: "Dashboard", ContentUnavailable {} } };
+///     // MAPPS-366: pages render bare inside the persistent AppShell and set
+///     // their title via use_page_title; ContentUnavailable self-titles, so
+///     // there is no AppLayout wrapper here.
+///     return rsx! { ContentUnavailable {} };
 /// }
 /// let report = report.value_or_default();
 /// ```

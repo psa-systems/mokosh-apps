@@ -2,7 +2,7 @@
 //!
 //! Any code in the app can push a toast via [`push_toast`] without
 //! threading state down the component tree. [`ToastRoot`] is mounted
-//! once inside [`crate::components::AppLayout`] and renders the
+//! once inside [`crate::components::AppShell`] and renders the
 //! current toast stack at the bottom-right of the viewport.
 
 use std::sync::atomic::{AtomicU64, Ordering};

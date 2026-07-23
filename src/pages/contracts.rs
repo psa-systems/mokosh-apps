@@ -16,9 +16,9 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::components::{
-    contract_status_badge, AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable,
-    IconSize, PageHeader, PlusIcon, Select, SelectOption, SettingFormModal, Table, TableBody,
-    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+    contract_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card,
+    DataTable, IconSize, PageHeader, PlusIcon, Select, SelectOption, SettingFormModal, Table,
+    TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::modules::contracts::{
     ContractHourBalanceResponse, ContractItemResponse, ContractResponse, CreateContractRequest,
@@ -115,6 +115,7 @@ pub fn ContractListPage() -> Element {
     // subscribers to tenant Admin (Admin already passes
     // `can_manage_billing()`); the standardised UI still matters for a
     // future role downgrade or a tenant-internal grant change.
+    use_page_title("Contracts");
     if !use_can_manage_billing() {
         return rsx! {
             crate::components::PermissionRequired {
@@ -231,148 +232,146 @@ pub fn ContractListPage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Contracts",
-            PageHeader {
-                title: "Contracts",
-                subtitle: "Manage customer contracts and agreements",
-                actions: rsx! {
-                    Link {
-                        to: Route::RateCardList {},
-                        Button { variant: ButtonVariant::Secondary, "Rate Cards" }
+        PageHeader {
+            title: "Contracts",
+            subtitle: "Manage customer contracts and agreements",
+            actions: rsx! {
+                Link {
+                    to: Route::RateCardList {},
+                    Button { variant: ButtonVariant::Secondary, "Rate Cards" }
+                }
+                Link {
+                    to: Route::ContractNew {},
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "New Contract"
                     }
-                    Link {
-                        to: Route::ContractNew {},
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                            "New Contract"
+                }
+            },
+        }
+
+        // MAPPS-321: scope indicator.
+        crate::components::ContextFilterBanner {
+            scope: crate::components::ContextFilterScope::Contracts,
+        }
+
+        // Filters
+        Card { class: "mb-6",
+            div { class: "flex flex-col sm:flex-row gap-4",
+                div { class: "flex-1",
+                    Select {
+                        name: "company",
+                        options: company_options,
+                        value: company_filter.read().clone(),
+                        onchange: move |e: FormEvent| {
+                            company_filter.set(e.value());
+                            page.set(1);
+                        },
+                    }
+                }
+                Select {
+                    name: "status",
+                    options: status_options,
+                    value: status_filter.read().clone(),
+                    onchange: move |e: FormEvent| {
+                        status_filter.set(e.value());
+                        page.set(1);
+                    },
+                }
+                Select {
+                    name: "type",
+                    options: type_options,
+                    value: type_filter.read().clone(),
+                    onchange: move |e: FormEvent| {
+                        type_filter.set(e.value());
+                        page.set(1);
+                    },
+                }
+            }
+        }
+
+        if fetch_failed {
+            div {
+                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                "Could not load contracts. Refresh the page to retry."
+            }
+        }
+
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 6,
+            onpagechange: move |p| page.set(p),
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Contract" }
+                        TableHeader { "Type" }
+                        TableHeader { "Value" }
+                        TableHeader { "Start" }
+                        TableHeader { "Expires" }
+                        TableHeader { "Status" }
+                    }
+                }
+                if is_loading {
+                    TableLoading { columns: 6, rows: 5 }
+                } else if page_rows.is_empty() {
+                    if has_filters {
+                        // Filtered to nothing: no CTA (creating won't help);
+                        // guide the user back to the filters.
+                        // MAPPS-291: one-click "Clear filters" affordance.
+                        TableEmpty {
+                            columns: 6,
+                            title: "No contracts match your filters".to_string(),
+                            description: "Adjust the filters above, or clear them to see every contract again.".to_string(),
+                            actions: rsx! {
+                                Button {
+                                    variant: ButtonVariant::Secondary,
+                                    onclick: move |_| {
+                                        company_filter.set(String::new());
+                                        status_filter.set(String::new());
+                                        type_filter.set(String::new());
+                                    },
+                                    "Clear filters"
+                                }
+                            },
                         }
-                    }
-                },
-            }
-
-            // MAPPS-321: scope indicator.
-            crate::components::ContextFilterBanner {
-                scope: crate::components::ContextFilterScope::Contracts,
-            }
-
-            // Filters
-            Card { class: "mb-6",
-                div { class: "flex flex-col sm:flex-row gap-4",
-                    div { class: "flex-1",
-                        Select {
-                            name: "company",
-                            options: company_options,
-                            value: company_filter.read().clone(),
-                            onchange: move |e: FormEvent| {
-                                company_filter.set(e.value());
-                                page.set(1);
+                    } else {
+                        TableEmpty {
+                            columns: 6,
+                            title: "No contracts yet".to_string(),
+                            description: "Create your first contract to track agreements and billing."
+                                .to_string(),
+                            actions: rsx! {
+                                Link {
+                                    to: Route::ContractNew {},
+                                    Button {
+                                        variant: ButtonVariant::Primary,
+                                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                        "New Contract"
+                                    }
+                                }
                             },
                         }
                     }
-                    Select {
-                        name: "status",
-                        options: status_options,
-                        value: status_filter.read().clone(),
-                        onchange: move |e: FormEvent| {
-                            status_filter.set(e.value());
-                            page.set(1);
-                        },
-                    }
-                    Select {
-                        name: "type",
-                        options: type_options,
-                        value: type_filter.read().clone(),
-                        onchange: move |e: FormEvent| {
-                            type_filter.set(e.value());
-                            page.set(1);
-                        },
-                    }
-                }
-            }
-
-            if fetch_failed {
-                div {
-                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                    "Could not load contracts. Refresh the page to retry."
-                }
-            }
-
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 6,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Contract" }
-                            TableHeader { "Type" }
-                            TableHeader { "Value" }
-                            TableHeader { "Start" }
-                            TableHeader { "Expires" }
-                            TableHeader { "Status" }
-                        }
-                    }
-                    if is_loading {
-                        TableLoading { columns: 6, rows: 5 }
-                    } else if page_rows.is_empty() {
-                        if has_filters {
-                            // Filtered to nothing: no CTA (creating won't help);
-                            // guide the user back to the filters.
-                            // MAPPS-291: one-click "Clear filters" affordance.
-                            TableEmpty {
-                                columns: 6,
-                                title: "No contracts match your filters".to_string(),
-                                description: "Adjust the filters above, or clear them to see every contract again.".to_string(),
-                                actions: rsx! {
-                                    Button {
-                                        variant: ButtonVariant::Secondary,
-                                        onclick: move |_| {
-                                            company_filter.set(String::new());
-                                            status_filter.set(String::new());
-                                            type_filter.set(String::new());
-                                        },
-                                        "Clear filters"
-                                    }
-                                },
-                            }
-                        } else {
-                            TableEmpty {
-                                columns: 6,
-                                title: "No contracts yet".to_string(),
-                                description: "Create your first contract to track agreements and billing."
-                                    .to_string(),
-                                actions: rsx! {
-                                    Link {
-                                        to: Route::ContractNew {},
-                                        Button {
-                                            variant: ButtonVariant::Primary,
-                                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                            "New Contract"
-                                        }
-                                    }
-                                },
-                            }
-                        }
-                    } else {
-                        TableBody {
-                            for contract in page_rows.iter().cloned() {
-                                ContractRow {
-                                    key: "{contract.id}",
-                                    id: contract.id.to_string(),
-                                    name: contract.name.clone(),
-                                    contract_type: contract.contract_type.clone(),
-                                    value: format_money_opt(contract.billing_amount),
-                                    start: contract.start_date.format("%b %-d, %Y").to_string(),
-                                    expires: contract
-                                        .end_date
-                                        .map(|d| d.format("%b %-d, %Y").to_string())
-                                        .unwrap_or_else(|| "Ongoing".to_string()),
-                                    status: contract.status.clone(),
-                                }
+                } else {
+                    TableBody {
+                        for contract in page_rows.iter().cloned() {
+                            ContractRow {
+                                key: "{contract.id}",
+                                id: contract.id.to_string(),
+                                name: contract.name.clone(),
+                                contract_type: contract.contract_type.clone(),
+                                value: format_money_opt(contract.billing_amount),
+                                start: contract.start_date.format("%b %-d, %Y").to_string(),
+                                expires: contract
+                                    .end_date
+                                    .map(|d| d.format("%b %-d, %Y").to_string())
+                                    .unwrap_or_else(|| "Ongoing".to_string()),
+                                status: contract.status.clone(),
                             }
                         }
                     }
@@ -435,6 +434,7 @@ fn ContractRow(props: ContractRowProps) -> Element {
 /// New contract page.
 #[component]
 pub fn ContractNewPage() -> Element {
+    use_page_title("New Contract");
     // MAPPS-300: pre-fill `company_id` from the URL so the Company detail
     // "New Contract" CTA lands on a form already scoped to that company.
     let initial = ContractFormValues {
@@ -442,28 +442,26 @@ pub fn ContractNewPage() -> Element {
         ..ContractFormValues::default()
     };
     rsx! {
-        AppLayout { title: "New Contract",
-            PageHeader {
-                title: "New Contract",
-                subtitle: "Create a new contract",
-                // MAPPS-294: breadcrumb back to the Contracts list.
-                breadcrumbs: rsx! {
-                    crate::components::Breadcrumbs {
-                        items: vec![
-                            crate::components::BreadcrumbItem {
-                                label: "Contracts".to_string(),
-                                route: Some(Route::ContractList {}),
-                            },
-                            crate::components::BreadcrumbItem {
-                                label: "New Contract".to_string(),
-                                route: None,
-                            },
-                        ],
-                    }
-                },
-            }
-            ContractForm { mode: ContractFormMode::Create, initial }
+        PageHeader {
+            title: "New Contract",
+            subtitle: "Create a new contract",
+            // MAPPS-294: breadcrumb back to the Contracts list.
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs {
+                    items: vec![
+                        crate::components::BreadcrumbItem {
+                            label: "Contracts".to_string(),
+                            route: Some(Route::ContractList {}),
+                        },
+                        crate::components::BreadcrumbItem {
+                            label: "New Contract".to_string(),
+                            route: None,
+                        },
+                    ],
+                }
+            },
         }
+        ContractForm { mode: ContractFormMode::Create, initial }
     }
 }
 
@@ -474,6 +472,7 @@ pub struct ContractEditPageProps {
 
 #[component]
 pub fn ContractEditPage(props: ContractEditPageProps) -> Element {
+    use_page_title("Edit Contract");
     let id_for_resource = props.id.clone();
     let id_for_form = props.id.clone();
     let detail_resource = use_resource(move || {
@@ -500,53 +499,51 @@ pub fn ContractEditPage(props: ContractEditPageProps) -> Element {
         };
     }
     rsx! {
-        AppLayout { title: "Edit Contract",
-            PageHeader { title: "Edit Contract" }
-            match &*snap {
-                None => rsx! {
-                    // PMS-353
-                    crate::components::DetailSkeleton {}
-                },
-                Some(None) => rsx! {
-                    Card {
-                        div { class: "py-8 text-center",
-                            p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load contract." }
-                            Link {
-                                to: Route::ContractList {},
-                                class: "text-sm text-accent hover:opacity-90",
-                                "Back to contracts"
-                            }
+        PageHeader { title: "Edit Contract" }
+        match &*snap {
+            None => rsx! {
+                // PMS-353
+                crate::components::DetailSkeleton {}
+            },
+            Some(None) => rsx! {
+                Card {
+                    div { class: "py-8 text-center",
+                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load contract." }
+                        Link {
+                            to: Route::ContractList {},
+                            class: "text-sm text-accent hover:opacity-90",
+                            "Back to contracts"
                         }
                     }
-                },
-                Some(Some(c)) => {
-                    let initial = ContractFormValues {
-                        name: c.name.clone(),
-                        company_id: c.company_id.to_string(),
-                        contract_type: c.contract_type.clone(),
-                        status: if c.status.is_empty() { "draft".to_string() } else { c.status.clone() },
-                        billing_cycle: if c.billing_cycle.is_empty() {
-                            "monthly".to_string()
-                        } else {
-                            c.billing_cycle.clone()
-                        },
-                        billing_amount: c.billing_amount.map(|d| d.to_string()).unwrap_or_default(),
-                        start_date: c.start_date.format("%Y-%m-%d").to_string(),
-                        end_date: c
-                            .end_date
-                            .map(|d| d.format("%Y-%m-%d").to_string())
-                            .unwrap_or_default(),
-                        auto_renew: c.auto_renew,
-                        contract_number: c.contract_number.clone().unwrap_or_default(),
-                        notes: c.notes.clone().unwrap_or_default(),
-                        items: Vec::new(),
-                    };
-                    let id = id_for_form.clone();
-                    rsx! {
-                        ContractForm { mode: ContractFormMode::Edit { id }, initial }
-                    }
-                },
-            }
+                }
+            },
+            Some(Some(c)) => {
+                let initial = ContractFormValues {
+                    name: c.name.clone(),
+                    company_id: c.company_id.to_string(),
+                    contract_type: c.contract_type.clone(),
+                    status: if c.status.is_empty() { "draft".to_string() } else { c.status.clone() },
+                    billing_cycle: if c.billing_cycle.is_empty() {
+                        "monthly".to_string()
+                    } else {
+                        c.billing_cycle.clone()
+                    },
+                    billing_amount: c.billing_amount.map(|d| d.to_string()).unwrap_or_default(),
+                    start_date: c.start_date.format("%Y-%m-%d").to_string(),
+                    end_date: c
+                        .end_date
+                        .map(|d| d.format("%Y-%m-%d").to_string())
+                        .unwrap_or_default(),
+                    auto_renew: c.auto_renew,
+                    contract_number: c.contract_number.clone().unwrap_or_default(),
+                    notes: c.notes.clone().unwrap_or_default(),
+                    items: Vec::new(),
+                };
+                let id = id_for_form.clone();
+                rsx! {
+                    ContractForm { mode: ContractFormMode::Edit { id }, initial }
+                }
+            },
         }
     }
 }
@@ -1500,6 +1497,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
         Some(Some(c)) => c.name.clone(),
         _ => "Contract".to_string(),
     };
+    use_page_title(header_title.clone());
 
     let navigator = use_navigator();
     let mut deleting = use_signal(|| false);
@@ -1549,177 +1547,175 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
     };
 
     rsx! {
-        AppLayout { title: "{header_title}",
-            crate::components::ConfirmDialog {
-                open: confirming_delete(),
-                title: "Delete contract".to_string(),
-                message: "Delete this contract? This cannot be undone.".to_string(),
-                confirm_text: "Delete".to_string(),
-                cancel_text: "Cancel".to_string(),
-                destructive: true,
-                loading: *deleting.read(),
-                onconfirm: on_confirm_delete,
-                oncancel: move |_| {
-                    if !*deleting.read() {
-                        confirming_delete.set(false);
-                    }
-                },
-            }
-            PageHeader {
-                title: "{header_title}",
-                breadcrumbs: rsx! {
-                    crate::components::Breadcrumbs {
-                        items: vec![
-                            crate::components::BreadcrumbItem {
-                                label: "Contracts".to_string(),
-                                route: Some(Route::ContractList {}),
-                            },
-                            crate::components::BreadcrumbItem {
-                                label: header_title.clone(),
-                                route: None,
-                            },
-                        ],
-                    }
-                },
-                actions: rsx! {
-                    Link {
-                        to: Route::ContractEdit { id: edit_id },
-                        Button { variant: ButtonVariant::Secondary, "Edit" }
-                    }
-                    Button {
-                        variant: ButtonVariant::Danger,
-                        loading: *deleting.read(),
-                        // MAPPS-357: block delete while the server is unreachable.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
-                        onclick: move |_| {
-                            if !*deleting.read() {
-                                confirming_delete.set(true);
-                            }
-                        },
-                        "Delete"
-                    }
-                },
-            }
-
-            match &*contract_snapshot {
-                None => rsx! {
-                    // PMS-353
-                    crate::components::DetailSkeleton {}
-                },
-                Some(None) => rsx! {
-                    Card {
-                        div { class: "py-8 text-center",
-                            p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load contract." }
-                            Link {
-                                to: Route::ContractList {},
-                                class: "text-sm text-accent hover:opacity-90",
-                                "Back to contracts"
-                            }
-                        }
-                    }
-                },
-                Some(Some(contract)) => {
-                    let type_label = humanize_contract_type(&contract.contract_type);
-                    let (status_variant, status_label) = contract_status_badge(&contract.status);
-                    // PMS-365: title-case the enum instead of leaking raw `monthly`.
-                    let billing_cycle = humanize_billing_cycle(&contract.billing_cycle);
-                    let billing_amount = format_money_opt(contract.billing_amount);
-                    let start = contract.start_date.format("%b %-d, %Y").to_string();
-                    let end = contract
-                        .end_date
-                        .map(|d| d.format("%b %-d, %Y").to_string())
-                        .unwrap_or_else(|| "Ongoing".to_string());
-                    let auto_renew = if contract.auto_renew { "Yes" } else { "No" };
-                    let number = contract.contract_number.clone().unwrap_or_default();
-                    let notes = contract.notes.clone().unwrap_or_default();
-                    rsx! {
-                        div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
-                            div { class: "lg:col-span-2 space-y-6",
-                                Card { title: "Contract Details",
-                                    dl { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
-                                        div {
-                                            dt { class: "text-sm text-muted", "Contract Type" }
-                                            dd { class: "mt-1 font-medium", "{type_label}" }
-                                        }
-                                        div {
-                                            dt { class: "text-sm text-muted", "Billing Cycle" }
-                                            dd { class: "mt-1", "{billing_cycle}" }
-                                        }
-                                        div {
-                                            dt { class: "text-sm text-muted", "Start Date" }
-                                            dd { class: "mt-1", "{start}" }
-                                        }
-                                        div {
-                                            dt { class: "text-sm text-muted", "End Date" }
-                                            dd { class: "mt-1", "{end}" }
-                                        }
-                                        div {
-                                            dt { class: "text-sm text-muted", "Auto-Renewal" }
-                                            dd { class: "mt-1", "{auto_renew}" }
-                                        }
-                                        if !number.is_empty() {
-                                            div {
-                                                dt { class: "text-sm text-muted", "Contract Number" }
-                                                dd { class: "mt-1", "{number}" }
-                                            }
-                                        }
-                                    }
-                                    if !notes.is_empty() {
-                                        div { class: "mt-4",
-                                            dt { class: "text-sm text-muted mb-1", "Notes" }
-                                            dd { class: "text-sm whitespace-pre-line", "{notes}" }
-                                        }
-                                    }
-                                }
-
-                                ContractItemsCard { items_resource, editing_item, can_mutate }
-                                ContractHourBalanceCard { balance_resource, items_resource, can_mutate }
-                            }
-
-                            div { class: "space-y-6",
-                                Card { title: "Summary",
-                                    dl { class: "space-y-4",
-                                        div { class: "flex justify-between",
-                                            dt { class: "text-sm text-muted", "Status" }
-                                            dd { Badge { variant: status_variant, "{status_label}" } }
-                                        }
-                                        div { class: "flex justify-between",
-                                            dt { class: "text-sm text-muted", "Value" }
-                                            dd { class: "font-medium text-lg", "{billing_amount}" }
-                                        }
-                                        div { class: "flex justify-between",
-                                            dt { class: "text-sm text-muted", "Company" }
-                                            dd {
-                                                Link {
-                                                    to: Route::CompanyDetail { id: contract.company_id.to_string() },
-                                                    class: "text-sm text-accent hover:opacity-90",
-                                                    "View company"
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-            }
-
-            if let Some(state) = editing_item.read().clone() {
-                ContractItemFormModal {
-                    state,
-                    contract_id: id_for_item_modal.clone(),
-                    onclose: move |_| editing_item.set(None),
-                    onsaved: move |_| {
-                        editing_item.set(None);
-                        // Refresh the items table and the contract itself so
-                        // per-row totals and the Summary "Value" reflect the
-                        // change (the server derives Value from items).
-                        items_resource.restart();
-                        contract_resource.restart();
-                    },
+        crate::components::ConfirmDialog {
+            open: confirming_delete(),
+            title: "Delete contract".to_string(),
+            message: "Delete this contract? This cannot be undone.".to_string(),
+            confirm_text: "Delete".to_string(),
+            cancel_text: "Cancel".to_string(),
+            destructive: true,
+            loading: *deleting.read(),
+            onconfirm: on_confirm_delete,
+            oncancel: move |_| {
+                if !*deleting.read() {
+                    confirming_delete.set(false);
                 }
+            },
+        }
+        PageHeader {
+            title: "{header_title}",
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs {
+                    items: vec![
+                        crate::components::BreadcrumbItem {
+                            label: "Contracts".to_string(),
+                            route: Some(Route::ContractList {}),
+                        },
+                        crate::components::BreadcrumbItem {
+                            label: header_title.clone(),
+                            route: None,
+                        },
+                    ],
+                }
+            },
+            actions: rsx! {
+                Link {
+                    to: Route::ContractEdit { id: edit_id },
+                    Button { variant: ButtonVariant::Secondary, "Edit" }
+                }
+                Button {
+                    variant: ButtonVariant::Danger,
+                    loading: *deleting.read(),
+                    // MAPPS-357: block delete while the server is unreachable.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
+                    onclick: move |_| {
+                        if !*deleting.read() {
+                            confirming_delete.set(true);
+                        }
+                    },
+                    "Delete"
+                }
+            },
+        }
+
+        match &*contract_snapshot {
+            None => rsx! {
+                // PMS-353
+                crate::components::DetailSkeleton {}
+            },
+            Some(None) => rsx! {
+                Card {
+                    div { class: "py-8 text-center",
+                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load contract." }
+                        Link {
+                            to: Route::ContractList {},
+                            class: "text-sm text-accent hover:opacity-90",
+                            "Back to contracts"
+                        }
+                    }
+                }
+            },
+            Some(Some(contract)) => {
+                let type_label = humanize_contract_type(&contract.contract_type);
+                let (status_variant, status_label) = contract_status_badge(&contract.status);
+                // PMS-365: title-case the enum instead of leaking raw `monthly`.
+                let billing_cycle = humanize_billing_cycle(&contract.billing_cycle);
+                let billing_amount = format_money_opt(contract.billing_amount);
+                let start = contract.start_date.format("%b %-d, %Y").to_string();
+                let end = contract
+                    .end_date
+                    .map(|d| d.format("%b %-d, %Y").to_string())
+                    .unwrap_or_else(|| "Ongoing".to_string());
+                let auto_renew = if contract.auto_renew { "Yes" } else { "No" };
+                let number = contract.contract_number.clone().unwrap_or_default();
+                let notes = contract.notes.clone().unwrap_or_default();
+                rsx! {
+                    div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
+                        div { class: "lg:col-span-2 space-y-6",
+                            Card { title: "Contract Details",
+                                dl { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
+                                    div {
+                                        dt { class: "text-sm text-muted", "Contract Type" }
+                                        dd { class: "mt-1 font-medium", "{type_label}" }
+                                    }
+                                    div {
+                                        dt { class: "text-sm text-muted", "Billing Cycle" }
+                                        dd { class: "mt-1", "{billing_cycle}" }
+                                    }
+                                    div {
+                                        dt { class: "text-sm text-muted", "Start Date" }
+                                        dd { class: "mt-1", "{start}" }
+                                    }
+                                    div {
+                                        dt { class: "text-sm text-muted", "End Date" }
+                                        dd { class: "mt-1", "{end}" }
+                                    }
+                                    div {
+                                        dt { class: "text-sm text-muted", "Auto-Renewal" }
+                                        dd { class: "mt-1", "{auto_renew}" }
+                                    }
+                                    if !number.is_empty() {
+                                        div {
+                                            dt { class: "text-sm text-muted", "Contract Number" }
+                                            dd { class: "mt-1", "{number}" }
+                                        }
+                                    }
+                                }
+                                if !notes.is_empty() {
+                                    div { class: "mt-4",
+                                        dt { class: "text-sm text-muted mb-1", "Notes" }
+                                        dd { class: "text-sm whitespace-pre-line", "{notes}" }
+                                    }
+                                }
+                            }
+
+                            ContractItemsCard { items_resource, editing_item, can_mutate }
+                            ContractHourBalanceCard { balance_resource, items_resource, can_mutate }
+                        }
+
+                        div { class: "space-y-6",
+                            Card { title: "Summary",
+                                dl { class: "space-y-4",
+                                    div { class: "flex justify-between",
+                                        dt { class: "text-sm text-muted", "Status" }
+                                        dd { Badge { variant: status_variant, "{status_label}" } }
+                                    }
+                                    div { class: "flex justify-between",
+                                        dt { class: "text-sm text-muted", "Value" }
+                                        dd { class: "font-medium text-lg", "{billing_amount}" }
+                                    }
+                                    div { class: "flex justify-between",
+                                        dt { class: "text-sm text-muted", "Company" }
+                                        dd {
+                                            Link {
+                                                to: Route::CompanyDetail { id: contract.company_id.to_string() },
+                                                class: "text-sm text-accent hover:opacity-90",
+                                                "View company"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+        }
+
+        if let Some(state) = editing_item.read().clone() {
+            ContractItemFormModal {
+                state,
+                contract_id: id_for_item_modal.clone(),
+                onclose: move |_| editing_item.set(None),
+                onsaved: move |_| {
+                    editing_item.set(None);
+                    // Refresh the items table and the contract itself so
+                    // per-row totals and the Summary "Value" reflect the
+                    // change (the server derives Value from items).
+                    items_resource.restart();
+                    contract_resource.restart();
+                },
             }
         }
     }
@@ -2440,6 +2436,7 @@ pub fn RateCardListPage(
     // retry." banner that read as transient when it was actually a
     // permission boundary. Render the shared `PermissionRequired`
     // empty state instead.
+    use_page_title("Rate Cards");
     if !can_edit {
         return rsx! {
             crate::components::PermissionRequired {
@@ -2448,6 +2445,7 @@ pub fn RateCardListPage(
             }
         };
     }
+
     let navigator = use_navigator();
     let mut page = use_signal(|| 1usize);
     let mut editing = use_signal(move || {
@@ -2493,104 +2491,102 @@ pub fn RateCardListPage(
     }
 
     rsx! {
-        AppLayout { title: "Rate Cards",
-            PageHeader {
-                title: "Rate Cards",
-                subtitle: "Hourly rates by work type",
-                actions: rsx! {
-                    Link {
-                        to: Route::ContractList {},
-                        Button { variant: ButtonVariant::Secondary, "Contracts" }
-                    }
-                    if can_edit {
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            // MAPPS-357: block while the server is unreachable.
-                            disabled: !can_mutate,
-                            title: (!can_mutate).then(|| "Can't create a rate card while the server is unreachable".to_string()),
-                            onclick: move |_| editing.set(Some(RateCardFormState::new())),
-                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                            "New Rate Card"
-                        }
-                    }
-                },
-            }
-
-            if fetch_failed {
-                div {
-                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                    "Could not load rate cards. Refresh the page to retry."
+        PageHeader {
+            title: "Rate Cards",
+            subtitle: "Hourly rates by work type",
+            actions: rsx! {
+                Link {
+                    to: Route::ContractList {},
+                    Button { variant: ButtonVariant::Secondary, "Contracts" }
                 }
-            }
-
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 3,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Name" }
-                            TableHeader { "Description" }
-                            TableHeader { "Default" }
-                        }
+                if can_edit {
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        // MAPPS-357: block while the server is unreachable.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't create a rate card while the server is unreachable".to_string()),
+                        onclick: move |_| editing.set(Some(RateCardFormState::new())),
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "New Rate Card"
                     }
-                    if is_loading {
-                        TableLoading { columns: 3, rows: 5 }
-                    } else if rows.is_empty() && !fetch_failed {
-                        TableEmpty {
-                            columns: 3,
-                            title: "No rate cards yet".to_string(),
-                            description: "Create your first rate card to set hourly rates by work type."
-                                .to_string(),
-                            actions: can_edit.then(|| rsx! {
-                                Button {
-                                    variant: ButtonVariant::Primary,
-                                    // MAPPS-357: block while the server is unreachable.
-                                    disabled: !can_mutate,
-                                    title: (!can_mutate).then(|| "Can't create a rate card while the server is unreachable".to_string()),
-                                    onclick: move |_| editing.set(Some(RateCardFormState::new())),
-                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                    "New Rate Card"
-                                }
-                            }),
-                        }
-                    } else {
-                        TableBody {
-                            for card in rows.into_iter() {
-                                RateCardRow {
-                                    key: "{card.id}",
-                                    id: card.id.to_string(),
-                                    name: card.name.clone(),
-                                    description: card.description.clone().unwrap_or_default(),
-                                    is_default: card.is_default,
-                                }
+                }
+            },
+        }
+
+        if fetch_failed {
+            div {
+                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                "Could not load rate cards. Refresh the page to retry."
+            }
+        }
+
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 3,
+            onpagechange: move |p| page.set(p),
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Name" }
+                        TableHeader { "Description" }
+                        TableHeader { "Default" }
+                    }
+                }
+                if is_loading {
+                    TableLoading { columns: 3, rows: 5 }
+                } else if rows.is_empty() && !fetch_failed {
+                    TableEmpty {
+                        columns: 3,
+                        title: "No rate cards yet".to_string(),
+                        description: "Create your first rate card to set hourly rates by work type."
+                            .to_string(),
+                        actions: can_edit.then(|| rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: block while the server is unreachable.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't create a rate card while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(RateCardFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Rate Card"
+                            }
+                        }),
+                    }
+                } else {
+                    TableBody {
+                        for card in rows.into_iter() {
+                            RateCardRow {
+                                key: "{card.id}",
+                                id: card.id.to_string(),
+                                name: card.name.clone(),
+                                description: card.description.clone().unwrap_or_default(),
+                                is_default: card.is_default,
                             }
                         }
                     }
                 }
             }
+        }
 
-            if let Some(state) = editing.read().clone() {
-                RateCardFormModal {
-                    state,
-                    onclose: move |_| editing.set(None),
-                    onsaved: move |_| {
-                        editing.set(None);
-                        rate_cards_resource.restart();
-                    },
-                    oncreated: move |id: String| {
-                        editing.set(None);
-                        navigator.push(Route::RateCardDetail { id });
-                    },
-                    ondeleted: move |_| {
-                        editing.set(None);
-                        rate_cards_resource.restart();
-                    },
-                }
+        if let Some(state) = editing.read().clone() {
+            RateCardFormModal {
+                state,
+                onclose: move |_| editing.set(None),
+                onsaved: move |_| {
+                    editing.set(None);
+                    rate_cards_resource.restart();
+                },
+                oncreated: move |id: String| {
+                    editing.set(None);
+                    navigator.push(Route::RateCardDetail { id });
+                },
+                ondeleted: move |_| {
+                    editing.set(None);
+                    rate_cards_resource.restart();
+                },
             }
         }
     }
@@ -2691,6 +2687,7 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
         Some(Some(c)) => c.name.clone(),
         _ => "Rate Card".to_string(),
     };
+    use_page_title(header_title.clone());
     let card_for_edit = match &*card_snapshot {
         Some(Some(c)) => Some(RateCardFormState::from_existing(c)),
         _ => None,
@@ -2731,127 +2728,125 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
     }
 
     rsx! {
-        AppLayout { title: "{header_title}",
-            PageHeader {
-                title: "{header_title}",
-                breadcrumbs: rsx! {
-                    crate::components::Breadcrumbs {
-                        items: vec![
-                            crate::components::BreadcrumbItem {
-                                label: "Rate Cards".to_string(),
-                                route: Some(Route::RateCardList {}),
-                            },
-                            crate::components::BreadcrumbItem {
-                                label: header_title.clone(),
-                                route: None,
-                            },
-                        ],
-                    }
-                },
-                actions: rsx! {
-                    Link {
-                        to: Route::RateCardList {},
-                        Button { variant: ButtonVariant::Secondary, "Rate Cards" }
-                    }
-                    if can_edit {
-                        if let Some(state) = card_for_edit.clone() {
-                            Button {
-                                variant: ButtonVariant::Secondary,
-                                // MAPPS-357: block while the server is unreachable.
-                                disabled: !can_mutate,
-                                title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
-                                onclick: move |_| editing_card.set(Some(state.clone())),
-                                "Edit Card"
-                            }
+        PageHeader {
+            title: "{header_title}",
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs {
+                    items: vec![
+                        crate::components::BreadcrumbItem {
+                            label: "Rate Cards".to_string(),
+                            route: Some(Route::RateCardList {}),
+                        },
+                        crate::components::BreadcrumbItem {
+                            label: header_title.clone(),
+                            route: None,
+                        },
+                    ],
+                }
+            },
+            actions: rsx! {
+                Link {
+                    to: Route::RateCardList {},
+                    Button { variant: ButtonVariant::Secondary, "Rate Cards" }
+                }
+                if can_edit {
+                    if let Some(state) = card_for_edit.clone() {
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            // MAPPS-357: block while the server is unreachable.
+                            disabled: !can_mutate,
+                            title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
+                            onclick: move |_| editing_card.set(Some(state.clone())),
+                            "Edit Card"
                         }
                     }
-                },
-            }
+                }
+            },
+        }
 
-            match &*card_snapshot {
-                None => rsx! {
-                    // PMS-353
-                    crate::components::DetailSkeleton {}
-                },
-                Some(None) => rsx! {
-                    Card {
-                        div { class: "py-8 text-center",
-                            p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load rate card." }
-                            Link {
-                                to: Route::RateCardList {},
-                                class: "text-sm text-accent hover:opacity-90",
-                                "Back to rate cards"
-                            }
+        match &*card_snapshot {
+            None => rsx! {
+                // PMS-353
+                crate::components::DetailSkeleton {}
+            },
+            Some(None) => rsx! {
+                Card {
+                    div { class: "py-8 text-center",
+                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load rate card." }
+                        Link {
+                            to: Route::RateCardList {},
+                            class: "text-sm text-accent hover:opacity-90",
+                            "Back to rate cards"
                         }
                     }
-                },
-                Some(Some(card)) => {
-                    let description = card.description.clone().unwrap_or_default();
-                    let is_default = card.is_default;
-                    rsx! {
-                        div { class: "space-y-6",
-                            Card { title: "Details",
-                                dl { class: "space-y-4",
-                                    if !description.is_empty() {
-                                        div {
-                                            dt { class: "text-sm text-muted", "Description" }
-                                            dd { class: "mt-1 text-sm", "{description}" }
-                                        }
+                }
+            },
+            Some(Some(card)) => {
+                let description = card.description.clone().unwrap_or_default();
+                let is_default = card.is_default;
+                rsx! {
+                    div { class: "space-y-6",
+                        Card { title: "Details",
+                            dl { class: "space-y-4",
+                                if !description.is_empty() {
+                                    div {
+                                        dt { class: "text-sm text-muted", "Description" }
+                                        dd { class: "mt-1 text-sm", "{description}" }
                                     }
-                                    div { class: "flex justify-between",
-                                        dt { class: "text-sm text-muted", "Default" }
-                                        dd {
-                                            if is_default {
-                                                Badge { variant: BadgeVariant::Green, "Yes" }
-                                            } else {
-                                                Badge { variant: BadgeVariant::Gray, "No" }
-                                            }
+                                }
+                                div { class: "flex justify-between",
+                                    dt { class: "text-sm text-muted", "Default" }
+                                    dd {
+                                        if is_default {
+                                            Badge { variant: BadgeVariant::Green, "Yes" }
+                                        } else {
+                                            Badge { variant: BadgeVariant::Gray, "No" }
                                         }
                                     }
                                 }
                             }
-                            RateCardItemsCard {
-                                items_resource,
-                                can_edit,
-                                can_mutate,
-                                work_types: work_types.clone(),
-                                editing_item,
-                            }
+                        }
+                        RateCardItemsCard {
+                            items_resource,
+                            can_edit,
+                            can_mutate,
+                            work_types: work_types.clone(),
+                            editing_item,
                         }
                     }
+                }
+            },
+        }
+
+        if let Some(state) = editing_card.read().clone() {
+            RateCardFormModal {
+                state,
+                onclose: move |_| editing_card.set(None),
+                onsaved: move |_| {
+                    editing_card.set(None);
+                    card_resource.restart();
+                },
+                // The detail page only ever edits an existing card, so a
+                // create callback is never invoked here.
+                oncreated: move |_: String| {},
+                ondeleted: move |_| {
+                    editing_card.set(None);
+                    navigator.push(Route::RateCardList {});
                 },
             }
+        }
 
-            if let Some(state) = editing_card.read().clone() {
-                RateCardFormModal {
-                    state,
-                    onclose: move |_| editing_card.set(None),
-                    onsaved: move |_| {
-                        editing_card.set(None);
-                        card_resource.restart();
-                    },
-                    // The detail page only ever edits an existing card, so a
-                    // create callback is never invoked here.
-                    oncreated: move |_: String| {},
-                    ondeleted: move |_| {
-                        editing_card.set(None);
-                        navigator.push(Route::RateCardList {});
-                    },
-                }
-            }
-
-            if let Some(state) = editing_item.read().clone() {
-                RateCardItemFormModal {
-                    state,
-                    card_id: card_id.clone(),
-                    work_types: work_types.clone(),
-                    used_work_type_ids: used_work_type_ids.clone(),
-                    onclose: move |_| editing_item.set(None),
-                    onsaved: move |_| {
-                        editing_item.set(None);
-                        items_resource.restart();
-                    },
-                }
+        if let Some(state) = editing_item.read().clone() {
+            RateCardItemFormModal {
+                state,
+                card_id: card_id.clone(),
+                work_types: work_types.clone(),
+                used_work_type_ids: used_work_type_ids.clone(),
+                onclose: move |_| editing_item.set(None),
+                onsaved: move |_| {
+                    editing_item.set(None);
+                    items_resource.restart();
+                },
             }
         }
     }

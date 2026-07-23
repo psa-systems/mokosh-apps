@@ -10,7 +10,7 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    AppLayout, Button, ButtonSize, ButtonVariant, Card, IconSize, PageHeader, PlusIcon,
+    use_page_title, Button, ButtonSize, ButtonVariant, Card, IconSize, PageHeader, PlusIcon,
 };
 
 /// One labeled row in the showcase: a heading, a "when to use" note, and the
@@ -29,65 +29,64 @@ fn ShowcaseRow(title: String, usage: String, children: Element) -> Element {
 /// Canonical button reference page.
 #[component]
 pub fn ButtonShowcasePage() -> Element {
+    use_page_title("Button Variants");
     rsx! {
-        AppLayout { title: "Button Variants",
-            PageHeader {
-                title: "Button Variants",
-                subtitle: "Canonical Button variants, sizes, and states (PMS-357). Match these in review.",
+        PageHeader {
+            title: "Button Variants",
+            subtitle: "Canonical Button variants, sizes, and states (PMS-357). Match these in review.",
+        }
+
+        Card {
+            ShowcaseRow {
+                title: "Primary".to_string(),
+                usage: "The page's main action: every \"New <thing>\" / create / submit button. Blue.".to_string(),
+                Button {
+                    variant: ButtonVariant::Primary,
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "New Ticket"
+                }
+                Button { variant: ButtonVariant::Primary, "Save" }
             }
 
-            Card {
-                ShowcaseRow {
-                    title: "Primary".to_string(),
-                    usage: "The page's main action: every \"New <thing>\" / create / submit button. Blue.".to_string(),
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Ticket"
-                    }
-                    Button { variant: ButtonVariant::Primary, "Save" }
-                }
+            ShowcaseRow {
+                title: "Secondary".to_string(),
+                usage: "Neutral companion action next to a Primary: Cancel, Close, Filter, Back. Gray.".to_string(),
+                Button { variant: ButtonVariant::Secondary, "Cancel" }
+                Button { variant: ButtonVariant::Secondary, "Filter" }
+            }
 
-                ShowcaseRow {
-                    title: "Secondary".to_string(),
-                    usage: "Neutral companion action next to a Primary: Cancel, Close, Filter, Back. Gray.".to_string(),
-                    Button { variant: ButtonVariant::Secondary, "Cancel" }
-                    Button { variant: ButtonVariant::Secondary, "Filter" }
-                }
+            ShowcaseRow {
+                title: "Danger".to_string(),
+                usage: "Destructive confirmation: Delete, Revoke, Remove (typically inside a confirm dialog). Red.".to_string(),
+                Button { variant: ButtonVariant::Danger, "Delete" }
+            }
 
-                ShowcaseRow {
-                    title: "Danger".to_string(),
-                    usage: "Destructive confirmation: Delete, Revoke, Remove (typically inside a confirm dialog). Red.".to_string(),
-                    Button { variant: ButtonVariant::Danger, "Delete" }
-                }
+            ShowcaseRow {
+                title: "Ghost".to_string(),
+                usage: "Low-emphasis inline / toolbar action where a filled button would be too heavy. Transparent.".to_string(),
+                Button { variant: ButtonVariant::Ghost, "Edit" }
+            }
 
-                ShowcaseRow {
-                    title: "Ghost".to_string(),
-                    usage: "Low-emphasis inline / toolbar action where a filled button would be too heavy. Transparent.".to_string(),
-                    Button { variant: ButtonVariant::Ghost, "Edit" }
-                }
+            ShowcaseRow {
+                title: "Link".to_string(),
+                usage: "Inline text action that reads as a hyperlink (e.g. \"View all\"). Blue text, no fill.".to_string(),
+                Button { variant: ButtonVariant::Link, "View all" }
+            }
 
-                ShowcaseRow {
-                    title: "Link".to_string(),
-                    usage: "Inline text action that reads as a hyperlink (e.g. \"View all\"). Blue text, no fill.".to_string(),
-                    Button { variant: ButtonVariant::Link, "View all" }
-                }
+            ShowcaseRow {
+                title: "Sizes".to_string(),
+                usage: "Small for dense toolbars / table rows, Medium (default) for forms and headers, Large for hero CTAs.".to_string(),
+                Button { variant: ButtonVariant::Primary, size: ButtonSize::Small, "Small" }
+                Button { variant: ButtonVariant::Primary, size: ButtonSize::Medium, "Medium" }
+                Button { variant: ButtonVariant::Primary, size: ButtonSize::Large, "Large" }
+            }
 
-                ShowcaseRow {
-                    title: "Sizes".to_string(),
-                    usage: "Small for dense toolbars / table rows, Medium (default) for forms and headers, Large for hero CTAs.".to_string(),
-                    Button { variant: ButtonVariant::Primary, size: ButtonSize::Small, "Small" }
-                    Button { variant: ButtonVariant::Primary, size: ButtonSize::Medium, "Medium" }
-                    Button { variant: ButtonVariant::Primary, size: ButtonSize::Large, "Large" }
-                }
-
-                ShowcaseRow {
-                    title: "States".to_string(),
-                    usage: "Loading shows a spinner and blocks repeat clicks; disabled dims and ignores input.".to_string(),
-                    Button { variant: ButtonVariant::Primary, "Default" }
-                    Button { variant: ButtonVariant::Primary, loading: true, "Loading" }
-                    Button { variant: ButtonVariant::Primary, disabled: true, "Disabled" }
-                }
+            ShowcaseRow {
+                title: "States".to_string(),
+                usage: "Loading shows a spinner and blocks repeat clicks; disabled dims and ignores input.".to_string(),
+                Button { variant: ButtonVariant::Primary, "Default" }
+                Button { variant: ButtonVariant::Primary, loading: true, "Loading" }
+                Button { variant: ButtonVariant::Primary, disabled: true, "Disabled" }
             }
         }
     }

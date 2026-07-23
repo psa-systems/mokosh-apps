@@ -31,7 +31,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, BreadcrumbItem, Breadcrumbs, Button, ButtonVariant, Card,
+    use_page_title, Badge, BadgeVariant, BreadcrumbItem, Breadcrumbs, Button, ButtonVariant, Card,
     Checkbox, DataTable, IconSize, Input, PageHeader, PlusIcon, SearchInput, Select, SelectOption,
     SettingFormModal, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
     TableLoading, TableRow, ThemePicker,
@@ -60,13 +60,12 @@ fn use_is_admin() -> bool {
 /// Shown in place of a settings page when a non-admin lands on one.
 #[component]
 fn AdminOnlyNotice(title: String) -> Element {
+    use_page_title(title.clone());
     rsx! {
-        AppLayout { title: title.clone(),
-            PageHeader { title, subtitle: "Settings" }
-            Card {
-                div { class: "text-sm text-content",
-                    "You need an administrator role to manage these settings."
-                }
+        PageHeader { title, subtitle: "Settings" }
+        Card {
+            div { class: "text-sm text-content",
+                "You need an administrator role to manage these settings."
             }
         }
     }
@@ -85,19 +84,18 @@ pub fn AppearanceSettingsPage() -> Element {
     // MAPPS-357: N/A - per-user appearance (theme + accent) has no server-backed
     // resource; the ThemePicker persists to the account with no page fetch that
     // an outage could blank, so there is no unavailable state to render.
+    use_page_title("Appearance");
     rsx! {
-        AppLayout { title: "Appearance",
-            PageHeader {
-                title: "Appearance",
-                subtitle: "Theme and accent color, saved to your account",
-                breadcrumbs: rsx! {
-                    SettingsBreadcrumb { current: Route::SettingsAppearance {} }
-                },
-            }
-            Card {
-                div { class: "p-6",
-                    ThemePicker {}
-                }
+        PageHeader {
+            title: "Appearance",
+            subtitle: "Theme and accent color, saved to your account",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsAppearance {} }
+            },
+        }
+        Card {
+            div { class: "p-6",
+                ThemePicker {}
             }
         }
     }
@@ -114,50 +112,49 @@ pub fn TvViewSettingsPage() -> Element {
     let mut enabled = use_signal(crate::hooks::tv_view::is_enabled);
     let mut team = use_signal(crate::hooks::tv_view::selected_team);
 
+    use_page_title("TV View");
     rsx! {
-        AppLayout { title: "TV View",
-            PageHeader {
-                title: "TV View",
-                subtitle: "Full-screen wall-monitor dashboard, scoped to your team, saved to this browser",
-                breadcrumbs: rsx! {
-                    SettingsBreadcrumb { current: Route::SettingsTvView {} }
-                },
-            }
-            Card {
-                div { class: "p-6 space-y-6 max-w-xl",
-                    Checkbox {
-                        name: "tv_view_enabled",
-                        label: "Enable TV view",
-                        checked: enabled(),
-                        help: "Shows a link into the full-screen dashboard from your normal dashboard.",
-                        onchange: move |e: FormEvent| {
-                            let on = e.checked();
-                            enabled.set(on);
-                            crate::hooks::tv_view::set_enabled(on);
+        PageHeader {
+            title: "TV View",
+            subtitle: "Full-screen wall-monitor dashboard, scoped to your team, saved to this browser",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsTvView {} }
+            },
+        }
+        Card {
+            div { class: "p-6 space-y-6 max-w-xl",
+                Checkbox {
+                    name: "tv_view_enabled",
+                    label: "Enable TV view",
+                    checked: enabled(),
+                    help: "Shows a link into the full-screen dashboard from your normal dashboard.",
+                    onchange: move |e: FormEvent| {
+                        let on = e.checked();
+                        enabled.set(on);
+                        crate::hooks::tv_view::set_enabled(on);
+                    },
+                }
+
+                div {
+                    Input {
+                        name: "tv_view_team",
+                        label: "Team id (optional)",
+                        value: team(),
+                        placeholder: "Leave blank to show all your teams",
+                        help: "Pin the board to a single team's tickets and KPIs. Blank uses the union of every team you belong to.",
+                        oninput: move |e: FormEvent| {
+                            let v = e.value();
+                            team.set(v.clone());
+                            crate::hooks::tv_view::set_selected_team(&v);
                         },
                     }
+                }
 
-                    div {
-                        Input {
-                            name: "tv_view_team",
-                            label: "Team id (optional)",
-                            value: team(),
-                            placeholder: "Leave blank to show all your teams",
-                            help: "Pin the board to a single team's tickets and KPIs. Blank uses the union of every team you belong to.",
-                            oninput: move |e: FormEvent| {
-                                let v = e.value();
-                                team.set(v.clone());
-                                crate::hooks::tv_view::set_selected_team(&v);
-                            },
-                        }
-                    }
-
-                    if enabled() {
-                        Link {
-                            to: Route::DashboardTv {},
-                            class: "inline-flex items-center rounded-md bg-accent text-on-accent px-4 py-2 text-sm font-medium hover:opacity-90",
-                            "Open TV view"
-                        }
+                if enabled() {
+                    Link {
+                        to: Route::DashboardTv {},
+                        class: "inline-flex items-center rounded-md bg-accent text-on-accent px-4 py-2 text-sm font-medium hover:opacity-90",
+                        "Open TV view"
                     }
                 }
             }
@@ -507,85 +504,84 @@ pub fn SettingsHomePage() -> Element {
             .collect()
     };
 
+    use_page_title("Settings");
     rsx! {
-        AppLayout { title: "Settings",
-            PageHeader {
-                title: "Settings",
-                subtitle: "Manage the standard types and configuration that shape how your workspace behaves",
-            }
+        PageHeader {
+            title: "Settings",
+            subtitle: "Manage the standard types and configuration that shape how your workspace behaves",
+        }
 
-            // Constrain the index to roughly 80% of the max-w-7xl content
-            // box (max-w-5xl is 64rem vs 80rem) so it reads as a focused
-            // settings surface rather than spanning full-bleed (MAPPS-257).
-            div { class: "mx-auto w-full max-w-5xl",
+        // Constrain the index to roughly 80% of the max-w-7xl content
+        // box (max-w-5xl is 64rem vs 80rem) so it reads as a focused
+        // settings surface rather than spanning full-bleed (MAPPS-257).
+        div { class: "mx-auto w-full max-w-5xl",
 
-            div { class: "mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between",
-                div { class: "w-full sm:max-w-xs",
-                    SearchInput {
-                        value: query.read().clone(),
-                        placeholder: "Search settings...".to_string(),
-                        oninput: move |e: FormEvent| query.set(e.value()),
-                    }
-                }
-                label { class: "flex shrink-0 items-center gap-2 text-sm text-content select-none",
-                    input {
-                        r#type: "checkbox",
-                        class: "h-4 w-4 rounded border-line text-accent focus:ring-accent",
-                        checked: adv,
-                        onchange: move |_| {
-                            let next = !*show_advanced.read();
-                            show_advanced.set(next);
-                            crate::utils::prefs::set_bool(PREF_SHOW_ADVANCED, next);
-                        },
-                    }
-                    "Show advanced settings"
+        div { class: "mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between",
+            div { class: "w-full sm:max-w-xs",
+                SearchInput {
+                    value: query.read().clone(),
+                    placeholder: "Search settings...".to_string(),
+                    oninput: move |e: FormEvent| query.set(e.value()),
                 }
             }
+            label { class: "flex shrink-0 items-center gap-2 text-sm text-content select-none",
+                input {
+                    r#type: "checkbox",
+                    class: "h-4 w-4 rounded border-line text-accent focus:ring-accent",
+                    checked: adv,
+                    onchange: move |_| {
+                        let next = !*show_advanced.read();
+                        show_advanced.set(next);
+                        crate::utils::prefs::set_bool(PREF_SHOW_ADVANCED, next);
+                    },
+                }
+                "Show advanced settings"
+            }
+        }
 
-            if q.is_empty() {
-                if !personalization.is_empty() {
-                    SettingsGroup {
-                        heading: SettingsGroupKey::Personalization.title().to_string(),
-                        color: Some(SettingsGroupKey::Personalization.color()),
-                        for surface in personalization {
-                            SettingsCard {
-                                to: surface.route.clone(),
-                                title: surface.title.to_string(),
-                                description: surface.description.to_string(),
-                            }
-                        }
-                    }
-                }
-                SettingsGroup { heading: "Configuration".to_string(),
-                    for (group, route, title, description) in group_cards {
-                        SettingsCard {
-                            to: route,
-                            title: title.to_string(),
-                            description: description.to_string(),
-                            color: Some(group.color()),
-                        }
-                    }
-                }
-            } else if results.is_empty() {
-                Card {
-                    div { class: "py-12 text-center text-sm text-muted",
-                        "No settings match \"{query}\"."
-                    }
-                }
-            } else {
-                div { class: "{group_grid_class(false)}",
-                    for surface in results {
+        if q.is_empty() {
+            if !personalization.is_empty() {
+                SettingsGroup {
+                    heading: SettingsGroupKey::Personalization.title().to_string(),
+                    color: Some(SettingsGroupKey::Personalization.color()),
+                    for surface in personalization {
                         SettingsCard {
                             to: surface.route.clone(),
                             title: surface.title.to_string(),
                             description: surface.description.to_string(),
-                            color: Some(surface.group.color()),
                         }
                     }
                 }
             }
-
+            SettingsGroup { heading: "Configuration".to_string(),
+                for (group, route, title, description) in group_cards {
+                    SettingsCard {
+                        to: route,
+                        title: title.to_string(),
+                        description: description.to_string(),
+                        color: Some(group.color()),
+                    }
+                }
             }
+        } else if results.is_empty() {
+            Card {
+                div { class: "py-12 text-center text-sm text-muted",
+                    "No settings match \"{query}\"."
+                }
+            }
+        } else {
+            div { class: "{group_grid_class(false)}",
+                for surface in results {
+                    SettingsCard {
+                        to: surface.route.clone(),
+                        title: surface.title.to_string(),
+                        description: surface.description.to_string(),
+                        color: Some(surface.group.color()),
+                    }
+                }
+            }
+        }
+
         }
     }
 }
@@ -649,45 +645,44 @@ fn SettingsGroupLanding(group: SettingsGroupKey) -> Element {
     let title = group.title();
     let visible: Vec<&SettingsSurface> = surfaces_in_group(group, show_advanced).collect();
 
+    use_page_title(title.to_string());
     rsx! {
-        AppLayout { title: title.to_string(),
-            PageHeader {
-                title: title.to_string(),
-                subtitle: group.description().to_string(),
-                breadcrumbs: rsx! {
-                    Breadcrumbs {
-                        items: vec![
-                            BreadcrumbItem { label: "Settings".to_string(), route: Some(Route::SettingsHome {}) },
-                            BreadcrumbItem { label: title.to_string(), route: None },
-                        ],
-                    }
-                },
-                actions: rsx! {
-                    Link { to: Route::SettingsHome {},
-                        Button { variant: ButtonVariant::Secondary, "Back to Settings" }
-                    }
-                },
-            }
-            if visible.is_empty() {
-                Card {
-                    div { class: "p-6 text-sm text-muted",
-                        "These settings are marked advanced. Turn on \"Show advanced settings\" on the "
-                        Link {
-                            to: Route::SettingsHome {},
-                            class: "font-medium text-accent hover:opacity-90",
-                            "Settings home"
-                        }
-                        " to view them."
-                    }
+        PageHeader {
+            title: title.to_string(),
+            subtitle: group.description().to_string(),
+            breadcrumbs: rsx! {
+                Breadcrumbs {
+                    items: vec![
+                        BreadcrumbItem { label: "Settings".to_string(), route: Some(Route::SettingsHome {}) },
+                        BreadcrumbItem { label: title.to_string(), route: None },
+                    ],
                 }
-            } else {
-                div { class: "{group_grid_class(group.prominent())}",
-                    for surface in visible {
-                        SettingsCard {
-                            to: surface.route.clone(),
-                            title: surface.title.to_string(),
-                            description: surface.description.to_string(),
-                        }
+            },
+            actions: rsx! {
+                Link { to: Route::SettingsHome {},
+                    Button { variant: ButtonVariant::Secondary, "Back to Settings" }
+                }
+            },
+        }
+        if visible.is_empty() {
+            Card {
+                div { class: "p-6 text-sm text-muted",
+                    "These settings are marked advanced. Turn on \"Show advanced settings\" on the "
+                    Link {
+                        to: Route::SettingsHome {},
+                        class: "font-medium text-accent hover:opacity-90",
+                        "Settings home"
+                    }
+                    " to view them."
+                }
+            }
+        } else {
+            div { class: "{group_grid_class(group.prominent())}",
+                for surface in visible {
+                    SettingsCard {
+                        to: surface.route.clone(),
+                        title: surface.title.to_string(),
+                        description: surface.description.to_string(),
                     }
                 }
             }
@@ -768,6 +763,7 @@ struct ImportSummary {
 /// tenant-name confirmation that matches the backend `confirm` guard.
 #[component]
 pub fn ImportExportSettingsPage() -> Element {
+    use_page_title("Import & Export");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Import & Export" } };
     }
@@ -783,19 +779,17 @@ pub fn ImportExportSettingsPage() -> Element {
         .unwrap_or_default();
 
     rsx! {
-        AppLayout { title: "Import & Export",
-            PageHeader {
-                title: "Import & Export",
-                subtitle: "Download a snapshot of this tenant's data, or restore it from a previous export",
-                breadcrumbs: rsx! {
-                    SettingsBreadcrumb { current: Route::SettingsImportExport {} }
-                },
-            }
-            div { class: "space-y-6",
-                SeedDemoPanel {}
-                ExportPanel {}
-                ImportPanel { tenant_name }
-            }
+        PageHeader {
+            title: "Import & Export",
+            subtitle: "Download a snapshot of this tenant's data, or restore it from a previous export",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsImportExport {} }
+            },
+        }
+        div { class: "space-y-6",
+            SeedDemoPanel {}
+            ExportPanel {}
+            ImportPanel { tenant_name }
         }
     }
 }
@@ -1165,6 +1159,7 @@ const MAX_DUE_BUSINESS_DAYS: u32 = 365;
 /// `validate_setting_value` range (0..=365) on the server (PMS-345).
 #[component]
 pub fn SchedulingSettingsPage() -> Element {
+    use_page_title("Scheduling");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Scheduling" } };
     }
@@ -1215,32 +1210,30 @@ pub fn SchedulingSettingsPage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Scheduling",
-            PageHeader {
-                title: "Scheduling",
-                subtitle: "Standard due date applied to new work when none is set",
-                breadcrumbs: rsx! {
-                    SettingsBreadcrumb { current: Route::SettingsScheduling {} }
-                },
-            }
-            match &*snap {
-                // PMS-353: shared detail skeleton instead of a bare text line.
-                None => rsx! {
-                    crate::components::DetailSkeleton {}
-                },
-                Some(None) => rsx! {
-                    Card {
-                        div { class: "py-12 text-center",
-                            p { class: "text-sm text-red-600 dark:text-red-300",
-                                "Could not load scheduling settings. Refresh the page to retry."
-                            }
+        PageHeader {
+            title: "Scheduling",
+            subtitle: "Standard due date applied to new work when none is set",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsScheduling {} }
+            },
+        }
+        match &*snap {
+            // PMS-353: shared detail skeleton instead of a bare text line.
+            None => rsx! {
+                crate::components::DetailSkeleton {}
+            },
+            Some(None) => rsx! {
+                Card {
+                    div { class: "py-12 text-center",
+                        p { class: "text-sm text-red-600 dark:text-red-300",
+                            "Could not load scheduling settings. Refresh the page to retry."
                         }
                     }
-                },
-                Some(Some(days)) => rsx! {
-                    StandardDueDateForm { initial: *days }
-                },
-            }
+                }
+            },
+            Some(Some(days)) => rsx! {
+                StandardDueDateForm { initial: *days }
+            },
         }
     }
 }
@@ -1360,6 +1353,7 @@ const DEFAULT_MAX_HOURS_PER_DAY: u32 = 24;
 /// 422 round-trip.
 #[component]
 pub fn MaxHoursPerDaySettingsPage() -> Element {
+    use_page_title("Time Tracking");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Time Tracking" } };
     }
@@ -1410,31 +1404,29 @@ pub fn MaxHoursPerDaySettingsPage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Time Tracking",
-            PageHeader {
-                title: "Time Tracking",
-                subtitle: "Maximum hours a user may log against a single day",
-                breadcrumbs: rsx! {
-                    SettingsBreadcrumb { current: Route::SettingsTimeTracking {} }
-                },
-            }
-            match &*snap {
-                None => rsx! {
-                    crate::components::DetailSkeleton {}
-                },
-                Some(None) => rsx! {
-                    Card {
-                        div { class: "py-12 text-center",
-                            p { class: "text-sm text-red-600 dark:text-red-300",
-                                "Could not load time tracking settings. Refresh the page to retry."
-                            }
+        PageHeader {
+            title: "Time Tracking",
+            subtitle: "Maximum hours a user may log against a single day",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsTimeTracking {} }
+            },
+        }
+        match &*snap {
+            None => rsx! {
+                crate::components::DetailSkeleton {}
+            },
+            Some(None) => rsx! {
+                Card {
+                    div { class: "py-12 text-center",
+                        p { class: "text-sm text-red-600 dark:text-red-300",
+                            "Could not load time tracking settings. Refresh the page to retry."
                         }
                     }
-                },
-                Some(Some(hours)) => rsx! {
-                    MaxHoursPerDayForm { initial: *hours }
-                },
-            }
+                }
+            },
+            Some(Some(hours)) => rsx! {
+                MaxHoursPerDayForm { initial: *hours }
+            },
         }
     }
 }
@@ -1560,6 +1552,7 @@ struct WorkTypeRow {
 
 #[component]
 pub fn WorkTypesSettingsPage() -> Element {
+    use_page_title("Work Types");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Work Types" } };
     }
@@ -1600,85 +1593,83 @@ pub fn WorkTypesSettingsPage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Work Types",
-            PageHeader {
-                title: "Work Types",
-                subtitle: "Billable work categories used when logging time entries",
-                breadcrumbs: rsx! {
-                    SettingsBreadcrumb { current: Route::SettingsWorkTypes {} }
-                },
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        // MAPPS-357: block creates while the server is unreachable.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
-                        onclick: move |_| editing.set(Some(WorkTypeFormState::new())),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Work Type"
-                    }
-                },
-            }
+        PageHeader {
+            title: "Work Types",
+            subtitle: "Billable work categories used when logging time entries",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsWorkTypes {} }
+            },
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block creates while the server is unreachable.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                    onclick: move |_| editing.set(Some(WorkTypeFormState::new())),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "New Work Type"
+                }
+            },
+        }
 
-            if fetch_failed {
-                LoadError { what: "work types" }
-            }
+        if fetch_failed {
+            LoadError { what: "work types" }
+        }
 
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 4,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Name" }
-                            TableHeader { "Billable" }
-                            TableHeader { class: "text-right", "Default Rate" }
-                            TableHeader { "Active" }
-                        }
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 4,
+            onpagechange: move |p| page.set(p),
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Name" }
+                        TableHeader { "Billable" }
+                        TableHeader { class: "text-right", "Default Rate" }
+                        TableHeader { "Active" }
                     }
-                    if is_loading {
-                        TableLoading { columns: 4, rows: 4 }
-                    } else if rows.is_empty() && !fetch_failed {
-                        TableEmpty {
-                            columns: 4,
-                            message: "No work types yet. Click New Work Type to add one.".to_string(),
-                        }
-                    } else {
-                        TableBody {
-                            for row in rows.iter().cloned() {
-                                {
-                                    let key = row.id.to_string();
-                                    let edit_state = WorkTypeFormState::from_existing(&row);
-                                    let name = row.name.clone();
-                                    let billable = row.default_billable;
-                                    let active = row.is_active;
-                                    let rate = row.default_rate.clone().unwrap_or_default();
-                                    let rate_display = if rate.trim().is_empty() {
-                                        "-".to_string()
-                                    } else {
-                                        // PMS-365: shared formatter for consistent $1,234.00.
-                                        format_money_str(&rate)
-                                    };
-                                    rsx! {
-                                        TableRow { key: "{key}", clickable: true,
-                                            onclick: move |_| editing.set(Some(edit_state.clone())),
-                                            TableCell {
-                                                span { class: "font-medium text-accent", "{name}" }
-                                            }
-                                            TableCell {
-                                                if billable {
-                                                    Badge { variant: BadgeVariant::Blue, "Billable" }
-                                                } else {
-                                                    Badge { variant: BadgeVariant::Gray, "Non-billable" }
-                                                }
-                                            }
-                                            TableCell { class: "text-right", "{rate_display}" }
-                                            TableCell { ActiveBadge { active } }
+                }
+                if is_loading {
+                    TableLoading { columns: 4, rows: 4 }
+                } else if rows.is_empty() && !fetch_failed {
+                    TableEmpty {
+                        columns: 4,
+                        message: "No work types yet. Click New Work Type to add one.".to_string(),
+                    }
+                } else {
+                    TableBody {
+                        for row in rows.iter().cloned() {
+                            {
+                                let key = row.id.to_string();
+                                let edit_state = WorkTypeFormState::from_existing(&row);
+                                let name = row.name.clone();
+                                let billable = row.default_billable;
+                                let active = row.is_active;
+                                let rate = row.default_rate.clone().unwrap_or_default();
+                                let rate_display = if rate.trim().is_empty() {
+                                    "-".to_string()
+                                } else {
+                                    // PMS-365: shared formatter for consistent $1,234.00.
+                                    format_money_str(&rate)
+                                };
+                                rsx! {
+                                    TableRow { key: "{key}", clickable: true,
+                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        TableCell {
+                                            span { class: "font-medium text-accent", "{name}" }
                                         }
+                                        TableCell {
+                                            if billable {
+                                                Badge { variant: BadgeVariant::Blue, "Billable" }
+                                            } else {
+                                                Badge { variant: BadgeVariant::Gray, "Non-billable" }
+                                            }
+                                        }
+                                        TableCell { class: "text-right", "{rate_display}" }
+                                        TableCell { ActiveBadge { active } }
                                     }
                                 }
                             }
@@ -1686,16 +1677,16 @@ pub fn WorkTypesSettingsPage() -> Element {
                     }
                 }
             }
+        }
 
-            if let Some(state) = editing.read().clone() {
-                WorkTypeFormModal {
-                    state,
-                    onclose: move |_| editing.set(None),
-                    onsaved: move |_| {
-                        editing.set(None);
-                        resource.restart();
-                    },
-                }
+        if let Some(state) = editing.read().clone() {
+            WorkTypeFormModal {
+                state,
+                onclose: move |_| editing.set(None),
+                onsaved: move |_| {
+                    editing.set(None);
+                    resource.restart();
+                },
             }
         }
     }
@@ -1905,6 +1896,7 @@ struct TaskStatusRow {
 
 #[component]
 pub fn TaskStatusesSettingsPage() -> Element {
+    use_page_title("Task Statuses");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Task Statuses" } };
     }
@@ -1945,74 +1937,72 @@ pub fn TaskStatusesSettingsPage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Task Statuses",
-            PageHeader {
-                title: "Task Statuses",
-                subtitle: "Workflow states a project task can move through",
-                breadcrumbs: rsx! {
-                    SettingsBreadcrumb { current: Route::SettingsTaskStatuses {} }
-                },
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        // MAPPS-357: block creates while the server is unreachable.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
-                        onclick: move |_| editing.set(Some(TaskStatusFormState::new())),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Status"
-                    }
-                },
-            }
+        PageHeader {
+            title: "Task Statuses",
+            subtitle: "Workflow states a project task can move through",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsTaskStatuses {} }
+            },
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block creates while the server is unreachable.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                    onclick: move |_| editing.set(Some(TaskStatusFormState::new())),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "New Status"
+                }
+            },
+        }
 
-            if fetch_failed {
-                LoadError { what: "task statuses" }
-            }
+        if fetch_failed {
+            LoadError { what: "task statuses" }
+        }
 
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 3,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Name" }
-                            TableHeader { "Color" }
-                            TableHeader { "Completed" }
-                        }
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 3,
+            onpagechange: move |p| page.set(p),
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Name" }
+                        TableHeader { "Color" }
+                        TableHeader { "Completed" }
                     }
-                    if is_loading {
-                        TableLoading { columns: 3, rows: 4 }
-                    } else if rows.is_empty() && !fetch_failed {
-                        TableEmpty {
-                            columns: 3,
-                            message: "No task statuses yet. Click New Status to add one.".to_string(),
-                        }
-                    } else {
-                        TableBody {
-                            for row in rows.iter().cloned() {
-                                {
-                                    let key = row.id.to_string();
-                                    let edit_state = TaskStatusFormState::from_existing(&row);
-                                    let name = row.name.clone();
-                                    let color = row.color.clone();
-                                    let completed = row.is_completed;
-                                    rsx! {
-                                        TableRow { key: "{key}", clickable: true,
-                                            onclick: move |_| editing.set(Some(edit_state.clone())),
-                                            TableCell {
-                                                span { class: "font-medium text-accent", "{name}" }
-                                            }
-                                            TableCell { ColorSwatch { color } }
-                                            TableCell {
-                                                if completed {
-                                                    Badge { variant: BadgeVariant::Green, "Completed" }
-                                                } else {
-                                                    Badge { variant: BadgeVariant::Gray, "Open" }
-                                                }
+                }
+                if is_loading {
+                    TableLoading { columns: 3, rows: 4 }
+                } else if rows.is_empty() && !fetch_failed {
+                    TableEmpty {
+                        columns: 3,
+                        message: "No task statuses yet. Click New Status to add one.".to_string(),
+                    }
+                } else {
+                    TableBody {
+                        for row in rows.iter().cloned() {
+                            {
+                                let key = row.id.to_string();
+                                let edit_state = TaskStatusFormState::from_existing(&row);
+                                let name = row.name.clone();
+                                let color = row.color.clone();
+                                let completed = row.is_completed;
+                                rsx! {
+                                    TableRow { key: "{key}", clickable: true,
+                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        TableCell {
+                                            span { class: "font-medium text-accent", "{name}" }
+                                        }
+                                        TableCell { ColorSwatch { color } }
+                                        TableCell {
+                                            if completed {
+                                                Badge { variant: BadgeVariant::Green, "Completed" }
+                                            } else {
+                                                Badge { variant: BadgeVariant::Gray, "Open" }
                                             }
                                         }
                                     }
@@ -2022,16 +2012,16 @@ pub fn TaskStatusesSettingsPage() -> Element {
                     }
                 }
             }
+        }
 
-            if let Some(state) = editing.read().clone() {
-                TaskStatusFormModal {
-                    state,
-                    onclose: move |_| editing.set(None),
-                    onsaved: move |_| {
-                        editing.set(None);
-                        resource.restart();
-                    },
-                }
+        if let Some(state) = editing.read().clone() {
+            TaskStatusFormModal {
+                state,
+                onclose: move |_| editing.set(None),
+                onsaved: move |_| {
+                    editing.set(None);
+                    resource.restart();
+                },
             }
         }
     }
@@ -2222,6 +2212,7 @@ struct AssetTypeRow {
 
 #[component]
 pub fn AssetTypesSettingsPage() -> Element {
+    use_page_title("Asset Types");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Asset Types" } };
     }
@@ -2262,76 +2253,74 @@ pub fn AssetTypesSettingsPage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Asset Types",
-            PageHeader {
-                title: "Asset Types",
-                subtitle: "Categories for the assets you track per company",
-                breadcrumbs: rsx! {
-                    SettingsBreadcrumb { current: Route::SettingsAssetTypes {} }
-                },
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        // MAPPS-357: block creates while the server is unreachable.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
-                        onclick: move |_| editing.set(Some(AssetTypeFormState::new())),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Asset Type"
-                    }
-                },
-            }
+        PageHeader {
+            title: "Asset Types",
+            subtitle: "Categories for the assets you track per company",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsAssetTypes {} }
+            },
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block creates while the server is unreachable.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                    onclick: move |_| editing.set(Some(AssetTypeFormState::new())),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "New Asset Type"
+                }
+            },
+        }
 
-            if fetch_failed {
-                LoadError { what: "asset types" }
-            }
+        if fetch_failed {
+            LoadError { what: "asset types" }
+        }
 
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 3,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Name" }
-                            TableHeader { "Icon" }
-                            TableHeader { "Active" }
-                        }
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 3,
+            onpagechange: move |p| page.set(p),
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Name" }
+                        TableHeader { "Icon" }
+                        TableHeader { "Active" }
                     }
-                    if is_loading {
-                        TableLoading { columns: 3, rows: 4 }
-                    } else if rows.is_empty() && !fetch_failed {
-                        TableEmpty {
-                            columns: 3,
-                            message: "No asset types yet. Click New Asset Type to add one.".to_string(),
-                        }
-                    } else {
-                        TableBody {
-                            for row in rows.iter().cloned() {
-                                {
-                                    let key = row.id.to_string();
-                                    let edit_state = AssetTypeFormState::from_existing(&row);
-                                    let name = row.name.clone();
-                                    let icon = row.icon.clone().unwrap_or_default();
-                                    let active = row.is_active;
-                                    rsx! {
-                                        TableRow { key: "{key}", clickable: true,
-                                            onclick: move |_| editing.set(Some(edit_state.clone())),
-                                            TableCell {
-                                                span { class: "font-medium text-accent", "{name}" }
-                                            }
-                                            TableCell {
-                                                if icon.is_empty() {
-                                                    span { class: "text-subtle", "-" }
-                                                } else {
-                                                    span { class: "text-sm text-content", "{icon}" }
-                                                }
-                                            }
-                                            TableCell { ActiveBadge { active } }
+                }
+                if is_loading {
+                    TableLoading { columns: 3, rows: 4 }
+                } else if rows.is_empty() && !fetch_failed {
+                    TableEmpty {
+                        columns: 3,
+                        message: "No asset types yet. Click New Asset Type to add one.".to_string(),
+                    }
+                } else {
+                    TableBody {
+                        for row in rows.iter().cloned() {
+                            {
+                                let key = row.id.to_string();
+                                let edit_state = AssetTypeFormState::from_existing(&row);
+                                let name = row.name.clone();
+                                let icon = row.icon.clone().unwrap_or_default();
+                                let active = row.is_active;
+                                rsx! {
+                                    TableRow { key: "{key}", clickable: true,
+                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        TableCell {
+                                            span { class: "font-medium text-accent", "{name}" }
                                         }
+                                        TableCell {
+                                            if icon.is_empty() {
+                                                span { class: "text-subtle", "-" }
+                                            } else {
+                                                span { class: "text-sm text-content", "{icon}" }
+                                            }
+                                        }
+                                        TableCell { ActiveBadge { active } }
                                     }
                                 }
                             }
@@ -2339,16 +2328,16 @@ pub fn AssetTypesSettingsPage() -> Element {
                     }
                 }
             }
+        }
 
-            if let Some(state) = editing.read().clone() {
-                AssetTypeFormModal {
-                    state,
-                    onclose: move |_| editing.set(None),
-                    onsaved: move |_| {
-                        editing.set(None);
-                        resource.restart();
-                    },
-                }
+        if let Some(state) = editing.read().clone() {
+            AssetTypeFormModal {
+                state,
+                onclose: move |_| editing.set(None),
+                onsaved: move |_| {
+                    editing.set(None);
+                    resource.restart();
+                },
             }
         }
     }
@@ -2538,6 +2527,7 @@ struct CompanyIndustryRow {
 
 #[component]
 pub fn CompanyIndustriesSettingsPage() -> Element {
+    use_page_title("Company Industries");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Company Industries" } };
     }
@@ -2578,67 +2568,65 @@ pub fn CompanyIndustriesSettingsPage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Company Industries",
-            PageHeader {
-                title: "Company Industries",
-                subtitle: "Suggested industries when categorizing a company",
-                breadcrumbs: rsx! {
-                    SettingsBreadcrumb { current: Route::SettingsCompanyIndustries {} }
-                },
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        // MAPPS-357: block creates while the server is unreachable.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
-                        onclick: move |_| editing.set(Some(CompanyIndustryFormState::new())),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Industry"
-                    }
-                },
-            }
+        PageHeader {
+            title: "Company Industries",
+            subtitle: "Suggested industries when categorizing a company",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsCompanyIndustries {} }
+            },
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block creates while the server is unreachable.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                    onclick: move |_| editing.set(Some(CompanyIndustryFormState::new())),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "New Industry"
+                }
+            },
+        }
 
-            if fetch_failed {
-                LoadError { what: "company industries" }
-            }
+        if fetch_failed {
+            LoadError { what: "company industries" }
+        }
 
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 2,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Name" }
-                            TableHeader { "Active" }
-                        }
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 2,
+            onpagechange: move |p| page.set(p),
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Name" }
+                        TableHeader { "Active" }
                     }
-                    if is_loading {
-                        TableLoading { columns: 2, rows: 4 }
-                    } else if rows.is_empty() && !fetch_failed {
-                        TableEmpty {
-                            columns: 2,
-                            message: "No industries yet. Click New Industry to add one.".to_string(),
-                        }
-                    } else {
-                        TableBody {
-                            for row in rows.iter().cloned() {
-                                {
-                                    let key = row.id.to_string();
-                                    let edit_state = CompanyIndustryFormState::from_existing(&row);
-                                    let name = row.name.clone();
-                                    let active = row.is_active;
-                                    rsx! {
-                                        TableRow { key: "{key}", clickable: true,
-                                            onclick: move |_| editing.set(Some(edit_state.clone())),
-                                            TableCell {
-                                                span { class: "font-medium text-accent", "{name}" }
-                                            }
-                                            TableCell { ActiveBadge { active } }
+                }
+                if is_loading {
+                    TableLoading { columns: 2, rows: 4 }
+                } else if rows.is_empty() && !fetch_failed {
+                    TableEmpty {
+                        columns: 2,
+                        message: "No industries yet. Click New Industry to add one.".to_string(),
+                    }
+                } else {
+                    TableBody {
+                        for row in rows.iter().cloned() {
+                            {
+                                let key = row.id.to_string();
+                                let edit_state = CompanyIndustryFormState::from_existing(&row);
+                                let name = row.name.clone();
+                                let active = row.is_active;
+                                rsx! {
+                                    TableRow { key: "{key}", clickable: true,
+                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        TableCell {
+                                            span { class: "font-medium text-accent", "{name}" }
                                         }
+                                        TableCell { ActiveBadge { active } }
                                     }
                                 }
                             }
@@ -2646,16 +2634,16 @@ pub fn CompanyIndustriesSettingsPage() -> Element {
                     }
                 }
             }
+        }
 
-            if let Some(state) = editing.read().clone() {
-                CompanyIndustryFormModal {
-                    state,
-                    onclose: move |_| editing.set(None),
-                    onsaved: move |_| {
-                        editing.set(None);
-                        resource.restart();
-                    },
-                }
+        if let Some(state) = editing.read().clone() {
+            CompanyIndustryFormModal {
+                state,
+                onclose: move |_| editing.set(None),
+                onsaved: move |_| {
+                    editing.set(None);
+                    resource.restart();
+                },
             }
         }
     }
@@ -2816,6 +2804,7 @@ struct ProjectTypeRow {
 
 #[component]
 pub fn ProjectTypesSettingsPage() -> Element {
+    use_page_title("Project Types");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Project Types" } };
     }
@@ -2856,80 +2845,78 @@ pub fn ProjectTypesSettingsPage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Project Types",
-            PageHeader {
-                title: "Project Types",
-                subtitle: "Classify projects (e.g. client vs internal)",
-                breadcrumbs: rsx! {
-                    SettingsBreadcrumb { current: Route::SettingsProjectTypes {} }
-                },
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        // MAPPS-357: block creates while the server is unreachable.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
-                        onclick: move |_| editing.set(Some(ProjectTypeFormState::new())),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Project Type"
-                    }
-                },
-            }
+        PageHeader {
+            title: "Project Types",
+            subtitle: "Classify projects (e.g. client vs internal)",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsProjectTypes {} }
+            },
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block creates while the server is unreachable.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                    onclick: move |_| editing.set(Some(ProjectTypeFormState::new())),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "New Project Type"
+                }
+            },
+        }
 
-            if fetch_failed {
-                LoadError { what: "project types" }
-            }
+        if fetch_failed {
+            LoadError { what: "project types" }
+        }
 
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 3,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Name" }
-                            TableHeader { "Default" }
-                            TableHeader { "Active" }
-                        }
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 3,
+            onpagechange: move |p| page.set(p),
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Name" }
+                        TableHeader { "Default" }
+                        TableHeader { "Active" }
                     }
-                    if is_loading {
-                        TableLoading { columns: 3, rows: 4 }
-                    } else if rows.is_empty() && !fetch_failed {
-                        TableEmpty {
-                            columns: 3,
-                            message: "No project types yet. Click New Project Type to add one.".to_string(),
-                        }
-                    } else {
-                        TableBody {
-                            for row in rows.iter().cloned() {
-                                {
-                                    let key = row.id.to_string();
-                                    let edit_state = ProjectTypeFormState::from_existing(&row);
-                                    let name = row.name.clone();
-                                    let default = row.is_default;
-                                    let active = row.is_active;
-                                    let system = row.is_system;
-                                    rsx! {
-                                        TableRow { key: "{key}", clickable: true,
-                                            onclick: move |_| editing.set(Some(edit_state.clone())),
-                                            TableCell {
-                                                div { class: "flex items-center gap-2",
-                                                    span { class: "font-medium text-accent", "{name}" }
-                                                    if system {
-                                                        Badge { variant: BadgeVariant::Gray, "System" }
-                                                    }
+                }
+                if is_loading {
+                    TableLoading { columns: 3, rows: 4 }
+                } else if rows.is_empty() && !fetch_failed {
+                    TableEmpty {
+                        columns: 3,
+                        message: "No project types yet. Click New Project Type to add one.".to_string(),
+                    }
+                } else {
+                    TableBody {
+                        for row in rows.iter().cloned() {
+                            {
+                                let key = row.id.to_string();
+                                let edit_state = ProjectTypeFormState::from_existing(&row);
+                                let name = row.name.clone();
+                                let default = row.is_default;
+                                let active = row.is_active;
+                                let system = row.is_system;
+                                rsx! {
+                                    TableRow { key: "{key}", clickable: true,
+                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        TableCell {
+                                            div { class: "flex items-center gap-2",
+                                                span { class: "font-medium text-accent", "{name}" }
+                                                if system {
+                                                    Badge { variant: BadgeVariant::Gray, "System" }
                                                 }
                                             }
-                                            TableCell {
-                                                if default {
-                                                    Badge { variant: BadgeVariant::Blue, "Default" }
-                                                }
-                                            }
-                                            TableCell { ActiveBadge { active } }
                                         }
+                                        TableCell {
+                                            if default {
+                                                Badge { variant: BadgeVariant::Blue, "Default" }
+                                            }
+                                        }
+                                        TableCell { ActiveBadge { active } }
                                     }
                                 }
                             }
@@ -2937,16 +2924,16 @@ pub fn ProjectTypesSettingsPage() -> Element {
                     }
                 }
             }
+        }
 
-            if let Some(state) = editing.read().clone() {
-                ProjectTypeFormModal {
-                    state,
-                    onclose: move |_| editing.set(None),
-                    onsaved: move |_| {
-                        editing.set(None);
-                        resource.restart();
-                    },
-                }
+        if let Some(state) = editing.read().clone() {
+            ProjectTypeFormModal {
+                state,
+                onclose: move |_| editing.set(None),
+                onsaved: move |_| {
+                    editing.set(None);
+                    resource.restart();
+                },
             }
         }
     }
@@ -3142,6 +3129,7 @@ struct PaymentTermRow {
 
 #[component]
 pub fn PaymentTermsSettingsPage() -> Element {
+    use_page_title("Payment Terms");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Payment Terms" } };
     }
@@ -3182,74 +3170,72 @@ pub fn PaymentTermsSettingsPage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Payment Terms",
-            PageHeader {
-                title: "Payment Terms",
-                subtitle: "Options for the invoice payment-terms dropdown",
-                breadcrumbs: rsx! {
-                    SettingsBreadcrumb { current: Route::SettingsPaymentTerms {} }
-                },
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        // MAPPS-357: block creates while the server is unreachable.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
-                        onclick: move |_| editing.set(Some(PaymentTermFormState::new())),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Payment Term"
-                    }
-                },
-            }
+        PageHeader {
+            title: "Payment Terms",
+            subtitle: "Options for the invoice payment-terms dropdown",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsPaymentTerms {} }
+            },
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block creates while the server is unreachable.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                    onclick: move |_| editing.set(Some(PaymentTermFormState::new())),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "New Payment Term"
+                }
+            },
+        }
 
-            if fetch_failed {
-                LoadError { what: "payment terms" }
-            }
+        if fetch_failed {
+            LoadError { what: "payment terms" }
+        }
 
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 3,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Name" }
-                            TableHeader { "Default" }
-                            TableHeader { "Active" }
-                        }
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 3,
+            onpagechange: move |p| page.set(p),
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Name" }
+                        TableHeader { "Default" }
+                        TableHeader { "Active" }
                     }
-                    if is_loading {
-                        TableLoading { columns: 3, rows: 4 }
-                    } else if rows.is_empty() && !fetch_failed {
-                        TableEmpty {
-                            columns: 3,
-                            message: "No payment terms yet. Click New Payment Term to add one.".to_string(),
-                        }
-                    } else {
-                        TableBody {
-                            for row in rows.iter().cloned() {
-                                {
-                                    let key = row.id.to_string();
-                                    let edit_state = PaymentTermFormState::from_existing(&row);
-                                    let name = row.name.clone();
-                                    let default = row.is_default;
-                                    let active = row.is_active;
-                                    rsx! {
-                                        TableRow { key: "{key}", clickable: true,
-                                            onclick: move |_| editing.set(Some(edit_state.clone())),
-                                            TableCell {
-                                                span { class: "font-medium text-accent", "{name}" }
-                                            }
-                                            TableCell {
-                                                if default {
-                                                    Badge { variant: BadgeVariant::Blue, "Default" }
-                                                }
-                                            }
-                                            TableCell { ActiveBadge { active } }
+                }
+                if is_loading {
+                    TableLoading { columns: 3, rows: 4 }
+                } else if rows.is_empty() && !fetch_failed {
+                    TableEmpty {
+                        columns: 3,
+                        message: "No payment terms yet. Click New Payment Term to add one.".to_string(),
+                    }
+                } else {
+                    TableBody {
+                        for row in rows.iter().cloned() {
+                            {
+                                let key = row.id.to_string();
+                                let edit_state = PaymentTermFormState::from_existing(&row);
+                                let name = row.name.clone();
+                                let default = row.is_default;
+                                let active = row.is_active;
+                                rsx! {
+                                    TableRow { key: "{key}", clickable: true,
+                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        TableCell {
+                                            span { class: "font-medium text-accent", "{name}" }
                                         }
+                                        TableCell {
+                                            if default {
+                                                Badge { variant: BadgeVariant::Blue, "Default" }
+                                            }
+                                        }
+                                        TableCell { ActiveBadge { active } }
                                     }
                                 }
                             }
@@ -3257,16 +3243,16 @@ pub fn PaymentTermsSettingsPage() -> Element {
                     }
                 }
             }
+        }
 
-            if let Some(state) = editing.read().clone() {
-                PaymentTermFormModal {
-                    state,
-                    onclose: move |_| editing.set(None),
-                    onsaved: move |_| {
-                        editing.set(None);
-                        resource.restart();
-                    },
-                }
+        if let Some(state) = editing.read().clone() {
+            PaymentTermFormModal {
+                state,
+                onclose: move |_| editing.set(None),
+                onsaved: move |_| {
+                    editing.set(None);
+                    resource.restart();
+                },
             }
         }
     }
@@ -3449,6 +3435,7 @@ struct TicketStatusRow {
 
 #[component]
 pub fn TicketStatusesSettingsPage() -> Element {
+    use_page_title("Ticket Statuses");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Ticket Statuses" } };
     }
@@ -3489,81 +3476,79 @@ pub fn TicketStatusesSettingsPage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Ticket Statuses",
-            PageHeader {
-                title: "Ticket Statuses",
-                subtitle: "Workflow states a ticket can move through",
-                breadcrumbs: rsx! {
-                    SettingsBreadcrumb { current: Route::SettingsTicketStatuses {} }
-                },
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        // MAPPS-357: block creates while the server is unreachable.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
-                        onclick: move |_| editing.set(Some(TicketStatusFormState::new())),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Status"
-                    }
-                },
-            }
+        PageHeader {
+            title: "Ticket Statuses",
+            subtitle: "Workflow states a ticket can move through",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsTicketStatuses {} }
+            },
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block creates while the server is unreachable.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                    onclick: move |_| editing.set(Some(TicketStatusFormState::new())),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "New Status"
+                }
+            },
+        }
 
-            if fetch_failed {
-                LoadError { what: "ticket statuses" }
-            }
+        if fetch_failed {
+            LoadError { what: "ticket statuses" }
+        }
 
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 4,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Name" }
-                            TableHeader { "Color" }
-                            TableHeader { "Closed" }
-                            TableHeader { "Default" }
-                        }
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 4,
+            onpagechange: move |p| page.set(p),
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Name" }
+                        TableHeader { "Color" }
+                        TableHeader { "Closed" }
+                        TableHeader { "Default" }
                     }
-                    if is_loading {
-                        TableLoading { columns: 4, rows: 4 }
-                    } else if rows.is_empty() && !fetch_failed {
-                        TableEmpty {
-                            columns: 4,
-                            message: "No ticket statuses yet. Click New Status to add one.".to_string(),
-                        }
-                    } else {
-                        TableBody {
-                            for row in rows.iter().cloned() {
-                                {
-                                    let key = row.id.to_string();
-                                    let edit_state = TicketStatusFormState::from_existing(&row);
-                                    let name = row.name.clone();
-                                    let color = row.color.clone();
-                                    let closed = row.is_closed;
-                                    let default = row.is_default;
-                                    rsx! {
-                                        TableRow { key: "{key}", clickable: true,
-                                            onclick: move |_| editing.set(Some(edit_state.clone())),
-                                            TableCell {
-                                                span { class: "font-medium text-accent", "{name}" }
+                }
+                if is_loading {
+                    TableLoading { columns: 4, rows: 4 }
+                } else if rows.is_empty() && !fetch_failed {
+                    TableEmpty {
+                        columns: 4,
+                        message: "No ticket statuses yet. Click New Status to add one.".to_string(),
+                    }
+                } else {
+                    TableBody {
+                        for row in rows.iter().cloned() {
+                            {
+                                let key = row.id.to_string();
+                                let edit_state = TicketStatusFormState::from_existing(&row);
+                                let name = row.name.clone();
+                                let color = row.color.clone();
+                                let closed = row.is_closed;
+                                let default = row.is_default;
+                                rsx! {
+                                    TableRow { key: "{key}", clickable: true,
+                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        TableCell {
+                                            span { class: "font-medium text-accent", "{name}" }
+                                        }
+                                        TableCell { ColorSwatch { color } }
+                                        TableCell {
+                                            if closed {
+                                                Badge { variant: BadgeVariant::Gray, "Closed" }
+                                            } else {
+                                                Badge { variant: BadgeVariant::Green, "Open" }
                                             }
-                                            TableCell { ColorSwatch { color } }
-                                            TableCell {
-                                                if closed {
-                                                    Badge { variant: BadgeVariant::Gray, "Closed" }
-                                                } else {
-                                                    Badge { variant: BadgeVariant::Green, "Open" }
-                                                }
-                                            }
-                                            TableCell {
-                                                if default {
-                                                    Badge { variant: BadgeVariant::Blue, "Default" }
-                                                }
+                                        }
+                                        TableCell {
+                                            if default {
+                                                Badge { variant: BadgeVariant::Blue, "Default" }
                                             }
                                         }
                                     }
@@ -3573,16 +3558,16 @@ pub fn TicketStatusesSettingsPage() -> Element {
                     }
                 }
             }
+        }
 
-            if let Some(state) = editing.read().clone() {
-                TicketStatusFormModal {
-                    state,
-                    onclose: move |_| editing.set(None),
-                    onsaved: move |_| {
-                        editing.set(None);
-                        resource.restart();
-                    },
-                }
+        if let Some(state) = editing.read().clone() {
+            TicketStatusFormModal {
+                state,
+                onclose: move |_| editing.set(None),
+                onsaved: move |_| {
+                    editing.set(None);
+                    resource.restart();
+                },
             }
         }
     }
@@ -3781,6 +3766,7 @@ struct TicketPriorityRow {
 
 #[component]
 pub fn TicketPrioritiesSettingsPage() -> Element {
+    use_page_title("Ticket Priorities");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Ticket Priorities" } };
     }
@@ -3821,75 +3807,73 @@ pub fn TicketPrioritiesSettingsPage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Ticket Priorities",
-            PageHeader {
-                title: "Ticket Priorities",
-                subtitle: "Priority levels and their SLA multipliers",
-                breadcrumbs: rsx! {
-                    SettingsBreadcrumb { current: Route::SettingsTicketPriorities {} }
-                },
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        // MAPPS-357: block creates while the server is unreachable.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
-                        onclick: move |_| editing.set(Some(TicketPriorityFormState::new())),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Priority"
-                    }
-                },
-            }
+        PageHeader {
+            title: "Ticket Priorities",
+            subtitle: "Priority levels and their SLA multipliers",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsTicketPriorities {} }
+            },
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block creates while the server is unreachable.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                    onclick: move |_| editing.set(Some(TicketPriorityFormState::new())),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "New Priority"
+                }
+            },
+        }
 
-            if fetch_failed {
-                LoadError { what: "ticket priorities" }
-            }
+        if fetch_failed {
+            LoadError { what: "ticket priorities" }
+        }
 
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 4,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Name" }
-                            TableHeader { "Color" }
-                            TableHeader { class: "text-right", "SLA x" }
-                            TableHeader { "Default" }
-                        }
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 4,
+            onpagechange: move |p| page.set(p),
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Name" }
+                        TableHeader { "Color" }
+                        TableHeader { class: "text-right", "SLA x" }
+                        TableHeader { "Default" }
                     }
-                    if is_loading {
-                        TableLoading { columns: 4, rows: 4 }
-                    } else if rows.is_empty() && !fetch_failed {
-                        TableEmpty {
-                            columns: 4,
-                            message: "No ticket priorities yet. Click New Priority to add one.".to_string(),
-                        }
-                    } else {
-                        TableBody {
-                            for row in rows.iter().cloned() {
-                                {
-                                    let key = row.id.to_string();
-                                    let edit_state = TicketPriorityFormState::from_existing(&row);
-                                    let name = row.name.clone();
-                                    let color = row.color.clone();
-                                    let sla = format!("{:.2}x", row.sla_multiplier);
-                                    let default = row.is_default;
-                                    rsx! {
-                                        TableRow { key: "{key}", clickable: true,
-                                            onclick: move |_| editing.set(Some(edit_state.clone())),
-                                            TableCell {
-                                                span { class: "font-medium text-accent", "{name}" }
-                                            }
-                                            TableCell { ColorSwatch { color } }
-                                            TableCell { class: "text-right", "{sla}" }
-                                            TableCell {
-                                                if default {
-                                                    Badge { variant: BadgeVariant::Blue, "Default" }
-                                                }
+                }
+                if is_loading {
+                    TableLoading { columns: 4, rows: 4 }
+                } else if rows.is_empty() && !fetch_failed {
+                    TableEmpty {
+                        columns: 4,
+                        message: "No ticket priorities yet. Click New Priority to add one.".to_string(),
+                    }
+                } else {
+                    TableBody {
+                        for row in rows.iter().cloned() {
+                            {
+                                let key = row.id.to_string();
+                                let edit_state = TicketPriorityFormState::from_existing(&row);
+                                let name = row.name.clone();
+                                let color = row.color.clone();
+                                let sla = format!("{:.2}x", row.sla_multiplier);
+                                let default = row.is_default;
+                                rsx! {
+                                    TableRow { key: "{key}", clickable: true,
+                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        TableCell {
+                                            span { class: "font-medium text-accent", "{name}" }
+                                        }
+                                        TableCell { ColorSwatch { color } }
+                                        TableCell { class: "text-right", "{sla}" }
+                                        TableCell {
+                                            if default {
+                                                Badge { variant: BadgeVariant::Blue, "Default" }
                                             }
                                         }
                                     }
@@ -3899,16 +3883,16 @@ pub fn TicketPrioritiesSettingsPage() -> Element {
                     }
                 }
             }
+        }
 
-            if let Some(state) = editing.read().clone() {
-                TicketPriorityFormModal {
-                    state,
-                    onclose: move |_| editing.set(None),
-                    onsaved: move |_| {
-                        editing.set(None);
-                        resource.restart();
-                    },
-                }
+        if let Some(state) = editing.read().clone() {
+            TicketPriorityFormModal {
+                state,
+                onclose: move |_| editing.set(None),
+                onsaved: move |_| {
+                    editing.set(None);
+                    resource.restart();
+                },
             }
         }
     }
@@ -4128,6 +4112,7 @@ struct TicketTypeRow {
 
 #[component]
 pub fn TicketTypesSettingsPage() -> Element {
+    use_page_title("Ticket Types");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Ticket Types" } };
     }
@@ -4168,72 +4153,70 @@ pub fn TicketTypesSettingsPage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Ticket Types",
-            PageHeader {
-                title: "Ticket Types",
-                subtitle: "Categories for the kind of work a ticket represents",
-                breadcrumbs: rsx! {
-                    SettingsBreadcrumb { current: Route::SettingsTicketTypes {} }
-                },
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        // MAPPS-357: block creates while the server is unreachable.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
-                        onclick: move |_| editing.set(Some(TicketTypeFormState::new())),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Type"
-                    }
-                },
-            }
+        PageHeader {
+            title: "Ticket Types",
+            subtitle: "Categories for the kind of work a ticket represents",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsTicketTypes {} }
+            },
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block creates while the server is unreachable.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                    onclick: move |_| editing.set(Some(TicketTypeFormState::new())),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "New Type"
+                }
+            },
+        }
 
-            if fetch_failed {
-                LoadError { what: "ticket types" }
-            }
+        if fetch_failed {
+            LoadError { what: "ticket types" }
+        }
 
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 3,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Name" }
-                            TableHeader { "Description" }
-                            TableHeader { "Active" }
-                        }
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 3,
+            onpagechange: move |p| page.set(p),
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Name" }
+                        TableHeader { "Description" }
+                        TableHeader { "Active" }
                     }
-                    if is_loading {
-                        TableLoading { columns: 3, rows: 4 }
-                    } else if rows.is_empty() && !fetch_failed {
-                        TableEmpty {
-                            columns: 3,
-                            message: "No ticket types yet. Click New Type to add one.".to_string(),
-                        }
-                    } else {
-                        TableBody {
-                            for row in rows.iter().cloned() {
-                                {
-                                    let key = row.id.to_string();
-                                    let edit_state = TicketTypeFormState::from_existing(&row);
-                                    let name = row.name.clone();
-                                    let desc = row.description.clone().unwrap_or_default();
-                                    let active = row.is_active;
-                                    rsx! {
-                                        TableRow { key: "{key}", clickable: true,
-                                            onclick: move |_| editing.set(Some(edit_state.clone())),
-                                            TableCell {
-                                                span { class: "font-medium text-accent", "{name}" }
-                                            }
-                                            TableCell {
-                                                span { class: "text-sm text-muted", "{desc}" }
-                                            }
-                                            TableCell { ActiveBadge { active } }
+                }
+                if is_loading {
+                    TableLoading { columns: 3, rows: 4 }
+                } else if rows.is_empty() && !fetch_failed {
+                    TableEmpty {
+                        columns: 3,
+                        message: "No ticket types yet. Click New Type to add one.".to_string(),
+                    }
+                } else {
+                    TableBody {
+                        for row in rows.iter().cloned() {
+                            {
+                                let key = row.id.to_string();
+                                let edit_state = TicketTypeFormState::from_existing(&row);
+                                let name = row.name.clone();
+                                let desc = row.description.clone().unwrap_or_default();
+                                let active = row.is_active;
+                                rsx! {
+                                    TableRow { key: "{key}", clickable: true,
+                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        TableCell {
+                                            span { class: "font-medium text-accent", "{name}" }
                                         }
+                                        TableCell {
+                                            span { class: "text-sm text-muted", "{desc}" }
+                                        }
+                                        TableCell { ActiveBadge { active } }
                                     }
                                 }
                             }
@@ -4241,16 +4224,16 @@ pub fn TicketTypesSettingsPage() -> Element {
                     }
                 }
             }
+        }
 
-            if let Some(state) = editing.read().clone() {
-                TicketTypeFormModal {
-                    state,
-                    onclose: move |_| editing.set(None),
-                    onsaved: move |_| {
-                        editing.set(None);
-                        resource.restart();
-                    },
-                }
+        if let Some(state) = editing.read().clone() {
+            TicketTypeFormModal {
+                state,
+                onclose: move |_| editing.set(None),
+                onsaved: move |_| {
+                    editing.set(None);
+                    resource.restart();
+                },
             }
         }
     }
@@ -4446,6 +4429,7 @@ struct TicketQueueRow {
 
 #[component]
 pub fn TicketQueuesSettingsPage() -> Element {
+    use_page_title("Ticket Queues");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Ticket Queues" } };
     }
@@ -4486,78 +4470,76 @@ pub fn TicketQueuesSettingsPage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Ticket Queues",
-            PageHeader {
-                title: "Ticket Queues",
-                subtitle: "Queues tickets are routed into",
-                breadcrumbs: rsx! {
-                    SettingsBreadcrumb { current: Route::SettingsTicketQueues {} }
-                },
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        // MAPPS-357: block creates while the server is unreachable.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
-                        onclick: move |_| editing.set(Some(TicketQueueFormState::new())),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Queue"
-                    }
-                },
-            }
+        PageHeader {
+            title: "Ticket Queues",
+            subtitle: "Queues tickets are routed into",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsTicketQueues {} }
+            },
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block creates while the server is unreachable.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                    onclick: move |_| editing.set(Some(TicketQueueFormState::new())),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "New Queue"
+                }
+            },
+        }
 
-            if fetch_failed {
-                LoadError { what: "ticket queues" }
-            }
+        if fetch_failed {
+            LoadError { what: "ticket queues" }
+        }
 
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 3,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Name" }
-                            TableHeader { "Color" }
-                            TableHeader { "Default" }
-                        }
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 3,
+            onpagechange: move |p| page.set(p),
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Name" }
+                        TableHeader { "Color" }
+                        TableHeader { "Default" }
                     }
-                    if is_loading {
-                        TableLoading { columns: 3, rows: 4 }
-                    } else if rows.is_empty() && !fetch_failed {
-                        TableEmpty {
-                            columns: 3,
-                            message: "No ticket queues yet. Click New Queue to add one.".to_string(),
-                        }
-                    } else {
-                        TableBody {
-                            for row in rows.iter().cloned() {
-                                {
-                                    let key = row.id.to_string();
-                                    let edit_state = TicketQueueFormState::from_existing(&row);
-                                    let name = row.name.clone();
-                                    let color = row.color.clone().unwrap_or_default();
-                                    let default = row.is_default;
-                                    rsx! {
-                                        TableRow { key: "{key}", clickable: true,
-                                            onclick: move |_| editing.set(Some(edit_state.clone())),
-                                            TableCell {
-                                                span { class: "font-medium text-accent", "{name}" }
+                }
+                if is_loading {
+                    TableLoading { columns: 3, rows: 4 }
+                } else if rows.is_empty() && !fetch_failed {
+                    TableEmpty {
+                        columns: 3,
+                        message: "No ticket queues yet. Click New Queue to add one.".to_string(),
+                    }
+                } else {
+                    TableBody {
+                        for row in rows.iter().cloned() {
+                            {
+                                let key = row.id.to_string();
+                                let edit_state = TicketQueueFormState::from_existing(&row);
+                                let name = row.name.clone();
+                                let color = row.color.clone().unwrap_or_default();
+                                let default = row.is_default;
+                                rsx! {
+                                    TableRow { key: "{key}", clickable: true,
+                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        TableCell {
+                                            span { class: "font-medium text-accent", "{name}" }
+                                        }
+                                        TableCell {
+                                            if color.is_empty() {
+                                                span { class: "text-subtle", "-" }
+                                            } else {
+                                                ColorSwatch { color }
                                             }
-                                            TableCell {
-                                                if color.is_empty() {
-                                                    span { class: "text-subtle", "-" }
-                                                } else {
-                                                    ColorSwatch { color }
-                                                }
-                                            }
-                                            TableCell {
-                                                if default {
-                                                    Badge { variant: BadgeVariant::Blue, "Default" }
-                                                }
+                                        }
+                                        TableCell {
+                                            if default {
+                                                Badge { variant: BadgeVariant::Blue, "Default" }
                                             }
                                         }
                                     }
@@ -4567,16 +4549,16 @@ pub fn TicketQueuesSettingsPage() -> Element {
                     }
                 }
             }
+        }
 
-            if let Some(state) = editing.read().clone() {
-                TicketQueueFormModal {
-                    state,
-                    onclose: move |_| editing.set(None),
-                    onsaved: move |_| {
-                        editing.set(None);
-                        resource.restart();
-                    },
-                }
+        if let Some(state) = editing.read().clone() {
+            TicketQueueFormModal {
+                state,
+                onclose: move |_| editing.set(None),
+                onsaved: move |_| {
+                    editing.set(None);
+                    resource.restart();
+                },
             }
         }
     }
@@ -4783,6 +4765,7 @@ struct TicketCategoryRow {
 
 #[component]
 pub fn TicketCategoriesSettingsPage() -> Element {
+    use_page_title("Ticket Categories");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Ticket Categories" } };
     }
@@ -4852,79 +4835,77 @@ pub fn TicketCategoriesSettingsPage() -> Element {
         all_cats.iter().map(|r| (r.id, r.name.clone())).collect();
 
     rsx! {
-        AppLayout { title: "Ticket Categories",
-            PageHeader {
-                title: "Ticket Categories",
-                subtitle: "Hierarchical categories for classifying tickets",
-                breadcrumbs: rsx! {
-                    SettingsBreadcrumb { current: Route::SettingsTicketCategories {} }
-                },
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        // MAPPS-357: block creates while the server is unreachable.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
-                        onclick: move |_| editing.set(Some(TicketCategoryFormState::new())),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Category"
-                    }
-                },
-            }
+        PageHeader {
+            title: "Ticket Categories",
+            subtitle: "Hierarchical categories for classifying tickets",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsTicketCategories {} }
+            },
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block creates while the server is unreachable.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                    onclick: move |_| editing.set(Some(TicketCategoryFormState::new())),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "New Category"
+                }
+            },
+        }
 
-            if fetch_failed {
-                LoadError { what: "ticket categories" }
-            }
+        if fetch_failed {
+            LoadError { what: "ticket categories" }
+        }
 
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 3,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Name" }
-                            TableHeader { "Parent" }
-                            TableHeader { "Active" }
-                        }
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 3,
+            onpagechange: move |p| page.set(p),
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Name" }
+                        TableHeader { "Parent" }
+                        TableHeader { "Active" }
                     }
-                    if is_loading {
-                        TableLoading { columns: 3, rows: 4 }
-                    } else if rows.is_empty() && !fetch_failed {
-                        TableEmpty {
-                            columns: 3,
-                            message: "No ticket categories yet. Click New Category to add one.".to_string(),
-                        }
-                    } else {
-                        TableBody {
-                            for row in rows.iter().cloned() {
-                                {
-                                    let key = row.id.to_string();
-                                    let edit_state = TicketCategoryFormState::from_existing(&row);
-                                    let name = row.name.clone();
-                                    let parent = row
-                                        .parent_id
-                                        .and_then(|pid| name_by_id.get(&pid).cloned())
-                                        .unwrap_or_default();
-                                    let active = row.is_active;
-                                    rsx! {
-                                        TableRow { key: "{key}", clickable: true,
-                                            onclick: move |_| editing.set(Some(edit_state.clone())),
-                                            TableCell {
-                                                span { class: "font-medium text-accent", "{name}" }
-                                            }
-                                            TableCell {
-                                                if parent.is_empty() {
-                                                    span { class: "text-subtle", "-" }
-                                                } else {
-                                                    span { class: "text-sm text-content", "{parent}" }
-                                                }
-                                            }
-                                            TableCell { ActiveBadge { active } }
+                }
+                if is_loading {
+                    TableLoading { columns: 3, rows: 4 }
+                } else if rows.is_empty() && !fetch_failed {
+                    TableEmpty {
+                        columns: 3,
+                        message: "No ticket categories yet. Click New Category to add one.".to_string(),
+                    }
+                } else {
+                    TableBody {
+                        for row in rows.iter().cloned() {
+                            {
+                                let key = row.id.to_string();
+                                let edit_state = TicketCategoryFormState::from_existing(&row);
+                                let name = row.name.clone();
+                                let parent = row
+                                    .parent_id
+                                    .and_then(|pid| name_by_id.get(&pid).cloned())
+                                    .unwrap_or_default();
+                                let active = row.is_active;
+                                rsx! {
+                                    TableRow { key: "{key}", clickable: true,
+                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        TableCell {
+                                            span { class: "font-medium text-accent", "{name}" }
                                         }
+                                        TableCell {
+                                            if parent.is_empty() {
+                                                span { class: "text-subtle", "-" }
+                                            } else {
+                                                span { class: "text-sm text-content", "{parent}" }
+                                            }
+                                        }
+                                        TableCell { ActiveBadge { active } }
                                     }
                                 }
                             }
@@ -4932,18 +4913,18 @@ pub fn TicketCategoriesSettingsPage() -> Element {
                     }
                 }
             }
+        }
 
-            if let Some(state) = editing.read().clone() {
-                TicketCategoryFormModal {
-                    state,
-                    all: all_cats.clone(),
-                    onclose: move |_| editing.set(None),
-                    onsaved: move |_| {
-                        editing.set(None);
-                        resource.restart();
-                        all_resource.restart();
-                    },
-                }
+        if let Some(state) = editing.read().clone() {
+            TicketCategoryFormModal {
+                state,
+                all: all_cats.clone(),
+                onclose: move |_| editing.set(None),
+                onsaved: move |_| {
+                    editing.set(None);
+                    resource.restart();
+                    all_resource.restart();
+                },
             }
         }
     }
@@ -5223,6 +5204,7 @@ struct RmmConnectionRow {
 
 #[component]
 pub fn RmmConnectionsSettingsPage() -> Element {
+    use_page_title("RMM Connections");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "RMM Connections" } };
     }
@@ -5263,78 +5245,76 @@ pub fn RmmConnectionsSettingsPage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "RMM Connections",
-            PageHeader {
-                title: "RMM Connections",
-                subtitle: "Connect remote monitoring providers and test reachability",
-                breadcrumbs: rsx! {
-                    SettingsBreadcrumb { current: Route::SettingsRmmConnections {} }
-                },
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        // MAPPS-357: block creates while the server is unreachable.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
-                        onclick: move |_| editing.set(Some(RmmConnectionFormState::new())),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Connection"
-                    }
-                },
-            }
+        PageHeader {
+            title: "RMM Connections",
+            subtitle: "Connect remote monitoring providers and test reachability",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsRmmConnections {} }
+            },
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block creates while the server is unreachable.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                    onclick: move |_| editing.set(Some(RmmConnectionFormState::new())),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "New Connection"
+                }
+            },
+        }
 
-            if fetch_failed {
-                LoadError { what: "RMM connections" }
-            }
+        if fetch_failed {
+            LoadError { what: "RMM connections" }
+        }
 
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 5,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Name" }
-                            TableHeader { "Provider" }
-                            TableHeader { "API URL" }
-                            TableHeader { "Sync status" }
-                            TableHeader { "Active" }
-                        }
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 5,
+            onpagechange: move |p| page.set(p),
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Name" }
+                        TableHeader { "Provider" }
+                        TableHeader { "API URL" }
+                        TableHeader { "Sync status" }
+                        TableHeader { "Active" }
                     }
-                    if is_loading {
-                        TableLoading { columns: 5, rows: 4 }
-                    } else if rows.is_empty() && !fetch_failed {
-                        TableEmpty {
-                            columns: 5,
-                            message: "No RMM connections yet. Click New Connection to add one.".to_string(),
-                        }
-                    } else {
-                        TableBody {
-                            for row in rows.iter().cloned() {
-                                {
-                                    let key = row.id.to_string();
-                                    let edit_state = RmmConnectionFormState::from_existing(&row);
-                                    let name = row.name.clone();
-                                    let provider = rmm_provider_label(&row.provider);
-                                    let api_url = row.api_url.clone();
-                                    let status = row.sync_status.clone();
-                                    let active = row.is_active;
-                                    rsx! {
-                                        TableRow { key: "{key}", clickable: true,
-                                            onclick: move |_| editing.set(Some(edit_state.clone())),
-                                            TableCell {
-                                                span { class: "font-medium text-accent", "{name}" }
-                                            }
-                                            TableCell { "{provider}" }
-                                            TableCell {
-                                                span { class: "text-muted break-all", "{api_url}" }
-                                            }
-                                            TableCell { RmmStatusBadge { status } }
-                                            TableCell { ActiveBadge { active } }
+                }
+                if is_loading {
+                    TableLoading { columns: 5, rows: 4 }
+                } else if rows.is_empty() && !fetch_failed {
+                    TableEmpty {
+                        columns: 5,
+                        message: "No RMM connections yet. Click New Connection to add one.".to_string(),
+                    }
+                } else {
+                    TableBody {
+                        for row in rows.iter().cloned() {
+                            {
+                                let key = row.id.to_string();
+                                let edit_state = RmmConnectionFormState::from_existing(&row);
+                                let name = row.name.clone();
+                                let provider = rmm_provider_label(&row.provider);
+                                let api_url = row.api_url.clone();
+                                let status = row.sync_status.clone();
+                                let active = row.is_active;
+                                rsx! {
+                                    TableRow { key: "{key}", clickable: true,
+                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        TableCell {
+                                            span { class: "font-medium text-accent", "{name}" }
                                         }
+                                        TableCell { "{provider}" }
+                                        TableCell {
+                                            span { class: "text-muted break-all", "{api_url}" }
+                                        }
+                                        TableCell { RmmStatusBadge { status } }
+                                        TableCell { ActiveBadge { active } }
                                     }
                                 }
                             }
@@ -5342,16 +5322,16 @@ pub fn RmmConnectionsSettingsPage() -> Element {
                     }
                 }
             }
+        }
 
-            if let Some(state) = editing.read().clone() {
-                RmmConnectionFormModal {
-                    state,
-                    onclose: move |_| editing.set(None),
-                    onsaved: move |_| {
-                        editing.set(None);
-                        resource.restart();
-                    },
-                }
+        if let Some(state) = editing.read().clone() {
+            RmmConnectionFormModal {
+                state,
+                onclose: move |_| editing.set(None),
+                onsaved: move |_| {
+                    editing.set(None);
+                    resource.restart();
+                },
             }
         }
     }
@@ -5713,6 +5693,7 @@ struct RmmDeviceMappingRow {
 
 #[component]
 pub fn RmmDeviceMappingsSettingsPage() -> Element {
+    use_page_title("RMM Device Mappings");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "RMM Device Mappings" } };
     }
@@ -5795,125 +5776,123 @@ pub fn RmmDeviceMappingsSettingsPage() -> Element {
     let no_connections = connections.is_empty();
 
     rsx! {
-        AppLayout { title: "RMM Device Mappings",
-            PageHeader {
-                title: "RMM Device Mappings",
-                subtitle: "Map monitored RMM devices to assets and companies",
-                breadcrumbs: rsx! {
-                    SettingsBreadcrumb { current: Route::SettingsRmmDeviceMappings {} }
-                },
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        // MAPPS-357: also block creates while the server is unreachable.
-                        disabled: no_connections || !can_mutate,
-                        title: if !can_mutate {
-                            Some("Can't do this while the server is unreachable".to_string())
-                        } else {
-                            no_connections
-                                .then(|| "Add an RMM connection first, then map its devices here.".to_string())
-                        },
-                        onclick: move |_| creating.set(true),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Mapping"
-                    }
-                },
-            }
-
-            if no_connections {
-                div {
-                    class: "mb-3 text-sm text-content bg-surface-2 border border-line rounded-md px-3 py-2",
-                    "Add an RMM connection first, then map its devices here."
-                }
-            }
-            if fetch_failed {
-                LoadError { what: "RMM device mappings" }
-            }
-            if !row_error.read().is_empty() {
-                div {
-                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                    "{row_error}"
-                }
-            }
-
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 5,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Device" }
-                            TableHeader { "Device ID" }
-                            TableHeader { "Connection" }
-                            TableHeader { "Sync status" }
-                            TableHeader { class: "text-right", "" }
-                        }
-                    }
-                    if is_loading {
-                        TableLoading { columns: 5, rows: 4 }
-                    } else if rows.is_empty() && !fetch_failed {
-                        TableEmpty {
-                            columns: 5,
-                            message: "No device mappings yet. Click New Mapping to add one.".to_string(),
-                        }
+        PageHeader {
+            title: "RMM Device Mappings",
+            subtitle: "Map monitored RMM devices to assets and companies",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsRmmDeviceMappings {} }
+            },
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: also block creates while the server is unreachable.
+                    disabled: no_connections || !can_mutate,
+                    title: if !can_mutate {
+                        Some("Can't do this while the server is unreachable".to_string())
                     } else {
-                        TableBody {
-                            for row in rows.iter().cloned() {
-                                {
-                                    let key = row.id.to_string();
-                                    let rid = row.id;
-                                    let device = row.device_name.clone().unwrap_or_default();
-                                    let device_display = if device.trim().is_empty() {
-                                        "-".to_string()
-                                    } else {
-                                        device
-                                    };
-                                    let device_id = row.rmm_device_id.clone();
-                                    let connection = conn_label(row.rmm_connection_id);
-                                    let status = row.sync_status.clone();
-                                    let is_deleting = *deleting_id.read() == Some(rid);
-                                    rsx! {
-                                        TableRow { key: "{key}",
-                                            TableCell {
-                                                span { class: "font-medium", "{device_display}" }
-                                            }
-                                            TableCell {
-                                                span { class: "font-mono text-xs text-muted break-all", "{device_id}" }
-                                            }
-                                            TableCell { "{connection}" }
-                                            TableCell { RmmStatusBadge { status } }
-                                            TableCell { class: "text-right",
-                                                Button {
-                                                    variant: ButtonVariant::Danger,
-                                                    size: crate::components::ButtonSize::Small,
-                                                    loading: is_deleting,
-                                                    // MAPPS-357: block deletes while the server is unreachable.
-                                                    disabled: !can_mutate,
-                                                    title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
-                                                    onclick: move |_| {
-                                                        if deleting_id.read().is_some() {
-                                                            return;
-                                                        }
-                                                        deleting_id.set(Some(rid));
-                                                        row_error.set(String::new());
-                                                        spawn(async move {
-                                                            #[cfg(feature = "web")]
-                                                            {
-                                                                match delete_lookup(&rid.to_string(), "/rmm/device-mappings").await {
-                                                                    Ok(true) => resource.restart(),
-                                                                    Ok(false) => {}
-                                                                    Err(err) => row_error.set(format!("Could not delete mapping: {err}")),
-                                                                }
+                        no_connections
+                            .then(|| "Add an RMM connection first, then map its devices here.".to_string())
+                    },
+                    onclick: move |_| creating.set(true),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "New Mapping"
+                }
+            },
+        }
+
+        if no_connections {
+            div {
+                class: "mb-3 text-sm text-content bg-surface-2 border border-line rounded-md px-3 py-2",
+                "Add an RMM connection first, then map its devices here."
+            }
+        }
+        if fetch_failed {
+            LoadError { what: "RMM device mappings" }
+        }
+        if !row_error.read().is_empty() {
+            div {
+                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                "{row_error}"
+            }
+        }
+
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 5,
+            onpagechange: move |p| page.set(p),
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Device" }
+                        TableHeader { "Device ID" }
+                        TableHeader { "Connection" }
+                        TableHeader { "Sync status" }
+                        TableHeader { class: "text-right", "" }
+                    }
+                }
+                if is_loading {
+                    TableLoading { columns: 5, rows: 4 }
+                } else if rows.is_empty() && !fetch_failed {
+                    TableEmpty {
+                        columns: 5,
+                        message: "No device mappings yet. Click New Mapping to add one.".to_string(),
+                    }
+                } else {
+                    TableBody {
+                        for row in rows.iter().cloned() {
+                            {
+                                let key = row.id.to_string();
+                                let rid = row.id;
+                                let device = row.device_name.clone().unwrap_or_default();
+                                let device_display = if device.trim().is_empty() {
+                                    "-".to_string()
+                                } else {
+                                    device
+                                };
+                                let device_id = row.rmm_device_id.clone();
+                                let connection = conn_label(row.rmm_connection_id);
+                                let status = row.sync_status.clone();
+                                let is_deleting = *deleting_id.read() == Some(rid);
+                                rsx! {
+                                    TableRow { key: "{key}",
+                                        TableCell {
+                                            span { class: "font-medium", "{device_display}" }
+                                        }
+                                        TableCell {
+                                            span { class: "font-mono text-xs text-muted break-all", "{device_id}" }
+                                        }
+                                        TableCell { "{connection}" }
+                                        TableCell { RmmStatusBadge { status } }
+                                        TableCell { class: "text-right",
+                                            Button {
+                                                variant: ButtonVariant::Danger,
+                                                size: crate::components::ButtonSize::Small,
+                                                loading: is_deleting,
+                                                // MAPPS-357: block deletes while the server is unreachable.
+                                                disabled: !can_mutate,
+                                                title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
+                                                onclick: move |_| {
+                                                    if deleting_id.read().is_some() {
+                                                        return;
+                                                    }
+                                                    deleting_id.set(Some(rid));
+                                                    row_error.set(String::new());
+                                                    spawn(async move {
+                                                        #[cfg(feature = "web")]
+                                                        {
+                                                            match delete_lookup(&rid.to_string(), "/rmm/device-mappings").await {
+                                                                Ok(true) => resource.restart(),
+                                                                Ok(false) => {}
+                                                                Err(err) => row_error.set(format!("Could not delete mapping: {err}")),
                                                             }
-                                                            deleting_id.set(None);
-                                                        });
-                                                    },
-                                                    "Delete"
-                                                }
+                                                        }
+                                                        deleting_id.set(None);
+                                                    });
+                                                },
+                                                "Delete"
                                             }
                                         }
                                     }
@@ -5923,16 +5902,16 @@ pub fn RmmDeviceMappingsSettingsPage() -> Element {
                     }
                 }
             }
+        }
 
-            if *creating.read() {
-                RmmDeviceMappingFormModal {
-                    connections: connections.clone(),
-                    onclose: move |_| creating.set(false),
-                    onsaved: move |_| {
-                        creating.set(false);
-                        resource.restart();
-                    },
-                }
+        if *creating.read() {
+            RmmDeviceMappingFormModal {
+                connections: connections.clone(),
+                onclose: move |_| creating.set(false),
+                onsaved: move |_| {
+                    creating.set(false);
+                    resource.restart();
+                },
             }
         }
     }
@@ -6126,6 +6105,7 @@ struct RmmAlertRuleRow {
 
 #[component]
 pub fn RmmAlertRulesSettingsPage() -> Element {
+    use_page_title("RMM Alert Rules");
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "RMM Alert Rules" } };
     }
@@ -6206,129 +6186,127 @@ pub fn RmmAlertRulesSettingsPage() -> Element {
     let no_connections = connections.is_empty();
 
     rsx! {
-        AppLayout { title: "RMM Alert Rules",
-            PageHeader {
-                title: "RMM Alert Rules",
-                subtitle: "Turn RMM alerts into tickets automatically",
-                breadcrumbs: rsx! {
-                    SettingsBreadcrumb { current: Route::SettingsRmmAlertRules {} }
-                },
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        // MAPPS-357: also block creates while the server is unreachable.
-                        disabled: no_connections || !can_mutate,
-                        title: if !can_mutate {
-                            Some("Can't do this while the server is unreachable".to_string())
-                        } else {
-                            no_connections
-                                .then(|| "Add an RMM connection first, then define alert rules for it.".to_string())
-                        },
-                        onclick: move |_| creating.set(true),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Alert Rule"
-                    }
-                },
-            }
-
-            if no_connections {
-                div {
-                    class: "mb-3 text-sm text-content bg-surface-2 border border-line rounded-md px-3 py-2",
-                    "Add an RMM connection first, then define alert rules for it."
-                }
-            }
-            if fetch_failed {
-                LoadError { what: "RMM alert rules" }
-            }
-            if !row_error.read().is_empty() {
-                div {
-                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                    "{row_error}"
-                }
-            }
-
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 5,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Name" }
-                            TableHeader { "Connection" }
-                            TableHeader { "Alert type" }
-                            TableHeader { "Auto-create ticket" }
-                            TableHeader { class: "text-right", "" }
-                        }
-                    }
-                    if is_loading {
-                        TableLoading { columns: 5, rows: 4 }
-                    } else if rows.is_empty() && !fetch_failed {
-                        TableEmpty {
-                            columns: 5,
-                            message: "No alert rules yet. Click New Alert Rule to add one.".to_string(),
-                        }
+        PageHeader {
+            title: "RMM Alert Rules",
+            subtitle: "Turn RMM alerts into tickets automatically",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsRmmAlertRules {} }
+            },
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: also block creates while the server is unreachable.
+                    disabled: no_connections || !can_mutate,
+                    title: if !can_mutate {
+                        Some("Can't do this while the server is unreachable".to_string())
                     } else {
-                        TableBody {
-                            for row in rows.iter().cloned() {
-                                {
-                                    let key = row.id.to_string();
-                                    let rid = row.id;
-                                    let name = row.name.clone();
-                                    let connection = conn_label(row.rmm_connection_id);
-                                    let alert_type = row.alert_type.clone().unwrap_or_default();
-                                    let alert_type_display = if alert_type.trim().is_empty() {
-                                        "Any".to_string()
-                                    } else {
-                                        alert_type
-                                    };
-                                    let auto = row.auto_create_ticket;
-                                    let is_deleting = *deleting_id.read() == Some(rid);
-                                    rsx! {
-                                        TableRow { key: "{key}",
-                                            TableCell {
-                                                span { class: "font-medium", "{name}" }
+                        no_connections
+                            .then(|| "Add an RMM connection first, then define alert rules for it.".to_string())
+                    },
+                    onclick: move |_| creating.set(true),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "New Alert Rule"
+                }
+            },
+        }
+
+        if no_connections {
+            div {
+                class: "mb-3 text-sm text-content bg-surface-2 border border-line rounded-md px-3 py-2",
+                "Add an RMM connection first, then define alert rules for it."
+            }
+        }
+        if fetch_failed {
+            LoadError { what: "RMM alert rules" }
+        }
+        if !row_error.read().is_empty() {
+            div {
+                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                "{row_error}"
+            }
+        }
+
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 5,
+            onpagechange: move |p| page.set(p),
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Name" }
+                        TableHeader { "Connection" }
+                        TableHeader { "Alert type" }
+                        TableHeader { "Auto-create ticket" }
+                        TableHeader { class: "text-right", "" }
+                    }
+                }
+                if is_loading {
+                    TableLoading { columns: 5, rows: 4 }
+                } else if rows.is_empty() && !fetch_failed {
+                    TableEmpty {
+                        columns: 5,
+                        message: "No alert rules yet. Click New Alert Rule to add one.".to_string(),
+                    }
+                } else {
+                    TableBody {
+                        for row in rows.iter().cloned() {
+                            {
+                                let key = row.id.to_string();
+                                let rid = row.id;
+                                let name = row.name.clone();
+                                let connection = conn_label(row.rmm_connection_id);
+                                let alert_type = row.alert_type.clone().unwrap_or_default();
+                                let alert_type_display = if alert_type.trim().is_empty() {
+                                    "Any".to_string()
+                                } else {
+                                    alert_type
+                                };
+                                let auto = row.auto_create_ticket;
+                                let is_deleting = *deleting_id.read() == Some(rid);
+                                rsx! {
+                                    TableRow { key: "{key}",
+                                        TableCell {
+                                            span { class: "font-medium", "{name}" }
+                                        }
+                                        TableCell { "{connection}" }
+                                        TableCell { "{alert_type_display}" }
+                                        TableCell {
+                                            if auto {
+                                                Badge { variant: BadgeVariant::Green, "Yes" }
+                                            } else {
+                                                Badge { variant: BadgeVariant::Gray, "No" }
                                             }
-                                            TableCell { "{connection}" }
-                                            TableCell { "{alert_type_display}" }
-                                            TableCell {
-                                                if auto {
-                                                    Badge { variant: BadgeVariant::Green, "Yes" }
-                                                } else {
-                                                    Badge { variant: BadgeVariant::Gray, "No" }
-                                                }
-                                            }
-                                            TableCell { class: "text-right",
-                                                Button {
-                                                    variant: ButtonVariant::Danger,
-                                                    size: crate::components::ButtonSize::Small,
-                                                    loading: is_deleting,
-                                                    // MAPPS-357: block deletes while the server is unreachable.
-                                                    disabled: !can_mutate,
-                                                    title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
-                                                    onclick: move |_| {
-                                                        if deleting_id.read().is_some() {
-                                                            return;
-                                                        }
-                                                        deleting_id.set(Some(rid));
-                                                        row_error.set(String::new());
-                                                        spawn(async move {
-                                                            #[cfg(feature = "web")]
-                                                            {
-                                                                match delete_lookup(&rid.to_string(), "/rmm/alert-rules").await {
-                                                                    Ok(true) => resource.restart(),
-                                                                    Ok(false) => {}
-                                                                    Err(err) => row_error.set(format!("Could not delete rule: {err}")),
-                                                                }
+                                        }
+                                        TableCell { class: "text-right",
+                                            Button {
+                                                variant: ButtonVariant::Danger,
+                                                size: crate::components::ButtonSize::Small,
+                                                loading: is_deleting,
+                                                // MAPPS-357: block deletes while the server is unreachable.
+                                                disabled: !can_mutate,
+                                                title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
+                                                onclick: move |_| {
+                                                    if deleting_id.read().is_some() {
+                                                        return;
+                                                    }
+                                                    deleting_id.set(Some(rid));
+                                                    row_error.set(String::new());
+                                                    spawn(async move {
+                                                        #[cfg(feature = "web")]
+                                                        {
+                                                            match delete_lookup(&rid.to_string(), "/rmm/alert-rules").await {
+                                                                Ok(true) => resource.restart(),
+                                                                Ok(false) => {}
+                                                                Err(err) => row_error.set(format!("Could not delete rule: {err}")),
                                                             }
-                                                            deleting_id.set(None);
-                                                        });
-                                                    },
-                                                    "Delete"
-                                                }
+                                                        }
+                                                        deleting_id.set(None);
+                                                    });
+                                                },
+                                                "Delete"
                                             }
                                         }
                                     }
@@ -6338,16 +6316,16 @@ pub fn RmmAlertRulesSettingsPage() -> Element {
                     }
                 }
             }
+        }
 
-            if *creating.read() {
-                RmmAlertRuleFormModal {
-                    connections: connections.clone(),
-                    onclose: move |_| creating.set(false),
-                    onsaved: move |_| {
-                        creating.set(false);
-                        resource.restart();
-                    },
-                }
+        if *creating.read() {
+            RmmAlertRuleFormModal {
+                connections: connections.clone(),
+                onclose: move |_| creating.set(false),
+                onsaved: move |_| {
+                    creating.set(false);
+                    resource.restart();
+                },
             }
         }
     }

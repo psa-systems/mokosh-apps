@@ -21,8 +21,8 @@ use serde::Deserialize;
 use std::str::FromStr;
 
 use crate::components::{
-    invoice_status_badge, AppLayout, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card,
-    DataTable, IconSize, InformationIcon, Modal, ModalSize, PageHeader, PlusIcon, Select,
+    invoice_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant,
+    Card, DataTable, IconSize, InformationIcon, Modal, ModalSize, PageHeader, PlusIcon, Select,
     SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
     TableRow,
 };
@@ -200,24 +200,23 @@ fn NoFinancePermission(title: String) -> Element {
         .as_ref()
         .map(|u| u.role.as_str().to_string())
         .unwrap_or_default();
+    use_page_title(title.clone());
     rsx! {
-        AppLayout { title: "{title}",
-            PageHeader { title: "{title}" }
-            Card {
-                div { class: "py-12 px-6 mx-auto flex max-w-md flex-col items-center text-center",
-                    div { class: "mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-surface-2",
-                        InformationIcon { size: IconSize::Large, class: "text-subtle".to_string() }
-                    }
-                    h3 { class: "text-base font-medium text-content",
-                        "Billing access required"
-                    }
-                    p { class: "mt-2 text-sm text-muted",
-                        "Invoices and payments are restricted to administrator and finance roles. Ask an administrator to grant you access."
-                    }
-                    if !role.is_empty() {
-                        p { class: "mt-4 text-xs text-subtle",
-                            "Your current role: {role}"
-                        }
+        PageHeader { title: "{title}" }
+        Card {
+            div { class: "py-12 px-6 mx-auto flex max-w-md flex-col items-center text-center",
+                div { class: "mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-surface-2",
+                    InformationIcon { size: IconSize::Large, class: "text-subtle".to_string() }
+                }
+                h3 { class: "text-base font-medium text-content",
+                    "Billing access required"
+                }
+                p { class: "mt-2 text-sm text-muted",
+                    "Invoices and payments are restricted to administrator and finance roles. Ask an administrator to grant you access."
+                }
+                if !role.is_empty() {
+                    p { class: "mt-4 text-xs text-subtle",
+                        "Your current role: {role}"
                     }
                 }
             }
@@ -237,6 +236,7 @@ pub fn InvoiceListPage() -> Element {
         .map(|u| u.role.can_manage_billing())
         .unwrap_or(false);
 
+    use_page_title("Invoices");
     if !has_finance {
         return rsx! { NoFinancePermission { title: "Invoices" } };
     }
@@ -323,137 +323,135 @@ pub fn InvoiceListPage() -> Element {
     let has_filters = !company_text.is_empty() || !status_text.is_empty();
 
     rsx! {
-        AppLayout { title: "Invoices",
-            PageHeader {
-                title: "Invoices",
-                subtitle: "Manage customer invoices and billing",
-                actions: rsx! {
-                    Link {
-                        to: Route::TaxRateList {},
-                        Button { variant: ButtonVariant::Secondary, "Tax Rates" }
+        PageHeader {
+            title: "Invoices",
+            subtitle: "Manage customer invoices and billing",
+            actions: rsx! {
+                Link {
+                    to: Route::TaxRateList {},
+                    Button { variant: ButtonVariant::Secondary, "Tax Rates" }
+                }
+                Link {
+                    to: Route::PaymentGatewayConfig {},
+                    Button { variant: ButtonVariant::Secondary, "Gateways" }
+                }
+                Link {
+                    to: Route::InvoiceNew {},
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "New Invoice"
                     }
-                    Link {
-                        to: Route::PaymentGatewayConfig {},
-                        Button { variant: ButtonVariant::Secondary, "Gateways" }
-                    }
-                    Link {
-                        to: Route::InvoiceNew {},
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                            "New Invoice"
-                        }
-                    }
-                },
-            }
+                }
+            },
+        }
 
-            // MAPPS-321: scope indicator.
-            crate::components::ContextFilterBanner {
-                scope: crate::components::ContextFilterScope::Invoices,
-            }
+        // MAPPS-321: scope indicator.
+        crate::components::ContextFilterBanner {
+            scope: crate::components::ContextFilterScope::Invoices,
+        }
 
-            // Filters
-            Card { class: "mb-6",
-                div { class: "flex flex-col sm:flex-row gap-4",
-                    div { class: "flex-1",
-                        Select {
-                            name: "company_id",
-                            options: company_options,
-                            value: company_filter.read().clone(),
-                            onchange: move |e: FormEvent| {
-                                company_filter.set(e.value());
-                                page.set(1);
-                            },
-                        }
-                    }
+        // Filters
+        Card { class: "mb-6",
+            div { class: "flex flex-col sm:flex-row gap-4",
+                div { class: "flex-1",
                     Select {
-                        name: "status",
-                        options: status_options,
-                        value: status_filter.read().clone(),
+                        name: "company_id",
+                        options: company_options,
+                        value: company_filter.read().clone(),
                         onchange: move |e: FormEvent| {
-                            status_filter.set(e.value());
+                            company_filter.set(e.value());
                             page.set(1);
                         },
                     }
                 }
-            }
-
-            if fetch_failed {
-                div {
-                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                    "Could not load invoices. Refresh the page to retry."
+                Select {
+                    name: "status",
+                    options: status_options,
+                    value: status_filter.read().clone(),
+                    onchange: move |e: FormEvent| {
+                        status_filter.set(e.value());
+                        page.set(1);
+                    },
                 }
             }
+        }
 
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 7,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Invoice" }
-                            TableHeader { "Company" }
-                            TableHeader { "Date" }
-                            TableHeader { "Due Date" }
-                            TableHeader { class: "text-right", "Total" }
-                            TableHeader { class: "text-right", "Balance" }
-                            TableHeader { "Status" }
-                        }
+        if fetch_failed {
+            div {
+                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                "Could not load invoices. Refresh the page to retry."
+            }
+        }
+
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 7,
+            onpagechange: move |p| page.set(p),
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Invoice" }
+                        TableHeader { "Company" }
+                        TableHeader { "Date" }
+                        TableHeader { "Due Date" }
+                        TableHeader { class: "text-right", "Total" }
+                        TableHeader { class: "text-right", "Balance" }
+                        TableHeader { "Status" }
                     }
-                    if is_loading {
-                        TableLoading { columns: 7, rows: 5 }
-                    } else if rows.is_empty() && has_filters {
-                        // MAPPS-291 "Clear filters" affordance on the
-                        // invoices list.
-                        TableEmpty {
-                            columns: 7,
-                            title: "No invoices match your filters".to_string(),
-                            description: "Adjust the filters above, or clear them to see every invoice again.".to_string(),
-                            actions: rsx! {
+                }
+                if is_loading {
+                    TableLoading { columns: 7, rows: 5 }
+                } else if rows.is_empty() && has_filters {
+                    // MAPPS-291 "Clear filters" affordance on the
+                    // invoices list.
+                    TableEmpty {
+                        columns: 7,
+                        title: "No invoices match your filters".to_string(),
+                        description: "Adjust the filters above, or clear them to see every invoice again.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                onclick: move |_| {
+                                    company_filter.set(String::new());
+                                    status_filter.set(String::new());
+                                },
+                                "Clear filters"
+                            }
+                        },
+                    }
+                } else if rows.is_empty() {
+                    TableEmpty {
+                        columns: 7,
+                        title: "No invoices yet".to_string(),
+                        description: "Create your first invoice to start billing customers.".to_string(),
+                        actions: rsx! {
+                            Link {
+                                to: Route::InvoiceNew {},
                                 Button {
-                                    variant: ButtonVariant::Secondary,
-                                    onclick: move |_| {
-                                        company_filter.set(String::new());
-                                        status_filter.set(String::new());
-                                    },
-                                    "Clear filters"
+                                    variant: ButtonVariant::Primary,
+                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                    "New Invoice"
                                 }
-                            },
-                        }
-                    } else if rows.is_empty() {
-                        TableEmpty {
-                            columns: 7,
-                            title: "No invoices yet".to_string(),
-                            description: "Create your first invoice to start billing customers.".to_string(),
-                            actions: rsx! {
-                                Link {
-                                    to: Route::InvoiceNew {},
-                                    Button {
-                                        variant: ButtonVariant::Primary,
-                                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                        "New Invoice"
-                                    }
-                                }
-                            },
-                        }
-                    } else {
-                        TableBody {
-                            for invoice in rows.iter().cloned() {
-                                InvoiceRow {
-                                    key: "{invoice.id}",
-                                    id: invoice.id.to_string(),
-                                    number: invoice.invoice_number,
-                                    company: invoice.company_name.clone().unwrap_or_default(),
-                                    date: invoice.invoice_date.unwrap_or_default(),
-                                    due_date: invoice.due_date.unwrap_or_default(),
-                                    total: format_money_str(&invoice.total),
-                                    balance: format_money_str(&invoice.balance_due),
-                                    status: invoice.status,
-                                }
+                            }
+                        },
+                    }
+                } else {
+                    TableBody {
+                        for invoice in rows.iter().cloned() {
+                            InvoiceRow {
+                                key: "{invoice.id}",
+                                id: invoice.id.to_string(),
+                                number: invoice.invoice_number,
+                                company: invoice.company_name.clone().unwrap_or_default(),
+                                date: invoice.invoice_date.unwrap_or_default(),
+                                due_date: invoice.due_date.unwrap_or_default(),
+                                total: format_money_str(&invoice.total),
+                                balance: format_money_str(&invoice.balance_due),
+                                status: invoice.status,
                             }
                         }
                     }
@@ -627,6 +625,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         Some(inv) => format!("Invoice {}", inv.invoice_number),
         None => "Invoice".to_string(),
     };
+    use_page_title(&header_title);
     let status = invoice
         .as_ref()
         .map(|i| i.status.clone())
@@ -700,356 +699,354 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
     }
 
     rsx! {
-        AppLayout { title: "{header_title}",
-            crate::components::ConfirmDialog {
-                open: confirming_void(),
-                title: "Void invoice".to_string(),
-                message: "Void this invoice? This cannot be undone.".to_string(),
-                confirm_text: "Void".to_string(),
-                cancel_text: "Cancel".to_string(),
-                destructive: true,
-                loading: *busy.read(),
-                onconfirm: on_confirm_void,
-                oncancel: move |_| {
-                    if !*busy.read() {
-                        confirming_void.set(false);
-                    }
-                },
-            }
-            PageHeader {
-                title: "{header_title}",
-                actions: rsx! {
-                    if editable {
-                        Button {
-                            variant: ButtonVariant::Secondary,
-                            // MAPPS-357: block edits while the server is down.
-                            disabled: !can_mutate,
-                            title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
-                            onclick: move |_| {
-                                action_error.set(String::new());
-                                show_edit.set(true);
-                            },
-                            "Edit"
-                        }
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            loading: *busy.read(),
-                            // MAPPS-357: block sending while the server is down.
-                            disabled: !can_mutate,
-                            title: (!can_mutate).then(|| "Can't send while the server is unreachable".to_string()),
-                            onclick: move |_| {
-                                if *busy.read() {
-                                    return;
-                                }
-                                busy.set(true);
-                                action_error.set(String::new());
-                                let path = format!("/invoices/{id_for_send}");
-                                spawn(async move {
-                                    #[cfg(feature = "web")]
-                                    {
-                                        let body = serde_json::json!({ "status": "sent" });
-                                        match crate::hooks::fetch::api::put_authed::<
-                                            serde_json::Value,
-                                            _,
-                                        >(&path, &body)
-                                            .await
-                                        {
-                                            Ok(_) => invoice_resource.restart(),
-                                            Err(err) => action_error
-                                                .set(format!("Could not send invoice: {err}")),
-                                        }
-                                    }
-                                    busy.set(false);
-                                });
-                            },
-                            "Send"
-                        }
-                    }
-                    if collectible {
-                        Button {
-                            variant: ButtonVariant::Secondary,
-                            // MAPPS-357: block recording a payment while down.
-                            disabled: !can_mutate,
-                            title: (!can_mutate).then(|| "Can't record a payment while the server is unreachable".to_string()),
-                            onclick: move |_| {
-                                action_error.set(String::new());
-                                show_payment.set(true);
-                            },
-                            "Record Payment"
-                        }
-                    }
-                    if editable {
-                        Button {
-                            variant: ButtonVariant::Danger,
-                            loading: *busy.read(),
-                            // MAPPS-357: block voiding while the server is down.
-                            // PMS-580: clarify that Void is the pre-send back-out.
-                            disabled: !can_mutate,
-                            title: "Voids this draft invoice and keeps it on record. Once an invoice is sent it can no longer be voided.".to_string(),
-                            onclick: move |_| {
-                                if !*busy.read() {
-                                    confirming_void.set(true);
-                                }
-                            },
-                            "Void"
-                        }
-                    }
-                },
-            }
-
-            // PMS-580: explain why a finalized invoice exposes no edit / cancel /
-            // void actions.
-            if let Some(note) = frozen_note {
-                div {
-                    class: "mb-3 text-xs text-muted bg-surface-2 border border-line rounded-md px-3 py-2",
-                    "{note}"
+        crate::components::ConfirmDialog {
+            open: confirming_void(),
+            title: "Void invoice".to_string(),
+            message: "Void this invoice? This cannot be undone.".to_string(),
+            confirm_text: "Void".to_string(),
+            cancel_text: "Cancel".to_string(),
+            destructive: true,
+            loading: *busy.read(),
+            onconfirm: on_confirm_void,
+            oncancel: move |_| {
+                if !*busy.read() {
+                    confirming_void.set(false);
                 }
-            }
-
-            if !act_err.is_empty() {
-                div {
-                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                    "{act_err}"
-                }
-            }
-
-            match &*snap {
-                None => rsx! {
-                    // PMS-353
-                    crate::components::DetailSkeleton {}
-                },
-                Some(None) => rsx! {
-                    Card {
-                        div { class: "py-8 text-center",
-                            p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load invoice." }
-                            Link {
-                                to: Route::InvoiceList {},
-                                class: "text-sm text-accent hover:opacity-90",
-                                "Back to invoices"
-                            }
-                        }
-                    }
-                },
-                Some(Some(inv)) => {
-                    let (status_variant, status_label) = invoice_status_badge(&inv.status);
-                    let lines = inv.lines.clone().unwrap_or_default();
-                    let currency = inv.currency.clone().unwrap_or_default();
-                    let notes = inv.notes.clone();
-                    let po_number = inv.po_number.clone();
-                    // Joined display name; the editor is seeded from the FK id.
-                    let payment_terms = inv.payment_term_name.clone();
-                    let company_id = inv.company_id.map(|c| c.to_string());
-                    let company_name = inv
-                        .company_name
-                        .clone()
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or_else(|| "View company".to_string());
-                    let billing_contact_id = inv.billing_contact_id.map(|c| c.to_string());
-                    let invoice_date = inv.invoice_date.clone().unwrap_or_default();
-                    let due_date = inv.due_date.clone().unwrap_or_default();
-                    let subtotal = format_money_str(&inv.subtotal);
-                    let tax_amount = format_money_str(&inv.tax_amount);
-                    let discount_amount = format_money_str(&inv.discount_amount);
-                    let total = format_money_str(&inv.total);
-                    let amount_paid = format_money_str(&inv.amount_paid);
-                    let balance_due = format_money_str(&inv.balance_due);
-                    rsx! {
-                        div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
-                            div { class: "lg:col-span-2",
-                                Card {
-                                    // Header
-                                    div { class: "flex justify-between mb-8",
-                                        div {
-                                            h2 { class: "text-2xl font-bold text-content", "INVOICE" }
-                                            p { class: "text-muted", "{inv.invoice_number}" }
-                                        }
-                                        div { class: "text-right",
-                                            div { class: "mb-2",
-                                                span { class: "text-sm text-muted", "Invoice Date: " }
-                                                span { class: "font-medium",
-                                                    if invoice_date.is_empty() { "-" } else { "{invoice_date}" }
-                                                }
-                                            }
-                                            div { class: "mb-2",
-                                                span { class: "text-sm text-muted", "Due Date: " }
-                                                span { class: "font-medium",
-                                                    if due_date.is_empty() { "-" } else { "{due_date}" }
-                                                }
-                                            }
-                                            if let Some(terms) = payment_terms.clone() {
-                                                if !terms.is_empty() {
-                                                    div {
-                                                        span { class: "text-sm text-muted", "Terms: " }
-                                                        span { class: "font-medium", "{terms}" }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // Line items
-                                    Table {
-                                        TableHead {
-                                            TableRow {
-                                                TableHeader { "Description" }
-                                                TableHeader { class: "text-right", "Qty" }
-                                                TableHeader { class: "text-right", "Unit Price" }
-                                                TableHeader { class: "text-right", "Amount" }
-                                            }
-                                        }
-                                        if lines.is_empty() {
-                                            TableEmpty { columns: 4, message: "This invoice has no line items.".to_string() }
-                                        } else {
-                                            TableBody {
-                                                for line in lines.iter().cloned() {
-                                                    TableRow { key: "{line.id}",
-                                                        TableCell { "{line.description}" }
-                                                        TableCell { class: "text-right", "{line.quantity}" }
-                                                        TableCell { class: "text-right", "{format_money_str(&line.unit_price)}" }
-                                                        TableCell { class: "text-right font-medium", "{format_money_str(&line.total)}" }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // Totals
-                                    div { class: "mt-8 border-t border-line pt-4",
-                                        div { class: "flex justify-end",
-                                            div { class: "w-64 space-y-2",
-                                                div { class: "flex justify-between",
-                                                    span { class: "text-muted", "Subtotal" }
-                                                    span { "{subtotal}" }
-                                                }
-                                                div { class: "flex justify-between",
-                                                    span { class: "text-muted", "Tax" }
-                                                    span { "{tax_amount}" }
-                                                }
-                                                div { class: "flex justify-between",
-                                                    span { class: "text-muted", "Discount" }
-                                                    span { "{discount_amount}" }
-                                                }
-                                                div { class: "flex justify-between text-lg font-bold pt-2 border-t border-line",
-                                                    span { "Total" }
-                                                    span { "{total}" }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    if let Some(notes) = notes.clone() {
-                                        if !notes.is_empty() {
-                                            div { class: "mt-6 text-sm",
-                                                h3 { class: "font-medium text-muted mb-1", "Notes" }
-                                                p { class: "text-content whitespace-pre-line", "{notes}" }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Sidebar
-                            div { class: "space-y-6",
-                                Card { title: "Status",
-                                    div { class: "space-y-4",
-                                        div { class: "flex justify-between items-center",
-                                            span { class: "text-muted", "Status" }
-                                            Badge { variant: status_variant, "{status_label}" }
-                                        }
-                                        div { class: "flex justify-between",
-                                            span { class: "text-muted", "Total" }
-                                            span { class: "font-medium", "{total}" }
-                                        }
-                                        div { class: "flex justify-between",
-                                            span { class: "text-muted", "Paid" }
-                                            span { class: "font-medium text-green-600", "{amount_paid}" }
-                                        }
-                                        div { class: "flex justify-between",
-                                            span { class: "text-muted", "Balance Due" }
-                                            span { class: "text-lg font-bold", "{balance_due}" }
-                                        }
-                                    }
-                                }
-
-                                Card { title: "Details",
-                                    dl { class: "space-y-3 text-sm",
-                                        if !currency.is_empty() {
-                                            div { class: "flex justify-between",
-                                                dt { class: "text-muted", "Currency" }
-                                                dd { "{currency}" }
-                                            }
-                                        }
-                                        if let Some(po) = po_number.clone() {
-                                            if !po.is_empty() {
-                                                div { class: "flex justify-between",
-                                                    dt { class: "text-muted", "PO Number" }
-                                                    dd { "{po}" }
-                                                }
-                                            }
-                                        }
-                                        if let Some(cid) = company_id.clone() {
-                                            div { class: "flex justify-between",
-                                                dt { class: "text-muted", "Company" }
-                                                dd {
-                                                    Link {
-                                                        to: Route::CompanyDetail { id: cid.clone() },
-                                                        class: "text-accent hover:opacity-90",
-                                                        "{company_name}"
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        if let Some(bcid) = billing_contact_id.clone() {
-                                            div { class: "flex justify-between",
-                                                dt { class: "text-muted", "Billing Contact" }
-                                                dd {
-                                                    Link {
-                                                        to: Route::ContactDetail { id: bcid.clone() },
-                                                        class: "text-accent hover:opacity-90",
-                                                        "View contact"
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-            }
-
-            if *show_edit.read() {
-                if let Some(inv) = invoice.clone() {
-                    InvoiceEditModal {
-                        id: props.id.clone(),
-                        invoice_date: inv.invoice_date.clone().unwrap_or_default(),
-                        due_date: inv.due_date.clone().unwrap_or_default(),
-                        payment_term_id: inv.payment_term_id.clone().unwrap_or_default(),
-                        po_number: inv.po_number.clone().unwrap_or_default(),
-                        notes: inv.notes.clone().unwrap_or_default(),
-                        lines: inv.lines.clone().unwrap_or_default(),
-                        tax_amount: inv.tax_amount.clone(),
-                        discount_amount: inv.discount_amount.clone(),
-                        onclose: move |_| show_edit.set(false),
-                        onsaved: move |_| {
-                            show_edit.set(false);
-                            invoice_resource.restart();
+            },
+        }
+        PageHeader {
+            title: "{header_title}",
+            actions: rsx! {
+                if editable {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        // MAPPS-357: block edits while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
+                        onclick: move |_| {
+                            action_error.set(String::new());
+                            show_edit.set(true);
                         },
+                        "Edit"
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        loading: *busy.read(),
+                        // MAPPS-357: block sending while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't send while the server is unreachable".to_string()),
+                        onclick: move |_| {
+                            if *busy.read() {
+                                return;
+                            }
+                            busy.set(true);
+                            action_error.set(String::new());
+                            let path = format!("/invoices/{id_for_send}");
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    let body = serde_json::json!({ "status": "sent" });
+                                    match crate::hooks::fetch::api::put_authed::<
+                                        serde_json::Value,
+                                        _,
+                                    >(&path, &body)
+                                        .await
+                                    {
+                                        Ok(_) => invoice_resource.restart(),
+                                        Err(err) => action_error
+                                            .set(format!("Could not send invoice: {err}")),
+                                    }
+                                }
+                                busy.set(false);
+                            });
+                        },
+                        "Send"
                     }
                 }
-            }
+                if collectible {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        // MAPPS-357: block recording a payment while down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't record a payment while the server is unreachable".to_string()),
+                        onclick: move |_| {
+                            action_error.set(String::new());
+                            show_payment.set(true);
+                        },
+                        "Record Payment"
+                    }
+                }
+                if editable {
+                    Button {
+                        variant: ButtonVariant::Danger,
+                        loading: *busy.read(),
+                        // MAPPS-357: block voiding while the server is down.
+                        // PMS-580: clarify that Void is the pre-send back-out.
+                        disabled: !can_mutate,
+                        title: "Voids this draft invoice and keeps it on record. Once an invoice is sent it can no longer be voided.".to_string(),
+                        onclick: move |_| {
+                            if !*busy.read() {
+                                confirming_void.set(true);
+                            }
+                        },
+                        "Void"
+                    }
+                }
+            },
+        }
 
-            if *show_payment.read() {
-                RecordPaymentModal {
-                    company_id: pay_company_id.clone(),
-                    invoice_id: props.id.clone(),
-                    onclose: move |_| show_payment.set(false),
+        // PMS-580: explain why a finalized invoice exposes no edit / cancel /
+        // void actions.
+        if let Some(note) = frozen_note {
+            div {
+                class: "mb-3 text-xs text-muted bg-surface-2 border border-line rounded-md px-3 py-2",
+                "{note}"
+            }
+        }
+
+        if !act_err.is_empty() {
+            div {
+                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                "{act_err}"
+            }
+        }
+
+        match &*snap {
+            None => rsx! {
+                // PMS-353
+                crate::components::DetailSkeleton {}
+            },
+            Some(None) => rsx! {
+                Card {
+                    div { class: "py-8 text-center",
+                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load invoice." }
+                        Link {
+                            to: Route::InvoiceList {},
+                            class: "text-sm text-accent hover:opacity-90",
+                            "Back to invoices"
+                        }
+                    }
+                }
+            },
+            Some(Some(inv)) => {
+                let (status_variant, status_label) = invoice_status_badge(&inv.status);
+                let lines = inv.lines.clone().unwrap_or_default();
+                let currency = inv.currency.clone().unwrap_or_default();
+                let notes = inv.notes.clone();
+                let po_number = inv.po_number.clone();
+                // Joined display name; the editor is seeded from the FK id.
+                let payment_terms = inv.payment_term_name.clone();
+                let company_id = inv.company_id.map(|c| c.to_string());
+                let company_name = inv
+                    .company_name
+                    .clone()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "View company".to_string());
+                let billing_contact_id = inv.billing_contact_id.map(|c| c.to_string());
+                let invoice_date = inv.invoice_date.clone().unwrap_or_default();
+                let due_date = inv.due_date.clone().unwrap_or_default();
+                let subtotal = format_money_str(&inv.subtotal);
+                let tax_amount = format_money_str(&inv.tax_amount);
+                let discount_amount = format_money_str(&inv.discount_amount);
+                let total = format_money_str(&inv.total);
+                let amount_paid = format_money_str(&inv.amount_paid);
+                let balance_due = format_money_str(&inv.balance_due);
+                rsx! {
+                    div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
+                        div { class: "lg:col-span-2",
+                            Card {
+                                // Header
+                                div { class: "flex justify-between mb-8",
+                                    div {
+                                        h2 { class: "text-2xl font-bold text-content", "INVOICE" }
+                                        p { class: "text-muted", "{inv.invoice_number}" }
+                                    }
+                                    div { class: "text-right",
+                                        div { class: "mb-2",
+                                            span { class: "text-sm text-muted", "Invoice Date: " }
+                                            span { class: "font-medium",
+                                                if invoice_date.is_empty() { "-" } else { "{invoice_date}" }
+                                            }
+                                        }
+                                        div { class: "mb-2",
+                                            span { class: "text-sm text-muted", "Due Date: " }
+                                            span { class: "font-medium",
+                                                if due_date.is_empty() { "-" } else { "{due_date}" }
+                                            }
+                                        }
+                                        if let Some(terms) = payment_terms.clone() {
+                                            if !terms.is_empty() {
+                                                div {
+                                                    span { class: "text-sm text-muted", "Terms: " }
+                                                    span { class: "font-medium", "{terms}" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Line items
+                                Table {
+                                    TableHead {
+                                        TableRow {
+                                            TableHeader { "Description" }
+                                            TableHeader { class: "text-right", "Qty" }
+                                            TableHeader { class: "text-right", "Unit Price" }
+                                            TableHeader { class: "text-right", "Amount" }
+                                        }
+                                    }
+                                    if lines.is_empty() {
+                                        TableEmpty { columns: 4, message: "This invoice has no line items.".to_string() }
+                                    } else {
+                                        TableBody {
+                                            for line in lines.iter().cloned() {
+                                                TableRow { key: "{line.id}",
+                                                    TableCell { "{line.description}" }
+                                                    TableCell { class: "text-right", "{line.quantity}" }
+                                                    TableCell { class: "text-right", "{format_money_str(&line.unit_price)}" }
+                                                    TableCell { class: "text-right font-medium", "{format_money_str(&line.total)}" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Totals
+                                div { class: "mt-8 border-t border-line pt-4",
+                                    div { class: "flex justify-end",
+                                        div { class: "w-64 space-y-2",
+                                            div { class: "flex justify-between",
+                                                span { class: "text-muted", "Subtotal" }
+                                                span { "{subtotal}" }
+                                            }
+                                            div { class: "flex justify-between",
+                                                span { class: "text-muted", "Tax" }
+                                                span { "{tax_amount}" }
+                                            }
+                                            div { class: "flex justify-between",
+                                                span { class: "text-muted", "Discount" }
+                                                span { "{discount_amount}" }
+                                            }
+                                            div { class: "flex justify-between text-lg font-bold pt-2 border-t border-line",
+                                                span { "Total" }
+                                                span { "{total}" }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if let Some(notes) = notes.clone() {
+                                    if !notes.is_empty() {
+                                        div { class: "mt-6 text-sm",
+                                            h3 { class: "font-medium text-muted mb-1", "Notes" }
+                                            p { class: "text-content whitespace-pre-line", "{notes}" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Sidebar
+                        div { class: "space-y-6",
+                            Card { title: "Status",
+                                div { class: "space-y-4",
+                                    div { class: "flex justify-between items-center",
+                                        span { class: "text-muted", "Status" }
+                                        Badge { variant: status_variant, "{status_label}" }
+                                    }
+                                    div { class: "flex justify-between",
+                                        span { class: "text-muted", "Total" }
+                                        span { class: "font-medium", "{total}" }
+                                    }
+                                    div { class: "flex justify-between",
+                                        span { class: "text-muted", "Paid" }
+                                        span { class: "font-medium text-green-600", "{amount_paid}" }
+                                    }
+                                    div { class: "flex justify-between",
+                                        span { class: "text-muted", "Balance Due" }
+                                        span { class: "text-lg font-bold", "{balance_due}" }
+                                    }
+                                }
+                            }
+
+                            Card { title: "Details",
+                                dl { class: "space-y-3 text-sm",
+                                    if !currency.is_empty() {
+                                        div { class: "flex justify-between",
+                                            dt { class: "text-muted", "Currency" }
+                                            dd { "{currency}" }
+                                        }
+                                    }
+                                    if let Some(po) = po_number.clone() {
+                                        if !po.is_empty() {
+                                            div { class: "flex justify-between",
+                                                dt { class: "text-muted", "PO Number" }
+                                                dd { "{po}" }
+                                            }
+                                        }
+                                    }
+                                    if let Some(cid) = company_id.clone() {
+                                        div { class: "flex justify-between",
+                                            dt { class: "text-muted", "Company" }
+                                            dd {
+                                                Link {
+                                                    to: Route::CompanyDetail { id: cid.clone() },
+                                                    class: "text-accent hover:opacity-90",
+                                                    "{company_name}"
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if let Some(bcid) = billing_contact_id.clone() {
+                                        div { class: "flex justify-between",
+                                            dt { class: "text-muted", "Billing Contact" }
+                                            dd {
+                                                Link {
+                                                    to: Route::ContactDetail { id: bcid.clone() },
+                                                    class: "text-accent hover:opacity-90",
+                                                    "View contact"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+        }
+
+        if *show_edit.read() {
+            if let Some(inv) = invoice.clone() {
+                InvoiceEditModal {
+                    id: props.id.clone(),
+                    invoice_date: inv.invoice_date.clone().unwrap_or_default(),
+                    due_date: inv.due_date.clone().unwrap_or_default(),
+                    payment_term_id: inv.payment_term_id.clone().unwrap_or_default(),
+                    po_number: inv.po_number.clone().unwrap_or_default(),
+                    notes: inv.notes.clone().unwrap_or_default(),
+                    lines: inv.lines.clone().unwrap_or_default(),
+                    tax_amount: inv.tax_amount.clone(),
+                    discount_amount: inv.discount_amount.clone(),
+                    onclose: move |_| show_edit.set(false),
                     onsaved: move |_| {
-                        show_payment.set(false);
+                        show_edit.set(false);
                         invoice_resource.restart();
                     },
                 }
+            }
+        }
+
+        if *show_payment.read() {
+            RecordPaymentModal {
+                company_id: pay_company_id.clone(),
+                invoice_id: props.id.clone(),
+                onclose: move |_| show_payment.set(false),
+                onsaved: move |_| {
+                    show_payment.set(false);
+                    invoice_resource.restart();
+                },
             }
         }
     }
@@ -1319,211 +1316,211 @@ pub fn InvoiceNewPage() -> Element {
             None
         };
 
+    use_page_title("New Invoice");
+
     rsx! {
-        AppLayout { title: "New Invoice",
-            PageHeader {
-                title: "New Invoice",
-                subtitle: "Create an invoice manually or generate one from billable time entries",
-            }
+        PageHeader {
+            title: "New Invoice",
+            subtitle: "Create an invoice manually or generate one from billable time entries",
+        }
 
-            Card {
-                form {
-                    class: "space-y-6",
-                    onsubmit: handle_create,
+        Card {
+            form {
+                class: "space-y-6",
+                onsubmit: handle_create,
 
-                    if !error.read().is_empty() {
-                        div {
-                            class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                            "{error.read()}"
-                        }
+                if !error.read().is_empty() {
+                    div {
+                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                        "{error.read()}"
                     }
+                }
 
-                    crate::components::CompanyPicker {
-                        value: company_name.read().clone(),
-                        selected_id: company_picker_selected_id,
+                crate::components::CompanyPicker {
+                    value: company_name.read().clone(),
+                    selected_id: company_picker_selected_id,
+                    required: true,
+                    allow_inline_create: true,
+                    // PMS-579: inline field-level error instead of the banner.
+                    error: company_error.read().clone(),
+                    onselect: move |(id, name): (String, String)| {
+                        company_id.set(id);
+                        company_name.set(name);
+                        company_error.set(String::new());
+                    },
+                    onclear: move |_| {
+                        company_id.set(String::new());
+                        company_name.set(String::new());
+                    },
+                }
+
+                div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                    crate::components::DateField {
+                        name: "invoice_date",
+                        label: "Invoice Date",
                         required: true,
-                        allow_inline_create: true,
-                        // PMS-579: inline field-level error instead of the banner.
-                        error: company_error.read().clone(),
-                        onselect: move |(id, name): (String, String)| {
-                            company_id.set(id);
-                            company_name.set(name);
-                            company_error.set(String::new());
-                        },
-                        onclear: move |_| {
-                            company_id.set(String::new());
-                            company_name.set(String::new());
+                        rules: vec![Rule::Required],
+                        error: invoice_date_error.read().clone(),
+                        value: invoice_date.read().clone(),
+                        oninput: move |e: FormEvent| {
+                            invoice_date_error.set(String::new());
+                            invoice_date.set(e.value());
                         },
                     }
+                    crate::components::DateField {
+                        name: "due_date",
+                        label: "Due Date",
+                        required: true,
+                        rules: vec![Rule::Required],
+                        value: due_date.read().clone(),
+                        error: due_date_error.read().clone(),
+                        oninput: move |e: FormEvent| {
+                            due_date_error.set(String::new());
+                            due_date.set(e.value());
+                        },
+                    }
+                }
 
-                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
-                        crate::components::DateField {
-                            name: "invoice_date",
-                            label: "Invoice Date",
+                crate::components::Input {
+                    name: "po_number",
+                    label: "PO Number",
+                    maxlength: 100,
+                    value: po_number.read().clone(),
+                    oninput: move |e: FormEvent| po_number.set(e.value()),
+                }
+
+                div {
+                    h3 { class: "text-sm font-medium text-content mb-3", "Line Item" }
+                    div { class: "grid grid-cols-1 gap-3 sm:grid-cols-[1fr_100px_140px]",
+                        crate::components::Input {
+                            name: "line_description",
+                            label: "Description",
                             required: true,
+                            maxlength: 1000,
                             rules: vec![Rule::Required],
-                            error: invoice_date_error.read().clone(),
-                            value: invoice_date.read().clone(),
+                            error: line_description_error.read().clone(),
+                            placeholder: "What was delivered",
+                            value: line_description.read().clone(),
                             oninput: move |e: FormEvent| {
-                                invoice_date_error.set(String::new());
-                                invoice_date.set(e.value());
+                                line_description_error.set(String::new());
+                                line_description.set(e.value());
                             },
                         }
-                        crate::components::DateField {
-                            name: "due_date",
-                            label: "Due Date",
+                        crate::components::Input {
+                            name: "line_quantity",
+                            label: "Quantity",
+                            r#type: "number",
                             required: true,
-                            rules: vec![Rule::Required],
-                            value: due_date.read().clone(),
-                            error: due_date_error.read().clone(),
+                            step: "0.01",
+                            min: "0",
+                            rules: vec![
+                                Rule::Required,
+                                Rule::Number { min: Some(0.0), max: None, max_decimals: None },
+                            ],
+                            placeholder: "Qty",
+                            value: line_quantity.read().clone(),
+                            error: quantity_error.read().clone(),
                             oninput: move |e: FormEvent| {
-                                due_date_error.set(String::new());
-                                due_date.set(e.value());
+                                quantity_error.set(String::new());
+                                line_quantity.set(e.value());
+                            },
+                        }
+                        crate::components::Input {
+                            name: "line_unit_price",
+                            label: "Unit Price",
+                            r#type: "number",
+                            required: true,
+                            step: "0.01",
+                            min: "0",
+                            rules: vec![
+                                Rule::Required,
+                                Rule::Number { min: Some(0.0), max: None, max_decimals: None },
+                            ],
+                            placeholder: "0.00",
+                            value: line_unit_price.read().clone(),
+                            error: unit_price_error.read().clone(),
+                            oninput: move |e: FormEvent| {
+                                unit_price_error.set(String::new());
+                                line_unit_price.set(e.value());
                             },
                         }
                     }
-
-                    crate::components::Input {
-                        name: "po_number",
-                        label: "PO Number",
-                        maxlength: 100,
-                        value: po_number.read().clone(),
-                        oninput: move |e: FormEvent| po_number.set(e.value()),
+                    p { class: "mt-2 text-xs text-muted",
+                        "Manual invoices start with a single service line. Add more lines by editing the invoice after it is created."
                     }
+                }
 
-                    div {
-                        h3 { class: "text-sm font-medium text-content mb-3", "Line Item" }
-                        div { class: "grid grid-cols-1 gap-3 sm:grid-cols-[1fr_100px_140px]",
-                            crate::components::Input {
-                                name: "line_description",
-                                label: "Description",
-                                required: true,
-                                maxlength: 1000,
-                                rules: vec![Rule::Required],
-                                error: line_description_error.read().clone(),
-                                placeholder: "What was delivered",
-                                value: line_description.read().clone(),
-                                oninput: move |e: FormEvent| {
-                                    line_description_error.set(String::new());
-                                    line_description.set(e.value());
-                                },
-                            }
-                            crate::components::Input {
-                                name: "line_quantity",
-                                label: "Quantity",
-                                r#type: "number",
-                                required: true,
-                                step: "0.01",
-                                min: "0",
-                                rules: vec![
-                                    Rule::Required,
-                                    Rule::Number { min: Some(0.0), max: None, max_decimals: None },
-                                ],
-                                placeholder: "Qty",
-                                value: line_quantity.read().clone(),
-                                error: quantity_error.read().clone(),
-                                oninput: move |e: FormEvent| {
-                                    quantity_error.set(String::new());
-                                    line_quantity.set(e.value());
-                                },
-                            }
-                            crate::components::Input {
-                                name: "line_unit_price",
-                                label: "Unit Price",
-                                r#type: "number",
-                                required: true,
-                                step: "0.01",
-                                min: "0",
-                                rules: vec![
-                                    Rule::Required,
-                                    Rule::Number { min: Some(0.0), max: None, max_decimals: None },
-                                ],
-                                placeholder: "0.00",
-                                value: line_unit_price.read().clone(),
-                                error: unit_price_error.read().clone(),
-                                oninput: move |e: FormEvent| {
-                                    unit_price_error.set(String::new());
-                                    line_unit_price.set(e.value());
-                                },
-                            }
+                div {
+                    h3 { class: "text-sm font-medium text-content mb-3", "Tax & Discount" }
+                    div { class: "grid grid-cols-1 gap-3 sm:grid-cols-3",
+                        Select {
+                            name: "tax_rate_id",
+                            label: "Tax Rate",
+                            options: tax_rate_options,
+                            value: tax_rate_id.read().clone(),
+                            onchange: move |e: FormEvent| {
+                                tax_rate_id.set(e.value());
+                                // Re-follow the computed value for the new rate.
+                                tax_override.set(None);
+                            },
                         }
-                        p { class: "mt-2 text-xs text-muted",
-                            "Manual invoices start with a single service line. Add more lines by editing the invoice after it is created."
+                        crate::components::Input {
+                            name: "tax_amount",
+                            label: "Tax",
+                            r#type: "number",
+                            step: "0.01".to_string(),
+                            min: "0".to_string(),
+                            placeholder: "0.00",
+                            help: "Auto-computed from the tax rate; edit to override.",
+                            value: tax_value.clone(),
+                            oninput: move |e: FormEvent| tax_override.set(Some(e.value())),
+                        }
+                        crate::components::Input {
+                            name: "discount_amount",
+                            label: "Discount",
+                            r#type: "number",
+                            step: "0.01".to_string(),
+                            min: "0".to_string(),
+                            placeholder: "0.00",
+                            value: discount_amount.read().clone(),
+                            oninput: move |e: FormEvent| discount_amount.set(e.value()),
                         }
                     }
+                }
 
-                    div {
-                        h3 { class: "text-sm font-medium text-content mb-3", "Tax & Discount" }
-                        div { class: "grid grid-cols-1 gap-3 sm:grid-cols-3",
-                            Select {
-                                name: "tax_rate_id",
-                                label: "Tax Rate",
-                                options: tax_rate_options,
-                                value: tax_rate_id.read().clone(),
-                                onchange: move |e: FormEvent| {
-                                    tax_rate_id.set(e.value());
-                                    // Re-follow the computed value for the new rate.
-                                    tax_override.set(None);
-                                },
-                            }
-                            crate::components::Input {
-                                name: "tax_amount",
-                                label: "Tax",
-                                r#type: "number",
-                                step: "0.01".to_string(),
-                                min: "0".to_string(),
-                                placeholder: "0.00",
-                                help: "Auto-computed from the tax rate; edit to override.",
-                                value: tax_value.clone(),
-                                oninput: move |e: FormEvent| tax_override.set(Some(e.value())),
-                            }
-                            crate::components::Input {
-                                name: "discount_amount",
-                                label: "Discount",
-                                r#type: "number",
-                                step: "0.01".to_string(),
-                                min: "0".to_string(),
-                                placeholder: "0.00",
-                                value: discount_amount.read().clone(),
-                                oninput: move |e: FormEvent| discount_amount.set(e.value()),
-                            }
-                        }
+                crate::components::Textarea {
+                    name: "notes",
+                    label: "Notes",
+                    placeholder: "Internal notes (not shown to the customer)",
+                    rows: 3,
+                    maxlength: 2000,
+                    value: notes.read().clone(),
+                    oninput: move |e: FormEvent| notes.set(e.value()),
+                }
+
+                div { class: "flex flex-wrap justify-end gap-3",
+                    Link {
+                        to: Route::InvoiceList {},
+                        Button { variant: ButtonVariant::Secondary, "Cancel" }
                     }
-
-                    crate::components::Textarea {
-                        name: "notes",
-                        label: "Notes",
-                        placeholder: "Internal notes (not shown to the customer)",
-                        rows: 3,
-                        maxlength: 2000,
-                        value: notes.read().clone(),
-                        oninput: move |e: FormEvent| notes.set(e.value()),
+                    Button {
+                        r#type: "button",
+                        variant: ButtonVariant::Secondary,
+                        loading: *is_generating.read(),
+                        // MAPPS-357: block generation while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't generate an invoice while the server is unreachable".to_string()),
+                        onclick: handle_generate,
+                        "Generate from Time Entries"
                     }
-
-                    div { class: "flex flex-wrap justify-end gap-3",
-                        Link {
-                            to: Route::InvoiceList {},
-                            Button { variant: ButtonVariant::Secondary, "Cancel" }
-                        }
-                        Button {
-                            r#type: "button",
-                            variant: ButtonVariant::Secondary,
-                            loading: *is_generating.read(),
-                            // MAPPS-357: block generation while the server is down.
-                            disabled: !can_mutate,
-                            title: (!can_mutate).then(|| "Can't generate an invoice while the server is unreachable".to_string()),
-                            onclick: handle_generate,
-                            "Generate from Time Entries"
-                        }
-                        Button {
-                            r#type: "submit",
-                            variant: ButtonVariant::Primary,
-                            loading: *is_submitting.read(),
-                            // MAPPS-357: block creation while the server is down.
-                            disabled: !can_mutate,
-                            title: (!can_mutate).then(|| "Can't create an invoice while the server is unreachable".to_string()),
-                            "Create Invoice"
-                        }
+                    Button {
+                        r#type: "submit",
+                        variant: ButtonVariant::Primary,
+                        loading: *is_submitting.read(),
+                        // MAPPS-357: block creation while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't create an invoice while the server is unreachable".to_string()),
+                        "Create Invoice"
                     }
                 }
             }
@@ -1571,6 +1568,7 @@ pub fn PaymentListPage() -> Element {
         .map(|u| u.role.can_manage_billing())
         .unwrap_or(false);
 
+    use_page_title("Payments");
     if !has_finance {
         return rsx! { NoFinancePermission { title: "Payments" } };
     }
@@ -1620,87 +1618,85 @@ pub fn PaymentListPage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Payments",
-            PageHeader {
-                title: "Payments",
-                subtitle: "Track customer payments",
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        // MAPPS-357: block recording a payment while down.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't record a payment while the server is unreachable".to_string()),
-                        onclick: move |_| recording.set(true),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "Record Payment"
-                    }
-                },
-            }
-
-            if fetch_failed {
-                div {
-                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                    "Could not load payments. Refresh the page to retry."
+        PageHeader {
+            title: "Payments",
+            subtitle: "Track customer payments",
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block recording a payment while down.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't record a payment while the server is unreachable".to_string()),
+                    onclick: move |_| recording.set(true),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "Record Payment"
                 }
-            }
+            },
+        }
 
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 7,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Date" }
-                            TableHeader { "Company" }
-                            TableHeader { "Invoice" }
-                            TableHeader { "Method" }
-                            TableHeader { "Reference" }
-                            TableHeader { class: "text-right", "Amount" }
-                            TableHeader { class: "text-right", "Actions" }
-                        }
+        if fetch_failed {
+            div {
+                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                "Could not load payments. Refresh the page to retry."
+            }
+        }
+
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 7,
+            onpagechange: move |p| page.set(p),
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Date" }
+                        TableHeader { "Company" }
+                        TableHeader { "Invoice" }
+                        TableHeader { "Method" }
+                        TableHeader { "Reference" }
+                        TableHeader { class: "text-right", "Amount" }
+                        TableHeader { class: "text-right", "Actions" }
                     }
-                    if is_loading {
-                        TableLoading { columns: 7, rows: 5 }
-                    } else if rows.is_empty() {
-                        TableEmpty {
-                            columns: 7,
-                            title: "No payments yet".to_string(),
-                            description: "Record a payment to track what your customers have paid.".to_string(),
-                            actions: rsx! {
-                                Button {
-                                    variant: ButtonVariant::Primary,
-                                    // MAPPS-357: block recording a payment while down.
-                                    disabled: !can_mutate,
-                                    title: (!can_mutate).then(|| "Can't record a payment while the server is unreachable".to_string()),
-                                    onclick: move |_| recording.set(true),
-                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                    "Record Payment"
-                                }
-                            },
-                        }
-                    } else {
-                        TableBody {
-                            for payment in rows.iter().cloned() {
-                                {
-                                    let edit_payment = payment.clone();
-                                    rsx! {
-                                        PaymentRow {
-                                            key: "{payment.id}",
-                                            id: payment.id.to_string(),
-                                            company: payment.company_name.clone().unwrap_or_default(),
-                                            invoice_id: payment.invoice_id.map(|i| i.to_string()).unwrap_or_default(),
-                                            invoice_number: payment.invoice_number.clone().unwrap_or_default(),
-                                            date: payment.payment_date.clone().unwrap_or_default(),
-                                            method: humanize_payment_method(&payment.payment_method),
-                                            reference: payment.reference_number.clone().unwrap_or_default(),
-                                            amount: format_money_str(&payment.amount),
-                                            on_edit: move |_| editing.set(Some(edit_payment.clone())),
-                                            on_deleted: move |_| { reload += 1; },
-                                        }
+                }
+                if is_loading {
+                    TableLoading { columns: 7, rows: 5 }
+                } else if rows.is_empty() {
+                    TableEmpty {
+                        columns: 7,
+                        title: "No payments yet".to_string(),
+                        description: "Record a payment to track what your customers have paid.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: block recording a payment while down.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't record a payment while the server is unreachable".to_string()),
+                                onclick: move |_| recording.set(true),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "Record Payment"
+                            }
+                        },
+                    }
+                } else {
+                    TableBody {
+                        for payment in rows.iter().cloned() {
+                            {
+                                let edit_payment = payment.clone();
+                                rsx! {
+                                    PaymentRow {
+                                        key: "{payment.id}",
+                                        id: payment.id.to_string(),
+                                        company: payment.company_name.clone().unwrap_or_default(),
+                                        invoice_id: payment.invoice_id.map(|i| i.to_string()).unwrap_or_default(),
+                                        invoice_number: payment.invoice_number.clone().unwrap_or_default(),
+                                        date: payment.payment_date.clone().unwrap_or_default(),
+                                        method: humanize_payment_method(&payment.payment_method),
+                                        reference: payment.reference_number.clone().unwrap_or_default(),
+                                        amount: format_money_str(&payment.amount),
+                                        on_edit: move |_| editing.set(Some(edit_payment.clone())),
+                                        on_deleted: move |_| { reload += 1; },
                                     }
                                 }
                             }
@@ -1708,33 +1704,33 @@ pub fn PaymentListPage() -> Element {
                     }
                 }
             }
+        }
 
-            if *recording.read() {
-                RecordPaymentModal {
-                    onclose: move |_| recording.set(false),
-                    onsaved: move |_| {
-                        recording.set(false);
-                        payments_resource.restart();
-                    },
-                }
+        if *recording.read() {
+            RecordPaymentModal {
+                onclose: move |_| recording.set(false),
+                onsaved: move |_| {
+                    recording.set(false);
+                    payments_resource.restart();
+                },
             }
+        }
 
-            if let Some(p) = editing.read().clone() {
-                RecordPaymentModal {
-                    payment_id: p.id.to_string(),
-                    company_id: p.company_id.to_string(),
-                    invoice_id: p.invoice_id.map(|i| i.to_string()).unwrap_or_default(),
-                    payment_date: p.payment_date.clone().unwrap_or_default(),
-                    amount: p.amount.clone(),
-                    payment_method: p.payment_method.clone(),
-                    reference_number: p.reference_number.clone().unwrap_or_default(),
-                    notes: p.notes.clone().unwrap_or_default(),
-                    onclose: move |_| editing.set(None),
-                    onsaved: move |_| {
-                        editing.set(None);
-                        payments_resource.restart();
-                    },
-                }
+        if let Some(p) = editing.read().clone() {
+            RecordPaymentModal {
+                payment_id: p.id.to_string(),
+                company_id: p.company_id.to_string(),
+                invoice_id: p.invoice_id.map(|i| i.to_string()).unwrap_or_default(),
+                payment_date: p.payment_date.clone().unwrap_or_default(),
+                amount: p.amount.clone(),
+                payment_method: p.payment_method.clone(),
+                reference_number: p.reference_number.clone().unwrap_or_default(),
+                notes: p.notes.clone().unwrap_or_default(),
+                onclose: move |_| editing.set(None),
+                onsaved: move |_| {
+                    editing.set(None);
+                    payments_resource.restart();
+                },
             }
         }
     }
@@ -2796,6 +2792,7 @@ pub fn TaxRateListPage() -> Element {
         .map(|u| u.role.can_manage_billing())
         .unwrap_or(false);
 
+    use_page_title("Tax Rates");
     if !has_finance {
         return rsx! { NoFinancePermission { title: "Tax Rates" } };
     }
@@ -2838,97 +2835,95 @@ pub fn TaxRateListPage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Tax Rates",
-            PageHeader {
-                title: "Tax Rates",
-                subtitle: "Manage tax rates applied to invoices",
-                actions: rsx! {
-                    Link {
-                        to: Route::InvoiceList {},
-                        Button { variant: ButtonVariant::Secondary, "Back to Invoices" }
-                    }
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        // MAPPS-357: block creating a tax rate while down.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't add a tax rate while the server is unreachable".to_string()),
-                        onclick: move |_| editing.set(Some(TaxRateFormState::new())),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Tax Rate"
-                    }
-                },
-            }
-
-            if fetch_failed {
-                div {
-                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                    "Could not load tax rates. Refresh the page to retry."
+        PageHeader {
+            title: "Tax Rates",
+            subtitle: "Manage tax rates applied to invoices",
+            actions: rsx! {
+                Link {
+                    to: Route::InvoiceList {},
+                    Button { variant: ButtonVariant::Secondary, "Back to Invoices" }
                 }
-            }
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block creating a tax rate while down.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't add a tax rate while the server is unreachable".to_string()),
+                    onclick: move |_| editing.set(Some(TaxRateFormState::new())),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "New Tax Rate"
+                }
+            },
+        }
 
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 4,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Name" }
-                            TableHeader { class: "text-right", "Rate" }
-                            TableHeader { "Default" }
-                            TableHeader { "Active" }
-                        }
+        if fetch_failed {
+            div {
+                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                "Could not load tax rates. Refresh the page to retry."
+            }
+        }
+
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 4,
+            onpagechange: move |p| page.set(p),
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Name" }
+                        TableHeader { class: "text-right", "Rate" }
+                        TableHeader { "Default" }
+                        TableHeader { "Active" }
                     }
-                    if is_loading {
-                        TableLoading { columns: 4, rows: 4 }
-                    } else if rows.is_empty() {
-                        TableEmpty {
-                            columns: 4,
-                            title: "No tax rates yet".to_string(),
-                            description: "Add a tax rate to apply it to your invoices.".to_string(),
-                            actions: rsx! {
-                                Button {
-                                    variant: ButtonVariant::Primary,
-                                    // MAPPS-357: block creating a tax rate while down.
-                                    disabled: !can_mutate,
-                                    title: (!can_mutate).then(|| "Can't add a tax rate while the server is unreachable".to_string()),
-                                    onclick: move |_| editing.set(Some(TaxRateFormState::new())),
-                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                    "New Tax Rate"
-                                }
-                            },
-                        }
-                    } else {
-                        TableBody {
-                            for rate in rows.iter().cloned() {
-                                {
-                                    let key = rate.id.to_string();
-                                    let edit_state = TaxRateFormState::from_existing(&rate);
-                                    let rate_label = rate.rate.clone();
-                                    let is_default = rate.is_default;
-                                    let is_active = rate.is_active;
-                                    let name = rate.name.clone();
-                                    rsx! {
-                                        TableRow { key: "{key}", clickable: true,
-                                            onclick: move |_| editing.set(Some(edit_state.clone())),
-                                            TableCell {
-                                                span { class: "font-medium text-accent", "{name}" }
+                }
+                if is_loading {
+                    TableLoading { columns: 4, rows: 4 }
+                } else if rows.is_empty() {
+                    TableEmpty {
+                        columns: 4,
+                        title: "No tax rates yet".to_string(),
+                        description: "Add a tax rate to apply it to your invoices.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: block creating a tax rate while down.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't add a tax rate while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(TaxRateFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Tax Rate"
+                            }
+                        },
+                    }
+                } else {
+                    TableBody {
+                        for rate in rows.iter().cloned() {
+                            {
+                                let key = rate.id.to_string();
+                                let edit_state = TaxRateFormState::from_existing(&rate);
+                                let rate_label = rate.rate.clone();
+                                let is_default = rate.is_default;
+                                let is_active = rate.is_active;
+                                let name = rate.name.clone();
+                                rsx! {
+                                    TableRow { key: "{key}", clickable: true,
+                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        TableCell {
+                                            span { class: "font-medium text-accent", "{name}" }
+                                        }
+                                        TableCell { class: "text-right", "{rate_label}%" }
+                                        TableCell {
+                                            if is_default {
+                                                Badge { variant: BadgeVariant::Blue, "Default" }
                                             }
-                                            TableCell { class: "text-right", "{rate_label}%" }
-                                            TableCell {
-                                                if is_default {
-                                                    Badge { variant: BadgeVariant::Blue, "Default" }
-                                                }
-                                            }
-                                            TableCell {
-                                                if is_active {
-                                                    Badge { variant: BadgeVariant::Green, "Active" }
-                                                } else {
-                                                    Badge { variant: BadgeVariant::Gray, "Inactive" }
-                                                }
+                                        }
+                                        TableCell {
+                                            if is_active {
+                                                Badge { variant: BadgeVariant::Green, "Active" }
+                                            } else {
+                                                Badge { variant: BadgeVariant::Gray, "Inactive" }
                                             }
                                         }
                                     }
@@ -2938,16 +2933,16 @@ pub fn TaxRateListPage() -> Element {
                     }
                 }
             }
+        }
 
-            if let Some(state) = editing.read().clone() {
-                TaxRateFormModal {
-                    state,
-                    onclose: move |_| editing.set(None),
-                    onsaved: move |_| {
-                        editing.set(None);
-                        tax_rates_resource.restart();
-                    },
-                }
+        if let Some(state) = editing.read().clone() {
+            TaxRateFormModal {
+                state,
+                onclose: move |_| editing.set(None),
+                onsaved: move |_| {
+                    editing.set(None);
+                    tax_rates_resource.restart();
+                },
             }
         }
     }
@@ -3280,6 +3275,7 @@ pub fn PaymentGatewayConfigPage() -> Element {
         .map(|u| u.role.can_manage_billing())
         .unwrap_or(false);
 
+    use_page_title("Payment Gateways");
     if !has_finance {
         return rsx! { NoFinancePermission { title: "Payment Gateways" } };
     }
@@ -3323,99 +3319,97 @@ pub fn PaymentGatewayConfigPage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Payment Gateways",
-            PageHeader {
-                title: "Payment Gateways",
-                subtitle: "Configure payment gateway integrations",
-                actions: rsx! {
-                    Link {
-                        to: Route::InvoiceList {},
-                        Button { variant: ButtonVariant::Secondary, "Back to Invoices" }
-                    }
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        // MAPPS-357: block configuring a gateway while down.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't configure a gateway while the server is unreachable".to_string()),
-                        onclick: move |_| editing.set(Some(GatewayFormState::new())),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "Configure Gateway"
-                    }
-                },
-            }
-
-            if fetch_failed {
-                div {
-                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                    "Could not load payment gateways. Refresh the page to retry."
+        PageHeader {
+            title: "Payment Gateways",
+            subtitle: "Configure payment gateway integrations",
+            actions: rsx! {
+                Link {
+                    to: Route::InvoiceList {},
+                    Button { variant: ButtonVariant::Secondary, "Back to Invoices" }
                 }
-            }
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block configuring a gateway while down.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't configure a gateway while the server is unreachable".to_string()),
+                    onclick: move |_| editing.set(Some(GatewayFormState::new())),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "Configure Gateway"
+                }
+            },
+        }
 
-            Card { padding: false,
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Provider" }
-                            TableHeader { "Mode" }
-                            TableHeader { "Active" }
-                            TableHeader { "Credentials" }
-                        }
+        if fetch_failed {
+            div {
+                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                "Could not load payment gateways. Refresh the page to retry."
+            }
+        }
+
+        Card { padding: false,
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Provider" }
+                        TableHeader { "Mode" }
+                        TableHeader { "Active" }
+                        TableHeader { "Credentials" }
                     }
-                    if is_loading {
-                        TableLoading { columns: 4, rows: 3 }
-                    } else if rows.is_empty() {
-                        TableEmpty {
-                            columns: 4,
-                            title: "No payment gateways yet".to_string(),
-                            description: "Configure a gateway to accept online payments.".to_string(),
-                            actions: rsx! {
-                                Button {
-                                    variant: ButtonVariant::Primary,
-                                    // MAPPS-357: block configuring a gateway while down.
-                                    disabled: !can_mutate,
-                                    title: (!can_mutate).then(|| "Can't configure a gateway while the server is unreachable".to_string()),
-                                    onclick: move |_| editing.set(Some(GatewayFormState::new())),
-                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                    "Configure Gateway"
-                                }
-                            },
-                        }
-                    } else {
-                        TableBody {
-                            for gateway in rows.iter().cloned() {
-                                {
-                                    let key = gateway.id.to_string();
-                                    let edit_state = GatewayFormState::from_existing(&gateway);
-                                    let provider_label = humanize_provider(&gateway.provider);
-                                    let is_test = gateway.is_test_mode;
-                                    let is_active = gateway.is_active;
-                                    let configured = gateway.configured;
-                                    rsx! {
-                                        TableRow { key: "{key}", clickable: true,
-                                            onclick: move |_| editing.set(Some(edit_state.clone())),
-                                            TableCell {
-                                                span { class: "font-medium text-accent", "{provider_label}" }
+                }
+                if is_loading {
+                    TableLoading { columns: 4, rows: 3 }
+                } else if rows.is_empty() {
+                    TableEmpty {
+                        columns: 4,
+                        title: "No payment gateways yet".to_string(),
+                        description: "Configure a gateway to accept online payments.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: block configuring a gateway while down.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't configure a gateway while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(GatewayFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "Configure Gateway"
+                            }
+                        },
+                    }
+                } else {
+                    TableBody {
+                        for gateway in rows.iter().cloned() {
+                            {
+                                let key = gateway.id.to_string();
+                                let edit_state = GatewayFormState::from_existing(&gateway);
+                                let provider_label = humanize_provider(&gateway.provider);
+                                let is_test = gateway.is_test_mode;
+                                let is_active = gateway.is_active;
+                                let configured = gateway.configured;
+                                rsx! {
+                                    TableRow { key: "{key}", clickable: true,
+                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        TableCell {
+                                            span { class: "font-medium text-accent", "{provider_label}" }
+                                        }
+                                        TableCell {
+                                            if is_test {
+                                                Badge { variant: BadgeVariant::Yellow, "Test" }
+                                            } else {
+                                                Badge { variant: BadgeVariant::Green, "Live" }
                                             }
-                                            TableCell {
-                                                if is_test {
-                                                    Badge { variant: BadgeVariant::Yellow, "Test" }
-                                                } else {
-                                                    Badge { variant: BadgeVariant::Green, "Live" }
-                                                }
+                                        }
+                                        TableCell {
+                                            if is_active {
+                                                Badge { variant: BadgeVariant::Green, "Active" }
+                                            } else {
+                                                Badge { variant: BadgeVariant::Gray, "Inactive" }
                                             }
-                                            TableCell {
-                                                if is_active {
-                                                    Badge { variant: BadgeVariant::Green, "Active" }
-                                                } else {
-                                                    Badge { variant: BadgeVariant::Gray, "Inactive" }
-                                                }
-                                            }
-                                            TableCell {
-                                                if configured {
-                                                    Badge { variant: BadgeVariant::Green, "Configured" }
-                                                } else {
-                                                    Badge { variant: BadgeVariant::Gray, "Not configured" }
-                                                }
+                                        }
+                                        TableCell {
+                                            if configured {
+                                                Badge { variant: BadgeVariant::Green, "Configured" }
+                                            } else {
+                                                Badge { variant: BadgeVariant::Gray, "Not configured" }
                                             }
                                         }
                                     }
@@ -3425,16 +3419,16 @@ pub fn PaymentGatewayConfigPage() -> Element {
                     }
                 }
             }
+        }
 
-            if let Some(state) = editing.read().clone() {
-                GatewayFormModal {
-                    state,
-                    onclose: move |_| editing.set(None),
-                    onsaved: move |_| {
-                        editing.set(None);
-                        gateways_resource.restart();
-                    },
-                }
+        if let Some(state) = editing.read().clone() {
+            GatewayFormModal {
+                state,
+                onclose: move |_| editing.set(None),
+                onsaved: move |_| {
+                    editing.set(None);
+                    gateways_resource.restart();
+                },
             }
         }
     }

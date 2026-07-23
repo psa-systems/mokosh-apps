@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::components::{
-    AlertType, AppLayout, Button, ButtonVariant, Card, PageHeader, Table, TableBody, TableCell,
-    TableHead, TableHeader, TableRow,
+    use_page_title, AlertType, Button, ButtonVariant, Card, PageHeader, Table, TableBody,
+    TableCell, TableHead, TableHeader, TableRow,
 };
 use crate::utils::Paginated;
 
@@ -136,6 +136,14 @@ pub fn SavedDashboardViewPage(id: String) -> Element {
                 .await
         }
     });
+    // MAPPS-366: set the tab title (the saved dashboard's name once loaded)
+    // unconditionally, BEFORE the unavailable early return, per the rules of
+    // hooks. The persistent AppShell reads it.
+    let title = row_resource
+        .ready()
+        .map(|d| d.name.clone())
+        .unwrap_or_else(|| "Dashboard".to_string());
+    use_page_title(&title);
     if row_resource.is_unavailable() {
         return rsx! {
             crate::components::ContentUnavailable { title: "Dashboard".to_string() }
@@ -147,16 +155,14 @@ pub fn SavedDashboardViewPage(id: String) -> Element {
     let row = row_resource.into_ready();
 
     rsx! {
-        AppLayout {
-            match row {
-                Some(d) => render_with_editor(d, version, can_mutate),
-                None => rsx! {
-                    PageHeader {
-                        title: "Dashboard".to_string(),
-                        subtitle: "Loading...".to_string(),
-                    }
-                },
-            }
+        match row {
+            Some(d) => render_with_editor(d, version, can_mutate),
+            None => rsx! {
+                PageHeader {
+                    title: "Dashboard".to_string(),
+                    subtitle: "Loading...".to_string(),
+                }
+            },
         }
     }
 }
@@ -176,6 +182,15 @@ pub fn DefaultDashboardPage() -> Element {
         crate::hooks::fetch::api::get_authed::<Option<SavedDashboardRow>>("/dashboards/default")
             .await
     });
+    // MAPPS-366: set the tab title unconditionally, BEFORE the unavailable
+    // early return (rules of hooks). A pinned dashboard shows its own name; the
+    // hardcoded fallback (None branch -> DashboardPage) sets "Dashboard" itself.
+    let title = default_resource
+        .ready()
+        .and_then(|pinned| pinned.as_ref())
+        .map(|d| d.name.clone())
+        .unwrap_or_else(|| "Dashboard".to_string());
+    use_page_title(&title);
     if default_resource.is_unavailable() {
         // This is the /dashboard entrypoint, so no self-referential link.
         return rsx! {
@@ -188,9 +203,7 @@ pub fn DefaultDashboardPage() -> Element {
     let pinned = default_resource.value_or_default();
 
     match pinned {
-        Some(d) => rsx! {
-            AppLayout { {render_read_only(d)} }
-        },
+        Some(d) => rsx! { {render_read_only(d)} },
         None => rsx! { crate::pages::dashboard::DashboardPage {} },
     }
 }

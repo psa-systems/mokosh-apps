@@ -20,7 +20,7 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, PageHeader, Table,
+    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, PageHeader, Table,
     TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::modules::sla::{
@@ -46,6 +46,7 @@ enum SlaTab {
 /// SLA management page. Admin-gated; renders the active tab's surface.
 #[component]
 pub fn SlaManagementPage() -> Element {
+    use_page_title("SLA Management");
     let auth = crate::hooks::use_auth();
     let is_admin = auth
         .read()
@@ -60,13 +61,11 @@ pub fn SlaManagementPage() -> Element {
 
     if !is_admin {
         return rsx! {
-            AppLayout { title: "SLA Management",
-                PageHeader { title: "SLA Management" }
-                Card {
-                    div { class: "py-12 text-center",
-                        p { class: "text-sm text-content",
-                            "You do not have permission to manage SLA policies. Ask an administrator for access."
-                        }
+            PageHeader { title: "SLA Management" }
+            Card {
+                div { class: "py-12 text-center",
+                    p { class: "text-sm text-content",
+                        "You do not have permission to manage SLA policies. Ask an administrator for access."
                     }
                 }
             }
@@ -99,38 +98,37 @@ struct SlaShellProps {
 
 #[component]
 fn SlaShell(props: SlaShellProps) -> Element {
+    use_page_title("SLA Management");
     let mut tab = props.tab;
     let current = *tab.read();
     rsx! {
-        AppLayout { title: "SLA Management",
-            PageHeader {
-                title: "SLA Management",
-                subtitle: "Define service-level policies, business hours, and holiday calendars",
-            }
+        PageHeader {
+            title: "SLA Management",
+            subtitle: "Define service-level policies, business hours, and holiday calendars",
+        }
 
-            // Tab bar
-            div { class: "mb-6 border-b border-line",
-                nav { class: "-mb-px flex space-x-6",
-                    SlaTabButton {
-                        label: "Policies",
-                        active: current == SlaTab::Policies,
-                        onclick: move |_| tab.set(SlaTab::Policies),
-                    }
-                    SlaTabButton {
-                        label: "Business Hours",
-                        active: current == SlaTab::BusinessHours,
-                        onclick: move |_| tab.set(SlaTab::BusinessHours),
-                    }
-                    SlaTabButton {
-                        label: "Holiday Calendars",
-                        active: current == SlaTab::Holidays,
-                        onclick: move |_| tab.set(SlaTab::Holidays),
-                    }
+        // Tab bar
+        div { class: "mb-6 border-b border-line",
+            nav { class: "-mb-px flex space-x-6",
+                SlaTabButton {
+                    label: "Policies",
+                    active: current == SlaTab::Policies,
+                    onclick: move |_| tab.set(SlaTab::Policies),
+                }
+                SlaTabButton {
+                    label: "Business Hours",
+                    active: current == SlaTab::BusinessHours,
+                    onclick: move |_| tab.set(SlaTab::BusinessHours),
+                }
+                SlaTabButton {
+                    label: "Holiday Calendars",
+                    active: current == SlaTab::Holidays,
+                    onclick: move |_| tab.set(SlaTab::Holidays),
                 }
             }
-
-            {props.children}
         }
+
+        {props.children}
     }
 }
 

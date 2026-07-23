@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Card, DataTable, PageHeader, Table, TableBody, TableCell,
+    use_page_title, Badge, BadgeVariant, Card, DataTable, PageHeader, Table, TableBody, TableCell,
     TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 
@@ -85,6 +85,7 @@ fn format_created(when: chrono::DateTime<chrono::Utc>) -> String {
 #[cfg(feature = "multi-tenant")]
 #[component]
 pub fn TenantManagementPage() -> Element {
+    use_page_title("Tenant Management");
     // Try the live tenants endpoint first; fall back to seeded demo
     // rows so the page stays demoable for envs without a live backend.
     let tenants_resource = use_resource(|| async {
@@ -157,121 +158,119 @@ pub fn TenantManagementPage() -> Element {
     let trial_label = stat(trial_count);
 
     rsx! {
-        AppLayout { title: "Tenant Management",
-            PageHeader {
-                title: "Tenant Management",
-                subtitle: "Manage tenants and subscriptions",
-                // F5: Add Tenant was decorative (no onclick, no
-                // canonical add-tenant flow on this client). Tenant
-                // provisioning lives in the Bunyip hub now; this
-                // admin page is a read-only roster for super_admins.
-                // Hidden until/unless a client-side add flow lands.
-            }
+        PageHeader {
+            title: "Tenant Management",
+            subtitle: "Manage tenants and subscriptions",
+            // F5: Add Tenant was decorative (no onclick, no
+            // canonical add-tenant flow on this client). Tenant
+            // provisioning lives in the Bunyip hub now; this
+            // admin page is a read-only roster for super_admins.
+            // Hidden until/unless a client-side add flow lands.
+        }
 
-            // Stats
-            div { class: "grid grid-cols-1 gap-5 sm:grid-cols-4 mb-6",
-                Card { class: "text-center",
-                    p { class: "text-sm text-muted","Total Tenants" }
-                    p { class: "text-2xl font-bold text-content", "{total_tenants_label}" }
-                }
-                Card { class: "text-center",
-                    p { class: "text-sm text-muted","Active" }
-                    p { class: "text-2xl font-bold text-green-600", "{active_label}" }
-                }
-                Card { class: "text-center",
-                    p { class: "text-sm text-muted","Trial" }
-                    p { class: "text-2xl font-bold text-accent", "{trial_label}" }
-                }
-                Card { class: "text-center",
-                    p { class: "text-sm text-muted","MRR" }
-                    p { class: "text-2xl font-bold text-subtle", "-" }
-                }
+        // Stats
+        div { class: "grid grid-cols-1 gap-5 sm:grid-cols-4 mb-6",
+            Card { class: "text-center",
+                p { class: "text-sm text-muted","Total Tenants" }
+                p { class: "text-2xl font-bold text-content", "{total_tenants_label}" }
             }
-
-            if source == TenantSource::Demo && !is_loading {
-                div {
-                    class: "mb-3 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
-                    "Backend tenants API not reachable - showing demo rows."
-                }
+            Card { class: "text-center",
+                p { class: "text-sm text-muted","Active" }
+                p { class: "text-2xl font-bold text-green-600", "{active_label}" }
             }
+            Card { class: "text-center",
+                p { class: "text-sm text-muted","Trial" }
+                p { class: "text-2xl font-bold text-accent", "{trial_label}" }
+            }
+            Card { class: "text-center",
+                p { class: "text-sm text-muted","MRR" }
+                p { class: "text-2xl font-bold text-subtle", "-" }
+            }
+        }
 
-            DataTable {
-                loading: is_loading,
-                total_items: if source == TenantSource::Backend { remote_tenants.len() } else { 4 },
-                current_page: 1,
-                per_page: 25,
-                columns: 6,
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { sortable: true, "Tenant" }
-                            TableHeader { "Plan" }
-                            TableHeader { sortable: true, "Users" }
-                            TableHeader { "MRR" }
-                            TableHeader { "Status" }
-                            TableHeader { sortable: true, "Created" }
-                        }
+        if source == TenantSource::Demo && !is_loading {
+            div {
+                class: "mb-3 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
+                "Backend tenants API not reachable - showing demo rows."
+            }
+        }
+
+        DataTable {
+            loading: is_loading,
+            total_items: if source == TenantSource::Backend { remote_tenants.len() } else { 4 },
+            current_page: 1,
+            per_page: 25,
+            columns: 6,
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { sortable: true, "Tenant" }
+                        TableHeader { "Plan" }
+                        TableHeader { sortable: true, "Users" }
+                        TableHeader { "MRR" }
+                        TableHeader { "Status" }
+                        TableHeader { sortable: true, "Created" }
                     }
-                    if is_loading {
-                        TableLoading { columns: 6, rows: 4 }
-                    } else if source == TenantSource::Backend && remote_tenants.is_empty() {
-                        TableEmpty {
-                            columns: 6,
-                            title: "No tenants yet".to_string(),
-                            description: "Tenants will appear here once they sign up or are provisioned.".to_string(),
-                        }
-                    } else {
-                        TableBody {
-                            if source == TenantSource::Backend {
-                                for tenant in remote_tenants.iter().cloned() {
-                                    TenantRow {
-                                        key: "{tenant.id}",
-                                        name: tenant.name.clone(),
-                                        domain: tenant.slug.clone(),
-                                        plan: humanize_plan(&tenant.subscription_plan),
-                                        users: 0,
-                                        mrr: "-".to_string(),
-                                        status: humanize_tenant_status(&tenant.status),
-                                        created: format_created(tenant.created_at),
-                                    }
-                                }
-                            } else {
+                }
+                if is_loading {
+                    TableLoading { columns: 6, rows: 4 }
+                } else if source == TenantSource::Backend && remote_tenants.is_empty() {
+                    TableEmpty {
+                        columns: 6,
+                        title: "No tenants yet".to_string(),
+                        description: "Tenants will appear here once they sign up or are provisioned.".to_string(),
+                    }
+                } else {
+                    TableBody {
+                        if source == TenantSource::Backend {
+                            for tenant in remote_tenants.iter().cloned() {
                                 TenantRow {
-                                    name: "Acme MSP",
-                                    domain: "acme-msp",
-                                    plan: "Professional",
-                                    users: 8,
-                                    mrr: "$299",
-                                    status: "Active",
-                                    created: "Jan 15, 2024",
+                                    key: "{tenant.id}",
+                                    name: tenant.name.clone(),
+                                    domain: tenant.slug.clone(),
+                                    plan: humanize_plan(&tenant.subscription_plan),
+                                    users: 0,
+                                    mrr: "-".to_string(),
+                                    status: humanize_tenant_status(&tenant.status),
+                                    created: format_created(tenant.created_at),
                                 }
-                                TenantRow {
-                                    name: "TechPro Services",
-                                    domain: "techpro",
-                                    plan: "Enterprise",
-                                    users: 25,
-                                    mrr: "$599",
-                                    status: "Active",
-                                    created: "Mar 1, 2024",
-                                }
-                                TenantRow {
-                                    name: "IT Solutions Co",
-                                    domain: "itsolutions",
-                                    plan: "Professional",
-                                    users: 5,
-                                    mrr: "$299",
-                                    status: "Active",
-                                    created: "Jun 15, 2024",
-                                }
-                                TenantRow {
-                                    name: "New MSP Trial",
-                                    domain: "newmsp-trial",
-                                    plan: "Trial",
-                                    users: 2,
-                                    mrr: "$0",
-                                    status: "Trial",
-                                    created: "Jan 10, 2025",
-                                }
+                            }
+                        } else {
+                            TenantRow {
+                                name: "Acme MSP",
+                                domain: "acme-msp",
+                                plan: "Professional",
+                                users: 8,
+                                mrr: "$299",
+                                status: "Active",
+                                created: "Jan 15, 2024",
+                            }
+                            TenantRow {
+                                name: "TechPro Services",
+                                domain: "techpro",
+                                plan: "Enterprise",
+                                users: 25,
+                                mrr: "$599",
+                                status: "Active",
+                                created: "Mar 1, 2024",
+                            }
+                            TenantRow {
+                                name: "IT Solutions Co",
+                                domain: "itsolutions",
+                                plan: "Professional",
+                                users: 5,
+                                mrr: "$299",
+                                status: "Active",
+                                created: "Jun 15, 2024",
+                            }
+                            TenantRow {
+                                name: "New MSP Trial",
+                                domain: "newmsp-trial",
+                                plan: "Trial",
+                                users: 2,
+                                mrr: "$0",
+                                status: "Trial",
+                                created: "Jan 10, 2025",
                             }
                         }
                     }

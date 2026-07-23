@@ -11,7 +11,7 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Card, DataTable, PageHeader, Select, SelectOption, Table,
+    use_page_title, Badge, BadgeVariant, Card, DataTable, PageHeader, Select, SelectOption, Table,
     TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::modules::audit::AuditLogEntry;
@@ -189,6 +189,7 @@ fn field_diff_rows(
 /// never kick off the (guaranteed-403) fetch.
 #[component]
 pub fn AuditLogPage() -> Element {
+    use_page_title("Audit Log");
     let auth = crate::hooks::use_auth();
     // Role gate: only org admins / super-admins may view the audit log.
     // Uses the `UserRole::is_admin()` helper on the cached CurrentUser so
@@ -204,16 +205,14 @@ pub fn AuditLogPage() -> Element {
 
     if !is_admin {
         return rsx! {
-            AppLayout { title: "Audit Log",
-                PageHeader { title: "Audit Log", subtitle: "System activity" }
-                Card {
-                    div { class: "py-12 text-center",
-                        p { class: "text-sm font-medium text-content mb-1",
-                            "Admins only"
-                        }
-                        p { class: "text-sm text-muted",
-                            "You do not have permission to view the audit log."
-                        }
+            PageHeader { title: "Audit Log", subtitle: "System activity" }
+            Card {
+                div { class: "py-12 text-center",
+                    p { class: "text-sm font-medium text-content mb-1",
+                        "Admins only"
+                    }
+                    p { class: "text-sm text-muted",
+                        "You do not have permission to view the audit log."
                     }
                 }
             }
@@ -228,6 +227,7 @@ pub fn AuditLogPage() -> Element {
 /// component's hook order never changes with auth state.
 #[component]
 fn AuditLogContent() -> Element {
+    use_page_title("Audit Log");
     let mut entity_type_filter = use_signal(String::new);
     let mut action_filter = use_signal(String::new);
     let mut user_id_filter = use_signal(String::new);
@@ -433,133 +433,131 @@ fn AuditLogContent() -> Element {
     let export_filename = format!("audit-log-{}.csv", chrono::Utc::now().format("%Y-%m-%d"));
 
     rsx! {
-        AppLayout { title: "Audit Log",
-            PageHeader {
-                title: "Audit Log",
-                subtitle: "Review who changed what, and when",
-                // PMS-455 / PMS-474: download CSV of the currently-
-                // filtered set. The `href` is a plain anchor (not a
-                // JS-driven button) so the same-origin auth cookie
-                // travels with the navigation. The `download` attr
-                // forces a dated filename ("audit-log-YYYY-MM-DD.csv")
-                // regardless of the server's Content-Disposition so
-                // an admin gets distinct files across runs.
-                actions: rsx! {
-                    a {
-                        href: "{export_href}",
-                        "download": "{export_filename}",
-                        class: "inline-flex items-center px-4 py-2 text-sm font-medium rounded-md border border-line hover:bg-surface-2 text-content",
-                        "Download CSV"
-                    }
-                },
-            }
+        PageHeader {
+            title: "Audit Log",
+            subtitle: "Review who changed what, and when",
+            // PMS-455 / PMS-474: download CSV of the currently-
+            // filtered set. The `href` is a plain anchor (not a
+            // JS-driven button) so the same-origin auth cookie
+            // travels with the navigation. The `download` attr
+            // forces a dated filename ("audit-log-YYYY-MM-DD.csv")
+            // regardless of the server's Content-Disposition so
+            // an admin gets distinct files across runs.
+            actions: rsx! {
+                a {
+                    href: "{export_href}",
+                    "download": "{export_filename}",
+                    class: "inline-flex items-center px-4 py-2 text-sm font-medium rounded-md border border-line hover:bg-surface-2 text-content",
+                    "Download CSV"
+                }
+            },
+        }
 
-            // Filters
-            Card { class: "mb-6",
-                div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5",
-                    crate::components::Input {
-                        name: "entity_type",
-                        label: "Entity type",
-                        placeholder: "e.g. ticket",
-                        value: entity_type_filter.read().clone(),
-                        oninput: move |e: FormEvent| {
-                            entity_type_filter.set(e.value());
-                            page.set(1);
-                        },
-                    }
-                    Select {
-                        name: "action",
-                        label: "Action",
-                        options: action_options,
-                        value: action_filter.read().clone(),
-                        onchange: move |e: FormEvent| {
-                            action_filter.set(e.value());
-                            page.set(1);
-                        },
-                    }
-                    Select {
-                        name: "user_id",
-                        label: "User",
-                        options: user_options,
-                        value: user_id_filter.read().clone(),
-                        onchange: move |e: FormEvent| {
-                            user_id_filter.set(e.value());
-                            page.set(1);
-                        },
-                    }
-                    crate::components::DateField {
-                        name: "from",
-                        label: "From",
-                        value: from_filter.read().clone(),
-                        oninput: move |e: FormEvent| {
-                            from_filter.set(e.value());
-                            page.set(1);
-                        },
-                    }
-                    crate::components::DateField {
-                        name: "to",
-                        label: "To",
-                        value: to_filter.read().clone(),
-                        oninput: move |e: FormEvent| {
-                            to_filter.set(e.value());
-                            page.set(1);
-                        },
-                    }
+        // Filters
+        Card { class: "mb-6",
+            div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5",
+                crate::components::Input {
+                    name: "entity_type",
+                    label: "Entity type",
+                    placeholder: "e.g. ticket",
+                    value: entity_type_filter.read().clone(),
+                    oninput: move |e: FormEvent| {
+                        entity_type_filter.set(e.value());
+                        page.set(1);
+                    },
+                }
+                Select {
+                    name: "action",
+                    label: "Action",
+                    options: action_options,
+                    value: action_filter.read().clone(),
+                    onchange: move |e: FormEvent| {
+                        action_filter.set(e.value());
+                        page.set(1);
+                    },
+                }
+                Select {
+                    name: "user_id",
+                    label: "User",
+                    options: user_options,
+                    value: user_id_filter.read().clone(),
+                    onchange: move |e: FormEvent| {
+                        user_id_filter.set(e.value());
+                        page.set(1);
+                    },
+                }
+                crate::components::DateField {
+                    name: "from",
+                    label: "From",
+                    value: from_filter.read().clone(),
+                    oninput: move |e: FormEvent| {
+                        from_filter.set(e.value());
+                        page.set(1);
+                    },
+                }
+                crate::components::DateField {
+                    name: "to",
+                    label: "To",
+                    value: to_filter.read().clone(),
+                    oninput: move |e: FormEvent| {
+                        to_filter.set(e.value());
+                        page.set(1);
+                    },
                 }
             }
+        }
 
-            if let Some(message) = error_message {
-                div {
-                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                    "{message}"
-                }
+        if let Some(message) = error_message {
+            div {
+                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                "{message}"
             }
+        }
 
-            // Audit table
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 7,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Timestamp" }
-                            TableHeader { "Action" }
-                            TableHeader { "Entity" }
-                            TableHeader { "Record" }
-                            TableHeader { "User" }
-                            TableHeader { "IP" }
-                            TableHeader { "Details" }
-                        }
+        // Audit table
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 7,
+            onpagechange: move |p| page.set(p),
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Timestamp" }
+                        TableHeader { "Action" }
+                        TableHeader { "Entity" }
+                        TableHeader { "Record" }
+                        TableHeader { "User" }
+                        TableHeader { "IP" }
+                        TableHeader { "Details" }
                     }
-                    if is_loading {
-                        TableLoading { columns: 7, rows: 5 }
-                    } else if page_rows.is_empty() {
-                        if has_filters {
-                            // Filtered to nothing: no CTA (entries are recorded by
-                            // the system); guide the user back to the filters.
-                            TableEmpty {
-                                columns: 7,
-                                title: "No audit entries match your filters".to_string(),
-                                description: "Try clearing or adjusting the filters above.".to_string(),
-                            }
-                        } else {
-                            // PMS-354: no CTA - audit entries are recorded by
-                            // the system, not created by the user.
-                            TableEmpty {
-                                columns: 7,
-                                title: "No activity yet".to_string(),
-                                description: "Changes across the app will appear here as they happen.".to_string(),
-                            }
+                }
+                if is_loading {
+                    TableLoading { columns: 7, rows: 5 }
+                } else if page_rows.is_empty() {
+                    if has_filters {
+                        // Filtered to nothing: no CTA (entries are recorded by
+                        // the system); guide the user back to the filters.
+                        TableEmpty {
+                            columns: 7,
+                            title: "No audit entries match your filters".to_string(),
+                            description: "Try clearing or adjusting the filters above.".to_string(),
                         }
                     } else {
-                        TableBody {
-                            for entry in page_rows.iter().cloned() {
-                                AuditRow { key: "{entry.id}", entry, users: users.clone() }
-                            }
+                        // PMS-354: no CTA - audit entries are recorded by
+                        // the system, not created by the user.
+                        TableEmpty {
+                            columns: 7,
+                            title: "No activity yet".to_string(),
+                            description: "Changes across the app will appear here as they happen.".to_string(),
+                        }
+                    }
+                } else {
+                    TableBody {
+                        for entry in page_rows.iter().cloned() {
+                            AuditRow { key: "{entry.id}", entry, users: users.clone() }
                         }
                     }
                 }

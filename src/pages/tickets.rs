@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    clear_selection, ticket_status_badge, use_bulk_selection, AlertType, AppLayout, Badge,
+    clear_selection, ticket_status_badge, use_bulk_selection, use_page_title, AlertType, Badge,
     BadgeVariant, BulkActionsBar, BulkSelection, Button, ButtonVariant, Card, ClockIcon, DataTable,
     IconSize, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectAllHeader,
     SelectOption, SelectRowCell, SortDirection, Table, TableBody, TableCell, TableEmpty, TableHead,
@@ -468,6 +468,7 @@ fn toggle_ticket_sort(
 /// Ticket list page
 #[component]
 pub fn TicketListPage() -> Element {
+    use_page_title("Tickets");
     let mut search = use_signal(String::new);
     let mut status_filter = use_signal(String::new);
     let mut priority_filter = use_signal(String::new);
@@ -648,333 +649,331 @@ pub fn TicketListPage() -> Element {
     ];
 
     rsx! {
-        AppLayout { title: "Tickets",
-            PageHeader {
-                title: "Tickets",
-                subtitle: "Manage support tickets and service requests",
-                actions: rsx! {
-                    Link {
-                        to: Route::TicketNew {},
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                            "New Ticket"
-                        }
+        PageHeader {
+            title: "Tickets",
+            subtitle: "Manage support tickets and service requests",
+            actions: rsx! {
+                Link {
+                    to: Route::TicketNew {},
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "New Ticket"
+                    }
+                }
+            },
+        }
+
+        // MAPPS-321: surface the active company scope when the user
+        // arrived via a "View all" link from CompanyDetail. The
+        // fetch above already narrows the list to ?company_id=;
+        // without this chip the user has no signal that the list
+        // is already scoped (the header reads a plain "Tickets").
+        crate::components::ContextFilterBanner {
+            scope: crate::components::ContextFilterScope::Tickets,
+        }
+
+        // Filters
+        Card { class: "mb-6",
+            div { class: "flex flex-col sm:flex-row gap-4",
+                div { class: "flex-1",
+                    SearchInput {
+                        value: search.read().clone(),
+                        placeholder: "Search tickets...",
+                        oninput: move |e: FormEvent| search.set(e.value()),
+                    }
+                }
+                div { class: "flex gap-4",
+                    Select {
+                        name: "status",
+                        options: status_options,
+                        value: status_filter.read().clone(),
+                        placeholder: "Status",
+                        onchange: move |e: FormEvent| status_filter.set(e.value()),
+                    }
+                    Select {
+                        name: "priority",
+                        options: priority_options,
+                        value: priority_filter.read().clone(),
+                        placeholder: "Priority",
+                        onchange: move |e: FormEvent| priority_filter.set(e.value()),
+                    }
+                }
+            }
+        }
+
+        if source == TicketSource::Demo && !is_loading {
+            div {
+                class: "mb-3 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
+                "Backend tickets API not reachable - showing demo rows."
+            }
+        }
+
+        // MAPPS-290: bulk actions bar. Renders only when at least one
+        // row is selected. The Delete verb issues parallel DELETE
+        // calls and clears the selection on completion. Adding more
+        // verbs (bulk assign, set priority) follows the same shape.
+        BulkActionsBar {
+            selection,
+            label: "ticket".to_string(),
+            Button {
+                variant: ButtonVariant::Danger,
+                // MAPPS-357: block bulk delete while the server is unreachable.
+                disabled: bulk_delete_running() || !can_mutate,
+                title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
+                onclick: move |_| {
+                    // MAPPS-310: stash the snapshot + open the
+                    // confirmation dialog. The actual delete fanout
+                    // runs from the dialog's confirm handler so an
+                    // accidental click is recoverable.
+                    let ids: Vec<String> = selection.read().iter().cloned().collect();
+                    if !ids.is_empty() {
+                        bulk_delete_confirm.set(Some(ids));
                     }
                 },
+                "Delete selected"
             }
+        }
 
-            // MAPPS-321: surface the active company scope when the user
-            // arrived via a "View all" link from CompanyDetail. The
-            // fetch above already narrows the list to ?company_id=;
-            // without this chip the user has no signal that the list
-            // is already scoped (the header reads a plain "Tickets").
-            crate::components::ContextFilterBanner {
-                scope: crate::components::ContextFilterScope::Tickets,
-            }
-
-            // Filters
-            Card { class: "mb-6",
-                div { class: "flex flex-col sm:flex-row gap-4",
-                    div { class: "flex-1",
-                        SearchInput {
-                            value: search.read().clone(),
-                            placeholder: "Search tickets...",
-                            oninput: move |e: FormEvent| search.set(e.value()),
-                        }
-                    }
-                    div { class: "flex gap-4",
-                        Select {
-                            name: "status",
-                            options: status_options,
-                            value: status_filter.read().clone(),
-                            placeholder: "Status",
-                            onchange: move |e: FormEvent| status_filter.set(e.value()),
-                        }
-                        Select {
-                            name: "priority",
-                            options: priority_options,
-                            value: priority_filter.read().clone(),
-                            placeholder: "Priority",
-                            onchange: move |e: FormEvent| priority_filter.set(e.value()),
-                        }
-                    }
-                }
-            }
-
-            if source == TicketSource::Demo && !is_loading {
-                div {
-                    class: "mb-3 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
-                    "Backend tickets API not reachable - showing demo rows."
-                }
-            }
-
-            // MAPPS-290: bulk actions bar. Renders only when at least one
-            // row is selected. The Delete verb issues parallel DELETE
-            // calls and clears the selection on completion. Adding more
-            // verbs (bulk assign, set priority) follows the same shape.
-            BulkActionsBar {
-                selection,
-                label: "ticket".to_string(),
-                Button {
-                    variant: ButtonVariant::Danger,
-                    // MAPPS-357: block bulk delete while the server is unreachable.
-                    disabled: bulk_delete_running() || !can_mutate,
-                    title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
-                    onclick: move |_| {
-                        // MAPPS-310: stash the snapshot + open the
-                        // confirmation dialog. The actual delete fanout
-                        // runs from the dialog's confirm handler so an
-                        // accidental click is recoverable.
-                        let ids: Vec<String> = selection.read().iter().cloned().collect();
-                        if !ids.is_empty() {
-                            bulk_delete_confirm.set(Some(ids));
+        // MAPPS-310: confirmation dialog for the bulk delete. The
+        // pending-id list lives in `bulk_delete_confirm`; the
+        // onconfirm handler runs the same join_all delete fanout
+        // the inline onclick used before this fix, then clears
+        // the selection and restarts the resource.
+        {
+            let pending = bulk_delete_confirm.read().clone();
+            let pending_count = pending.as_ref().map(|v| v.len()).unwrap_or(0);
+            let dialog_message = format!(
+                "Delete {pending_count} selected ticket(s)? Notes, attachments, and time entries on these tickets are also removed. This cannot be undone."
+            );
+            let confirm_text = format!("Delete {pending_count} ticket(s)");
+            rsx! {
+                crate::components::ConfirmDialog {
+                    open: pending.is_some(),
+                    title: "Delete selected tickets".to_string(),
+                    message: dialog_message,
+                    confirm_text,
+                    cancel_text: "Cancel".to_string(),
+                    destructive: true,
+                    loading: bulk_delete_running(),
+                    onconfirm: move |_| {
+                        let Some(ids) = bulk_delete_confirm.read().clone() else { return };
+                        if ids.is_empty() || bulk_delete_running() { return; }
+                        bulk_delete_running.set(true);
+                        spawn(async move {
+                            #[cfg(feature = "web")]
+                            {
+                                use futures_util::future::join_all;
+                                let futs = ids.iter().map(|id| {
+                                    let path = format!("/tickets/{id}");
+                                    async move {
+                                        crate::hooks::fetch::api::delete_authed(&path).await
+                                    }
+                                });
+                                let results = join_all(futs).await;
+                                let failures = results.iter().filter(|r| r.is_err()).count();
+                                if failures == 0 {
+                                    crate::hooks::toast::push_toast(
+                                        crate::components::AlertType::Success,
+                                        format!("Deleted {} ticket(s).", ids.len()),
+                                    );
+                                } else {
+                                    crate::hooks::toast::push_toast(
+                                        crate::components::AlertType::Error,
+                                        format!("Deleted {} of {}; {} failed.", ids.len() - failures, ids.len(), failures),
+                                    );
+                                }
+                            }
+                            clear_selection(&mut selection);
+                            tickets_resource.restart();
+                            bulk_delete_confirm.set(None);
+                            bulk_delete_running.set(false);
+                        });
+                    },
+                    oncancel: move |_| {
+                        if !bulk_delete_running() {
+                            bulk_delete_confirm.set(None);
                         }
                     },
-                    "Delete selected"
                 }
             }
+        }
 
-            // MAPPS-310: confirmation dialog for the bulk delete. The
-            // pending-id list lives in `bulk_delete_confirm`; the
-            // onconfirm handler runs the same join_all delete fanout
-            // the inline onclick used before this fix, then clears
-            // the selection and restarts the resource.
-            {
-                let pending = bulk_delete_confirm.read().clone();
-                let pending_count = pending.as_ref().map(|v| v.len()).unwrap_or(0);
-                let dialog_message = format!(
-                    "Delete {pending_count} selected ticket(s)? Notes, attachments, and time entries on these tickets are also removed. This cannot be undone."
-                );
-                let confirm_text = format!("Delete {pending_count} ticket(s)");
-                rsx! {
-                    crate::components::ConfirmDialog {
-                        open: pending.is_some(),
-                        title: "Delete selected tickets".to_string(),
-                        message: dialog_message,
-                        confirm_text,
-                        cancel_text: "Cancel".to_string(),
-                        destructive: true,
-                        loading: bulk_delete_running(),
-                        onconfirm: move |_| {
-                            let Some(ids) = bulk_delete_confirm.read().clone() else { return };
-                            if ids.is_empty() || bulk_delete_running() { return; }
-                            bulk_delete_running.set(true);
-                            spawn(async move {
-                                #[cfg(feature = "web")]
-                                {
-                                    use futures_util::future::join_all;
-                                    let futs = ids.iter().map(|id| {
-                                        let path = format!("/tickets/{id}");
-                                        async move {
-                                            crate::hooks::fetch::api::delete_authed(&path).await
-                                        }
-                                    });
-                                    let results = join_all(futs).await;
-                                    let failures = results.iter().filter(|r| r.is_err()).count();
-                                    if failures == 0 {
-                                        crate::hooks::toast::push_toast(
-                                            crate::components::AlertType::Success,
-                                            format!("Deleted {} ticket(s).", ids.len()),
-                                        );
-                                    } else {
-                                        crate::hooks::toast::push_toast(
-                                            crate::components::AlertType::Error,
-                                            format!("Deleted {} of {}; {} failed.", ids.len() - failures, ids.len(), failures),
-                                        );
-                                    }
+        // Ticket table
+        DataTable {
+            loading: is_loading,
+            total_items: if source == TicketSource::Backend { filtered_tickets.len() } else { 5 },
+            current_page: 1,
+            per_page: 25,
+            columns: 6,
+            Table {
+                striped: true,
+                TableHead {
+                    TableRow {
+                        // MAPPS-290: select-all checkbox for the visible page.
+                        SelectAllHeader {
+                            selection,
+                            ids: filtered_tickets.iter().map(|t| t.id.to_string()).collect::<Vec<_>>(),
+                        }
+                        {
+                            let sort_snap = *sort.read();
+                            rsx! {
+                                TableHeader {
+                                    sortable: true,
+                                    sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Ticket),
+                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Ticket),
+                                    "Ticket"
                                 }
-                                clear_selection(&mut selection);
-                                tickets_resource.restart();
-                                bulk_delete_confirm.set(None);
-                                bulk_delete_running.set(false);
-                            });
-                        },
-                        oncancel: move |_| {
-                            if !bulk_delete_running() {
-                                bulk_delete_confirm.set(None);
-                            }
-                        },
-                    }
-                }
-            }
-
-            // Ticket table
-            DataTable {
-                loading: is_loading,
-                total_items: if source == TicketSource::Backend { filtered_tickets.len() } else { 5 },
-                current_page: 1,
-                per_page: 25,
-                columns: 6,
-                Table {
-                    striped: true,
-                    TableHead {
-                        TableRow {
-                            // MAPPS-290: select-all checkbox for the visible page.
-                            SelectAllHeader {
-                                selection,
-                                ids: filtered_tickets.iter().map(|t| t.id.to_string()).collect::<Vec<_>>(),
-                            }
-                            {
-                                let sort_snap = *sort.read();
-                                rsx! {
-                                    TableHeader {
-                                        sortable: true,
-                                        sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Ticket),
-                                        onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Ticket),
-                                        "Ticket"
-                                    }
-                                    TableHeader {
-                                        sortable: true,
-                                        sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Company),
-                                        onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Company),
-                                        "Company"
-                                    }
-                                    TableHeader {
-                                        sortable: true,
-                                        sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Status),
-                                        onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Status),
-                                        "Status"
-                                    }
-                                    TableHeader {
-                                        sortable: true,
-                                        sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Priority),
-                                        onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Priority),
-                                        "Priority"
-                                    }
-                                    TableHeader {
-                                        sortable: true,
-                                        sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Assigned),
-                                        onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Assigned),
-                                        "Assigned To"
-                                    }
-                                    TableHeader {
-                                        sortable: true,
-                                        sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Updated),
-                                        onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Updated),
-                                        "Updated"
-                                    }
+                                TableHeader {
+                                    sortable: true,
+                                    sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Company),
+                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Company),
+                                    "Company"
+                                }
+                                TableHeader {
+                                    sortable: true,
+                                    sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Status),
+                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Status),
+                                    "Status"
+                                }
+                                TableHeader {
+                                    sortable: true,
+                                    sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Priority),
+                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Priority),
+                                    "Priority"
+                                }
+                                TableHeader {
+                                    sortable: true,
+                                    sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Assigned),
+                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Assigned),
+                                    "Assigned To"
+                                }
+                                TableHeader {
+                                    sortable: true,
+                                    sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Updated),
+                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Updated),
+                                    "Updated"
                                 }
                             }
                         }
                     }
-                    if is_loading {
-                        TableLoading { columns: 6, rows: 5 }
-                    } else if source == TicketSource::Backend && filtered_tickets.is_empty() {
-                        if remote_tickets.is_empty() {
-                            // PMS-354: helpful empty state with a primary CTA,
-                            // matching the Contracts reference pattern.
-                            TableEmpty {
-                                columns: 6,
-                                title: "No tickets yet".to_string(),
-                                description: "Create your first ticket to start tracking support work."
-                                    .to_string(),
-                                actions: rsx! {
-                                    Link {
-                                        to: Route::TicketNew {},
-                                        Button {
-                                            variant: ButtonVariant::Primary,
-                                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                            "New Ticket"
-                                        }
-                                    }
-                                },
-                            }
-                        } else {
-                            // Filtered to nothing: MAPPS-291 adds a one-click
-                            // "Clear filters" affordance so the user does not
-                            // have to find every filter control and reset
-                            // each one to recover. Resets the three signals
-                            // the toolbar above mounts.
-                            TableEmpty {
-                                columns: 6,
-                                title: "No tickets match your filters".to_string(),
-                                description: "Adjust the filters above, or clear them to see every ticket again.".to_string(),
-                                actions: rsx! {
+                }
+                if is_loading {
+                    TableLoading { columns: 6, rows: 5 }
+                } else if source == TicketSource::Backend && filtered_tickets.is_empty() {
+                    if remote_tickets.is_empty() {
+                        // PMS-354: helpful empty state with a primary CTA,
+                        // matching the Contracts reference pattern.
+                        TableEmpty {
+                            columns: 6,
+                            title: "No tickets yet".to_string(),
+                            description: "Create your first ticket to start tracking support work."
+                                .to_string(),
+                            actions: rsx! {
+                                Link {
+                                    to: Route::TicketNew {},
                                     Button {
-                                        variant: ButtonVariant::Secondary,
-                                        onclick: move |_| {
-                                            search.set(String::new());
-                                            status_filter.set(String::new());
-                                            priority_filter.set(String::new());
-                                        },
-                                        "Clear filters"
+                                        variant: ButtonVariant::Primary,
+                                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                        "New Ticket"
                                     }
-                                },
-                            }
+                                }
+                            },
                         }
                     } else {
-                        TableBody {
-                            if source == TicketSource::Backend {
-                                for ticket in filtered_tickets.iter().cloned() {
-                                    TicketRow {
-                                        key: "{ticket.id}",
-                                        id: ticket.id.to_string(),
-                                        number: ticket.ticket_number,
-                                        title: ticket.title,
-                                        company: ticket.company_name,
-                                        status: humanize_ticket_status(&ticket.status.name),
-                                        priority: humanize_priority(&ticket.priority.name),
-                                        assigned_to: ticket.assigned_to_name.unwrap_or_else(|| "Unassigned".to_string()),
-                                        updated: relative_time(ticket.updated_at),
-                                        // MAPPS-290: hand the page-scoped
-                                        // selection signal down so each
-                                        // row's first cell renders a
-                                        // checkbox bound to it.
-                                        selection: Some(selection),
-                                    }
+                        // Filtered to nothing: MAPPS-291 adds a one-click
+                        // "Clear filters" affordance so the user does not
+                        // have to find every filter control and reset
+                        // each one to recover. Resets the three signals
+                        // the toolbar above mounts.
+                        TableEmpty {
+                            columns: 6,
+                            title: "No tickets match your filters".to_string(),
+                            description: "Adjust the filters above, or clear them to see every ticket again.".to_string(),
+                            actions: rsx! {
+                                Button {
+                                    variant: ButtonVariant::Secondary,
+                                    onclick: move |_| {
+                                        search.set(String::new());
+                                        status_filter.set(String::new());
+                                        priority_filter.set(String::new());
+                                    },
+                                    "Clear filters"
                                 }
-                            } else {
+                            },
+                        }
+                    }
+                } else {
+                    TableBody {
+                        if source == TicketSource::Backend {
+                            for ticket in filtered_tickets.iter().cloned() {
                                 TicketRow {
-                                    id: "1",
-                                    number: "TKT-1234",
-                                    title: "Email server not responding",
-                                    company: "Acme Corp",
-                                    status: "Open",
-                                    priority: "High",
-                                    assigned_to: "John Smith",
-                                    updated: "5 min ago",
+                                    key: "{ticket.id}",
+                                    id: ticket.id.to_string(),
+                                    number: ticket.ticket_number,
+                                    title: ticket.title,
+                                    company: ticket.company_name,
+                                    status: humanize_ticket_status(&ticket.status.name),
+                                    priority: humanize_priority(&ticket.priority.name),
+                                    assigned_to: ticket.assigned_to_name.unwrap_or_else(|| "Unassigned".to_string()),
+                                    updated: relative_time(ticket.updated_at),
+                                    // MAPPS-290: hand the page-scoped
+                                    // selection signal down so each
+                                    // row's first cell renders a
+                                    // checkbox bound to it.
+                                    selection: Some(selection),
                                 }
-                                TicketRow {
-                                    id: "2",
-                                    number: "TKT-1233",
-                                    title: "New user setup request",
-                                    company: "TechStart Inc",
-                                    status: "In Progress",
-                                    priority: "Medium",
-                                    assigned_to: "Jane Doe",
-                                    updated: "1 hour ago",
-                                }
-                                TicketRow {
-                                    id: "3",
-                                    number: "TKT-1232",
-                                    title: "Printer configuration for new office",
-                                    company: "Global Widgets",
-                                    status: "Pending",
-                                    priority: "Low",
-                                    assigned_to: "Unassigned",
-                                    updated: "2 hours ago",
-                                }
-                                TicketRow {
-                                    id: "4",
-                                    number: "TKT-1231",
-                                    title: "VPN connection issues for remote workers",
-                                    company: "Acme Corp",
-                                    status: "Open",
-                                    priority: "Critical",
-                                    assigned_to: "John Smith",
-                                    updated: "3 hours ago",
-                                }
-                                TicketRow {
-                                    id: "5",
-                                    number: "TKT-1230",
-                                    title: "Software license renewal required",
-                                    company: "TechStart Inc",
-                                    status: "Resolved",
-                                    priority: "Medium",
-                                    assigned_to: "Jane Doe",
-                                    updated: "1 day ago",
-                                }
+                            }
+                        } else {
+                            TicketRow {
+                                id: "1",
+                                number: "TKT-1234",
+                                title: "Email server not responding",
+                                company: "Acme Corp",
+                                status: "Open",
+                                priority: "High",
+                                assigned_to: "John Smith",
+                                updated: "5 min ago",
+                            }
+                            TicketRow {
+                                id: "2",
+                                number: "TKT-1233",
+                                title: "New user setup request",
+                                company: "TechStart Inc",
+                                status: "In Progress",
+                                priority: "Medium",
+                                assigned_to: "Jane Doe",
+                                updated: "1 hour ago",
+                            }
+                            TicketRow {
+                                id: "3",
+                                number: "TKT-1232",
+                                title: "Printer configuration for new office",
+                                company: "Global Widgets",
+                                status: "Pending",
+                                priority: "Low",
+                                assigned_to: "Unassigned",
+                                updated: "2 hours ago",
+                            }
+                            TicketRow {
+                                id: "4",
+                                number: "TKT-1231",
+                                title: "VPN connection issues for remote workers",
+                                company: "Acme Corp",
+                                status: "Open",
+                                priority: "Critical",
+                                assigned_to: "John Smith",
+                                updated: "3 hours ago",
+                            }
+                            TicketRow {
+                                id: "5",
+                                number: "TKT-1230",
+                                title: "Software license renewal required",
+                                company: "TechStart Inc",
+                                status: "Resolved",
+                                priority: "Medium",
+                                assigned_to: "Jane Doe",
+                                updated: "1 day ago",
                             }
                         }
                     }
@@ -1128,6 +1127,7 @@ fn read_kb_prefill_from_url() -> KbArticlePrefill {
 /// while the server is unreachable so a write cannot silently fail.
 #[component]
 pub fn TicketNewPage() -> Element {
+    use_page_title("New Ticket");
     // MAPPS-207: seed the company from the URL when linked from a company.
     let prefill = use_signal(read_company_prefill_from_url);
     let prefill = prefill.read().clone();
@@ -1509,223 +1509,221 @@ pub fn TicketNewPage() -> Element {
     let can_mutate = crate::hooks::use_can_mutate();
 
     rsx! {
-        AppLayout { title: "New Ticket",
-            PageHeader {
-                title: "New Ticket",
-                subtitle: "Create a new support ticket",
-                breadcrumbs: rsx! {
-                    crate::components::Breadcrumbs {
-                        items: vec![
-                            crate::components::BreadcrumbItem {
-                                label: "Tickets".to_string(),
-                                route: Some(Route::TicketList {}),
-                            },
-                            crate::components::BreadcrumbItem {
-                                label: "New Ticket".to_string(),
-                                route: None,
-                            },
-                        ],
+        PageHeader {
+            title: "New Ticket",
+            subtitle: "Create a new support ticket",
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs {
+                    items: vec![
+                        crate::components::BreadcrumbItem {
+                            label: "Tickets".to_string(),
+                            route: Some(Route::TicketList {}),
+                        },
+                        crate::components::BreadcrumbItem {
+                            label: "New Ticket".to_string(),
+                            route: None,
+                        },
+                    ],
+                }
+            },
+        }
+
+        Card {
+            form {
+                class: "space-y-6",
+                onsubmit: handle_submit,
+
+                if !error.read().is_empty() {
+                    div {
+                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                        "{error.read()}"
                     }
-                },
-            }
+                }
 
-            Card {
-                form {
-                    class: "space-y-6",
-                    onsubmit: handle_submit,
-
-                    if !error.read().is_empty() {
-                        div {
-                            class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                            "{error.read()}"
-                        }
-                    }
-
-                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
-                        crate::components::Input {
-                            name: "title",
-                            label: "Title",
-                            placeholder: "Brief description of the issue",
-                            required: true,
-                            // Server caps the title at 500 chars; mirror it
-                            // client-side as a UX nicety (MAPPS-210).
-                            maxlength: 500,
-                            rules: vec![Rule::Required],
-                            error: title_error.read().clone(),
-                            value: title.read().clone(),
-                            oninput: move |e: FormEvent| {
-                                title_error.set(String::new());
-                                title.set(e.value());
-                            },
-                        }
-
-                        crate::components::CompanyPicker {
-                            value: company_name.read().clone(),
-                            selected_id: picker_selected_id,
-                            required: true,
-                            // MAPPS-322: surface the required-company error
-                            // inline on the picker, cleared on select/clear
-                            // like the title/description fields.
-                            error: company_error.read().clone(),
-                            // PMS-352: opt this picker into the inline
-                            // "+ Create new company" affordance so a
-                            // first-time technician on a tenant with zero
-                            // companies can finish the New Ticket flow
-                            // without leaving the form to seed a company.
-                            allow_inline_create: true,
-                            onselect: move |(id, name): (String, String)| {
-                                company_error.set(String::new());
-                                company_id.set(id);
-                                company_name.set(name);
-                                // Contacts are scoped to a company; clear
-                                // any prior pick when the company changes.
-                                contact_id.set(String::new());
-                                contact_name.set(String::new());
-                            },
-                            onclear: move |_| {
-                                company_error.set(String::new());
-                                company_id.set(String::new());
-                                company_name.set(String::new());
-                                contact_id.set(String::new());
-                                contact_name.set(String::new());
-                            },
-                        }
-
-                        // MAPPS-207: optional contact on create, scoped to
-                        // the selected company. Sends the server's
-                        // `contact_id` field on TicketCreateRequest; empty
-                        // signal sends null (no contact).
-                        crate::components::ContactPicker {
-                            value: contact_name.read().clone(),
-                            selected_id: picker_contact_selected_id,
-                            label: "Contact".to_string(),
-                            company_filter: contact_company_filter,
-                            // MAPPS-276: opt this picker into the inline
-                            // "+ Create new contact" affordance so the New
-                            // Ticket flow doesn't dead-end when the calling
-                            // user isn't in the company's contacts yet. The
-                            // picker inherits the form's selected company
-                            // via `company_filter`, so the new contact
-                            // lands attached to the right company.
-                            allow_inline_create: true,
-                            onselect: move |(id, name): (String, String)| {
-                                contact_id.set(id);
-                                contact_name.set(name);
-                            },
-                            onclear: move |_| {
-                                contact_id.set(String::new());
-                                contact_name.set(String::new());
-                            },
-                        }
-                    }
-
-                    Textarea {
-                        name: "description",
-                        label: "Description",
-                        placeholder: "Provide detailed information about the issue...",
-                        rows: 6,
+                div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                    crate::components::Input {
+                        name: "title",
+                        label: "Title",
+                        placeholder: "Brief description of the issue",
                         required: true,
+                        // Server caps the title at 500 chars; mirror it
+                        // client-side as a UX nicety (MAPPS-210).
+                        maxlength: 500,
                         rules: vec![Rule::Required],
-                        error: description_error.read().clone(),
-                        value: description.read().clone(),
+                        error: title_error.read().clone(),
+                        value: title.read().clone(),
                         oninput: move |e: FormEvent| {
-                            description_error.set(String::new());
-                            description.set(e.value());
+                            title_error.set(String::new());
+                            title.set(e.value());
                         },
                     }
 
-                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
-                        Select {
-                            name: "priority",
-                            label: "Priority",
-                            options: priority_options,
-                            value: priority_id.read().clone(),
-                            onchange: move |e: FormEvent| priority_id.set(e.value()),
-                        }
+                    crate::components::CompanyPicker {
+                        value: company_name.read().clone(),
+                        selected_id: picker_selected_id,
+                        required: true,
+                        // MAPPS-322: surface the required-company error
+                        // inline on the picker, cleared on select/clear
+                        // like the title/description fields.
+                        error: company_error.read().clone(),
+                        // PMS-352: opt this picker into the inline
+                        // "+ Create new company" affordance so a
+                        // first-time technician on a tenant with zero
+                        // companies can finish the New Ticket flow
+                        // without leaving the form to seed a company.
+                        allow_inline_create: true,
+                        onselect: move |(id, name): (String, String)| {
+                            company_error.set(String::new());
+                            company_id.set(id);
+                            company_name.set(name);
+                            // Contacts are scoped to a company; clear
+                            // any prior pick when the company changes.
+                            contact_id.set(String::new());
+                            contact_name.set(String::new());
+                        },
+                        onclear: move |_| {
+                            company_error.set(String::new());
+                            company_id.set(String::new());
+                            company_name.set(String::new());
+                            contact_id.set(String::new());
+                            contact_name.set(String::new());
+                        },
+                    }
 
-                        // PMS-344: optional asset on create. Wires to the
-                        // server's `asset_id` field on TicketCreateRequest;
-                        // empty signal sends null (no asset).
-                        {
-                            let picker_asset_selected_id: Option<String> =
-                                if uuid::Uuid::parse_str(asset_id.read().as_str()).is_ok() {
-                                    Some(asset_id.read().clone())
-                                } else {
-                                    None
-                                };
-                            rsx! {
-                                crate::components::AssetPicker {
-                                    value: asset_name.read().clone(),
-                                    selected_id: picker_asset_selected_id,
-                                    onselect: move |(id, name): (String, String)| {
-                                        asset_id.set(id);
-                                        asset_name.set(name);
-                                    },
-                                    onclear: move |_| {
-                                        asset_id.set(String::new());
-                                        asset_name.set(String::new());
-                                    },
-                                }
+                    // MAPPS-207: optional contact on create, scoped to
+                    // the selected company. Sends the server's
+                    // `contact_id` field on TicketCreateRequest; empty
+                    // signal sends null (no contact).
+                    crate::components::ContactPicker {
+                        value: contact_name.read().clone(),
+                        selected_id: picker_contact_selected_id,
+                        label: "Contact".to_string(),
+                        company_filter: contact_company_filter,
+                        // MAPPS-276: opt this picker into the inline
+                        // "+ Create new contact" affordance so the New
+                        // Ticket flow doesn't dead-end when the calling
+                        // user isn't in the company's contacts yet. The
+                        // picker inherits the form's selected company
+                        // via `company_filter`, so the new contact
+                        // lands attached to the right company.
+                        allow_inline_create: true,
+                        onselect: move |(id, name): (String, String)| {
+                            contact_id.set(id);
+                            contact_name.set(name);
+                        },
+                        onclear: move |_| {
+                            contact_id.set(String::new());
+                            contact_name.set(String::new());
+                        },
+                    }
+                }
+
+                Textarea {
+                    name: "description",
+                    label: "Description",
+                    placeholder: "Provide detailed information about the issue...",
+                    rows: 6,
+                    required: true,
+                    rules: vec![Rule::Required],
+                    error: description_error.read().clone(),
+                    value: description.read().clone(),
+                    oninput: move |e: FormEvent| {
+                        description_error.set(String::new());
+                        description.set(e.value());
+                    },
+                }
+
+                div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                    Select {
+                        name: "priority",
+                        label: "Priority",
+                        options: priority_options,
+                        value: priority_id.read().clone(),
+                        onchange: move |e: FormEvent| priority_id.set(e.value()),
+                    }
+
+                    // PMS-344: optional asset on create. Wires to the
+                    // server's `asset_id` field on TicketCreateRequest;
+                    // empty signal sends null (no asset).
+                    {
+                        let picker_asset_selected_id: Option<String> =
+                            if uuid::Uuid::parse_str(asset_id.read().as_str()).is_ok() {
+                                Some(asset_id.read().clone())
+                            } else {
+                                None
+                            };
+                        rsx! {
+                            crate::components::AssetPicker {
+                                value: asset_name.read().clone(),
+                                selected_id: picker_asset_selected_id,
+                                onselect: move |(id, name): (String, String)| {
+                                    asset_id.set(id);
+                                    asset_name.set(name);
+                                },
+                                onclear: move |_| {
+                                    asset_id.set(String::new());
+                                    asset_name.set(String::new());
+                                },
                             }
                         }
                     }
+                }
 
-                    // MAPPS-296: richer create form. Type + Category +
-                    // Assignee + Due Date so the dispatcher captures
-                    // everything a service-desk ticket needs at
-                    // creation, instead of opening the new ticket and
-                    // immediately editing in four more fields.
-                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
-                        Select {
-                            name: "type",
-                            label: "Type",
-                            options: type_options,
-                            value: type_id.read().clone(),
-                            onchange: move |e: FormEvent| type_id.set(e.value()),
-                        }
-                        Select {
-                            name: "category",
-                            label: "Category",
-                            options: category_options,
-                            value: category_id.read().clone(),
-                            onchange: move |e: FormEvent| category_id.set(e.value()),
-                        }
+                // MAPPS-296: richer create form. Type + Category +
+                // Assignee + Due Date so the dispatcher captures
+                // everything a service-desk ticket needs at
+                // creation, instead of opening the new ticket and
+                // immediately editing in four more fields.
+                div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                    Select {
+                        name: "type",
+                        label: "Type",
+                        options: type_options,
+                        value: type_id.read().clone(),
+                        onchange: move |e: FormEvent| type_id.set(e.value()),
                     }
-
-                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
-                        Select {
-                            name: "assigned_to",
-                            label: "Assigned To",
-                            options: assignee_options,
-                            value: assigned_to_id.read().clone(),
-                            onchange: move |e: FormEvent| assigned_to_id.set(e.value()),
-                        }
-                        crate::components::DateField {
-                            name: "due_date",
-                            label: "Due Date".to_string(),
-                            value: due_date.read().clone(),
-                            help: "Stamps the ticket's scheduled-end so SLA + dispatch view it on creation.".to_string(),
-                            oninput: move |e: FormEvent| due_date.set(e.value()),
-                        }
+                    Select {
+                        name: "category",
+                        label: "Category",
+                        options: category_options,
+                        value: category_id.read().clone(),
+                        onchange: move |e: FormEvent| category_id.set(e.value()),
                     }
+                }
 
-                    div { class: "flex justify-end space-x-3",
-                        Link {
-                            to: Route::TicketList {},
-                            Button {
-                                variant: ButtonVariant::Secondary,
-                                "Cancel"
-                            }
-                        }
+                div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                    Select {
+                        name: "assigned_to",
+                        label: "Assigned To",
+                        options: assignee_options,
+                        value: assigned_to_id.read().clone(),
+                        onchange: move |e: FormEvent| assigned_to_id.set(e.value()),
+                    }
+                    crate::components::DateField {
+                        name: "due_date",
+                        label: "Due Date".to_string(),
+                        value: due_date.read().clone(),
+                        help: "Stamps the ticket's scheduled-end so SLA + dispatch view it on creation.".to_string(),
+                        oninput: move |e: FormEvent| due_date.set(e.value()),
+                    }
+                }
+
+                div { class: "flex justify-end space-x-3",
+                    Link {
+                        to: Route::TicketList {},
                         Button {
-                            r#type: "submit",
-                            variant: ButtonVariant::Primary,
-                            loading: *is_submitting.read(),
-                            // MAPPS-357: block create while the server is unreachable.
-                            disabled: !can_mutate,
-                            title: (!can_mutate).then(|| "Can't create a ticket while the server is unreachable".to_string()),
-                            "Create Ticket"
+                            variant: ButtonVariant::Secondary,
+                            "Cancel"
                         }
+                    }
+                    Button {
+                        r#type: "submit",
+                        variant: ButtonVariant::Primary,
+                        loading: *is_submitting.read(),
+                        // MAPPS-357: block create while the server is unreachable.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't create a ticket while the server is unreachable".to_string()),
+                        "Create Ticket"
                     }
                 }
             }
@@ -1888,6 +1886,27 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     // disables every mutating control on the page.
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
+    // MAPPS-366: set the tab title once, before the early returns (use_page_title
+    // is a hook, so it must run on every render path). Mirrors the header label
+    // used in the body: the ticket's "number: title" once loaded, "Loading…" in
+    // flight, or "Ticket not found" on a 404.
+    let header_title = match ticket.as_ref() {
+        Some(t) if !t.title.trim().is_empty() => {
+            if t.ticket_number.trim().is_empty() {
+                t.title.clone()
+            } else {
+                format!("{}: {}", t.ticket_number, t.title)
+            }
+        }
+        Some(_) => format!("Ticket {}", props.id),
+        None => "Loading…".to_string(),
+    };
+    let title = if ticket_fetch_failed {
+        "Ticket not found".to_string()
+    } else {
+        header_title.clone()
+    };
+    use_page_title(&title);
     if ticket_fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Ticket".to_string() }
@@ -1895,19 +1914,17 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     }
     if ticket_fetch_failed {
         return rsx! {
-            AppLayout { title: "Ticket not found",
-                PageHeader { title: "Ticket not found" }
-                Card {
-                    div { class: "py-8 text-center",
-                        p {
-                            class: "text-sm text-red-600 dark:text-red-300 mb-2",
-                            "Ticket not found. It may have been deleted, or the link may be incorrect."
-                        }
-                        Link {
-                            to: Route::TicketList {},
-                            class: "text-sm text-accent hover:opacity-90",
-                            "Back to tickets"
-                        }
+            PageHeader { title: "Ticket not found" }
+            Card {
+                div { class: "py-8 text-center",
+                    p {
+                        class: "text-sm text-red-600 dark:text-red-300 mb-2",
+                        "Ticket not found. It may have been deleted, or the link may be incorrect."
+                    }
+                    Link {
+                        to: Route::TicketList {},
+                        class: "text-sm text-accent hover:opacity-90",
+                        "Back to tickets"
                     }
                 }
             }
@@ -1942,19 +1959,6 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                 format!("Edited {when} by {who}")
             }
         });
-    // Prefer the ticket's human label (number + title) over the raw UUID. Fall
-    // back to "Ticket <id>" only if the title is missing, "Loading…" in flight.
-    let header_title = match ticket.as_ref() {
-        Some(t) if !t.title.trim().is_empty() => {
-            if t.ticket_number.trim().is_empty() {
-                t.title.clone()
-            } else {
-                format!("{}: {}", t.ticket_number, t.title)
-            }
-        }
-        Some(_) => format!("Ticket {}", props.id),
-        None => "Loading…".to_string(),
-    };
     let notes: Vec<RemoteNote> = notes_resource
         .read_unchecked()
         .clone()
@@ -1978,674 +1982,672 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     let log_time_href = format!("/time/new?ticket_id={}", props.id);
 
     rsx! {
-        AppLayout { title: "{header_title}",
-            PageHeader {
-                title: "{header_title}",
-                actions: rsx! {
+        PageHeader {
+            title: "{header_title}",
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    // MAPPS-357: block adding a note while the server is down.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't add a note while the server is unreachable".to_string()),
+                    onclick: move |_| {
+                        note_error.set(String::new());
+                        show_note_modal.set(true);
+                    },
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "Add Note"
+                }
+                a {
+                    href: "{log_time_href}",
                     Button {
-                        variant: ButtonVariant::Secondary,
-                        // MAPPS-357: block adding a note while the server is down.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't add a note while the server is unreachable".to_string()),
-                        onclick: move |_| {
-                            note_error.set(String::new());
-                            show_note_modal.set(true);
-                        },
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "Add Note"
-                    }
-                    a {
-                        href: "{log_time_href}",
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            ClockIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                            "Log Time"
-                        }
-                    }
-                    // MAPPS-313: per-ticket Delete affordance, matching
-                    // the pattern on Company / Contract / Asset detail.
-                    Button {
-                        variant: ButtonVariant::Danger,
-                        // MAPPS-357: block delete while the server is unreachable.
-                        disabled: deleting_ticket() || !can_mutate,
-                        title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
-                        onclick: move |_| {
-                            delete_ticket_error.set(String::new());
-                            confirming_ticket_delete.set(true);
-                        },
-                        "Delete"
-                    }
-                },
-            }
-            // MAPPS-313: confirm-before-delete for the ticket. Success
-            // toasts, navigates back to the list. Failure surfaces the
-            // server message inline in the dialog so the user can
-            // retry without losing their place.
-            {
-                let ticket_label = ticket
-                    .as_ref()
-                    .map(|t| {
-                        if t.ticket_number.trim().is_empty() {
-                            t.title.clone()
-                        } else {
-                            format!("{} - {}", t.ticket_number, t.title)
-                        }
-                    })
-                    .unwrap_or_else(|| "this ticket".to_string());
-                let id_for_confirm = id_for_delete.clone();
-                rsx! {
-                    crate::components::ConfirmDialog {
-                        open: confirming_ticket_delete(),
-                        title: "Delete ticket".to_string(),
-                        message: {
-                            let mut msg = format!(
-                                "Delete {ticket_label}? Notes, attachments, and time entries on this ticket are also removed. This cannot be undone."
-                            );
-                            if !delete_ticket_error.read().is_empty() {
-                                msg.push_str(&format!("\n\n{}", delete_ticket_error.read()));
-                            }
-                            msg
-                        },
-                        confirm_text: "Delete ticket".to_string(),
-                        cancel_text: "Cancel".to_string(),
-                        destructive: true,
-                        loading: deleting_ticket(),
-                        oncancel: move |_| {
-                            if !deleting_ticket() {
-                                confirming_ticket_delete.set(false);
-                                delete_ticket_error.set(String::new());
-                            }
-                        },
-                        onconfirm: move |_| {
-                            if deleting_ticket() { return; }
-                            deleting_ticket.set(true);
-                            delete_ticket_error.set(String::new());
-                            let id = id_for_confirm.clone();
-                            spawn(async move {
-                                #[cfg(feature = "web")]
-                                {
-                                    let path = format!("/tickets/{id}");
-                                    match crate::hooks::fetch::api::delete_authed(&path).await {
-                                        Ok(()) => {
-                                            crate::hooks::toast::push_toast(
-                                                crate::components::AlertType::Success,
-                                                "Ticket deleted.",
-                                            );
-                                            confirming_ticket_delete.set(false);
-                                            delete_nav.push(Route::TicketList {});
-                                        }
-                                        Err(err) => {
-                                            delete_ticket_error.set(format!("Could not delete ticket: {err}"));
-                                        }
-                                    }
-                                }
-                                #[cfg(not(feature = "web"))]
-                                let _ = &id;
-                                deleting_ticket.set(false);
-                            });
-                        },
+                        variant: ButtonVariant::Primary,
+                        ClockIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "Log Time"
                     }
                 }
+                // MAPPS-313: per-ticket Delete affordance, matching
+                // the pattern on Company / Contract / Asset detail.
+                Button {
+                    variant: ButtonVariant::Danger,
+                    // MAPPS-357: block delete while the server is unreachable.
+                    disabled: deleting_ticket() || !can_mutate,
+                    title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
+                    onclick: move |_| {
+                        delete_ticket_error.set(String::new());
+                        confirming_ticket_delete.set(true);
+                    },
+                    "Delete"
+                }
+            },
+        }
+        // MAPPS-313: confirm-before-delete for the ticket. Success
+        // toasts, navigates back to the list. Failure surfaces the
+        // server message inline in the dialog so the user can
+        // retry without losing their place.
+        {
+            let ticket_label = ticket
+                .as_ref()
+                .map(|t| {
+                    if t.ticket_number.trim().is_empty() {
+                        t.title.clone()
+                    } else {
+                        format!("{} - {}", t.ticket_number, t.title)
+                    }
+                })
+                .unwrap_or_else(|| "this ticket".to_string());
+            let id_for_confirm = id_for_delete.clone();
+            rsx! {
+                crate::components::ConfirmDialog {
+                    open: confirming_ticket_delete(),
+                    title: "Delete ticket".to_string(),
+                    message: {
+                        let mut msg = format!(
+                            "Delete {ticket_label}? Notes, attachments, and time entries on this ticket are also removed. This cannot be undone."
+                        );
+                        if !delete_ticket_error.read().is_empty() {
+                            msg.push_str(&format!("\n\n{}", delete_ticket_error.read()));
+                        }
+                        msg
+                    },
+                    confirm_text: "Delete ticket".to_string(),
+                    cancel_text: "Cancel".to_string(),
+                    destructive: true,
+                    loading: deleting_ticket(),
+                    oncancel: move |_| {
+                        if !deleting_ticket() {
+                            confirming_ticket_delete.set(false);
+                            delete_ticket_error.set(String::new());
+                        }
+                    },
+                    onconfirm: move |_| {
+                        if deleting_ticket() { return; }
+                        deleting_ticket.set(true);
+                        delete_ticket_error.set(String::new());
+                        let id = id_for_confirm.clone();
+                        spawn(async move {
+                            #[cfg(feature = "web")]
+                            {
+                                let path = format!("/tickets/{id}");
+                                match crate::hooks::fetch::api::delete_authed(&path).await {
+                                    Ok(()) => {
+                                        crate::hooks::toast::push_toast(
+                                            crate::components::AlertType::Success,
+                                            "Ticket deleted.",
+                                        );
+                                        confirming_ticket_delete.set(false);
+                                        delete_nav.push(Route::TicketList {});
+                                    }
+                                    Err(err) => {
+                                        delete_ticket_error.set(format!("Could not delete ticket: {err}"));
+                                    }
+                                }
+                            }
+                            #[cfg(not(feature = "web"))]
+                            let _ = &id;
+                            deleting_ticket.set(false);
+                        });
+                    },
+                }
             }
+        }
 
-            div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
-                // Main content
-                div { class: "lg:col-span-2 space-y-6",
-                    // Description (real ticket description, editable - PMS-182)
-                    {
-                        let ticket_loaded = ticket.is_some();
-                        let cur_desc = ticket
-                            .as_ref()
-                            .and_then(|t| t.description.clone())
-                            .unwrap_or_default();
-                        // MAPPS-188: seed the title field from the saved ticket
-                        // so the edit modal opens with the current title too.
-                        let cur_title = ticket
-                            .as_ref()
-                            .map(|t| t.title.clone())
-                            .unwrap_or_default();
-                        let open_edit = move |_| {
-                            e_title.set(cur_title.clone());
-                            e_desc.set(cur_desc.clone());
-                            e_error.set(String::new());
-                            editing_desc.set(true);
-                        };
-                        let marker = desc_edited.clone();
-                        rsx! {
-                            Card {
-                                title: "Description",
-                                actions: if ticket_loaded {
-                                    Some(rsx! {
-                                        Button {
-                                            variant: ButtonVariant::Secondary,
-                                            // MAPPS-357: block the edit modal while the server is down.
-                                            disabled: !can_mutate,
-                                            title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
-                                            onclick: open_edit,
-                                            PencilIcon { size: IconSize::Small, class: "mr-1.5".to_string() }
-                                            "Edit"
-                                        }
-                                    })
-                                } else {
-                                    None
-                                },
-                                if let Some(t) = ticket.as_ref() {
-                                    if let Some(desc) = t.description.as_ref().filter(|d| !d.trim().is_empty()) {
-                                        // PMS-309: render Markdown (sanitized). PMS-348:
-                                        // task-list checkboxes are clickable - toggling
-                                        // flips the source marker and persists.
-                                        {
-                                            let desc_src = desc.clone();
-                                            let tid = props.id.clone();
-                                            rsx! {
-                                                crate::components::Markdown {
-                                                    content: desc.clone(),
-                                                    // MAPPS-357: task-list checkboxes PUT on
-                                                    // toggle, so drop interactivity while the
-                                                    // server is unreachable (on_toggle is a
-                                                    // no-op when not interactive) to block the
-                                                    // silent-fail write.
-                                                    interactive: can_mutate,
-                                                    on_toggle: move |i: usize| {
-                                                        let Some(new_desc) =
-                                                            crate::utils::markdown::toggle_task(&desc_src, i)
-                                                        else {
-                                                            return;
-                                                        };
-                                                        let tid = tid.clone();
-                                                        let mut tr = ticket_resource;
-                                                        let mut hr = history_resource;
-                                                        spawn(async move {
-                                                            let body = serde_json::json!({ "description": new_desc });
-                                                            match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
-                                                                    &format!("/tickets/{tid}"),
-                                                                    &body,
-                                                                )
-                                                                .await
-                                                            {
-                                                                Ok(_) => {
-                                                                    tr.restart();
-                                                                    hr.restart();
-                                                                }
-                                                                Err(e) => {
-                                                                    crate::hooks::push_toast(
-                                                                        crate::components::AlertType::Error,
-                                                                        format!("Could not update checklist: {e}"),
-                                                                    );
-                                                                    tr.restart();
-                                                                }
+        div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
+            // Main content
+            div { class: "lg:col-span-2 space-y-6",
+                // Description (real ticket description, editable - PMS-182)
+                {
+                    let ticket_loaded = ticket.is_some();
+                    let cur_desc = ticket
+                        .as_ref()
+                        .and_then(|t| t.description.clone())
+                        .unwrap_or_default();
+                    // MAPPS-188: seed the title field from the saved ticket
+                    // so the edit modal opens with the current title too.
+                    let cur_title = ticket
+                        .as_ref()
+                        .map(|t| t.title.clone())
+                        .unwrap_or_default();
+                    let open_edit = move |_| {
+                        e_title.set(cur_title.clone());
+                        e_desc.set(cur_desc.clone());
+                        e_error.set(String::new());
+                        editing_desc.set(true);
+                    };
+                    let marker = desc_edited.clone();
+                    rsx! {
+                        Card {
+                            title: "Description",
+                            actions: if ticket_loaded {
+                                Some(rsx! {
+                                    Button {
+                                        variant: ButtonVariant::Secondary,
+                                        // MAPPS-357: block the edit modal while the server is down.
+                                        disabled: !can_mutate,
+                                        title: (!can_mutate).then(|| "Can't edit while the server is unreachable".to_string()),
+                                        onclick: open_edit,
+                                        PencilIcon { size: IconSize::Small, class: "mr-1.5".to_string() }
+                                        "Edit"
+                                    }
+                                })
+                            } else {
+                                None
+                            },
+                            if let Some(t) = ticket.as_ref() {
+                                if let Some(desc) = t.description.as_ref().filter(|d| !d.trim().is_empty()) {
+                                    // PMS-309: render Markdown (sanitized). PMS-348:
+                                    // task-list checkboxes are clickable - toggling
+                                    // flips the source marker and persists.
+                                    {
+                                        let desc_src = desc.clone();
+                                        let tid = props.id.clone();
+                                        rsx! {
+                                            crate::components::Markdown {
+                                                content: desc.clone(),
+                                                // MAPPS-357: task-list checkboxes PUT on
+                                                // toggle, so drop interactivity while the
+                                                // server is unreachable (on_toggle is a
+                                                // no-op when not interactive) to block the
+                                                // silent-fail write.
+                                                interactive: can_mutate,
+                                                on_toggle: move |i: usize| {
+                                                    let Some(new_desc) =
+                                                        crate::utils::markdown::toggle_task(&desc_src, i)
+                                                    else {
+                                                        return;
+                                                    };
+                                                    let tid = tid.clone();
+                                                    let mut tr = ticket_resource;
+                                                    let mut hr = history_resource;
+                                                    spawn(async move {
+                                                        let body = serde_json::json!({ "description": new_desc });
+                                                        match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
+                                                                &format!("/tickets/{tid}"),
+                                                                &body,
+                                                            )
+                                                            .await
+                                                        {
+                                                            Ok(_) => {
+                                                                tr.restart();
+                                                                hr.restart();
                                                             }
-                                                        });
-                                                    },
-                                                }
+                                                            Err(e) => {
+                                                                crate::hooks::push_toast(
+                                                                    crate::components::AlertType::Error,
+                                                                    format!("Could not update checklist: {e}"),
+                                                                );
+                                                                tr.restart();
+                                                            }
+                                                        }
+                                                    });
+                                                },
                                             }
                                         }
-                                    } else {
-                                        p { class: "text-sm text-subtle italic", "No description provided." }
-                                    }
-                                    if let Some(m) = marker {
-                                        p { class: "text-xs text-subtle italic mt-3", "{m}" }
                                     }
                                 } else {
-                                    p { class: "text-sm text-subtle", "Loading…" }
+                                    p { class: "text-sm text-subtle italic", "No description provided." }
                                 }
+                                if let Some(m) = marker {
+                                    p { class: "text-xs text-subtle italic mt-3", "{m}" }
+                                }
+                            } else {
+                                p { class: "text-sm text-subtle", "Loading…" }
                             }
                         }
                     }
+                }
 
-                    // PMS-486: ticket-detail Approvals section. Self-contained
-                    // component owns its own fetch, modal state, and refresh
-                    // cycle; rendered above the activity timeline so the
-                    // open approval requests are immediately visible.
-                    ApprovalsSection { entity_id: props.id.clone() }
+                // PMS-486: ticket-detail Approvals section. Self-contained
+                // component owns its own fetch, modal state, and refresh
+                // cycle; rendered above the activity timeline so the
+                // open approval requests are immediately visible.
+                ApprovalsSection { entity_id: props.id.clone() }
 
-                    // Activity timeline (real ticket notes; there is no audit
-                    // feed yet, so status / assignment events do not appear).
-                    Card { title: "Activity",
-                        if note_count == 0 {
-                            p { class: "text-sm text-subtle italic",
-                                "No activity yet. Notes added to this ticket will appear here."
-                            }
-                        } else {
-                            div { class: "flow-root",
-                                ul { class: "-mb-8",
-                                    for (i , n) in notes.iter().enumerate() {
-                                        TimelineItem {
-                                            user: if n.created_by_name.is_empty() { "Someone".to_string() } else { n.created_by_name.clone() },
-                                            action: if n.note_type == "internal" { "added an internal note".to_string() } else { "added a note".to_string() },
-                                            time: fmt_datetime(n.created_at),
-                                            content: Some(n.content.clone()),
-                                            is_last: i + 1 == note_count,
-                                        }
+                // Activity timeline (real ticket notes; there is no audit
+                // feed yet, so status / assignment events do not appear).
+                Card { title: "Activity",
+                    if note_count == 0 {
+                        p { class: "text-sm text-subtle italic",
+                            "No activity yet. Notes added to this ticket will appear here."
+                        }
+                    } else {
+                        div { class: "flow-root",
+                            ul { class: "-mb-8",
+                                for (i , n) in notes.iter().enumerate() {
+                                    TimelineItem {
+                                        user: if n.created_by_name.is_empty() { "Someone".to_string() } else { n.created_by_name.clone() },
+                                        action: if n.note_type == "internal" { "added an internal note".to_string() } else { "added a note".to_string() },
+                                        time: fmt_datetime(n.created_at),
+                                        content: Some(n.content.clone()),
+                                        is_last: i + 1 == note_count,
                                     }
                                 }
                             }
                         }
                     }
                 }
+            }
 
-                // Sidebar
-                div { class: "space-y-6",
-                    Card { title: "Details",
-                        if let Some(t) = ticket.as_ref() {
-                            dl { class: "space-y-4",
-                                // PMS-359: inline Status / Priority / Assigned To editors.
-                                // Each renders a native Select bound to the
-                                // currently-saved id; onchange fires a PUT
-                                // /tickets/{id} with the matching field and
-                                // refreshes the ticket + history resources on
-                                // success so the change-history pane records
-                                // the edit alongside any prior description edits.
-                                {
-                                    // Statuses Select. Empty options list (still
-                                    // fetching) falls back to a single "Loading…"
-                                    // entry so the component does not collapse.
-                                    let current_status = t
-                                        .status
-                                        .id
-                                        .map(|u| u.to_string())
-                                        .unwrap_or_default();
-                                    let mut status_options: Vec<SelectOption> = statuses
-                                        .iter()
-                                        .map(|s| SelectOption::new(s.id.to_string(), s.name.clone()))
-                                        .collect();
-                                    if status_options.is_empty() {
-                                        status_options.push(SelectOption::new("", "Loading…"));
-                                    }
-                                    let save_id = props.id.clone();
-                                    let mut tr = ticket_resource;
-                                    let mut hr = history_resource;
-                                    let onchange = move |e: FormEvent| {
-                                        let Ok(new_id) = uuid::Uuid::parse_str(&e.value()) else {
-                                            return;
-                                        };
-                                        let save_id = save_id.clone();
-                                        spawn(async move {
-                                            field_error.set(String::new());
-                                            let body =
-                                                serde_json::json!({ "status_id": new_id });
-                                            match crate::hooks::fetch::api::put_authed::<
-                                                serde_json::Value,
-                                                _,
-                                            >(
-                                                &format!("/tickets/{save_id}"), &body
-                                            )
-                                            .await
-                                            {
-                                                Ok(_) => {
-                                                    tr.restart();
-                                                    hr.restart();
-                                                }
-                                                Err(err) => {
-                                                    field_error.set(format!(
-                                                        "Could not update status: {err}"
-                                                    ));
-                                                }
-                                            }
-                                        });
+            // Sidebar
+            div { class: "space-y-6",
+                Card { title: "Details",
+                    if let Some(t) = ticket.as_ref() {
+                        dl { class: "space-y-4",
+                            // PMS-359: inline Status / Priority / Assigned To editors.
+                            // Each renders a native Select bound to the
+                            // currently-saved id; onchange fires a PUT
+                            // /tickets/{id} with the matching field and
+                            // refreshes the ticket + history resources on
+                            // success so the change-history pane records
+                            // the edit alongside any prior description edits.
+                            {
+                                // Statuses Select. Empty options list (still
+                                // fetching) falls back to a single "Loading…"
+                                // entry so the component does not collapse.
+                                let current_status = t
+                                    .status
+                                    .id
+                                    .map(|u| u.to_string())
+                                    .unwrap_or_default();
+                                let mut status_options: Vec<SelectOption> = statuses
+                                    .iter()
+                                    .map(|s| SelectOption::new(s.id.to_string(), s.name.clone()))
+                                    .collect();
+                                if status_options.is_empty() {
+                                    status_options.push(SelectOption::new("", "Loading…"));
+                                }
+                                let save_id = props.id.clone();
+                                let mut tr = ticket_resource;
+                                let mut hr = history_resource;
+                                let onchange = move |e: FormEvent| {
+                                    let Ok(new_id) = uuid::Uuid::parse_str(&e.value()) else {
+                                        return;
                                     };
-                                    rsx! {
-                                        DetailItem {
-                                            label: "Status",
-                                            value: rsx! {
-                                                Select {
-                                                    name: "status_id",
-                                                    label: "",
-                                                    options: status_options,
-                                                    value: current_status,
-                                                    // MAPPS-357: this Select PUTs on change; block it while down.
-                                                    disabled: !can_mutate,
-                                                    onchange,
-                                                }
-                                            },
-                                        }
-                                    }
-                                }
-                                {
-                                    let current_priority = t
-                                        .priority
-                                        .id
-                                        .map(|u| u.to_string())
-                                        .unwrap_or_default();
-                                    let mut priority_options: Vec<SelectOption> = priorities
-                                        .iter()
-                                        .map(|p| SelectOption::new(p.id.to_string(), p.name.clone()))
-                                        .collect();
-                                    if priority_options.is_empty() {
-                                        priority_options.push(SelectOption::new("", "Loading…"));
-                                    }
-                                    let save_id = props.id.clone();
-                                    let mut tr = ticket_resource;
-                                    let mut hr = history_resource;
-                                    let onchange = move |e: FormEvent| {
-                                        let Ok(new_id) = uuid::Uuid::parse_str(&e.value()) else {
-                                            return;
-                                        };
-                                        let save_id = save_id.clone();
-                                        spawn(async move {
-                                            field_error.set(String::new());
-                                            let body =
-                                                serde_json::json!({ "priority_id": new_id });
-                                            match crate::hooks::fetch::api::put_authed::<
-                                                serde_json::Value,
-                                                _,
-                                            >(
-                                                &format!("/tickets/{save_id}"), &body
-                                            )
-                                            .await
-                                            {
-                                                Ok(_) => {
-                                                    tr.restart();
-                                                    hr.restart();
-                                                }
-                                                Err(err) => {
-                                                    field_error.set(format!(
-                                                        "Could not update priority: {err}"
-                                                    ));
-                                                }
+                                    let save_id = save_id.clone();
+                                    spawn(async move {
+                                        field_error.set(String::new());
+                                        let body =
+                                            serde_json::json!({ "status_id": new_id });
+                                        match crate::hooks::fetch::api::put_authed::<
+                                            serde_json::Value,
+                                            _,
+                                        >(
+                                            &format!("/tickets/{save_id}"), &body
+                                        )
+                                        .await
+                                        {
+                                            Ok(_) => {
+                                                tr.restart();
+                                                hr.restart();
                                             }
-                                        });
-                                    };
-                                    rsx! {
-                                        DetailItem {
-                                            label: "Priority",
-                                            value: rsx! {
-                                                Select {
-                                                    name: "priority_id",
-                                                    label: "",
-                                                    options: priority_options,
-                                                    value: current_priority,
-                                                    // MAPPS-357: this Select PUTs on change; block it while down.
-                                                    disabled: !can_mutate,
-                                                    onchange,
-                                                }
-                                            },
-                                        }
-                                    }
-                                }
-                                {
-                                    // Assignee uses the same users list the change-
-                                    // history viewer consumes. Empty value = unassigned,
-                                    // which serialises to JSON null so the server
-                                    // clears assigned_to_id.
-                                    let current_assignee = t
-                                        .assigned_to_id
-                                        .map(|u| u.to_string())
-                                        .unwrap_or_default();
-                                    let mut user_options: Vec<SelectOption> =
-                                        vec![SelectOption::new("", "Unassigned")];
-                                    for u in users.iter() {
-                                        let label = if u.full_name.trim().is_empty() {
-                                            u.id.to_string()
-                                        } else {
-                                            u.full_name.clone()
-                                        };
-                                        user_options.push(SelectOption::new(u.id.to_string(), label));
-                                    }
-                                    let save_id = props.id.clone();
-                                    let mut tr = ticket_resource;
-                                    let mut hr = history_resource;
-                                    let onchange = move |e: FormEvent| {
-                                        let raw = e.value();
-                                        let new_id: Option<uuid::Uuid> = if raw.is_empty() {
-                                            None
-                                        } else {
-                                            match uuid::Uuid::parse_str(&raw) {
-                                                Ok(u) => Some(u),
-                                                Err(_) => return,
+                                            Err(err) => {
+                                                field_error.set(format!(
+                                                    "Could not update status: {err}"
+                                                ));
                                             }
-                                        };
-                                        let save_id = save_id.clone();
-                                        spawn(async move {
-                                            field_error.set(String::new());
-                                            let body =
-                                                serde_json::json!({ "assigned_to_id": new_id });
-                                            match crate::hooks::fetch::api::put_authed::<
-                                                serde_json::Value,
-                                                _,
-                                            >(
-                                                &format!("/tickets/{save_id}"), &body
-                                            )
-                                            .await
-                                            {
-                                                Ok(_) => {
-                                                    tr.restart();
-                                                    hr.restart();
-                                                }
-                                                Err(err) => {
-                                                    field_error.set(format!(
-                                                        "Could not update assignee: {err}"
-                                                    ));
-                                                }
-                                            }
-                                        });
-                                    };
-                                    rsx! {
-                                        DetailItem {
-                                            label: "Assigned To",
-                                            value: rsx! {
-                                                Select {
-                                                    name: "assigned_to_id",
-                                                    label: "",
-                                                    options: user_options,
-                                                    value: current_assignee,
-                                                    // MAPPS-357: this Select PUTs on change; block it while down.
-                                                    disabled: !can_mutate,
-                                                    onchange,
-                                                }
-                                            },
                                         }
-                                    }
-                                }
-                                if !field_error.read().is_empty() {
-                                    p { class: "text-xs text-red-600 dark:text-red-400",
-                                        "{field_error}"
-                                    }
-                                }
-                                // PMS-344: Asset row with inline AssetPicker.
-                                // Selecting an asset fires PUT /tickets/{id}
-                                // with `asset_id`, the same shape the inline
-                                // status/priority/assignee editors above use.
-                                // Clearing the picker sends `null` so the
-                                // server unsets the association.
-                                {
-                                    let current_asset_id = t.asset_id.map(|u| u.to_string());
-                                    let current_asset_name =
-                                        t.asset_name.clone().unwrap_or_default();
-                                    let save_id = props.id.clone();
-                                    let mut tr = ticket_resource;
-                                    let mut hr = history_resource;
-                                    let put_asset = move |new_id: Option<uuid::Uuid>| {
-                                        let save_id = save_id.clone();
-                                        spawn(async move {
-                                            field_error.set(String::new());
-                                            let body = serde_json::json!({
-                                                "asset_id": new_id,
-                                            });
-                                            match crate::hooks::fetch::api::put_authed::<
-                                                serde_json::Value,
-                                                _,
-                                            >(
-                                                &format!("/tickets/{save_id}"),
-                                                &body,
-                                            )
-                                            .await
-                                            {
-                                                Ok(_) => {
-                                                    tr.restart();
-                                                    hr.restart();
-                                                }
-                                                Err(err) => {
-                                                    field_error.set(format!(
-                                                        "Could not update asset: {err}"
-                                                    ));
-                                                }
-                                            }
-                                        });
-                                    };
-                                    let put_asset_for_select = put_asset.clone();
-                                    let put_asset_for_clear = put_asset.clone();
-                                    rsx! {
-                                        DetailItem {
-                                            label: "Asset",
-                                            value: rsx! {
-                                                // MAPPS-357: the AssetPicker PUTs on
-                                                // select/clear but exposes no `disabled`
-                                                // prop, so it cannot be gated from this
-                                                // file (unlike the Selects above). A write
-                                                // it fires while down surfaces the inline
-                                                // "Could not update asset" error rather
-                                                // than silently succeeding; gating it needs
-                                                // a `disabled` prop on the shared component.
-                                                crate::components::AssetPicker {
-                                                    // PMS-344 follow-up
-                                                    // (layout): suppress
-                                                    // the picker's own
-                                                    // label here because
-                                                    // DetailItem already
-                                                    // renders "Asset" on
-                                                    // the left, matching
-                                                    // how the inline
-                                                    // Status/Priority/
-                                                    // Assignee Select
-                                                    // editors mount.
-                                                    label: String::new(),
-                                                    value: current_asset_name,
-                                                    selected_id: current_asset_id,
-                                                    onselect: move |(id, _name): (String, String)| {
-                                                        if let Ok(uid) = uuid::Uuid::parse_str(&id) {
-                                                            put_asset_for_select(Some(uid));
-                                                        }
-                                                    },
-                                                    onclear: move |_| {
-                                                        put_asset_for_clear(None);
-                                                    },
-                                                }
-                                            },
-                                        }
-                                    }
-                                }
-                                if !t.company_name.is_empty() {
+                                    });
+                                };
+                                rsx! {
                                     DetailItem {
-                                        label: "Company",
+                                        label: "Status",
                                         value: rsx! {
-                                            if let Some(cid) = t.company_id {
-                                                Link {
-                                                    to: Route::CompanyDetail { id: cid.to_string() },
-                                                    class: "text-accent hover:opacity-90",
-                                                    "{t.company_name}"
-                                                }
-                                            } else {
-                                                span { "{t.company_name}" }
+                                            Select {
+                                                name: "status_id",
+                                                label: "",
+                                                options: status_options,
+                                                value: current_status,
+                                                // MAPPS-357: this Select PUTs on change; block it while down.
+                                                disabled: !can_mutate,
+                                                onchange,
                                             }
                                         },
                                     }
                                 }
-                                if let Some(contact) = t.contact_name.as_ref().filter(|s| !s.is_empty()) {
-                                    DetailItem { label: "Contact", value: rsx!(span { "{contact}" }) }
+                            }
+                            {
+                                let current_priority = t
+                                    .priority
+                                    .id
+                                    .map(|u| u.to_string())
+                                    .unwrap_or_default();
+                                let mut priority_options: Vec<SelectOption> = priorities
+                                    .iter()
+                                    .map(|p| SelectOption::new(p.id.to_string(), p.name.clone()))
+                                    .collect();
+                                if priority_options.is_empty() {
+                                    priority_options.push(SelectOption::new("", "Loading…"));
                                 }
-                                if !t.queue_name.is_empty() {
-                                    DetailItem { label: "Queue", value: rsx!(span { "{t.queue_name}" }) }
-                                }
-                                {
-                                    let created = if t.created_by_name.is_empty() {
-                                        fmt_datetime(t.created_at)
-                                    } else {
-                                        format!("{} by {}", fmt_datetime(t.created_at), t.created_by_name)
+                                let save_id = props.id.clone();
+                                let mut tr = ticket_resource;
+                                let mut hr = history_resource;
+                                let onchange = move |e: FormEvent| {
+                                    let Ok(new_id) = uuid::Uuid::parse_str(&e.value()) else {
+                                        return;
                                     };
-                                    rsx! {
-                                        DetailItem { label: "Created", nowrap: true, value: rsx!(span { "{created}" }) }
+                                    let save_id = save_id.clone();
+                                    spawn(async move {
+                                        field_error.set(String::new());
+                                        let body =
+                                            serde_json::json!({ "priority_id": new_id });
+                                        match crate::hooks::fetch::api::put_authed::<
+                                            serde_json::Value,
+                                            _,
+                                        >(
+                                            &format!("/tickets/{save_id}"), &body
+                                        )
+                                        .await
+                                        {
+                                            Ok(_) => {
+                                                tr.restart();
+                                                hr.restart();
+                                            }
+                                            Err(err) => {
+                                                field_error.set(format!(
+                                                    "Could not update priority: {err}"
+                                                ));
+                                            }
+                                        }
+                                    });
+                                };
+                                rsx! {
+                                    DetailItem {
+                                        label: "Priority",
+                                        value: rsx! {
+                                            Select {
+                                                name: "priority_id",
+                                                label: "",
+                                                options: priority_options,
+                                                value: current_priority,
+                                                // MAPPS-357: this Select PUTs on change; block it while down.
+                                                disabled: !can_mutate,
+                                                onchange,
+                                            }
+                                        },
                                     }
                                 }
-                                if let Some((variant , label)) = t.sla_status.badge() {
-                                    DetailItem { label: "SLA Status", value: rsx!(Badge { variant, "{label}" }) }
+                            }
+                            {
+                                // Assignee uses the same users list the change-
+                                // history viewer consumes. Empty value = unassigned,
+                                // which serialises to JSON null so the server
+                                // clears assigned_to_id.
+                                let current_assignee = t
+                                    .assigned_to_id
+                                    .map(|u| u.to_string())
+                                    .unwrap_or_default();
+                                let mut user_options: Vec<SelectOption> =
+                                    vec![SelectOption::new("", "Unassigned")];
+                                for u in users.iter() {
+                                    let label = if u.full_name.trim().is_empty() {
+                                        u.id.to_string()
+                                    } else {
+                                        u.full_name.clone()
+                                    };
+                                    user_options.push(SelectOption::new(u.id.to_string(), label));
                                 }
-                                if let Some(due) = t.sla_due_date.map(format_sla_due) {
-                                    DetailItem { label: "SLA Due", nowrap: true, value: rsx!(span { "{due}" }) }
+                                let save_id = props.id.clone();
+                                let mut tr = ticket_resource;
+                                let mut hr = history_resource;
+                                let onchange = move |e: FormEvent| {
+                                    let raw = e.value();
+                                    let new_id: Option<uuid::Uuid> = if raw.is_empty() {
+                                        None
+                                    } else {
+                                        match uuid::Uuid::parse_str(&raw) {
+                                            Ok(u) => Some(u),
+                                            Err(_) => return,
+                                        }
+                                    };
+                                    let save_id = save_id.clone();
+                                    spawn(async move {
+                                        field_error.set(String::new());
+                                        let body =
+                                            serde_json::json!({ "assigned_to_id": new_id });
+                                        match crate::hooks::fetch::api::put_authed::<
+                                            serde_json::Value,
+                                            _,
+                                        >(
+                                            &format!("/tickets/{save_id}"), &body
+                                        )
+                                        .await
+                                        {
+                                            Ok(_) => {
+                                                tr.restart();
+                                                hr.restart();
+                                            }
+                                            Err(err) => {
+                                                field_error.set(format!(
+                                                    "Could not update assignee: {err}"
+                                                ));
+                                            }
+                                        }
+                                    });
+                                };
+                                rsx! {
+                                    DetailItem {
+                                        label: "Assigned To",
+                                        value: rsx! {
+                                            Select {
+                                                name: "assigned_to_id",
+                                                label: "",
+                                                options: user_options,
+                                                value: current_assignee,
+                                                // MAPPS-357: this Select PUTs on change; block it while down.
+                                                disabled: !can_mutate,
+                                                onchange,
+                                            }
+                                        },
+                                    }
                                 }
                             }
-                        } else {
-                            p { class: "text-sm text-subtle", "Loading…" }
+                            if !field_error.read().is_empty() {
+                                p { class: "text-xs text-red-600 dark:text-red-400",
+                                    "{field_error}"
+                                }
+                            }
+                            // PMS-344: Asset row with inline AssetPicker.
+                            // Selecting an asset fires PUT /tickets/{id}
+                            // with `asset_id`, the same shape the inline
+                            // status/priority/assignee editors above use.
+                            // Clearing the picker sends `null` so the
+                            // server unsets the association.
+                            {
+                                let current_asset_id = t.asset_id.map(|u| u.to_string());
+                                let current_asset_name =
+                                    t.asset_name.clone().unwrap_or_default();
+                                let save_id = props.id.clone();
+                                let mut tr = ticket_resource;
+                                let mut hr = history_resource;
+                                let put_asset = move |new_id: Option<uuid::Uuid>| {
+                                    let save_id = save_id.clone();
+                                    spawn(async move {
+                                        field_error.set(String::new());
+                                        let body = serde_json::json!({
+                                            "asset_id": new_id,
+                                        });
+                                        match crate::hooks::fetch::api::put_authed::<
+                                            serde_json::Value,
+                                            _,
+                                        >(
+                                            &format!("/tickets/{save_id}"),
+                                            &body,
+                                        )
+                                        .await
+                                        {
+                                            Ok(_) => {
+                                                tr.restart();
+                                                hr.restart();
+                                            }
+                                            Err(err) => {
+                                                field_error.set(format!(
+                                                    "Could not update asset: {err}"
+                                                ));
+                                            }
+                                        }
+                                    });
+                                };
+                                let put_asset_for_select = put_asset.clone();
+                                let put_asset_for_clear = put_asset.clone();
+                                rsx! {
+                                    DetailItem {
+                                        label: "Asset",
+                                        value: rsx! {
+                                            // MAPPS-357: the AssetPicker PUTs on
+                                            // select/clear but exposes no `disabled`
+                                            // prop, so it cannot be gated from this
+                                            // file (unlike the Selects above). A write
+                                            // it fires while down surfaces the inline
+                                            // "Could not update asset" error rather
+                                            // than silently succeeding; gating it needs
+                                            // a `disabled` prop on the shared component.
+                                            crate::components::AssetPicker {
+                                                // PMS-344 follow-up
+                                                // (layout): suppress
+                                                // the picker's own
+                                                // label here because
+                                                // DetailItem already
+                                                // renders "Asset" on
+                                                // the left, matching
+                                                // how the inline
+                                                // Status/Priority/
+                                                // Assignee Select
+                                                // editors mount.
+                                                label: String::new(),
+                                                value: current_asset_name,
+                                                selected_id: current_asset_id,
+                                                onselect: move |(id, _name): (String, String)| {
+                                                    if let Ok(uid) = uuid::Uuid::parse_str(&id) {
+                                                        put_asset_for_select(Some(uid));
+                                                    }
+                                                },
+                                                onclear: move |_| {
+                                                    put_asset_for_clear(None);
+                                                },
+                                            }
+                                        },
+                                    }
+                                }
+                            }
+                            if !t.company_name.is_empty() {
+                                DetailItem {
+                                    label: "Company",
+                                    value: rsx! {
+                                        if let Some(cid) = t.company_id {
+                                            Link {
+                                                to: Route::CompanyDetail { id: cid.to_string() },
+                                                class: "text-accent hover:opacity-90",
+                                                "{t.company_name}"
+                                            }
+                                        } else {
+                                            span { "{t.company_name}" }
+                                        }
+                                    },
+                                }
+                            }
+                            if let Some(contact) = t.contact_name.as_ref().filter(|s| !s.is_empty()) {
+                                DetailItem { label: "Contact", value: rsx!(span { "{contact}" }) }
+                            }
+                            if !t.queue_name.is_empty() {
+                                DetailItem { label: "Queue", value: rsx!(span { "{t.queue_name}" }) }
+                            }
+                            {
+                                let created = if t.created_by_name.is_empty() {
+                                    fmt_datetime(t.created_at)
+                                } else {
+                                    format!("{} by {}", fmt_datetime(t.created_at), t.created_by_name)
+                                };
+                                rsx! {
+                                    DetailItem { label: "Created", nowrap: true, value: rsx!(span { "{created}" }) }
+                                }
+                            }
+                            if let Some((variant , label)) = t.sla_status.badge() {
+                                DetailItem { label: "SLA Status", value: rsx!(Badge { variant, "{label}" }) }
+                            }
+                            if let Some(due) = t.sla_due_date.map(format_sla_due) {
+                                DetailItem { label: "SLA Due", nowrap: true, value: rsx!(span { "{due}" }) }
+                            }
                         }
+                    } else {
+                        p { class: "text-sm text-subtle", "Loading…" }
                     }
+                }
 
-                    // Time entries (real, summed from /time-entries?ticket_id=)
-                    Card { title: "Time Logged",
-                        div { class: "space-y-3",
-                            div { class: "flex justify-between items-center",
-                                span { class: "text-sm text-muted", "Total Time" }
-                                span { class: "text-lg font-semibold", "{total_hours_label}" }
-                            }
-                            if time_entries.is_empty() {
-                                p { class: "text-sm text-subtle italic", "No time logged yet." }
-                            } else {
-                                div { class: "space-y-2 text-sm text-muted",
-                                    for e in time_entries.iter() {
-                                        div {
-                                            div { class: "flex justify-between gap-2",
-                                                span { "{e.date} · {e.duration_minutes} min" }
-                                                if e.is_billable {
-                                                    span { class: "text-green-600 dark:text-green-400", "billable" }
-                                                }
+                // Time entries (real, summed from /time-entries?ticket_id=)
+                Card { title: "Time Logged",
+                    div { class: "space-y-3",
+                        div { class: "flex justify-between items-center",
+                            span { class: "text-sm text-muted", "Total Time" }
+                            span { class: "text-lg font-semibold", "{total_hours_label}" }
+                        }
+                        if time_entries.is_empty() {
+                            p { class: "text-sm text-subtle italic", "No time logged yet." }
+                        } else {
+                            div { class: "space-y-2 text-sm text-muted",
+                                for e in time_entries.iter() {
+                                    div {
+                                        div { class: "flex justify-between gap-2",
+                                            span { "{e.date} · {e.duration_minutes} min" }
+                                            if e.is_billable {
+                                                span { class: "text-green-600 dark:text-green-400", "billable" }
                                             }
-                                            if let Some(note) = e.notes.as_ref().filter(|s| !s.is_empty()) {
-                                                p { class: "text-xs text-subtle truncate", "{note}" }
-                                            }
+                                        }
+                                        if let Some(note) = e.notes.as_ref().filter(|s| !s.is_empty()) {
+                                            p { class: "text-xs text-subtle truncate", "{note}" }
                                         }
                                     }
                                 }
                             }
                         }
                     }
+                }
 
-                    // Change history (PMS-182) - field-level edits to the ticket.
-                    Card { title: "Change History",
-                        if history.is_empty() {
-                            p { class: "text-sm text-subtle italic", "No edits yet." }
-                        } else {
-                            div { class: "space-y-3 text-sm",
-                                for e in history.iter().take(20) {
-                                    {
-                                        let label = action_label(&e.action);
-                                        let fields = fields_label(&e.changed_fields);
-                                        let who = actor_name(&users, &e.user_id);
-                                        let when = fmt_datetime(e.timestamp);
-                                        rsx! {
-                                            div { class: "flex justify-between gap-2",
-                                                div { class: "min-w-0",
-                                                    p { class: "text-content",
-                                                        if fields.is_empty() {
-                                                            "{label}"
+                // Change history (PMS-182) - field-level edits to the ticket.
+                Card { title: "Change History",
+                    if history.is_empty() {
+                        p { class: "text-sm text-subtle italic", "No edits yet." }
+                    } else {
+                        div { class: "space-y-3 text-sm",
+                            for e in history.iter().take(20) {
+                                {
+                                    let label = action_label(&e.action);
+                                    let fields = fields_label(&e.changed_fields);
+                                    let who = actor_name(&users, &e.user_id);
+                                    let when = fmt_datetime(e.timestamp);
+                                    rsx! {
+                                        div { class: "flex justify-between gap-2",
+                                            div { class: "min-w-0",
+                                                p { class: "text-content",
+                                                    if fields.is_empty() {
+                                                        "{label}"
+                                                    } else {
+                                                        "{label}: {fields}"
+                                                    }
+                                                }
+                                                if who != "-" {
+                                                    p { class: "text-xs text-subtle", "by {who}" }
+                                                }
+                                                // PMS-204: actual before/after content.
+                                                for c in e.changes.iter() {
+                                                    {
+                                                        let old = fmt_change_value(&c.old);
+                                                        let new = fmt_change_value(&c.new);
+                                                        let fname = title_field(&c.field);
+                                                        if old == "(reference)" && new == "(reference)" {
+                                                            rsx! {}
                                                         } else {
-                                                            "{label}: {fields}"
-                                                        }
-                                                    }
-                                                    if who != "-" {
-                                                        p { class: "text-xs text-subtle", "by {who}" }
-                                                    }
-                                                    // PMS-204: actual before/after content.
-                                                    for c in e.changes.iter() {
-                                                        {
-                                                            let old = fmt_change_value(&c.old);
-                                                            let new = fmt_change_value(&c.new);
-                                                            let fname = title_field(&c.field);
-                                                            if old == "(reference)" && new == "(reference)" {
-                                                                rsx! {}
-                                                            } else {
-                                                                rsx! {
-                                                                    p { class: "text-xs text-muted mt-1",
-                                                                        span { class: "font-medium", "{fname}: " }
-                                                                        span { class: "line-through text-subtle", "{old}" }
-                                                                        " → "
-                                                                        span { "{new}" }
-                                                                    }
+                                                            rsx! {
+                                                                p { class: "text-xs text-muted mt-1",
+                                                                    span { class: "font-medium", "{fname}: " }
+                                                                    span { class: "line-through text-subtle", "{old}" }
+                                                                    " → "
+                                                                    span { "{new}" }
                                                                 }
                                                             }
                                                         }
                                                     }
                                                 }
-                                                span { class: "text-subtle whitespace-nowrap", "{when}" }
                                             }
+                                            span { class: "text-subtle whitespace-nowrap", "{when}" }
                                         }
                                     }
                                 }
@@ -2654,224 +2656,224 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     }
                 }
             }
+        }
 
-            // PMS-182 description edit modal.
-            {
-                let mut ticket_res = ticket_resource;
-                let mut history_res = history_resource;
-                let save_id = id_for_save.clone();
-                let on_save = move |_| {
-                    if e_submitting() {
-                        return;
-                    }
+        // PMS-182 description edit modal.
+        {
+            let mut ticket_res = ticket_resource;
+            let mut history_res = history_resource;
+            let save_id = id_for_save.clone();
+            let on_save = move |_| {
+                if e_submitting() {
+                    return;
+                }
+                e_error.set(String::new());
+                // PMS-518: validate the required Title + Description through
+                // the shared FormGuard so both failures surface inline at
+                // once and the first invalid field is focused. The ids match
+                // each field component's `name` prop. MAPPS-188: Title is
+                // still trimmed (the server validates length >= 1) so a
+                // whitespace-only value never reaches the PUT.
+                let mut guard = FormGuard::new();
+                let title_v = e_title().trim().to_string();
+                e_title_error
+                    .set(guard.field("edit-title", &title_v, "Title", &[Rule::Required]));
+                let desc_v = e_desc().trim().to_string();
+                e_desc_error.set(guard.field(
+                    "edit-description",
+                    &desc_v,
+                    "Description",
+                    &[Rule::Required],
+                ));
+                if guard.blocked() {
+                    return;
+                }
+                let save_id = save_id.clone();
+                spawn(async move {
+                    e_submitting.set(true);
                     e_error.set(String::new());
-                    // PMS-518: validate the required Title + Description through
-                    // the shared FormGuard so both failures surface inline at
-                    // once and the first invalid field is focused. The ids match
-                    // each field component's `name` prop. MAPPS-188: Title is
-                    // still trimmed (the server validates length >= 1) so a
-                    // whitespace-only value never reaches the PUT.
-                    let mut guard = FormGuard::new();
-                    let title_v = e_title().trim().to_string();
-                    e_title_error
-                        .set(guard.field("edit-title", &title_v, "Title", &[Rule::Required]));
-                    let desc_v = e_desc().trim().to_string();
-                    e_desc_error.set(guard.field(
-                        "edit-description",
-                        &desc_v,
-                        "Description",
-                        &[Rule::Required],
-                    ));
-                    if guard.blocked() {
-                        return;
-                    }
-                    let save_id = save_id.clone();
-                    spawn(async move {
-                        e_submitting.set(true);
-                        e_error.set(String::new());
-                        // MAPPS-322: send the trimmed, guard-validated values.
-                        // `desc_v` is already non-empty (the FormGuard above
-                        // blocks a blank edit), so an edit can no longer blank
-                        // an existing description.
-                        let body = serde_json::json!({
-                            "title": title_v,
-                            "description": desc_v,
-                        });
-                        match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
-                            &format!("/tickets/{save_id}"),
-                            &body,
-                        )
-                        .await
-                        {
-                            Ok(_) => {
-                                e_submitting.set(false);
-                                editing_desc.set(false);
-                                ticket_res.restart();
-                                history_res.restart();
-                            }
-                            Err(err) => {
-                                e_submitting.set(false);
-                                e_error.set(err);
-                            }
-                        }
+                    // MAPPS-322: send the trimmed, guard-validated values.
+                    // `desc_v` is already non-empty (the FormGuard above
+                    // blocks a blank edit), so an edit can no longer blank
+                    // an existing description.
+                    let body = serde_json::json!({
+                        "title": title_v,
+                        "description": desc_v,
                     });
-                };
-                rsx! {
-                    Modal {
-                        open: editing_desc(),
-                        title: "Edit Ticket",
-                        size: crate::components::ModalSize::Large,
-                        onclose: move |_| editing_desc.set(false),
-                        footer: rsx! {
-                            Button {
-                                variant: ButtonVariant::Secondary,
-                                onclick: move |_| editing_desc.set(false),
-                                "Cancel"
-                            }
-                            Button {
-                                variant: ButtonVariant::Primary,
-                                loading: e_submitting(),
-                                // MAPPS-357: block the save PUT while the server is down.
-                                disabled: !can_mutate,
-                                title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
-                                onclick: on_save,
-                                "Save Changes"
-                            }
-                        },
-                        div { class: "space-y-3",
-                            if !e_error().is_empty() {
-                                p { class: "text-sm text-red-600 dark:text-red-400", "{e_error}" }
-                            }
-                            // MAPPS-188: title is now editable alongside the
-                            // description (previously description-only).
-                            crate::components::Input {
-                                name: "edit-title",
-                                label: "Title",
-                                required: true,
-                                rules: vec![Rule::Required],
-                                error: e_title_error.read().clone(),
-                                value: "{e_title}",
-                                oninput: move |e: FormEvent| {
-                                    e_title_error.set(String::new());
-                                    e_title.set(e.value());
-                                },
-                            }
-                            Textarea {
-                                name: "edit-description",
-                                label: "Description",
-                                rows: 8,
-                                required: true,
-                                rules: vec![Rule::Required],
-                                error: e_desc_error.read().clone(),
-                                value: "{e_desc}",
-                                oninput: move |e: FormEvent| {
-                                    e_desc_error.set(String::new());
-                                    e_desc.set(e.value());
-                                },
-                            }
+                    match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
+                        &format!("/tickets/{save_id}"),
+                        &body,
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            e_submitting.set(false);
+                            editing_desc.set(false);
+                            ticket_res.restart();
+                            history_res.restart();
+                        }
+                        Err(err) => {
+                            e_submitting.set(false);
+                            e_error.set(err);
+                        }
+                    }
+                });
+            };
+            rsx! {
+                Modal {
+                    open: editing_desc(),
+                    title: "Edit Ticket",
+                    size: crate::components::ModalSize::Large,
+                    onclose: move |_| editing_desc.set(false),
+                    footer: rsx! {
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            onclick: move |_| editing_desc.set(false),
+                            "Cancel"
+                        }
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            loading: e_submitting(),
+                            // MAPPS-357: block the save PUT while the server is down.
+                            disabled: !can_mutate,
+                            title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
+                            onclick: on_save,
+                            "Save Changes"
+                        }
+                    },
+                    div { class: "space-y-3",
+                        if !e_error().is_empty() {
+                            p { class: "text-sm text-red-600 dark:text-red-400", "{e_error}" }
+                        }
+                        // MAPPS-188: title is now editable alongside the
+                        // description (previously description-only).
+                        crate::components::Input {
+                            name: "edit-title",
+                            label: "Title",
+                            required: true,
+                            rules: vec![Rule::Required],
+                            error: e_title_error.read().clone(),
+                            value: "{e_title}",
+                            oninput: move |e: FormEvent| {
+                                e_title_error.set(String::new());
+                                e_title.set(e.value());
+                            },
+                        }
+                        Textarea {
+                            name: "edit-description",
+                            label: "Description",
+                            rows: 8,
+                            required: true,
+                            rules: vec![Rule::Required],
+                            error: e_desc_error.read().clone(),
+                            value: "{e_desc}",
+                            oninput: move |e: FormEvent| {
+                                e_desc_error.set(String::new());
+                                e_desc.set(e.value());
+                            },
                         }
                     }
                 }
             }
+        }
 
-            // Add note modal
-            Modal {
-                open: *show_note_modal.read(),
-                title: "Add Note",
-                size: crate::components::ModalSize::Medium,
-                onclose: move |_| show_note_modal.set(false),
-                footer: rsx! {
-                    Button {
-                        variant: ButtonVariant::Secondary,
-                        onclick: move |_| show_note_modal.set(false),
-                        "Cancel"
-                    }
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        loading: *note_submitting.read(),
-                        // MAPPS-357: block the add-note POST while the server is down.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't add a note while the server is unreachable".to_string()),
-                        onclick: move |_| {
-                            note_error.set(String::new());
-                            // PMS-518: validate the required Content through the
-                            // shared FormGuard before submitting so the failure
-                            // lands in the textarea's own inline slot and the
-                            // field is focused. Runs before `note_submitting` is
-                            // set, so the bail path leaves it untouched.
-                            let mut guard = FormGuard::new();
-                            let content_v = note_content.read().clone();
-                            note_content_error.set(guard.field(
-                                "content",
-                                content_v.trim(),
-                                "Content",
-                                &[Rule::Required],
-                            ));
-                            if guard.blocked() {
-                                return;
-                            }
-                            note_submitting.set(true);
-                            let id = ticket_id_for_note.clone();
-                            let type_v = note_type.read().clone();
-                            spawn(async move {
-                                #[cfg(feature = "web")]
-                                {
-                                    let body = serde_json::json!({
-                                        "note_type": type_v,
-                                        "content": content_v,
-                                    });
-                                    let path = format!("/tickets/{id}/notes");
-                                    match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(&path, &body).await {
-                                        Ok(_) => {
-                                            note_content.set(String::new());
-                                            note_error.set(String::new());
-                                            show_note_modal.set(false);
-                                            // Refresh the Activity feed so the new note shows.
-                                            let mut nr = notes_resource;
-                                            nr.restart();
-                                        }
-                                        Err(err) => {
-                                            note_error.set(format!("Could not add note: {err}"));
-                                        }
+        // Add note modal
+        Modal {
+            open: *show_note_modal.read(),
+            title: "Add Note",
+            size: crate::components::ModalSize::Medium,
+            onclose: move |_| show_note_modal.set(false),
+            footer: rsx! {
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| show_note_modal.set(false),
+                    "Cancel"
+                }
+                Button {
+                    variant: ButtonVariant::Primary,
+                    loading: *note_submitting.read(),
+                    // MAPPS-357: block the add-note POST while the server is down.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't add a note while the server is unreachable".to_string()),
+                    onclick: move |_| {
+                        note_error.set(String::new());
+                        // PMS-518: validate the required Content through the
+                        // shared FormGuard before submitting so the failure
+                        // lands in the textarea's own inline slot and the
+                        // field is focused. Runs before `note_submitting` is
+                        // set, so the bail path leaves it untouched.
+                        let mut guard = FormGuard::new();
+                        let content_v = note_content.read().clone();
+                        note_content_error.set(guard.field(
+                            "content",
+                            content_v.trim(),
+                            "Content",
+                            &[Rule::Required],
+                        ));
+                        if guard.blocked() {
+                            return;
+                        }
+                        note_submitting.set(true);
+                        let id = ticket_id_for_note.clone();
+                        let type_v = note_type.read().clone();
+                        spawn(async move {
+                            #[cfg(feature = "web")]
+                            {
+                                let body = serde_json::json!({
+                                    "note_type": type_v,
+                                    "content": content_v,
+                                });
+                                let path = format!("/tickets/{id}/notes");
+                                match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(&path, &body).await {
+                                    Ok(_) => {
+                                        note_content.set(String::new());
+                                        note_error.set(String::new());
+                                        show_note_modal.set(false);
+                                        // Refresh the Activity feed so the new note shows.
+                                        let mut nr = notes_resource;
+                                        nr.restart();
+                                    }
+                                    Err(err) => {
+                                        note_error.set(format!("Could not add note: {err}"));
                                     }
                                 }
-                                note_submitting.set(false);
-                            });
-                        },
-                        "Add Note"
+                            }
+                            note_submitting.set(false);
+                        });
+                    },
+                    "Add Note"
+                }
+            },
+            div { class: "space-y-4",
+                if !note_error.read().is_empty() {
+                    div {
+                        class: "rounded-md bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 px-3 py-2 text-sm text-red-700 dark:text-red-300",
+                        "{note_error}"
                     }
-                },
-                div { class: "space-y-4",
-                    if !note_error.read().is_empty() {
-                        div {
-                            class: "rounded-md bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 px-3 py-2 text-sm text-red-700 dark:text-red-300",
-                            "{note_error}"
-                        }
-                    }
-                    Select {
-                        name: "note_type",
-                        label: "Note Type",
-                        options: vec![
-                            SelectOption::new("internal", "Internal Note"),
-                            SelectOption::new("public", "Public Note (visible to customer)"),
-                        ],
-                        value: note_type.read().clone(),
-                        onchange: move |e: FormEvent| note_type.set(e.value()),
-                    }
-                    Textarea {
-                        name: "content",
-                        label: "Content",
-                        placeholder: "Enter your note...",
-                        rows: 4,
-                        required: true,
-                        rules: vec![Rule::Required],
-                        error: note_content_error.read().clone(),
-                        value: note_content.read().clone(),
-                        oninput: move |e: FormEvent| {
-                            note_content_error.set(String::new());
-                            note_content.set(e.value());
-                        },
-                    }
+                }
+                Select {
+                    name: "note_type",
+                    label: "Note Type",
+                    options: vec![
+                        SelectOption::new("internal", "Internal Note"),
+                        SelectOption::new("public", "Public Note (visible to customer)"),
+                    ],
+                    value: note_type.read().clone(),
+                    onchange: move |e: FormEvent| note_type.set(e.value()),
+                }
+                Textarea {
+                    name: "content",
+                    label: "Content",
+                    placeholder: "Enter your note...",
+                    rows: 4,
+                    required: true,
+                    rules: vec![Rule::Required],
+                    error: note_content_error.read().clone(),
+                    value: note_content.read().clone(),
+                    oninput: move |e: FormEvent| {
+                        note_content_error.set(String::new());
+                        note_content.set(e.value());
+                    },
                 }
             }
         }

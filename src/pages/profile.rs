@@ -26,7 +26,7 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{
-    AppLayout, Button, ButtonVariant, Card, Input, Modal, ModalSize, PageHeader, Select,
+    use_page_title, Button, ButtonVariant, Card, Input, Modal, ModalSize, PageHeader, Select,
     SelectOption,
 };
 use crate::utils::datetime::{format_user_datetime, preset_label, token_warnings, PRESET_FORMATS};
@@ -197,6 +197,7 @@ const PREF_FIRST_DAY: &str = "mokosh_first_day_of_week";
 
 #[component]
 pub fn ProfilePage() -> Element {
+    use_page_title("Profile");
     // MAPPS-331: keep the actual `/auth/me` failure mode on the resource
     // (status + server message) instead of collapsing every fault into a
     // bare `None`. The banner below surfaces the real reason so the user
@@ -238,45 +239,43 @@ pub fn ProfilePage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Profile",
-            PageHeader {
-                title: "Profile",
-                subtitle: "Identity, personal info, and your local preferences.",
-            }
+        PageHeader {
+            title: "Profile",
+            subtitle: "Identity, personal info, and your local preferences.",
+        }
 
-            // Identity strip is rendered unconditionally: it reads
-            // from AuthContext (already loaded by the time this page
-            // mounts) so it does not block on the mokosh `/auth/me`
-            // round-trip.
-            IdentityStrip {}
+        // Identity strip is rendered unconditionally: it reads
+        // from AuthContext (already loaded by the time this page
+        // mounts) so it does not block on the mokosh `/auth/me`
+        // round-trip.
+        IdentityStrip {}
 
-            match &*snap {
-                None => rsx! {
-                    crate::components::DetailSkeleton {} // PMS-353
-                },
-                Some(Err(err)) => {
-                    let detail = err.to_string();
-                    let toast = err.user_message();
-                    rsx! {
-                        Card {
-                            div { class: "py-12 text-center",
-                                p { class: "text-sm text-red-600 dark:text-red-300",
-                                    "Could not load your profile: {toast}"
-                                }
-                                p { class: "mt-2 text-xs text-muted",
-                                    "Detail: {detail}"
-                                }
+        match &*snap {
+            None => rsx! {
+                crate::components::DetailSkeleton {} // PMS-353
+            },
+            Some(Err(err)) => {
+                let detail = err.to_string();
+                let toast = err.user_message();
+                rsx! {
+                    Card {
+                        div { class: "py-12 text-center",
+                            p { class: "text-sm text-red-600 dark:text-red-300",
+                                "Could not load your profile: {toast}"
+                            }
+                            p { class: "mt-2 text-xs text-muted",
+                                "Detail: {detail}"
                             }
                         }
                     }
                 }
-                Some(Ok(me)) => rsx! {
-                    PersonalInfoForm { initial: me.clone() }
-                },
             }
-
-            PreferencesCard {}
+            Some(Ok(me)) => rsx! {
+                PersonalInfoForm { initial: me.clone() }
+            },
         }
+
+        PreferencesCard {}
     }
 }
 

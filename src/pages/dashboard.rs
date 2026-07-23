@@ -5,9 +5,9 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    ticket_status_badge, AppLayout, Badge, BadgeVariant, Card, ClockIcon, FolderIcon, PageHeader,
-    StatCard, StatCardTone, Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-    TicketIcon,
+    ticket_status_badge, use_page_title, Badge, BadgeVariant, Card, ClockIcon, FolderIcon,
+    PageHeader, StatCard, StatCardTone, Table, TableBody, TableCell, TableHead, TableHeader,
+    TableRow, TicketIcon,
 };
 use crate::modules::calendar::DispatchResponse;
 use crate::utils::Paginated;
@@ -122,6 +122,9 @@ pub fn DashboardPage() -> Element {
     })
     .value_or_default();
 
+    // MAPPS-366: set the tab title unconditionally, BEFORE the unavailable
+    // early return (rules of hooks). The persistent AppShell reads it.
+    use_page_title("Dashboard");
     if report_data.is_unavailable() {
         // Already on the dashboard, so no self-referential "Go to dashboard".
         return rsx! {
@@ -148,10 +151,9 @@ pub fn DashboardPage() -> Element {
     let recent_time: Vec<&DashTimeEntry> = time_entries.iter().take(5).collect();
 
     rsx! {
-        AppLayout { title: "Dashboard",
-            PageHeader {
-                title: "Dashboard",
-                subtitle: "Welcome back! Here's what's happening today.",
+        PageHeader {
+            title: "Dashboard",
+            subtitle: "Welcome back! Here's what's happening today.",
                 // MAPPS-256: entry point into the full-screen TV view,
                 // shown only when the user has enabled it in settings.
                 actions: rsx! {
@@ -330,7 +332,6 @@ pub fn DashboardPage() -> Element {
                     }
                 }
             }
-        }
     }
 }
 
