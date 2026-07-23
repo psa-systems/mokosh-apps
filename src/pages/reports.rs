@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    AppLayout, BarChart, BarChartDatum, Card, ChartIcon, IconSize, PageHeader,
+    use_page_title, BarChart, BarChartDatum, Card, ChartIcon, IconSize, PageHeader,
 };
 use crate::utils::money::format_money_str;
 use crate::Route;
@@ -196,71 +196,70 @@ struct ReportView {
 /// Reports home page
 #[component]
 pub fn ReportsPage() -> Element {
+    use_page_title("Reports");
     // MAPPS-357: N/A - this landing page is not data-driven. It renders a
     // static, hard-coded catalog of report categories with no fetch, so there
     // is no primary resource that can fail and no write control to gate.
     rsx! {
-        AppLayout { title: "Reports",
-            PageHeader {
-                title: "Reports",
-                subtitle: "Analytics and business intelligence",
-            }
+        PageHeader {
+            title: "Reports",
+            subtitle: "Analytics and business intelligence",
+        }
 
-            // Report categories
-            div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6",
-                ReportCategory {
-                    title: "Service Desk",
-                    description: "Ticket metrics, SLA performance, and support analytics",
-                    reports: vec![
-                        ("ticket-volume", "Ticket Volume"),
-                        ("sla-performance", "SLA Performance"),
-                        ("resolution-time", "Resolution Time"),
-                        ("tech-performance", "Technician Performance"),
-                    ],
-                }
-                ReportCategory {
-                    title: "Time & Billing",
-                    description: "Time tracking, utilization, and billing reports",
-                    reports: vec![
-                        ("utilization", "Technician Utilization"),
-                        ("billable-hours", "Billable Hours"),
-                        ("timesheet-summary", "Timesheet Summary"),
-                    ],
-                }
-                ReportCategory {
-                    title: "Financial",
-                    description: "Revenue, invoicing, and profitability reports",
-                    reports: vec![
-                        ("revenue", "Revenue Summary"),
-                        ("ar-aging", "A/R Aging"),
-                        ("profitability", "Client Profitability"),
-                    ],
-                }
-                ReportCategory {
-                    title: "Projects",
-                    description: "Project status, budget tracking, and progress reports",
-                    reports: vec![
-                        ("project-status", "Project Status"),
-                        ("budget-tracking", "Budget vs Actual"),
-                        ("milestone-tracking", "Milestone Tracking"),
-                    ],
-                }
-                ReportCategory {
-                    title: "Clients",
-                    description: "Client activity, asset, and contract reports",
-                    reports: vec![
-                        ("client-summary", "Client Summary"),
-                        ("asset-inventory", "Asset Inventory"),
-                        ("contract-renewals", "Contract Renewals"),
-                    ],
-                }
-                ReportCategory {
-                    title: "Custom Reports",
-                    description: "Build your own custom reports",
-                    reports: vec![
-                        ("report-builder", "Report Builder"),
-                    ],
-                }
+        // Report categories
+        div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6",
+            ReportCategory {
+                title: "Service Desk",
+                description: "Ticket metrics, SLA performance, and support analytics",
+                reports: vec![
+                    ("ticket-volume", "Ticket Volume"),
+                    ("sla-performance", "SLA Performance"),
+                    ("resolution-time", "Resolution Time"),
+                    ("tech-performance", "Technician Performance"),
+                ],
+            }
+            ReportCategory {
+                title: "Time & Billing",
+                description: "Time tracking, utilization, and billing reports",
+                reports: vec![
+                    ("utilization", "Technician Utilization"),
+                    ("billable-hours", "Billable Hours"),
+                    ("timesheet-summary", "Timesheet Summary"),
+                ],
+            }
+            ReportCategory {
+                title: "Financial",
+                description: "Revenue, invoicing, and profitability reports",
+                reports: vec![
+                    ("revenue", "Revenue Summary"),
+                    ("ar-aging", "A/R Aging"),
+                    ("profitability", "Client Profitability"),
+                ],
+            }
+            ReportCategory {
+                title: "Projects",
+                description: "Project status, budget tracking, and progress reports",
+                reports: vec![
+                    ("project-status", "Project Status"),
+                    ("budget-tracking", "Budget vs Actual"),
+                    ("milestone-tracking", "Milestone Tracking"),
+                ],
+            }
+            ReportCategory {
+                title: "Clients",
+                description: "Client activity, asset, and contract reports",
+                reports: vec![
+                    ("client-summary", "Client Summary"),
+                    ("asset-inventory", "Asset Inventory"),
+                    ("contract-renewals", "Contract Renewals"),
+                ],
+            }
+            ReportCategory {
+                title: "Custom Reports",
+                description: "Build your own custom reports",
+                reports: vec![
+                    ("report-builder", "Report Builder"),
+                ],
             }
         }
     }
@@ -307,22 +306,8 @@ pub struct ReportDetailPageProps {
 
 #[component]
 pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
-    // The custom report builder is its own interactive surface, not a
-    // fixed report. `report_type` is a route param fixed for this mount, so
-    // returning before the hooks below keeps hook order stable.
-    if props.report_type == "report-builder" {
-        return rsx! {
-            AppLayout { title: "Report Builder",
-                PageHeader {
-                    title: "Custom Report Builder",
-                    subtitle: "Build a report from your own data",
-                }
-                CustomReportBuilder {}
-            }
-        };
-    }
-
     let report_title = match props.report_type.as_str() {
+        "report-builder" => "Report Builder",
         "ticket-volume" => "Ticket Volume Report",
         "sla-performance" => "SLA Performance Report",
         "resolution-time" => "Resolution Time Report",
@@ -341,6 +326,20 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
         "contract-renewals" => "Contract Renewals Report",
         _ => "Report",
     };
+    use_page_title(report_title);
+
+    // The custom report builder is its own interactive surface, not a
+    // fixed report. `report_type` is a route param fixed for this mount, so
+    // returning before the hooks below keeps hook order stable.
+    if props.report_type == "report-builder" {
+        return rsx! {
+            PageHeader {
+                title: "Custom Report Builder",
+                subtitle: "Build a report from your own data",
+            }
+            CustomReportBuilder {}
+        };
+    }
 
     // MAPPS-357: the normalised report view is this page's PRIMARY resource.
     // It flows through `use_remote_resource`, which preserves a failed fetch
@@ -365,71 +364,69 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
     let view = view_data.value_or_default();
 
     rsx! {
-        AppLayout { title: report_title,
-            PageHeader { title: report_title, subtitle: "Live figures from the reports service" }
+        PageHeader { title: report_title, subtitle: "Live figures from the reports service" }
 
-            if is_loading {
-                crate::components::DetailSkeleton {} // PMS-353
-            } else if !view.supported {
-                Card {
-                    p { class: "text-sm text-muted",
-                        "This report isn't available yet. The reports service powers the ticket, time, billing, project, and client reports. The custom report builder is planned but not implemented."
+        if is_loading {
+            crate::components::DetailSkeleton {} // PMS-353
+        } else if !view.supported {
+            Card {
+                p { class: "text-sm text-muted",
+                    "This report isn't available yet. The reports service powers the ticket, time, billing, project, and client reports. The custom report builder is planned but not implemented."
+                }
+            }
+        } else {
+            Card { title: "Summary",
+                if view.summary.is_empty() {
+                    p { class: "text-sm text-subtle italic", "No data for this period." }
+                } else {
+                    div { class: "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4",
+                        for (label , value) in view.summary.iter() {
+                            div { class: "text-center p-4 bg-app rounded-lg",
+                                p { class: "text-sm text-muted", "{label}" }
+                                p { class: "text-3xl font-bold text-content", "{value}" }
+                            }
+                        }
                     }
                 }
-            } else {
-                Card { title: "Summary",
-                    if view.summary.is_empty() {
-                        p { class: "text-sm text-subtle italic", "No data for this period." }
+            }
+
+            if !view.breakdown.is_empty() {
+                // MAPPS-297: render a chart alongside the table
+                // whenever the breakdown values parse as numbers.
+                // Currency strings (`$1,234.56`) and bare integers
+                // both parse via `parse_chartable_value`; rows that
+                // do not parse are dropped from the chart but kept
+                // in the table so nothing is lost.
+                {
+                    let chart_data = chart_data_from_breakdown(&view.breakdown);
+                    if !chart_data.is_empty() {
+                        rsx! {
+                            Card { title: "{view.breakdown_title}", class: "mt-6",
+                                BarChart { data: chart_data, one_decimal: false }
+                                div { class: "mt-4 overflow-x-auto",
+                                    table { class: "min-w-full divide-y divide-line",
+                                        tbody { class: "bg-surface divide-y divide-line",
+                                            for (k , v) in view.breakdown.iter() {
+                                                tr {
+                                                    td { class: "px-6 py-3 text-sm text-content", "{k}" }
+                                                    td { class: "px-6 py-3 text-sm text-right font-medium", "{v}" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     } else {
-                        div { class: "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4",
-                            for (label , value) in view.summary.iter() {
-                                div { class: "text-center p-4 bg-app rounded-lg",
-                                    p { class: "text-sm text-muted", "{label}" }
-                                    p { class: "text-3xl font-bold text-content", "{value}" }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if !view.breakdown.is_empty() {
-                    // MAPPS-297: render a chart alongside the table
-                    // whenever the breakdown values parse as numbers.
-                    // Currency strings (`$1,234.56`) and bare integers
-                    // both parse via `parse_chartable_value`; rows that
-                    // do not parse are dropped from the chart but kept
-                    // in the table so nothing is lost.
-                    {
-                        let chart_data = chart_data_from_breakdown(&view.breakdown);
-                        if !chart_data.is_empty() {
-                            rsx! {
-                                Card { title: "{view.breakdown_title}", class: "mt-6",
-                                    BarChart { data: chart_data, one_decimal: false }
-                                    div { class: "mt-4 overflow-x-auto",
-                                        table { class: "min-w-full divide-y divide-line",
-                                            tbody { class: "bg-surface divide-y divide-line",
-                                                for (k , v) in view.breakdown.iter() {
-                                                    tr {
-                                                        td { class: "px-6 py-3 text-sm text-content", "{k}" }
-                                                        td { class: "px-6 py-3 text-sm text-right font-medium", "{v}" }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            rsx! {
-                                Card { title: "{view.breakdown_title}", class: "mt-6",
-                                    div { class: "overflow-x-auto",
-                                        table { class: "min-w-full divide-y divide-line",
-                                            tbody { class: "bg-surface divide-y divide-line",
-                                                for (k , v) in view.breakdown.iter() {
-                                                    tr {
-                                                        td { class: "px-6 py-3 text-sm text-content", "{k}" }
-                                                        td { class: "px-6 py-3 text-sm text-right font-medium", "{v}" }
-                                                    }
+                        rsx! {
+                            Card { title: "{view.breakdown_title}", class: "mt-6",
+                                div { class: "overflow-x-auto",
+                                    table { class: "min-w-full divide-y divide-line",
+                                        tbody { class: "bg-surface divide-y divide-line",
+                                            for (k , v) in view.breakdown.iter() {
+                                                tr {
+                                                    td { class: "px-6 py-3 text-sm text-content", "{k}" }
+                                                    td { class: "px-6 py-3 text-sm text-right font-medium", "{v}" }
                                                 }
                                             }
                                         }
@@ -439,23 +436,23 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
                         }
                     }
                 }
+            }
 
-                // MAPPS-297: every report ships at least one chart.
-                // When the breakdown is empty (Time / others) but the
-                // summary card has numeric metrics, render those as a
-                // bar chart so the AC holds for every report type.
-                if view.breakdown.is_empty() {
-                    {
-                        let summary_chart = chart_data_from_breakdown(&view.summary);
-                        if !summary_chart.is_empty() {
-                            rsx! {
-                                Card { title: "Summary chart".to_string(), class: "mt-6",
-                                    BarChart { data: summary_chart, one_decimal: true }
-                                }
+            // MAPPS-297: every report ships at least one chart.
+            // When the breakdown is empty (Time / others) but the
+            // summary card has numeric metrics, render those as a
+            // bar chart so the AC holds for every report type.
+            if view.breakdown.is_empty() {
+                {
+                    let summary_chart = chart_data_from_breakdown(&view.summary);
+                    if !summary_chart.is_empty() {
+                        rsx! {
+                            Card { title: "Summary chart".to_string(), class: "mt-6",
+                                BarChart { data: summary_chart, one_decimal: true }
                             }
-                        } else {
-                            rsx! {}
                         }
+                    } else {
+                        rsx! {}
                     }
                 }
             }

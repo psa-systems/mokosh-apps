@@ -8,116 +8,94 @@ use super::theme_picker::ThemePickerButton;
 use crate::modules::theme::SectionColor;
 use crate::Route;
 
-/// Main application layout with sidebar
-#[derive(Props, Clone, PartialEq)]
-pub struct AppLayoutProps {
-    children: Element,
-    #[props(default)]
-    title: String,
+// ---------------------------------------------------------------------------
+// MAPPS-366: persistent application shell.
+//
+// Before MAPPS-366 an `AppLayout` component wrapped each page individually, so
+// every SPA navigation re-mounted the whole shell (top bar, sidebar, banners)
+// and the screen visibly repainted - the text blanked on the user<->admin
+// dashboard switch while the cached SVG icons did not. `AppShell` is that same
+// chrome hoisted into a Dioxus `#[layout]`: it renders once, stays mounted
+// across navigations, and swaps only the routed subtree through `Outlet`. Pages
+// render their body directly and set their title via `use_page_title` instead
+// of an `AppLayout { title }` prop.
+// ---------------------------------------------------------------------------
+
+/// The current page's title, provided at the App root and set by each page's
+/// body via [`use_page_title`]. A newtype so the context lookup cannot collide
+/// with any other `String` signal placed at the root.
+#[derive(Clone, PartialEq, Default)]
+pub struct PageTitle(pub String);
+
+/// Provide the page-title signal at the App root. Mirrors
+/// [`crate::hooks::use_sidebar_provider`]; mount once in `App`.
+pub fn use_page_title_provider() -> Signal<PageTitle> {
+    let state = use_signal(PageTitle::default);
+    use_context_provider(|| state);
+    state
 }
 
+/// Read the current page title inside the persistent [`AppShell`].
+pub fn use_current_page_title() -> Signal<PageTitle> {
+    use_context::<Signal<PageTitle>>()
+}
+
+/// Set the current page's title from a page body. Replaces the old
+/// `AppLayout { title: "..." }` prop: the persistent shell reads the same
+/// signal for the top bar and `document.title`. Writes only when the value
+/// changes so it never loops on the render it runs in; a page that swaps a
+/// "Loading..." placeholder for the real record name just calls it again with
+/// the new value.
+pub fn use_page_title(title: impl Into<String>) {
+    let mut sig = use_context::<Signal<PageTitle>>();
+    let title = title.into();
+    // `peek` so reading the current value here never subscribes this caller
+    // to its own write.
+    if sig.peek().0 != title {
+        sig.set(PageTitle(title));
+    }
+}
+
+/// MAPPS-366: the persistent app shell, mounted as a Dioxus `#[layout]` so it
+/// survives navigation. Holds the chrome (top bar, sidebar, banners, toast +
+/// account-deleted overlays) and renders the routed page through `Outlet`, so
+/// navigation swaps only the routed subtree while the chrome stays mounted.
+///
+/// It deliberately does NOT read the page-title signal: `TopBar` reads it
+/// itself, so a page's `use_page_title` write re-renders only the bar, never
+/// this shell or the routed page below (which would otherwise loop when a page
+/// and its `ContentUnavailable` / `PermissionRequired` branch set the title).
 #[component]
-pub fn AppLayout(props: AppLayoutProps) -> Element {
+pub fn AppShell() -> Element {
     let mut sidebar_open = use_signal(|| false);
 
-    // MAPPS-287: keep `document.title` in sync with the page title every
-    // route hands to AppLayout. Without this the tab title was always the
-    // fixed `_mokosh_config` index value ("Mokosh Platform") regardless of
-    // route, which broke browser history, bookmarks, tab identification,
-    // and the title announcement screen readers make on navigation.
-    // Format mirrors Bunyip's pattern: `<page> | Mokosh Platform` when a
-    // page provides a title, plain `Mokosh Platform` otherwise. Runs on
-    // every render so a page that mutates its own `title` prop (e.g. a
-    // detail page swapping "Loading..." for the record name) propagates.
-    {
-        // Set the tab title directly in the component body, NOT via use_effect.
-        // The effect version captured `title` by value and read no signal, so it
-        // fired once on mount and never re-ran when a detail page swapped its
-        // loading placeholder for the real record name - leaving tabs stuck on
-        // "Loading… | Mokosh Platform" even after the record loaded. The body
-        // runs on every render with the current props.title, and set_title is
-        // idempotent. Both loading placeholders the pages use - "Loading…"
-        // (U+2026) and ASCII "Loading..." - are treated as "no title yet" so the
-        // tab shows a clean "Mokosh Platform" until the real title arrives.
-        #[cfg(feature = "web")]
-        {
-            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-                let t = props.title.trim();
-                let next = if t.is_empty() || t == "Loading…" || t == "Loading..." {
-                    "Mokosh Platform".to_string()
-                } else {
-                    format!("{} | Mokosh Platform", t)
-                };
-                doc.set_title(&next);
-            }
-        }
-    }
-
     rsx! {
-        // Single full-height viewport: top bar spans the full width
-        // (brand + page title + user menu live together), and the
-        // sidebar + main content sit side-by-side beneath it. Only the
-        // main panel scrolls; the sidebar gets its own internal scroll
-        // surface with a thin scrollbar (input.css `.scrollbar-thin`)
-        // so users see the affordance when nav overflows on short
-        // viewports.
         div { class: "h-screen flex flex-col bg-app overflow-hidden",
-            // App-wide "server unreachable" banner (MAPPS-333). Sits at
-            // the very top so an outage is the first thing surfaced;
-            // renders nothing while the server is reachable, so healthy
-            // layouts are unaffected.
             super::ServerStatusBanner {}
-
-            // Admin-only update-available banner. Sits above the top
-            // bar (page-wide) and renders nothing for non-admins or
-            // when no update is published, so non-admin layouts are
-            // unaffected.
             super::UpdateBanner {}
-
-            // Persistent top bar: brand on the left (above the sidebar
-            // column on lg+), page title in the middle, search +
-            // notifications + user menu on the right.
             TopBar {
-                title: props.title.clone(),
                 on_menu_click: move |_| sidebar_open.set(true),
             }
-
-            // Below the top bar: sidebar + main, side-by-side.
             div { class: "flex flex-1 overflow-hidden",
-                // Mobile sidebar backdrop
                 if *sidebar_open.read() {
                     div {
                         class: "fixed inset-0 z-40 bg-gray-600/75 lg:hidden", // theme-guard-allow: mobile nav overlay scrim
                         onclick: move |_| sidebar_open.set(false),
                     }
                 }
-
-                // Sidebar - nav only, no brand block.
                 Sidebar {
                     open: *sidebar_open.read(),
                     onclose: move |_| sidebar_open.set(false),
                 }
-
-                // Main content - the only vertical scroll surface in the layout
+                // The routed page renders here. Only this subtree swaps on
+                // navigation; the chrome above and below stays mounted.
                 main { class: "flex-1 overflow-y-auto overscroll-contain py-6",
                     div { class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
-                        {props.children}
+                        Outlet::<crate::Route> {}
                     }
                 }
             }
-
-            // Mount the global toast surface once at the layout level
-            // so any page or hook can push notifications without
-            // wiring its own container.
             crate::hooks::toast::ToastRoot {}
-
-            // MAPPS-348: terminal "your bunyip account was deleted"
-            // overlay. Renders nothing while the ACCOUNT_DELETED flag
-            // is false (the common case); once mokosh-server returns a
-            // 410 Gone with `code: ACCOUNT_DELETED` the shared fetch
-            // layer flips the flag and this covers the app with the
-            // blocking modal + logout countdown. Sits at the layout
-            // root so every route inherits it.
             super::AccountDeletedOverlay {}
         }
     }
@@ -642,8 +620,6 @@ fn NavItem(props: NavItemProps) -> Element {
 /// right. Single h-16 strip across the full viewport width.
 #[derive(Props, Clone, PartialEq)]
 pub struct TopBarProps {
-    #[props(default)]
-    title: String,
     on_menu_click: EventHandler<()>,
 }
 
@@ -651,6 +627,27 @@ pub struct TopBarProps {
 pub fn TopBar(props: TopBarProps) -> Element {
     let auth = crate::hooks::use_auth();
     let active_org = auth.read().active_org_name().map(str::to_string);
+    // MAPPS-366: the page title lives in a shared signal each page sets via
+    // use_page_title. Reading it HERE (in TopBar, a child of AppShell) rather
+    // than in AppShell means a title change re-renders only the top bar, not
+    // the Outlet/page - so a page and its ContentUnavailable / PermissionRequired
+    // branch can both call use_page_title without fighting into a render loop.
+    let title = use_current_page_title().read().0.clone();
+    // MAPPS-287: keep document.title in sync. Both loading placeholders
+    // ("Loading…" U+2026 and ASCII "Loading...") read as "no title yet" so the
+    // tab shows a clean "Mokosh Platform" until the real title arrives.
+    #[cfg(feature = "web")]
+    {
+        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+            let t = title.trim();
+            let next = if t.is_empty() || t == "Loading…" || t == "Loading..." {
+                "Mokosh Platform".to_string()
+            } else {
+                format!("{} | Mokosh Platform", t)
+            };
+            doc.set_title(&next);
+        }
+    }
     rsx! {
         header { class: "h-16 flex items-center bg-surface-2 border-b border-line shrink-0 z-20",
             // Brand block - same width as the sidebar below it.
@@ -691,7 +688,7 @@ pub fn TopBar(props: TopBarProps) -> Element {
             // slot so the title can center across the bar.
             div { class: "flex-1 px-4 sm:px-6 lg:px-8 min-w-0 flex items-center justify-center",
                 h1 { class: "text-xl font-semibold text-content truncate",
-                    "{props.title}"
+                    "{title}"
                 }
             }
 
@@ -1454,6 +1451,65 @@ mod tests {
         assert!(
             full_nav_visible(true),
             "recovered server must restore the full sidebar"
+        );
+    }
+}
+
+/// MAPPS-366: the page-title plumbing that replaced the per-page `AppLayout`
+/// title prop. A page now sets its title with `use_page_title`; the shared
+/// `PageTitle` signal (provided at the App root, read by `TopBar` inside the
+/// persistent `AppShell`) must carry that value to the reader. This renders a
+/// page plus a `TopBar`-style reader under one provider and asserts the reader
+/// observes the page's title.
+///
+/// The complementary "the shell does not re-mount across navigation" property
+/// is a structural guarantee of the `#[layout(AppShell)]` router construct (a
+/// Dioxus `#[layout]` is a single scope the router keeps mounted across its
+/// child routes), not an emergent behaviour of this module, so it is enforced
+/// by the route wiring in `lib.rs` rather than asserted here.
+#[cfg(test)]
+mod page_title_tests {
+    use super::{use_current_page_title, use_page_title, use_page_title_provider};
+    use dioxus::prelude::*;
+    use std::sync::Mutex;
+
+    // What the reader component last observed, captured out of the render so
+    // the test can assert on it.
+    static OBSERVED: Mutex<String> = Mutex::new(String::new());
+
+    #[component]
+    fn Page() -> Element {
+        // Stand-in for an authenticated page: sets its title, renders a body.
+        use_page_title("Tickets");
+        rsx! { "page body" }
+    }
+
+    #[component]
+    fn Reader() -> Element {
+        // Stand-in for TopBar: reads the shared title signal and records it.
+        let title = use_current_page_title().read().0.clone();
+        *OBSERVED.lock().unwrap() = title;
+        rsx! {}
+    }
+
+    #[component]
+    fn Harness() -> Element {
+        use_page_title_provider();
+        rsx! {
+            Page {}
+            Reader {}
+        }
+    }
+
+    #[test]
+    fn use_page_title_reaches_the_shared_signal() {
+        *OBSERVED.lock().unwrap() = String::new();
+        let mut dom = VirtualDom::new(Harness);
+        dom.rebuild_in_place();
+        assert_eq!(
+            *OBSERVED.lock().unwrap(),
+            "Tickets",
+            "a page's use_page_title must reach the shared PageTitle signal that TopBar reads"
         );
     }
 }

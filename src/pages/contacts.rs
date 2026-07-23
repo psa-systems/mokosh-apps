@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use crate::components::{
     asset_status_badge, contract_status_badge, invoice_status_badge, project_status_badge,
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, CollapsibleCard, DataTable,
+    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, CollapsibleCard, DataTable,
     IconSize, Modal, PageHeader, PlusIcon, SearchInput, Select, SelectOption, SortDirection, Table,
     TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
@@ -308,6 +308,8 @@ pub fn CompanyListPage() -> Element {
     };
     let has_filters = !search_text.is_empty() || !type_text.is_empty();
 
+    use_page_title("Companies");
+
     // MAPPS-357: `companies_resource` is this page's primary resource. It
     // stays a hand-rolled `use_resource` (rather than `use_remote_resource`)
     // because the page needs the loading / failed / `meta.total` distinction
@@ -325,132 +327,130 @@ pub fn CompanyListPage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Companies",
-            PageHeader {
-                title: "Companies",
-                subtitle: "Manage customer and vendor accounts",
-                actions: rsx! {
-                    Link {
-                        to: Route::CompanyNew {},
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                            "New Company"
-                        }
+        PageHeader {
+            title: "Companies",
+            subtitle: "Manage customer and vendor accounts",
+            actions: rsx! {
+                Link {
+                    to: Route::CompanyNew {},
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "New Company"
                     }
-                },
-            }
+                }
+            },
+        }
 
-            // Filters
-            Card { class: "mb-6",
-                div { class: "flex flex-col sm:flex-row gap-4",
-                    div { class: "flex-1",
-                        SearchInput {
-                            value: search.read().clone(),
-                            placeholder: "Search companies...",
-                            oninput: move |e: FormEvent| {
-                                search.set(e.value());
-                                page.set(1);
-                            },
-                        }
-                    }
-                    Select {
-                        name: "type",
-                        options: type_options,
-                        value: type_filter.read().clone(),
-                        onchange: move |e: FormEvent| {
-                            type_filter.set(e.value());
+        // Filters
+        Card { class: "mb-6",
+            div { class: "flex flex-col sm:flex-row gap-4",
+                div { class: "flex-1",
+                    SearchInput {
+                        value: search.read().clone(),
+                        placeholder: "Search companies...",
+                        oninput: move |e: FormEvent| {
+                            search.set(e.value());
                             page.set(1);
                         },
                     }
                 }
-            }
-
-            if fetch_failed {
-                div {
-                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                    "Could not load companies. Refresh the page to retry."
+                Select {
+                    name: "type",
+                    options: type_options,
+                    value: type_filter.read().clone(),
+                    onchange: move |e: FormEvent| {
+                        type_filter.set(e.value());
+                        page.set(1);
+                    },
                 }
             }
+        }
 
-            // Companies table
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 4,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    striped: true,
-                    TableHead {
-                        TableRow {
-                            TableHeader {
-                                sortable: true,
-                                sort_direction: sort_dir_for(&sort_snapshot, CompanySortKey::Company),
-                                onsort: move |_| toggle_sort(&mut sort, CompanySortKey::Company, &mut page),
-                                "Company"
-                            }
-                            TableHeader {
-                                sortable: true,
-                                sort_direction: sort_dir_for(&sort_snapshot, CompanySortKey::Type),
-                                onsort: move |_| toggle_sort(&mut sort, CompanySortKey::Type, &mut page),
-                                "Type"
-                            }
-                            TableHeader { "Account Manager" }
-                            TableHeader { "Open Tickets" }
+        if fetch_failed {
+            div {
+                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                "Could not load companies. Refresh the page to retry."
+            }
+        }
+
+        // Companies table
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 4,
+            onpagechange: move |p| page.set(p),
+            Table {
+                striped: true,
+                TableHead {
+                    TableRow {
+                        TableHeader {
+                            sortable: true,
+                            sort_direction: sort_dir_for(&sort_snapshot, CompanySortKey::Company),
+                            onsort: move |_| toggle_sort(&mut sort, CompanySortKey::Company, &mut page),
+                            "Company"
                         }
+                        TableHeader {
+                            sortable: true,
+                            sort_direction: sort_dir_for(&sort_snapshot, CompanySortKey::Type),
+                            onsort: move |_| toggle_sort(&mut sort, CompanySortKey::Type, &mut page),
+                            "Type"
+                        }
+                        TableHeader { "Account Manager" }
+                        TableHeader { "Open Tickets" }
                     }
-                    if is_loading {
-                        TableLoading { columns: 4, rows: 5 }
-                    } else if page_rows.is_empty() {
-                        if has_filters {
-                            // Filtered to nothing: MAPPS-291 "Clear filters"
-                            // affordance so the user does not have to find
-                            // every control and reset each one to recover.
-                            TableEmpty {
-                                columns: 4,
-                                title: "No companies match your filters".to_string(),
-                                description: "Adjust the filters above, or clear them to see every company again.".to_string(),
-                                actions: rsx! {
-                                    Button {
-                                        variant: ButtonVariant::Secondary,
-                                        onclick: move |_| {
-                                            search.set(String::new());
-                                            type_filter.set(String::new());
-                                        },
-                                        "Clear filters"
-                                    }
-                                },
-                            }
-                        } else {
-                            TableEmpty {
-                                columns: 4,
-                                title: "No companies yet".to_string(),
-                                description: "Add your first company to start managing clients.".to_string(),
-                                actions: rsx! {
-                                    Link {
-                                        to: Route::CompanyNew {},
-                                        Button {
-                                            variant: ButtonVariant::Primary,
-                                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                            "New Company"
-                                        }
-                                    }
-                                },
-                            }
+                }
+                if is_loading {
+                    TableLoading { columns: 4, rows: 5 }
+                } else if page_rows.is_empty() {
+                    if has_filters {
+                        // Filtered to nothing: MAPPS-291 "Clear filters"
+                        // affordance so the user does not have to find
+                        // every control and reset each one to recover.
+                        TableEmpty {
+                            columns: 4,
+                            title: "No companies match your filters".to_string(),
+                            description: "Adjust the filters above, or clear them to see every company again.".to_string(),
+                            actions: rsx! {
+                                Button {
+                                    variant: ButtonVariant::Secondary,
+                                    onclick: move |_| {
+                                        search.set(String::new());
+                                        type_filter.set(String::new());
+                                    },
+                                    "Clear filters"
+                                }
+                            },
                         }
                     } else {
-                        TableBody {
-                            for company in page_rows.iter().cloned() {
-                                CompanyRow {
-                                    key: "{company.id}",
-                                    id: company.id.to_string(),
-                                    name: company.name,
-                                    company_type: humanize_company_type(&company.company_type),
-                                    primary_contact: company.account_manager_name.unwrap_or_default(),
-                                    open_tickets: company.open_ticket_count.unwrap_or(0).max(0) as u32,
+                        TableEmpty {
+                            columns: 4,
+                            title: "No companies yet".to_string(),
+                            description: "Add your first company to start managing clients.".to_string(),
+                            actions: rsx! {
+                                Link {
+                                    to: Route::CompanyNew {},
+                                    Button {
+                                        variant: ButtonVariant::Primary,
+                                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                        "New Company"
+                                    }
                                 }
+                            },
+                        }
+                    }
+                } else {
+                    TableBody {
+                        for company in page_rows.iter().cloned() {
+                            CompanyRow {
+                                key: "{company.id}",
+                                id: company.id.to_string(),
+                                name: company.name,
+                                company_type: humanize_company_type(&company.company_type),
+                                primary_contact: company.account_manager_name.unwrap_or_default(),
+                                open_tickets: company.open_ticket_count.unwrap_or(0).max(0) as u32,
                             }
                         }
                     }
@@ -514,13 +514,13 @@ pub fn CompanyNewPage() -> Element {
     // primary entity (it is a blank create form). The one write control (the
     // Create submit) is disabled while the server is down inside `CompanyForm`,
     // which owns the button and is shared with the edit page.
+    use_page_title("New Company");
+
     rsx! {
-        AppLayout { title: "New Company",
-            PageHeader { title: "New Company", subtitle: "Add a new company account" }
-            CompanyForm {
-                initial: CompanyFormValues::default(),
-                mode: CompanyFormMode::Create,
-            }
+        PageHeader { title: "New Company", subtitle: "Add a new company account" }
+        CompanyForm {
+            initial: CompanyFormValues::default(),
+            mode: CompanyFormMode::Create,
         }
     }
 }
@@ -549,6 +549,7 @@ pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
         }
     });
     let snap = detail_resource.read_unchecked();
+    use_page_title("Edit Company");
     // MAPPS-357: the fetched company is this edit page's primary resource. A
     // failed load while the server is flagged down is an outage, not a missing
     // record - render the honest unavailable state instead of "Could not load
@@ -562,47 +563,45 @@ pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
         };
     }
     rsx! {
-        AppLayout { title: "Edit Company",
-            PageHeader { title: "Edit Company" }
-            match &*snap {
-                None => rsx! {
-                    crate::components::DetailSkeleton {} // PMS-353
-                },
-                Some(None) => rsx! {
-                    Card {
-                        div { class: "py-8 text-center",
-                            p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load company." }
-                            Link {
-                                to: Route::CompanyList {},
-                                class: "text-sm text-accent hover:opacity-90",
-                                "Back to companies"
-                            }
+        PageHeader { title: "Edit Company" }
+        match &*snap {
+            None => rsx! {
+                crate::components::DetailSkeleton {} // PMS-353
+            },
+            Some(None) => rsx! {
+                Card {
+                    div { class: "py-8 text-center",
+                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load company." }
+                        Link {
+                            to: Route::CompanyList {},
+                            class: "text-sm text-accent hover:opacity-90",
+                            "Back to companies"
                         }
                     }
-                },
-                Some(Some(payload)) => {
-                    let initial = CompanyFormValues {
-                        name: payload.name.clone(),
-                        company_type: payload.company_type.clone(),
-                        industry: payload.industry.clone().unwrap_or_default(),
-                        website: payload.website.clone().unwrap_or_default(),
-                        phone: payload.phone.clone().unwrap_or_default(),
-                        address_line1: payload.address.line1.clone().unwrap_or_default(),
-                        address_line2: payload.address.line2.clone().unwrap_or_default(),
-                        address_city: payload.address.city.clone().unwrap_or_default(),
-                        address_state: payload.address.state.clone().unwrap_or_default(),
-                        address_postal_code: payload.address.postal_code.clone().unwrap_or_default(),
-                        address_country: payload.address.country.clone().unwrap_or_default(),
-                    };
-                    let id = id_for_form.clone();
-                    rsx! {
-                        CompanyForm {
-                            initial,
-                            mode: CompanyFormMode::Edit { id },
-                        }
+                }
+            },
+            Some(Some(payload)) => {
+                let initial = CompanyFormValues {
+                    name: payload.name.clone(),
+                    company_type: payload.company_type.clone(),
+                    industry: payload.industry.clone().unwrap_or_default(),
+                    website: payload.website.clone().unwrap_or_default(),
+                    phone: payload.phone.clone().unwrap_or_default(),
+                    address_line1: payload.address.line1.clone().unwrap_or_default(),
+                    address_line2: payload.address.line2.clone().unwrap_or_default(),
+                    address_city: payload.address.city.clone().unwrap_or_default(),
+                    address_state: payload.address.state.clone().unwrap_or_default(),
+                    address_postal_code: payload.address.postal_code.clone().unwrap_or_default(),
+                    address_country: payload.address.country.clone().unwrap_or_default(),
+                };
+                let id = id_for_form.clone();
+                rsx! {
+                    CompanyForm {
+                        initial,
+                        mode: CompanyFormMode::Edit { id },
                     }
-                },
-            }
+                }
+            },
         }
     }
 }
@@ -1439,6 +1438,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         None => "Loading...".to_string(),
         Some(None) => "Company not found".to_string(),
     };
+    use_page_title(&header_title);
 
     let navigator = use_navigator();
     let mut deleting = use_signal(|| false);
@@ -1479,252 +1479,250 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     }
 
     rsx! {
-        AppLayout { title: "{header_title}",
-            crate::components::ConfirmDialog {
-                open: confirming_delete(),
-                title: "Delete company".to_string(),
-                message: "Delete this company? This will also remove its sites and unlink its contacts/tickets.".to_string(),
-                confirm_text: "Delete".to_string(),
-                cancel_text: "Cancel".to_string(),
-                destructive: true,
-                // PMS-369: this delete cascades (removes sites, unlinks
-                // contacts/tickets), so gate it behind typing the company name.
-                confirm_phrase: header_title.clone(),
-                loading: *deleting.read(),
-                onconfirm: on_confirm_delete,
-                oncancel: move |_| {
-                    if !*deleting.read() {
-                        confirming_delete.set(false);
-                    }
-                },
-            }
-            PageHeader {
-                title: "{header_title}",
-                breadcrumbs: rsx! {
-                    crate::components::Breadcrumbs {
-                        items: vec![
-                            crate::components::BreadcrumbItem {
-                                label: "Companies".to_string(),
-                                route: Some(Route::CompanyList {}),
-                            },
-                            crate::components::BreadcrumbItem {
-                                label: header_title.clone(),
-                                route: None,
-                            },
-                        ],
-                    }
-                },
-                actions: rsx! {
-                    Link {
-                        to: Route::CompanyEdit { id: edit_id },
-                        Button {
-                            variant: ButtonVariant::Secondary,
-                            "Edit"
-                        }
-                    }
-                    Button {
-                        variant: ButtonVariant::Danger,
-                        loading: *deleting.read(),
-                        // MAPPS-357: block delete while the server is down.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
-                        onclick: move |_| {
-                            if !*deleting.read() {
-                                confirming_delete.set(true);
-                            }
+        crate::components::ConfirmDialog {
+            open: confirming_delete(),
+            title: "Delete company".to_string(),
+            message: "Delete this company? This will also remove its sites and unlink its contacts/tickets.".to_string(),
+            confirm_text: "Delete".to_string(),
+            cancel_text: "Cancel".to_string(),
+            destructive: true,
+            // PMS-369: this delete cascades (removes sites, unlinks
+            // contacts/tickets), so gate it behind typing the company name.
+            confirm_phrase: header_title.clone(),
+            loading: *deleting.read(),
+            onconfirm: on_confirm_delete,
+            oncancel: move |_| {
+                if !*deleting.read() {
+                    confirming_delete.set(false);
+                }
+            },
+        }
+        PageHeader {
+            title: "{header_title}",
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs {
+                    items: vec![
+                        crate::components::BreadcrumbItem {
+                            label: "Companies".to_string(),
+                            route: Some(Route::CompanyList {}),
                         },
-                        "Delete"
+                        crate::components::BreadcrumbItem {
+                            label: header_title.clone(),
+                            route: None,
+                        },
+                    ],
+                }
+            },
+            actions: rsx! {
+                Link {
+                    to: Route::CompanyEdit { id: edit_id },
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        "Edit"
                     }
-                },
-            }
+                }
+                Button {
+                    variant: ButtonVariant::Danger,
+                    loading: *deleting.read(),
+                    // MAPPS-357: block delete while the server is down.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
+                    onclick: move |_| {
+                        if !*deleting.read() {
+                            confirming_delete.set(true);
+                        }
+                    },
+                    "Delete"
+                }
+            },
+        }
 
-            match &*company_snapshot {
-                None => rsx! {
-                    crate::components::DetailSkeleton {} // PMS-353
-                },
-                Some(None) => rsx! {
-                    Card {
-                        div {
-                            class: "py-8 text-center",
-                            p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load company." }
-                            Link {
-                                to: Route::CompanyList {},
-                                class: "text-sm text-accent hover:opacity-90",
-                                "Back to companies"
-                            }
+        match &*company_snapshot {
+            None => rsx! {
+                crate::components::DetailSkeleton {} // PMS-353
+            },
+            Some(None) => rsx! {
+                Card {
+                    div {
+                        class: "py-8 text-center",
+                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load company." }
+                        Link {
+                            to: Route::CompanyList {},
+                            class: "text-sm text-accent hover:opacity-90",
+                            "Back to companies"
                         }
                     }
-                },
-                Some(Some(company)) => {
-                    let address_parts: Vec<String> = [
-                        company.address.line1.clone(),
-                        company.address.line2.clone(),
-                        company.address.city.clone(),
-                        company.address.state.clone(),
-                        company.address.postal_code.clone(),
-                        company.address.country.clone(),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                    let type_label = humanize_company_type(&company.company_type);
-                    let website = company.website.clone();
-                    let phone = company.phone.clone();
-                    let industry = company.industry.clone();
-                    let am_name = company.account_manager_name.clone();
-                    let open_tickets = company.open_ticket_count.unwrap_or(0).max(0);
-                    let contact_count = company.contact_count.unwrap_or(0).max(0);
-                    let site_count = company.site_count.unwrap_or(0).max(0);
-                    rsx! {
-                        div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
-                            div { class: "lg:col-span-2 space-y-6",
-                                // Contacts
-                                CompanyContactsCard {
-                                    company_id: company_id_str.clone(),
-                                    company_name: company.name.clone(),
-                                    contacts_resource,
-                                }
-                                // Sites
-                                CompanySitesCard {
-                                    company_id: company_id_str.clone(),
-                                    sites_resource,
-                                    company_resource,
-                                }
-                                // Recent tickets
-                                CompanyTicketsCard {
-                                    company_id: company_id_str.clone(),
-                                    company_name: company.name.clone(),
-                                    tickets_resource,
-                                }
-                                // Contracts (MAPPS-195)
-                                CompanyContractsCard {
-                                    company_id: company_id_str.clone(),
-                                    contracts_resource,
-                                }
-                                // Projects (MAPPS-195)
-                                CompanyProjectsCard {
-                                    company_id: company_id_str.clone(),
-                                    projects_resource,
-                                }
-                                // Invoices (MAPPS-195)
-                                CompanyInvoicesCard {
-                                    company_id: company_id_str.clone(),
-                                    invoices_resource,
-                                }
-                                // Assets (MAPPS-195)
-                                CompanyAssetsCard {
-                                    company_id: company_id_str.clone(),
-                                    assets_resource,
-                                    asset_types_resource,
-                                }
+                }
+            },
+            Some(Some(company)) => {
+                let address_parts: Vec<String> = [
+                    company.address.line1.clone(),
+                    company.address.line2.clone(),
+                    company.address.city.clone(),
+                    company.address.state.clone(),
+                    company.address.postal_code.clone(),
+                    company.address.country.clone(),
+                ]
+                .into_iter()
+                .flatten()
+                .filter(|s| !s.is_empty())
+                .collect();
+                let type_label = humanize_company_type(&company.company_type);
+                let website = company.website.clone();
+                let phone = company.phone.clone();
+                let industry = company.industry.clone();
+                let am_name = company.account_manager_name.clone();
+                let open_tickets = company.open_ticket_count.unwrap_or(0).max(0);
+                let contact_count = company.contact_count.unwrap_or(0).max(0);
+                let site_count = company.site_count.unwrap_or(0).max(0);
+                rsx! {
+                    div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
+                        div { class: "lg:col-span-2 space-y-6",
+                            // Contacts
+                            CompanyContactsCard {
+                                company_id: company_id_str.clone(),
+                                company_name: company.name.clone(),
+                                contacts_resource,
                             }
-                            // Sidebar
-                            div { class: "space-y-6",
-                                Card { title: "Details",
-                                    dl { class: "space-y-4",
-                                        div { class: "flex justify-between",
-                                            dt { class: "text-sm text-muted", "Type" }
-                                            dd { Badge { variant: BadgeVariant::Green, "{type_label}" } }
-                                        }
-                                        if let Some(industry) = industry {
-                                            if !industry.is_empty() {
-                                                div { class: "flex justify-between",
-                                                    dt { class: "text-sm text-muted", "Industry" }
-                                                    dd { class: "text-sm", "{industry}" }
-                                                }
+                            // Sites
+                            CompanySitesCard {
+                                company_id: company_id_str.clone(),
+                                sites_resource,
+                                company_resource,
+                            }
+                            // Recent tickets
+                            CompanyTicketsCard {
+                                company_id: company_id_str.clone(),
+                                company_name: company.name.clone(),
+                                tickets_resource,
+                            }
+                            // Contracts (MAPPS-195)
+                            CompanyContractsCard {
+                                company_id: company_id_str.clone(),
+                                contracts_resource,
+                            }
+                            // Projects (MAPPS-195)
+                            CompanyProjectsCard {
+                                company_id: company_id_str.clone(),
+                                projects_resource,
+                            }
+                            // Invoices (MAPPS-195)
+                            CompanyInvoicesCard {
+                                company_id: company_id_str.clone(),
+                                invoices_resource,
+                            }
+                            // Assets (MAPPS-195)
+                            CompanyAssetsCard {
+                                company_id: company_id_str.clone(),
+                                assets_resource,
+                                asset_types_resource,
+                            }
+                        }
+                        // Sidebar
+                        div { class: "space-y-6",
+                            Card { title: "Details",
+                                dl { class: "space-y-4",
+                                    div { class: "flex justify-between",
+                                        dt { class: "text-sm text-muted", "Type" }
+                                        dd { Badge { variant: BadgeVariant::Green, "{type_label}" } }
+                                    }
+                                    if let Some(industry) = industry {
+                                        if !industry.is_empty() {
+                                            div { class: "flex justify-between",
+                                                dt { class: "text-sm text-muted", "Industry" }
+                                                dd { class: "text-sm", "{industry}" }
                                             }
                                         }
-                                        if let Some(phone) = phone {
-                                            if !phone.is_empty() {
-                                                div { class: "flex justify-between",
-                                                    dt { class: "text-sm text-muted", "Phone" }
-                                                    // MAPPS-283: render with separators.
-                                                    dd { class: "text-sm", {format_phone(&phone)} }
-                                                }
+                                    }
+                                    if let Some(phone) = phone {
+                                        if !phone.is_empty() {
+                                            div { class: "flex justify-between",
+                                                dt { class: "text-sm text-muted", "Phone" }
+                                                // MAPPS-283: render with separators.
+                                                dd { class: "text-sm", {format_phone(&phone)} }
                                             }
                                         }
-                                        if let Some(website) = website {
-                                            if !website.is_empty() {
-                                                div { class: "flex justify-between",
-                                                    dt { class: "text-sm text-muted", "Website" }
-                                                    dd {
-                                                        // Only render a live link when the value carries a
-                                                        // safe URL scheme; `javascript:`/`data:`/`vbscript:`
-                                                        // values fall back to plain text (MAPPS-149).
-                                                        if let Some(href) = safe_href(&website) {
-                                                            a {
-                                                                href: "{href}",
-                                                                target: "_blank",
-                                                                rel: "noopener noreferrer",
-                                                                class: "text-sm text-accent hover:opacity-90",
-                                                                "{website}"
-                                                            }
-                                                        } else {
-                                                            span { class: "text-sm", "{website}" }
+                                    }
+                                    if let Some(website) = website {
+                                        if !website.is_empty() {
+                                            div { class: "flex justify-between",
+                                                dt { class: "text-sm text-muted", "Website" }
+                                                dd {
+                                                    // Only render a live link when the value carries a
+                                                    // safe URL scheme; `javascript:`/`data:`/`vbscript:`
+                                                    // values fall back to plain text (MAPPS-149).
+                                                    if let Some(href) = safe_href(&website) {
+                                                        a {
+                                                            href: "{href}",
+                                                            target: "_blank",
+                                                            rel: "noopener noreferrer",
+                                                            class: "text-sm text-accent hover:opacity-90",
+                                                            "{website}"
                                                         }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        if let Some(am) = am_name {
-                                            if !am.is_empty() {
-                                                div { class: "flex justify-between",
-                                                    dt { class: "text-sm text-muted", "Account Manager" }
-                                                    dd { class: "text-sm", "{am}" }
-                                                }
-                                            }
-                                        }
-                                        if !address_parts.is_empty() {
-                                            div {
-                                                dt { class: "text-sm text-muted mb-1", "Address" }
-                                                dd { class: "text-sm space-y-0.5",
-                                                    for line in address_parts.iter() {
-                                                        p { "{line}" }
+                                                    } else {
+                                                        span { class: "text-sm", "{website}" }
                                                     }
                                                 }
                                             }
                                         }
                                     }
+                                    if let Some(am) = am_name {
+                                        if !am.is_empty() {
+                                            div { class: "flex justify-between",
+                                                dt { class: "text-sm text-muted", "Account Manager" }
+                                                dd { class: "text-sm", "{am}" }
+                                            }
+                                        }
+                                    }
+                                    if !address_parts.is_empty() {
+                                        div {
+                                            dt { class: "text-sm text-muted mb-1", "Address" }
+                                            dd { class: "text-sm space-y-0.5",
+                                                for line in address_parts.iter() {
+                                                    p { "{line}" }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
-                                Card { title: "Statistics",
-                                    div { class: "space-y-3",
-                                        div { class: "flex justify-between",
-                                            span { class: "text-sm text-muted", "Open Tickets" }
-                                            span { class: "font-medium text-content", "{open_tickets}" }
-                                        }
-                                        div { class: "flex justify-between",
-                                            span { class: "text-sm text-muted", "Contacts" }
-                                            span { class: "font-medium", "{contact_count}" }
-                                        }
-                                        div { class: "flex justify-between",
-                                            span { class: "text-sm text-muted", "Sites" }
-                                            span { class: "font-medium", "{site_count}" }
-                                        }
-                                        // MAPPS-195: counts for the newly surfaced relationships.
-                                        div { class: "flex justify-between",
-                                            span { class: "text-sm text-muted", "Contracts" }
-                                            span { class: "font-medium", "{contract_count}" }
-                                        }
-                                        div { class: "flex justify-between",
-                                            span { class: "text-sm text-muted", "Projects" }
-                                            span { class: "font-medium", "{project_count}" }
-                                        }
-                                        div { class: "flex justify-between",
-                                            span { class: "text-sm text-muted", "Invoices" }
-                                            span { class: "font-medium", "{invoice_count}" }
-                                        }
-                                        div { class: "flex justify-between",
-                                            span { class: "text-sm text-muted", "Assets" }
-                                            span { class: "font-medium", "{asset_count}" }
-                                        }
+                            }
+                            Card { title: "Statistics",
+                                div { class: "space-y-3",
+                                    div { class: "flex justify-between",
+                                        span { class: "text-sm text-muted", "Open Tickets" }
+                                        span { class: "font-medium text-content", "{open_tickets}" }
+                                    }
+                                    div { class: "flex justify-between",
+                                        span { class: "text-sm text-muted", "Contacts" }
+                                        span { class: "font-medium", "{contact_count}" }
+                                    }
+                                    div { class: "flex justify-between",
+                                        span { class: "text-sm text-muted", "Sites" }
+                                        span { class: "font-medium", "{site_count}" }
+                                    }
+                                    // MAPPS-195: counts for the newly surfaced relationships.
+                                    div { class: "flex justify-between",
+                                        span { class: "text-sm text-muted", "Contracts" }
+                                        span { class: "font-medium", "{contract_count}" }
+                                    }
+                                    div { class: "flex justify-between",
+                                        span { class: "text-sm text-muted", "Projects" }
+                                        span { class: "font-medium", "{project_count}" }
+                                    }
+                                    div { class: "flex justify-between",
+                                        span { class: "text-sm text-muted", "Invoices" }
+                                        span { class: "font-medium", "{invoice_count}" }
+                                    }
+                                    div { class: "flex justify-between",
+                                        span { class: "text-sm text-muted", "Assets" }
+                                        span { class: "font-medium", "{asset_count}" }
                                     }
                                 }
                             }
                         }
                     }
-                },
-            }
+                }
+            },
         }
     }
 }
@@ -3349,6 +3347,8 @@ pub fn ContactListPage() -> Element {
     };
     let has_filters = !search_text.is_empty() || !type_text.is_empty() || !portal_text.is_empty();
 
+    use_page_title("Contacts");
+
     // MAPPS-357: `contacts_resource` is this page's primary resource. It stays
     // a hand-rolled `use_resource` (rather than `use_remote_resource`) because
     // the page needs the loading / failed / `meta.total` distinction from the
@@ -3365,151 +3365,149 @@ pub fn ContactListPage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Contacts",
-            PageHeader {
-                title: "Contacts",
-                subtitle: "Manage customer contacts",
-                actions: rsx! {
-                    Link {
-                        to: Route::ContactNew {},
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                            "New Contact"
-                        }
+        PageHeader {
+            title: "Contacts",
+            subtitle: "Manage customer contacts",
+            actions: rsx! {
+                Link {
+                    to: Route::ContactNew {},
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "New Contact"
                     }
-                },
-            }
+                }
+            },
+        }
 
-            // MAPPS-321: scope indicator.
-            crate::components::ContextFilterBanner {
-                scope: crate::components::ContextFilterScope::Contacts,
-            }
+        // MAPPS-321: scope indicator.
+        crate::components::ContextFilterBanner {
+            scope: crate::components::ContextFilterScope::Contacts,
+        }
 
-            // Filters
-            Card { class: "mb-6",
-                div { class: "flex flex-col sm:flex-row gap-4",
-                    div { class: "flex-1",
-                        SearchInput {
-                            value: search.read().clone(),
-                            placeholder: "Search contacts...",
-                            oninput: move |e: FormEvent| {
-                                search.set(e.value());
-                                page.set(1);
+        // Filters
+        Card { class: "mb-6",
+            div { class: "flex flex-col sm:flex-row gap-4",
+                div { class: "flex-1",
+                    SearchInput {
+                        value: search.read().clone(),
+                        placeholder: "Search contacts...",
+                        oninput: move |e: FormEvent| {
+                            search.set(e.value());
+                            page.set(1);
+                        },
+                    }
+                }
+                Select {
+                    name: "contact_type",
+                    options: type_options,
+                    value: contact_type_filter.read().clone(),
+                    onchange: move |e: FormEvent| {
+                        contact_type_filter.set(e.value());
+                        page.set(1);
+                    },
+                }
+                Select {
+                    name: "portal",
+                    options: portal_options,
+                    value: portal_filter.read().clone(),
+                    onchange: move |e: FormEvent| {
+                        portal_filter.set(e.value());
+                        page.set(1);
+                    },
+                }
+            }
+        }
+
+        if fetch_failed {
+            div {
+                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                "Could not load contacts. Refresh the page to retry."
+            }
+        }
+
+        // Contacts table
+        DataTable {
+            loading: is_loading,
+            total_items: total as usize,
+            current_page,
+            per_page: PER_PAGE,
+            columns: 5,
+            onpagechange: move |p| page.set(p),
+            Table {
+                striped: true,
+                TableHead {
+                    TableRow {
+                        TableHeader {
+                            sortable: true,
+                            sort_direction: sort_dir_for(&sort_snapshot, ContactSortKey::Name),
+                            onsort: move |_| toggle_sort(&mut sort, ContactSortKey::Name, &mut page),
+                            "Name"
+                        }
+                        TableHeader {
+                            sortable: true,
+                            sort_direction: sort_dir_for(&sort_snapshot, ContactSortKey::Company),
+                            onsort: move |_| toggle_sort(&mut sort, ContactSortKey::Company, &mut page),
+                            "Company"
+                        }
+                        TableHeader { "Email" }
+                        TableHeader { "Phone" }
+                        TableHeader { "Role" }
+                    }
+                }
+                if is_loading {
+                    TableLoading { columns: 5, rows: 5 }
+                } else if page_rows.is_empty() {
+                    if has_filters {
+                        // MAPPS-291 "Clear filters" affordance on the
+                        // contacts list mirrors the companies list.
+                        TableEmpty {
+                            columns: 5,
+                            title: "No contacts match your filters".to_string(),
+                            description: "Adjust the filters above, or clear them to see every contact again.".to_string(),
+                            actions: rsx! {
+                                Button {
+                                    variant: ButtonVariant::Secondary,
+                                    onclick: move |_| {
+                                        search.set(String::new());
+                                        contact_type_filter.set(String::new());
+                                        portal_filter.set(String::new());
+                                    },
+                                    "Clear filters"
+                                }
+                            },
+                        }
+                    } else {
+                        TableEmpty {
+                            columns: 5,
+                            title: "No contacts yet".to_string(),
+                            description: "Add your first contact to a company.".to_string(),
+                            actions: rsx! {
+                                Link {
+                                    to: Route::ContactNew {},
+                                    Button {
+                                        variant: ButtonVariant::Primary,
+                                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                        "New Contact"
+                                    }
+                                }
                             },
                         }
                     }
-                    Select {
-                        name: "contact_type",
-                        options: type_options,
-                        value: contact_type_filter.read().clone(),
-                        onchange: move |e: FormEvent| {
-                            contact_type_filter.set(e.value());
-                            page.set(1);
-                        },
-                    }
-                    Select {
-                        name: "portal",
-                        options: portal_options,
-                        value: portal_filter.read().clone(),
-                        onchange: move |e: FormEvent| {
-                            portal_filter.set(e.value());
-                            page.set(1);
-                        },
-                    }
-                }
-            }
-
-            if fetch_failed {
-                div {
-                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                    "Could not load contacts. Refresh the page to retry."
-                }
-            }
-
-            // Contacts table
-            DataTable {
-                loading: is_loading,
-                total_items: total as usize,
-                current_page,
-                per_page: PER_PAGE,
-                columns: 5,
-                onpagechange: move |p| page.set(p),
-                Table {
-                    striped: true,
-                    TableHead {
-                        TableRow {
-                            TableHeader {
-                                sortable: true,
-                                sort_direction: sort_dir_for(&sort_snapshot, ContactSortKey::Name),
-                                onsort: move |_| toggle_sort(&mut sort, ContactSortKey::Name, &mut page),
-                                "Name"
-                            }
-                            TableHeader {
-                                sortable: true,
-                                sort_direction: sort_dir_for(&sort_snapshot, ContactSortKey::Company),
-                                onsort: move |_| toggle_sort(&mut sort, ContactSortKey::Company, &mut page),
-                                "Company"
-                            }
-                            TableHeader { "Email" }
-                            TableHeader { "Phone" }
-                            TableHeader { "Role" }
-                        }
-                    }
-                    if is_loading {
-                        TableLoading { columns: 5, rows: 5 }
-                    } else if page_rows.is_empty() {
-                        if has_filters {
-                            // MAPPS-291 "Clear filters" affordance on the
-                            // contacts list mirrors the companies list.
-                            TableEmpty {
-                                columns: 5,
-                                title: "No contacts match your filters".to_string(),
-                                description: "Adjust the filters above, or clear them to see every contact again.".to_string(),
-                                actions: rsx! {
-                                    Button {
-                                        variant: ButtonVariant::Secondary,
-                                        onclick: move |_| {
-                                            search.set(String::new());
-                                            contact_type_filter.set(String::new());
-                                            portal_filter.set(String::new());
-                                        },
-                                        "Clear filters"
-                                    }
-                                },
-                            }
-                        } else {
-                            TableEmpty {
-                                columns: 5,
-                                title: "No contacts yet".to_string(),
-                                description: "Add your first contact to a company.".to_string(),
-                                actions: rsx! {
-                                    Link {
-                                        to: Route::ContactNew {},
-                                        Button {
-                                            variant: ButtonVariant::Primary,
-                                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                            "New Contact"
-                                        }
-                                    }
-                                },
-                            }
-                        }
-                    } else {
-                        TableBody {
-                            for contact in page_rows.iter().cloned() {
-                                ContactRow {
-                                    key: "{contact.id}",
-                                    id: contact.id.to_string(),
-                                    name: format!("{} {}", contact.first_name, contact.last_name).trim().to_string(),
-                                    company: contact.company_name.clone().unwrap_or_default(),
-                                    company_id: contact.company_id.map(|id| id.to_string()).unwrap_or_default(),
-                                    email: contact.email.clone().unwrap_or_default(),
-                                    phone: contact.phone.clone().unwrap_or_default(),
-                                    role: humanize_contact_type(
-                                        contact.contact_type.as_deref().unwrap_or_default(),
-                                    ),
-                                }
+                } else {
+                    TableBody {
+                        for contact in page_rows.iter().cloned() {
+                            ContactRow {
+                                key: "{contact.id}",
+                                id: contact.id.to_string(),
+                                name: format!("{} {}", contact.first_name, contact.last_name).trim().to_string(),
+                                company: contact.company_name.clone().unwrap_or_default(),
+                                company_id: contact.company_id.map(|id| id.to_string()).unwrap_or_default(),
+                                email: contact.email.clone().unwrap_or_default(),
+                                phone: contact.phone.clone().unwrap_or_default(),
+                                role: humanize_contact_type(
+                                    contact.contact_type.as_deref().unwrap_or_default(),
+                                ),
                             }
                         }
                     }
@@ -3626,19 +3624,19 @@ pub fn ContactNewPage() -> Element {
         ]
     };
 
+    use_page_title("New Contact");
+
     rsx! {
-        AppLayout { title: "New Contact",
-            PageHeader {
-                title: "New Contact",
-                subtitle: "Add a new contact",
-                breadcrumbs: rsx! {
-                    crate::components::Breadcrumbs { items: crumbs }
-                },
-            }
-            ContactForm {
-                initial,
-                mode: ContactFormMode::Create,
-            }
+        PageHeader {
+            title: "New Contact",
+            subtitle: "Add a new contact",
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs { items: crumbs }
+            },
+        }
+        ContactForm {
+            initial,
+            mode: ContactFormMode::Create,
         }
     }
 }
@@ -3689,6 +3687,7 @@ pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
         }
     });
     let snap = detail.read_unchecked();
+    use_page_title("Edit Contact");
     // MAPPS-357: the fetched contact is this edit page's primary resource. A
     // failed load while the server is flagged down is an outage, not a missing
     // record - render the honest unavailable state instead of "Could not load
@@ -3702,53 +3701,51 @@ pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
         };
     }
     rsx! {
-        AppLayout { title: "Edit Contact",
-            PageHeader { title: "Edit Contact" }
-            match &*snap {
-                None => rsx! {
-                    crate::components::DetailSkeleton {} // PMS-353
-                },
-                Some(None) => rsx! {
-                    Card {
-                        div { class: "py-8 text-center",
-                            p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load contact." }
-                            Link {
-                                to: Route::ContactList {},
-                                class: "text-sm text-accent hover:opacity-90",
-                                "Back to contacts"
-                            }
+        PageHeader { title: "Edit Contact" }
+        match &*snap {
+            None => rsx! {
+                crate::components::DetailSkeleton {} // PMS-353
+            },
+            Some(None) => rsx! {
+                Card {
+                    div { class: "py-8 text-center",
+                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load contact." }
+                        Link {
+                            to: Route::ContactList {},
+                            class: "text-sm text-accent hover:opacity-90",
+                            "Back to contacts"
                         }
                     }
-                },
-                Some(Some(payload)) => {
-                    let initial = ContactFormValues {
-                        first_name: payload.first_name.clone(),
-                        last_name: payload.last_name.clone(),
-                        email: payload.email.clone().unwrap_or_default(),
-                        phone: payload.phone.clone().unwrap_or_default(),
-                        mobile: payload.mobile.clone().unwrap_or_default(),
-                        title: payload.title.clone().unwrap_or_default(),
-                        department: payload.department.clone().unwrap_or_default(),
-                        contact_type: if payload.contact_type.is_empty() {
-                            "other".to_string()
-                        } else {
-                            payload.contact_type.clone()
-                        },
-                        company_id: payload
-                            .company_id
-                            .map(|id| id.to_string())
-                            .unwrap_or_default(),
-                        company_name: payload.company_name.clone().unwrap_or_default(),
-                    };
-                    let id = id_for_form.clone();
-                    rsx! {
-                        ContactForm {
-                            initial,
-                            mode: ContactFormMode::Edit { id },
-                        }
+                }
+            },
+            Some(Some(payload)) => {
+                let initial = ContactFormValues {
+                    first_name: payload.first_name.clone(),
+                    last_name: payload.last_name.clone(),
+                    email: payload.email.clone().unwrap_or_default(),
+                    phone: payload.phone.clone().unwrap_or_default(),
+                    mobile: payload.mobile.clone().unwrap_or_default(),
+                    title: payload.title.clone().unwrap_or_default(),
+                    department: payload.department.clone().unwrap_or_default(),
+                    contact_type: if payload.contact_type.is_empty() {
+                        "other".to_string()
+                    } else {
+                        payload.contact_type.clone()
+                    },
+                    company_id: payload
+                        .company_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_default(),
+                    company_name: payload.company_name.clone().unwrap_or_default(),
+                };
+                let id = id_for_form.clone();
+                rsx! {
+                    ContactForm {
+                        initial,
+                        mode: ContactFormMode::Edit { id },
                     }
-                },
-            }
+                }
+            },
         }
     }
 }
@@ -4232,6 +4229,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
         None => "Loading...".to_string(),
         Some(None) => "Contact not found".to_string(),
     };
+    use_page_title(&header_title);
 
     let navigator = use_navigator();
     let mut deleting = use_signal(|| false);
@@ -4273,169 +4271,167 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     }
 
     rsx! {
-        AppLayout { title: "{header_title}",
-            crate::components::ConfirmDialog {
-                open: confirming_delete(),
-                title: "Delete contact".to_string(),
-                message: "Delete this contact? This cannot be undone.".to_string(),
-                confirm_text: "Delete".to_string(),
-                cancel_text: "Cancel".to_string(),
-                destructive: true,
-                loading: *deleting.read(),
-                onconfirm: on_confirm_delete,
-                oncancel: move |_| {
-                    if !*deleting.read() {
-                        confirming_delete.set(false);
-                    }
-                },
-            }
-            PageHeader {
-                title: "{header_title}",
-                actions: rsx! {
-                    Link {
-                        to: Route::ContactEdit { id: edit_id },
-                        Button { variant: ButtonVariant::Secondary, "Edit" }
-                    }
-                    Button {
-                        variant: ButtonVariant::Danger,
-                        loading: *deleting.read(),
-                        // MAPPS-357: block delete while the server is down.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
-                        onclick: move |_| {
-                            if !*deleting.read() {
-                                confirming_delete.set(true);
-                            }
-                        },
-                        "Delete"
-                    }
-                },
-            }
+        crate::components::ConfirmDialog {
+            open: confirming_delete(),
+            title: "Delete contact".to_string(),
+            message: "Delete this contact? This cannot be undone.".to_string(),
+            confirm_text: "Delete".to_string(),
+            cancel_text: "Cancel".to_string(),
+            destructive: true,
+            loading: *deleting.read(),
+            onconfirm: on_confirm_delete,
+            oncancel: move |_| {
+                if !*deleting.read() {
+                    confirming_delete.set(false);
+                }
+            },
+        }
+        PageHeader {
+            title: "{header_title}",
+            actions: rsx! {
+                Link {
+                    to: Route::ContactEdit { id: edit_id },
+                    Button { variant: ButtonVariant::Secondary, "Edit" }
+                }
+                Button {
+                    variant: ButtonVariant::Danger,
+                    loading: *deleting.read(),
+                    // MAPPS-357: block delete while the server is down.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
+                    onclick: move |_| {
+                        if !*deleting.read() {
+                            confirming_delete.set(true);
+                        }
+                    },
+                    "Delete"
+                }
+            },
+        }
 
-            match &*snap {
-                None => rsx! {
-                    crate::components::DetailSkeleton {} // PMS-353
-                },
-                Some(None) => rsx! {
-                    Card {
-                        div { class: "py-8 text-center",
-                            p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load contact." }
-                            Link {
-                                to: Route::ContactList {},
-                                class: "text-sm text-accent hover:opacity-90",
-                                "Back to contacts"
-                            }
+        match &*snap {
+            None => rsx! {
+                crate::components::DetailSkeleton {} // PMS-353
+            },
+            Some(None) => rsx! {
+                Card {
+                    div { class: "py-8 text-center",
+                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load contact." }
+                        Link {
+                            to: Route::ContactList {},
+                            class: "text-sm text-accent hover:opacity-90",
+                            "Back to contacts"
                         }
                     }
-                },
-                Some(Some(c)) => {
-                    let company_id = c.company_id.map(|id| id.to_string());
-                    let company_name = c.company_name.clone().unwrap_or_default();
-                    let email = c.email.clone();
-                    let phone = c.phone.clone();
-                    let mobile = c.mobile.clone();
-                    let title = c.title.clone();
-                    let department = c.department.clone();
-                    let contact_type = c.contact_type.clone();
-                    let is_portal_user = c.is_portal_user;
-                    let portal_id = id_for_portal.clone();
-                    rsx! {
-                        div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
-                            div { class: "lg:col-span-2 space-y-6",
-                                ContactTicketsCard { tickets_resource: tickets }
-                            }
-                            div { class: "space-y-6",
-                                Card { title: "Contact Information",
-                                    dl { class: "space-y-4",
-                                        if let Some(email) = email {
-                                            if !email.is_empty() {
-                                                div {
-                                                    dt { class: "text-sm text-muted", "Email" }
-                                                    dd { class: "mt-1",
-                                                        a {
-                                                            href: "mailto:{email}",
-                                                            class: "text-accent hover:opacity-90",
-                                                            "{email}"
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        if let Some(phone) = phone {
-                                            if !phone.is_empty() {
-                                                div {
-                                                    dt { class: "text-sm text-muted", "Phone" }
-                                                    // MAPPS-283: render with separators.
-                                                    dd { class: "mt-1", {format_phone(&phone)} }
-                                                }
-                                            }
-                                        }
-                                        if let Some(mobile) = mobile {
-                                            if !mobile.is_empty() {
-                                                div {
-                                                    dt { class: "text-sm text-muted", "Mobile" }
-                                                    // MAPPS-283: render with separators.
-                                                    dd { class: "mt-1", {format_phone(&mobile)} }
-                                                }
-                                            }
-                                        }
-                                        if let Some(title) = title {
-                                            if !title.is_empty() {
-                                                div {
-                                                    dt { class: "text-sm text-muted", "Title" }
-                                                    dd { class: "mt-1", "{title}" }
-                                                }
-                                            }
-                                        }
-                                        if let Some(dept) = department {
-                                            if !dept.is_empty() {
-                                                div {
-                                                    dt { class: "text-sm text-muted", "Department" }
-                                                    dd { class: "mt-1", "{dept}" }
-                                                }
-                                            }
-                                        }
-                                        if !contact_type.is_empty() {
+                }
+            },
+            Some(Some(c)) => {
+                let company_id = c.company_id.map(|id| id.to_string());
+                let company_name = c.company_name.clone().unwrap_or_default();
+                let email = c.email.clone();
+                let phone = c.phone.clone();
+                let mobile = c.mobile.clone();
+                let title = c.title.clone();
+                let department = c.department.clone();
+                let contact_type = c.contact_type.clone();
+                let is_portal_user = c.is_portal_user;
+                let portal_id = id_for_portal.clone();
+                rsx! {
+                    div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
+                        div { class: "lg:col-span-2 space-y-6",
+                            ContactTicketsCard { tickets_resource: tickets }
+                        }
+                        div { class: "space-y-6",
+                            Card { title: "Contact Information",
+                                dl { class: "space-y-4",
+                                    if let Some(email) = email {
+                                        if !email.is_empty() {
                                             div {
-                                                dt { class: "text-sm text-muted", "Type" }
+                                                dt { class: "text-sm text-muted", "Email" }
                                                 dd { class: "mt-1",
-                                                    Badge { variant: BadgeVariant::Blue, "{humanize_contact_type(&contact_type)}" }
-                                                }
-                                            }
-                                        }
-                                        if !company_name.is_empty() {
-                                            div {
-                                                dt { class: "text-sm text-muted", "Company" }
-                                                dd { class: "mt-1",
-                                                    // MAPPS-251: link only when an FK-linked CRM
-                                                    // company exists; a freeform company name has
-                                                    // no `companies` row to navigate to.
-                                                    if let Some(cid) = company_id.clone() {
-                                                        Link {
-                                                            to: Route::CompanyDetail { id: cid },
-                                                            class: "text-accent hover:opacity-90",
-                                                            "{company_name}"
-                                                        }
-                                                    } else {
-                                                        span { class: "text-content", "{company_name}" }
+                                                    a {
+                                                        href: "mailto:{email}",
+                                                        class: "text-accent hover:opacity-90",
+                                                        "{email}"
                                                     }
                                                 }
                                             }
                                         }
                                     }
+                                    if let Some(phone) = phone {
+                                        if !phone.is_empty() {
+                                            div {
+                                                dt { class: "text-sm text-muted", "Phone" }
+                                                // MAPPS-283: render with separators.
+                                                dd { class: "mt-1", {format_phone(&phone)} }
+                                            }
+                                        }
+                                    }
+                                    if let Some(mobile) = mobile {
+                                        if !mobile.is_empty() {
+                                            div {
+                                                dt { class: "text-sm text-muted", "Mobile" }
+                                                // MAPPS-283: render with separators.
+                                                dd { class: "mt-1", {format_phone(&mobile)} }
+                                            }
+                                        }
+                                    }
+                                    if let Some(title) = title {
+                                        if !title.is_empty() {
+                                            div {
+                                                dt { class: "text-sm text-muted", "Title" }
+                                                dd { class: "mt-1", "{title}" }
+                                            }
+                                        }
+                                    }
+                                    if let Some(dept) = department {
+                                        if !dept.is_empty() {
+                                            div {
+                                                dt { class: "text-sm text-muted", "Department" }
+                                                dd { class: "mt-1", "{dept}" }
+                                            }
+                                        }
+                                    }
+                                    if !contact_type.is_empty() {
+                                        div {
+                                            dt { class: "text-sm text-muted", "Type" }
+                                            dd { class: "mt-1",
+                                                Badge { variant: BadgeVariant::Blue, "{humanize_contact_type(&contact_type)}" }
+                                            }
+                                        }
+                                    }
+                                    if !company_name.is_empty() {
+                                        div {
+                                            dt { class: "text-sm text-muted", "Company" }
+                                            dd { class: "mt-1",
+                                                // MAPPS-251: link only when an FK-linked CRM
+                                                // company exists; a freeform company name has
+                                                // no `companies` row to navigate to.
+                                                if let Some(cid) = company_id.clone() {
+                                                    Link {
+                                                        to: Route::CompanyDetail { id: cid },
+                                                        class: "text-accent hover:opacity-90",
+                                                        "{company_name}"
+                                                    }
+                                                } else {
+                                                    span { class: "text-content", "{company_name}" }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
+                            }
 
-                                ContactPortalCard {
-                                    contact_id: portal_id,
-                                    is_portal_user,
-                                    toggling: portal_toggling,
-                                    on_change: move |_| { contact.restart(); },
-                                }
+                            ContactPortalCard {
+                                contact_id: portal_id,
+                                is_portal_user,
+                                toggling: portal_toggling,
+                                on_change: move |_| { contact.restart(); },
                             }
                         }
                     }
-                },
-            }
+                }
+            },
         }
     }
 }

@@ -8,8 +8,8 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, ConfirmDialog, DataTable, Input,
-    PageHeader, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
+    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, ConfirmDialog, DataTable,
+    Input, PageHeader, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
     TableHeader, TableLoading, TableRow,
 };
 use crate::hooks::auth::use_auth;
@@ -42,6 +42,7 @@ const ROLE_ASSIGNMENT_ENABLED: bool = false;
 
 #[component]
 pub fn TeamPage() -> Element {
+    use_page_title("Team");
     let auth = use_auth();
     let is_admin = {
         let a = auth.read();
@@ -135,15 +136,13 @@ pub fn TeamPage() -> Element {
 
     if !is_admin {
         return rsx! {
-            AppLayout { title: "Team",
-                PageHeader {
-                    title: "Team",
-                    subtitle: "Manage who can access this organization",
-                }
-                Card {
-                    p { class: "text-sm text-muted",
-                        "You need an admin role to manage invitations."
-                    }
+            PageHeader {
+                title: "Team",
+                subtitle: "Manage who can access this organization",
+            }
+            Card {
+                p { class: "text-sm text-muted",
+                    "You need an admin role to manage invitations."
                 }
             }
         };
@@ -180,167 +179,165 @@ pub fn TeamPage() -> Element {
     let mut revoking = use_signal(|| false);
 
     rsx! {
-        AppLayout { title: "Team",
-            PageHeader {
-                title: "Team",
-                subtitle: "Invite people to this organization and manage pending invitations",
-            }
+        PageHeader {
+            title: "Team",
+            subtitle: "Invite people to this organization and manage pending invitations",
+        }
 
-            Card {
-                form { class: "space-y-4", onsubmit: handle_invite,
-                    if !error.read().is_empty() {
-                        div {
-                            class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                            "{error.read()}"
-                        }
-                    }
+        Card {
+            form { class: "space-y-4", onsubmit: handle_invite,
+                if !error.read().is_empty() {
                     div {
-                        class: if ROLE_ASSIGNMENT_ENABLED { "grid grid-cols-1 gap-4 sm:grid-cols-3 sm:items-end" } else { "grid grid-cols-1 gap-4 sm:grid-cols-2 sm:items-end" },
-                        Input {
-                            name: "email",
-                            label: "Email",
-                            r#type: "email".to_string(),
-                            placeholder: "person@example.com",
-                            required: true,
-                            rules: vec![Rule::Required, Rule::Email],
-                            error: email_error.read().clone(),
-                            value: email.read().clone(),
-                            oninput: move |e: FormEvent| {
-                                email_error.set(String::new());
-                                email.set(e.value());
-                            },
-                        }
-                        if ROLE_ASSIGNMENT_ENABLED {
-                            Select {
-                                name: "role",
-                                label: "Role",
-                                options: role_options,
-                                value: role.read().clone(),
-                                onchange: move |e: FormEvent| role.set(e.value()),
-                            }
-                        }
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            r#type: "submit".to_string(),
-                            loading: is_submitting(),
-                            // MAPPS-357: block invites while the server is down.
-                            disabled: is_submitting() || !can_mutate,
-                            title: (!can_mutate).then(|| "Can't send an invite while the server is unreachable".to_string()),
-                            "Send invite"
-                        }
+                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                        "{error.read()}"
                     }
                 }
-            }
-
-            // PMS-369: Revoke confirmation. `pending_revoke` carries the
-            // (id, email) of the row whose Revoke button was clicked; the
-            // dialog renders with the email inlined so the user can see
-            // which invite they are about to revoke. `revoking` gates the
-            // dialog's loading state so a click during the in-flight
-            // request does not double-fire.
-            {
-                let pending = pending_revoke.read().clone();
-                let open = pending.is_some();
-                let email_label = pending
-                    .as_ref()
-                    .map(|(_, e)| e.clone())
-                    .unwrap_or_default();
-                let message = if email_label.is_empty() {
-                    "Revoke this invitation? The invitee will not be able to accept it.".to_string()
-                } else {
-                    format!(
-                        "Revoke the invitation for {email_label}? They will not be able to accept it."
-                    )
-                };
-                let mut invites_for_confirm = invites;
-                let on_confirm = move |_: ()| {
-                    let Some((id, _)) = pending_revoke.read().clone() else {
-                        return;
-                    };
-                    if revoking() {
-                        return;
-                    }
-                    revoking.set(true);
-                    spawn(async move {
-                        #[cfg(feature = "web")]
-                        {
-                            let _ = crate::hooks::fetch::api::delete_authed(&format!(
-                                "/invitations/{id}"
-                            ))
-                            .await;
-                            invites_for_confirm.restart();
-                        }
-                        #[cfg(not(feature = "web"))]
-                        {
-                            let _ = id;
-                        }
-                        revoking.set(false);
-                        pending_revoke.set(None);
-                    });
-                };
-                rsx! {
-                    ConfirmDialog {
-                        open,
-                        title: "Revoke invitation".to_string(),
-                        message,
-                        confirm_text: "Revoke".to_string(),
-                        cancel_text: "Cancel".to_string(),
-                        destructive: true,
-                        loading: revoking(),
-                        onconfirm: on_confirm,
-                        oncancel: move |_| {
-                            if !revoking() {
-                                pending_revoke.set(None);
-                            }
+                div {
+                    class: if ROLE_ASSIGNMENT_ENABLED { "grid grid-cols-1 gap-4 sm:grid-cols-3 sm:items-end" } else { "grid grid-cols-1 gap-4 sm:grid-cols-2 sm:items-end" },
+                    Input {
+                        name: "email",
+                        label: "Email",
+                        r#type: "email".to_string(),
+                        placeholder: "person@example.com",
+                        required: true,
+                        rules: vec![Rule::Required, Rule::Email],
+                        error: email_error.read().clone(),
+                        value: email.read().clone(),
+                        oninput: move |e: FormEvent| {
+                            email_error.set(String::new());
+                            email.set(e.value());
                         },
                     }
+                    if ROLE_ASSIGNMENT_ENABLED {
+                        Select {
+                            name: "role",
+                            label: "Role",
+                            options: role_options,
+                            value: role.read().clone(),
+                            onchange: move |e: FormEvent| role.set(e.value()),
+                        }
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        r#type: "submit".to_string(),
+                        loading: is_submitting(),
+                        // MAPPS-357: block invites while the server is down.
+                        disabled: is_submitting() || !can_mutate,
+                        title: (!can_mutate).then(|| "Can't send an invite while the server is unreachable".to_string()),
+                        "Send invite"
+                    }
                 }
             }
+        }
 
-            div { class: "mt-6",
-                DataTable {
-                    loading: is_loading,
-                    total_items: rows.len(),
-                    current_page: 1,
-                    per_page: 25,
-                    columns: 4,
-                    Table {
-                        TableHead {
-                            TableRow {
-                                TableHeader { "Email" }
-                                TableHeader { "Role" }
-                                TableHeader { "Expires" }
-                                TableHeader { "" }
-                            }
+        // PMS-369: Revoke confirmation. `pending_revoke` carries the
+        // (id, email) of the row whose Revoke button was clicked; the
+        // dialog renders with the email inlined so the user can see
+        // which invite they are about to revoke. `revoking` gates the
+        // dialog's loading state so a click during the in-flight
+        // request does not double-fire.
+        {
+            let pending = pending_revoke.read().clone();
+            let open = pending.is_some();
+            let email_label = pending
+                .as_ref()
+                .map(|(_, e)| e.clone())
+                .unwrap_or_default();
+            let message = if email_label.is_empty() {
+                "Revoke this invitation? The invitee will not be able to accept it.".to_string()
+            } else {
+                format!(
+                    "Revoke the invitation for {email_label}? They will not be able to accept it."
+                )
+            };
+            let mut invites_for_confirm = invites;
+            let on_confirm = move |_: ()| {
+                let Some((id, _)) = pending_revoke.read().clone() else {
+                    return;
+                };
+                if revoking() {
+                    return;
+                }
+                revoking.set(true);
+                spawn(async move {
+                    #[cfg(feature = "web")]
+                    {
+                        let _ = crate::hooks::fetch::api::delete_authed(&format!(
+                            "/invitations/{id}"
+                        ))
+                        .await;
+                        invites_for_confirm.restart();
+                    }
+                    #[cfg(not(feature = "web"))]
+                    {
+                        let _ = id;
+                    }
+                    revoking.set(false);
+                    pending_revoke.set(None);
+                });
+            };
+            rsx! {
+                ConfirmDialog {
+                    open,
+                    title: "Revoke invitation".to_string(),
+                    message,
+                    confirm_text: "Revoke".to_string(),
+                    cancel_text: "Cancel".to_string(),
+                    destructive: true,
+                    loading: revoking(),
+                    onconfirm: on_confirm,
+                    oncancel: move |_| {
+                        if !revoking() {
+                            pending_revoke.set(None);
                         }
-                        if is_loading {
-                            TableLoading { columns: 4, rows: 3 }
-                        } else if rows.is_empty() {
-                            TableEmpty {
-                                columns: 4,
-                                title: "No pending invitations".to_string(),
-                                description: "Use the Invite form above to grant a teammate access.".to_string(),
-                            }
-                        } else {
-                            TableBody {
-                                for inv in rows.iter().cloned() {
-                                    TableRow { key: "{inv.id}",
-                                        TableCell { "{inv.email}" }
-                                        TableCell {
-                                            Badge { variant: BadgeVariant::Gray, "{inv.role}" }
-                                        }
-                                        TableCell { "{inv.expires_at.format(\"%Y-%m-%d\")}" }
-                                        TableCell {
-                                            Button {
-                                                variant: ButtonVariant::Secondary,
-                                                // MAPPS-357: block revoke while the server is down.
-                                                disabled: !can_mutate,
-                                                title: (!can_mutate).then(|| "Can't revoke while the server is unreachable".to_string()),
-                                                onclick: move |_| {
-                                                    pending_revoke.set(Some((inv.id, inv.email.clone())));
-                                                },
-                                                "Revoke"
-                                            }
+                    },
+                }
+            }
+        }
+
+        div { class: "mt-6",
+            DataTable {
+                loading: is_loading,
+                total_items: rows.len(),
+                current_page: 1,
+                per_page: 25,
+                columns: 4,
+                Table {
+                    TableHead {
+                        TableRow {
+                            TableHeader { "Email" }
+                            TableHeader { "Role" }
+                            TableHeader { "Expires" }
+                            TableHeader { "" }
+                        }
+                    }
+                    if is_loading {
+                        TableLoading { columns: 4, rows: 3 }
+                    } else if rows.is_empty() {
+                        TableEmpty {
+                            columns: 4,
+                            title: "No pending invitations".to_string(),
+                            description: "Use the Invite form above to grant a teammate access.".to_string(),
+                        }
+                    } else {
+                        TableBody {
+                            for inv in rows.iter().cloned() {
+                                TableRow { key: "{inv.id}",
+                                    TableCell { "{inv.email}" }
+                                    TableCell {
+                                        Badge { variant: BadgeVariant::Gray, "{inv.role}" }
+                                    }
+                                    TableCell { "{inv.expires_at.format(\"%Y-%m-%d\")}" }
+                                    TableCell {
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            // MAPPS-357: block revoke while the server is down.
+                                            disabled: !can_mutate,
+                                            title: (!can_mutate).then(|| "Can't revoke while the server is unreachable".to_string()),
+                                            onclick: move |_| {
+                                                pending_revoke.set(Some((inv.id, inv.email.clone())));
+                                            },
+                                            "Revoke"
                                         }
                                     }
                                 }

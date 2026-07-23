@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, Checkbox, ChevronRightIcon,
+    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, Checkbox, ChevronRightIcon,
     DataTable, IconSize, Modal, PageHeader, PlusIcon, Select, SelectOption, Table, TableBody,
     TableCell, TableHead, TableHeader, TableRow,
 };
@@ -177,6 +177,7 @@ fn work_item_label(e: &RemoteTimeEntry) -> String {
 /// Time entry list page
 #[component]
 pub fn TimeEntryListPage() -> Element {
+    use_page_title("Time Entries");
     let mut entries_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
@@ -240,140 +241,138 @@ pub fn TimeEntryListPage() -> Element {
     let total = entries.len();
 
     rsx! {
-        AppLayout { title: "Time Entries",
-            PageHeader {
-                title: "Time Entries",
-                subtitle: "Track and manage time spent on work",
-                actions: rsx! {
-                    Link {
-                        to: Route::TimeEntryNew {},
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                            "Log Time"
-                        }
-                    }
-                },
-            }
-
-            div { class: "grid grid-cols-1 gap-5 sm:grid-cols-4 mb-6",
-                Card { class: "text-center",
-                    p { class: "text-sm text-muted", "Today" }
-                    p { class: "text-2xl font-bold text-content", "{today_h}" }
-                }
-                Card { class: "text-center",
-                    p { class: "text-sm text-muted", "This Week" }
-                    p { class: "text-2xl font-bold text-content", "{week_h}" }
-                }
-                Card { class: "text-center",
-                    p { class: "text-sm text-muted", "Billable" }
-                    p { class: "text-2xl font-bold text-green-600", "{billable_h}" }
-                }
-                Card { class: "text-center",
-                    p { class: "text-sm text-muted", "Non-Billable" }
-                    p { class: "text-2xl font-bold text-muted", "{nonbillable_h}" }
-                }
-            }
-
-            if load_failed {
-                Card { class: "mb-6",
-                    p { class: "text-sm text-yellow-600 dark:text-yellow-400",
-                        "Could not load time entries from the server."
+        PageHeader {
+            title: "Time Entries",
+            subtitle: "Track and manage time spent on work",
+            actions: rsx! {
+                Link {
+                    to: Route::TimeEntryNew {},
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "Log Time"
                     }
                 }
-            }
+            },
+        }
 
-            DataTable {
-                total_items: total,
-                current_page: 1,
-                per_page: if total == 0 { 25 } else { total },
-                columns: 6,
-                Table {
-                    TableHead {
+        div { class: "grid grid-cols-1 gap-5 sm:grid-cols-4 mb-6",
+            Card { class: "text-center",
+                p { class: "text-sm text-muted", "Today" }
+                p { class: "text-2xl font-bold text-content", "{today_h}" }
+            }
+            Card { class: "text-center",
+                p { class: "text-sm text-muted", "This Week" }
+                p { class: "text-2xl font-bold text-content", "{week_h}" }
+            }
+            Card { class: "text-center",
+                p { class: "text-sm text-muted", "Billable" }
+                p { class: "text-2xl font-bold text-green-600", "{billable_h}" }
+            }
+            Card { class: "text-center",
+                p { class: "text-sm text-muted", "Non-Billable" }
+                p { class: "text-2xl font-bold text-muted", "{nonbillable_h}" }
+            }
+        }
+
+        if load_failed {
+            Card { class: "mb-6",
+                p { class: "text-sm text-yellow-600 dark:text-yellow-400",
+                    "Could not load time entries from the server."
+                }
+            }
+        }
+
+        DataTable {
+            total_items: total,
+            current_page: 1,
+            per_page: if total == 0 { 25 } else { total },
+            columns: 6,
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Date" }
+                        TableHeader { "Work Item" }
+                        TableHeader { "Work Type" }
+                        TableHeader { "Description" }
+                        TableHeader { "Hours" }
+                        TableHeader { "Billable" }
+                    }
+                }
+                TableBody {
+                    if is_loading {
+                        TableRow { TableCell { class: "text-subtle", "Loading…" } }
+                    } else if entries.is_empty() {
                         TableRow {
-                            TableHeader { "Date" }
-                            TableHeader { "Work Item" }
-                            TableHeader { "Work Type" }
-                            TableHeader { "Description" }
-                            TableHeader { "Hours" }
-                            TableHeader { "Billable" }
+                            TableCell { class: "text-subtle italic", "No time logged yet." }
                         }
-                    }
-                    TableBody {
-                        if is_loading {
-                            TableRow { TableCell { class: "text-subtle", "Loading…" } }
-                        } else if entries.is_empty() {
-                            TableRow {
-                                TableCell { class: "text-subtle italic", "No time logged yet." }
-                            }
-                        } else {
-                            for e in entries.iter() {
-                                {
-                                    let hrs = hours(e.duration_minutes);
-                                    let note = e
-                                        .notes
-                                        .clone()
-                                        .filter(|s| !s.is_empty())
-                                        .unwrap_or_else(|| "-".to_string());
-                                    let status = e.billing_status.clone();
-                                    let wi_label = work_item_label(e);
-                                    let wt_label = e
-                                        .work_type_id
-                                        .and_then(|id| work_type_name_by_id.get(&id).cloned())
-                                        .unwrap_or_else(|| "-".to_string());
-                                    let entry = e.clone();
-                                    rsx! {
-                                        TableRow {
-                                            clickable: true,
-                                            onclick: move |_| selected_entry.set(Some(entry.clone())),
-                                            TableCell { class: "text-muted", "{e.date}" }
-                                            TableCell {
-                                                if let Some(tid) = e.ticket_id {
-                                                    // Stop the link click from also opening the
-                                                    // row's edit modal; let it just navigate.
-                                                    span {
-                                                        onclick: move |evt: MouseEvent| evt.stop_propagation(),
-                                                        Link {
-                                                            to: Route::TicketDetail { id: tid.to_string() },
-                                                            class: "font-medium text-accent hover:opacity-90",
-                                                            "{wi_label}"
-                                                        }
+                    } else {
+                        for e in entries.iter() {
+                            {
+                                let hrs = hours(e.duration_minutes);
+                                let note = e
+                                    .notes
+                                    .clone()
+                                    .filter(|s| !s.is_empty())
+                                    .unwrap_or_else(|| "-".to_string());
+                                let status = e.billing_status.clone();
+                                let wi_label = work_item_label(e);
+                                let wt_label = e
+                                    .work_type_id
+                                    .and_then(|id| work_type_name_by_id.get(&id).cloned())
+                                    .unwrap_or_else(|| "-".to_string());
+                                let entry = e.clone();
+                                rsx! {
+                                    TableRow {
+                                        clickable: true,
+                                        onclick: move |_| selected_entry.set(Some(entry.clone())),
+                                        TableCell { class: "text-muted", "{e.date}" }
+                                        TableCell {
+                                            if let Some(tid) = e.ticket_id {
+                                                // Stop the link click from also opening the
+                                                // row's edit modal; let it just navigate.
+                                                span {
+                                                    onclick: move |evt: MouseEvent| evt.stop_propagation(),
+                                                    Link {
+                                                        to: Route::TicketDetail { id: tid.to_string() },
+                                                        class: "font-medium text-accent hover:opacity-90",
+                                                        "{wi_label}"
                                                     }
-                                                } else if let Some(pid) = e.project_id {
-                                                    // PMS-320: link the project like the ticket
-                                                    // above. stop_propagation so the link
-                                                    // navigates instead of opening the edit modal.
-                                                    span {
-                                                        onclick: move |evt: MouseEvent| evt.stop_propagation(),
-                                                        Link {
-                                                            to: Route::ProjectDetail { id: pid.to_string() },
-                                                            class: "font-medium text-accent hover:opacity-90",
-                                                            "{wi_label}"
-                                                        }
-                                                    }
-                                                } else if e.work_category.as_deref()
-                                                    == Some("general")
-                                                {
-                                                    // MAPPS-243: a ticketless overhead entry. No
-                                                    // detail page to link to, so render the
-                                                    // "General" label as plain content.
-                                                    span { class: "font-medium text-content", "{wi_label}" }
-                                                } else {
-                                                    span { class: "text-subtle", "-" }
                                                 }
+                                            } else if let Some(pid) = e.project_id {
+                                                // PMS-320: link the project like the ticket
+                                                // above. stop_propagation so the link
+                                                // navigates instead of opening the edit modal.
+                                                span {
+                                                    onclick: move |evt: MouseEvent| evt.stop_propagation(),
+                                                    Link {
+                                                        to: Route::ProjectDetail { id: pid.to_string() },
+                                                        class: "font-medium text-accent hover:opacity-90",
+                                                        "{wi_label}"
+                                                    }
+                                                }
+                                            } else if e.work_category.as_deref()
+                                                == Some("general")
+                                            {
+                                                // MAPPS-243: a ticketless overhead entry. No
+                                                // detail page to link to, so render the
+                                                // "General" label as plain content.
+                                                span { class: "font-medium text-content", "{wi_label}" }
+                                            } else {
+                                                span { class: "text-subtle", "-" }
                                             }
-                                            TableCell { class: "text-muted", "{wt_label}" }
-                                            TableCell { class: "max-w-xs truncate", "{note}" }
-                                            TableCell { class: "font-medium", "{hrs}" }
-                                            TableCell {
-                                                if e.is_billable {
-                                                    Badge { variant: BadgeVariant::Green, "Billable" }
-                                                } else {
-                                                    Badge { variant: BadgeVariant::Gray, "Non-Billable" }
-                                                }
-                                                if !status.is_empty() && status != "not_billed" {
-                                                    span { class: "ml-2 text-xs text-subtle", "{status}" }
-                                                }
+                                        }
+                                        TableCell { class: "text-muted", "{wt_label}" }
+                                        TableCell { class: "max-w-xs truncate", "{note}" }
+                                        TableCell { class: "font-medium", "{hrs}" }
+                                        TableCell {
+                                            if e.is_billable {
+                                                Badge { variant: BadgeVariant::Green, "Billable" }
+                                            } else {
+                                                Badge { variant: BadgeVariant::Gray, "Non-Billable" }
+                                            }
+                                            if !status.is_empty() && status != "not_billed" {
+                                                span { class: "ml-2 text-xs text-subtle", "{status}" }
                                             }
                                         }
                                     }
@@ -383,16 +382,16 @@ pub fn TimeEntryListPage() -> Element {
                     }
                 }
             }
+        }
 
-            if let Some(entry) = selected_entry() {
-                TimeEntryEditModal {
-                    entry,
-                    onclose: move |_| selected_entry.set(None),
-                    onsaved: move |_| {
-                        selected_entry.set(None);
-                        entries_resource.restart();
-                    },
-                }
+        if let Some(entry) = selected_entry() {
+            TimeEntryEditModal {
+                entry,
+                onclose: move |_| selected_entry.set(None),
+                onsaved: move |_| {
+                    selected_entry.set(None);
+                    entries_resource.restart();
+                },
             }
         }
     }
@@ -450,6 +449,7 @@ fn read_ticket_prefill_from_url() -> String {
 /// New time entry page
 #[component]
 pub fn TimeEntryNewPage() -> Element {
+    use_page_title("Log Time");
     let auth = crate::hooks::auth::use_auth();
     // PMS-362: seed the work-item picker from `?ticket_id=` when linked from a
     // ticket; falls back to empty for direct navigation (no regression).
@@ -653,316 +653,314 @@ pub fn TimeEntryNewPage() -> Element {
     let can_mutate = crate::hooks::use_can_mutate();
 
     rsx! {
-        AppLayout { title: "Log Time",
-            PageHeader { title: "Log Time", subtitle: "Record time spent on work" }
+        PageHeader { title: "Log Time", subtitle: "Record time spent on work" }
 
-            Card {
-                form {
-                    class: "space-y-6",
-                    onsubmit: move |e: FormEvent| {
-                        e.prevent_default();
-                        error.set(String::new());
-                        let wi = work_item.read().clone();
-                        let wtid = work_type.read().clone();
-                        let hrs = hours.read().clone();
-                        let desc = description.read().trim().to_string();
-                        let billable = *is_billable.read();
+        Card {
+            form {
+                class: "space-y-6",
+                onsubmit: move |e: FormEvent| {
+                    e.prevent_default();
+                    error.set(String::new());
+                    let wi = work_item.read().clone();
+                    let wtid = work_type.read().clone();
+                    let hrs = hours.read().clone();
+                    let desc = description.read().trim().to_string();
+                    let billable = *is_billable.read();
 
-                        // PMS-518: validate every required field through the shared
-                        // FormGuard so all "you forgot to fill X" failures surface at
-                        // once (each in its own inline slot) and the first is focused.
-                        // Description is now enforced (it carried the asterisk but was
-                        // never validated). The cross-field resolution and per-day cap
-                        // errors below have no single field, so they stay on the
-                        // form-level banner.
-                        let mut guard = FormGuard::new();
-                        work_item_error
-                            .set(guard.field("work_item", &wi, "Work item", &[Rule::Required]));
-                        work_type_error
-                            .set(guard.field("work_type", &wtid, "Work type", &[Rule::Required]));
-                        description_error
-                            .set(guard.field("description", &desc, "Description", &[Rule::Required]));
+                    // PMS-518: validate every required field through the shared
+                    // FormGuard so all "you forgot to fill X" failures surface at
+                    // once (each in its own inline slot) and the first is focused.
+                    // Description is now enforced (it carried the asterisk but was
+                    // never validated). The cross-field resolution and per-day cap
+                    // errors below have no single field, so they stay on the
+                    // form-level banner.
+                    let mut guard = FormGuard::new();
+                    work_item_error
+                        .set(guard.field("work_item", &wi, "Work item", &[Rule::Required]));
+                    work_type_error
+                        .set(guard.field("work_type", &wtid, "Work type", &[Rule::Required]));
+                    description_error
+                        .set(guard.field("description", &desc, "Description", &[Rule::Required]));
 
-                        // The Hours field is free-text (it accepts H:MM as well as
-                        // decimal), so it keeps its custom parse: 0 < t <= 24h (the
-                        // hard single-entry bound, MAPPS-244 AC6). It reports through
-                        // the guard so it joins the same up-front pass.
-                        let duration_minutes =
-                            match crate::utils::duration::parse_input_to_minutes(&hrs) {
-                                Some(m) if m > 0 && m <= MAX_SINGLE_ENTRY_MINUTES => {
-                                    hours_error.set(String::new());
-                                    Some(m)
-                                }
-                                _ => {
-                                    hours_error.set(
-                                        "Enter time as hours (2.5) or H:MM (1:30), greater than 0 and at most 24h."
+                    // The Hours field is free-text (it accepts H:MM as well as
+                    // decimal), so it keeps its custom parse: 0 < t <= 24h (the
+                    // hard single-entry bound, MAPPS-244 AC6). It reports through
+                    // the guard so it joins the same up-front pass.
+                    let duration_minutes =
+                        match crate::utils::duration::parse_input_to_minutes(&hrs) {
+                            Some(m) if m > 0 && m <= MAX_SINGLE_ENTRY_MINUTES => {
+                                hours_error.set(String::new());
+                                Some(m)
+                            }
+                            _ => {
+                                hours_error.set(
+                                    "Enter time as hours (2.5) or H:MM (1:30), greater than 0 and at most 24h."
+                                        .to_string(),
+                                );
+                                guard.note_invalid(Some("hours"));
+                                None
+                            }
+                        };
+
+                    if guard.blocked() {
+                        return;
+                    }
+                    // Past the guard: Hours parsed to a valid duration.
+                    let Some(duration_minutes) = duration_minutes else {
+                        return;
+                    };
+                    // MAPPS-244: pre-flight per-day cap check. Once today's
+                    // existing total is known, block (before the network
+                    // call) any entry that would push the day over the
+                    // configured cap, naming the cap and the minutes left.
+                    if let Some(existing) = existing_today_minutes {
+                        if existing + duration_minutes > cap_minutes {
+                            let remaining = (cap_minutes - existing).max(0);
+                            error.set(format!(
+                                "This entry would put today's total over the {}h/day cap. \
+                                 You have {} minute(s) left to log today.",
+                                cap_minutes / 60,
+                                remaining,
+                            ));
+                            return;
+                        }
+                    }
+                    // Resolve the work item into (ticket_id, project_id,
+                    // task_id, company_id, work_category). A ticket carries
+                    // its company; a project carries its own (required,
+                    // which is why the picker only lists projects that have
+                    // one). MAPPS-243: a "general" selection carries no work
+                    // item and attributes to the tenant's own company; the
+                    // server classifies it via work_category (PMS-394).
+                    let (ticket_id, project_id, task_id, company_id, work_category) =
+                        if wi == "general" {
+                            // MAPPS-243: a deliberate overhead entry. The
+                            // option is UI-disabled when own_company_id is
+                            // None, but re-check here so we never POST a
+                            // null company_id (no invented fallback).
+                            match own_company_id {
+                                Some(cid) => (None, None, None, cid, "general"),
+                                None => {
+                                    error.set(
+                                        "General time needs your company on file, which isn't set yet. Pick a ticket or project, or contact an admin."
                                             .to_string(),
                                     );
-                                    guard.note_invalid(Some("hours"));
-                                    None
+                                    return;
                                 }
-                            };
-
-                        if guard.blocked() {
-                            return;
-                        }
-                        // Past the guard: Hours parsed to a valid duration.
-                        let Some(duration_minutes) = duration_minutes else {
-                            return;
-                        };
-                        // MAPPS-244: pre-flight per-day cap check. Once today's
-                        // existing total is known, block (before the network
-                        // call) any entry that would push the day over the
-                        // configured cap, naming the cap and the minutes left.
-                        if let Some(existing) = existing_today_minutes {
-                            if existing + duration_minutes > cap_minutes {
-                                let remaining = (cap_minutes - existing).max(0);
-                                error.set(format!(
-                                    "This entry would put today's total over the {}h/day cap. \
-                                     You have {} minute(s) left to log today.",
-                                    cap_minutes / 60,
-                                    remaining,
-                                ));
-                                return;
                             }
-                        }
-                        // Resolve the work item into (ticket_id, project_id,
-                        // task_id, company_id, work_category). A ticket carries
-                        // its company; a project carries its own (required,
-                        // which is why the picker only lists projects that have
-                        // one). MAPPS-243: a "general" selection carries no work
-                        // item and attributes to the tenant's own company; the
-                        // server classifies it via work_category (PMS-394).
-                        let (ticket_id, project_id, task_id, company_id, work_category) =
-                            if wi == "general" {
-                                // MAPPS-243: a deliberate overhead entry. The
-                                // option is UI-disabled when own_company_id is
-                                // None, but re-check here so we never POST a
-                                // null company_id (no invented fallback).
-                                match own_company_id {
-                                    Some(cid) => (None, None, None, cid, "general"),
+                        } else if let Some(tid) = wi.strip_prefix("ticket:") {
+                            match tickets_for_submit.iter().find(|t| t.id.to_string() == tid) {
+                                Some(t) => {
+                                    (Some(tid.to_string()), None, None, t.company_id, "ticketed")
+                                }
+                                None => {
+                                    error.set("Could not resolve the ticket.".to_string());
+                                    return;
+                                }
+                            }
+                        } else if let Some(pid) = wi.strip_prefix("project:") {
+                            match projects_for_submit.iter().find(|p| p.id.to_string() == pid) {
+                                Some(p) => match p.company_id {
+                                    Some(cid) => {
+                                        let tk = task.read().clone();
+                                        let tk = if tk.is_empty() { None } else { Some(tk) };
+                                        (None, Some(pid.to_string()), tk, cid, "project")
+                                    }
                                     None => {
                                         error.set(
-                                            "General time needs your company on file, which isn't set yet. Pick a ticket or project, or contact an admin."
+                                            "That project has no company; pick a ticket or a project with a company."
                                                 .to_string(),
                                         );
                                         return;
                                     }
+                                },
+                                None => {
+                                    error.set("Could not resolve the project.".to_string());
+                                    return;
                                 }
-                            } else if let Some(tid) = wi.strip_prefix("ticket:") {
-                                match tickets_for_submit.iter().find(|t| t.id.to_string() == tid) {
-                                    Some(t) => {
-                                        (Some(tid.to_string()), None, None, t.company_id, "ticketed")
-                                    }
-                                    None => {
-                                        error.set("Could not resolve the ticket.".to_string());
-                                        return;
-                                    }
-                                }
-                            } else if let Some(pid) = wi.strip_prefix("project:") {
-                                match projects_for_submit.iter().find(|p| p.id.to_string() == pid) {
-                                    Some(p) => match p.company_id {
-                                        Some(cid) => {
-                                            let tk = task.read().clone();
-                                            let tk = if tk.is_empty() { None } else { Some(tk) };
-                                            (None, Some(pid.to_string()), tk, cid, "project")
-                                        }
-                                        None => {
-                                            error.set(
-                                                "That project has no company; pick a ticket or a project with a company."
-                                                    .to_string(),
-                                            );
-                                            return;
-                                        }
-                                    },
-                                    None => {
-                                        error.set("Could not resolve the project.".to_string());
-                                        return;
-                                    }
-                                }
-                            } else {
-                                error.set("Please pick a work item.".to_string());
-                                return;
-                            };
-                        let user_id = match auth.read().user.as_ref().map(|u| u.id) {
-                            Some(id) => id,
-                            None => {
-                                error.set("Not signed in.".to_string());
-                                return;
                             }
+                        } else {
+                            error.set("Please pick a work item.".to_string());
+                            return;
                         };
-                        let date = Utc::now().date_naive().to_string();
+                    let user_id = match auth.read().user.as_ref().map(|u| u.id) {
+                        Some(id) => id,
+                        None => {
+                            error.set("Not signed in.".to_string());
+                            return;
+                        }
+                    };
+                    let date = Utc::now().date_naive().to_string();
 
-                        is_submitting.set(true);
-                        spawn(async move {
-                            #[cfg(feature = "web")]
+                    is_submitting.set(true);
+                    spawn(async move {
+                        #[cfg(feature = "web")]
+                        {
+                            let mut body = serde_json::json!({
+                                "user_id": user_id,
+                                "date": date,
+                                "duration_minutes": duration_minutes,
+                                "work_type_id": wtid,
+                                "company_id": company_id,
+                                // MAPPS-243 / PMS-394: classify the entry so
+                                // reports split overhead ("general") from
+                                // client-attributable work. "ticketed" with
+                                // a ticket and "project" with a project both
+                                // pass the server's derive_work_category
+                                // consistency check.
+                                "work_category": work_category,
+                                "notes": desc,
+                                "is_billable": billable,
+                            });
+                            if let Some(t) = ticket_id {
+                                body["ticket_id"] = serde_json::json!(t);
+                            }
+                            if let Some(p) = project_id {
+                                body["project_id"] = serde_json::json!(p);
+                            }
+                            if let Some(tk) = task_id {
+                                body["task_id"] = serde_json::json!(tk);
+                            }
+                            match crate::hooks::fetch::api::post_authed_typed::<serde_json::Value, _>(
+                                "/time-entries",
+                                &body,
+                            )
+                            .await
                             {
-                                let mut body = serde_json::json!({
-                                    "user_id": user_id,
-                                    "date": date,
-                                    "duration_minutes": duration_minutes,
-                                    "work_type_id": wtid,
-                                    "company_id": company_id,
-                                    // MAPPS-243 / PMS-394: classify the entry so
-                                    // reports split overhead ("general") from
-                                    // client-attributable work. "ticketed" with
-                                    // a ticket and "project" with a project both
-                                    // pass the server's derive_work_category
-                                    // consistency check.
-                                    "work_category": work_category,
-                                    "notes": desc,
-                                    "is_billable": billable,
-                                });
-                                if let Some(t) = ticket_id {
-                                    body["ticket_id"] = serde_json::json!(t);
+                                Ok(_) => {
+                                    dioxus::prelude::navigator().push(Route::TimeEntryList {});
                                 }
-                                if let Some(p) = project_id {
-                                    body["project_id"] = serde_json::json!(p);
-                                }
-                                if let Some(tk) = task_id {
-                                    body["task_id"] = serde_json::json!(tk);
-                                }
-                                match crate::hooks::fetch::api::post_authed_typed::<serde_json::Value, _>(
-                                    "/time-entries",
-                                    &body,
-                                )
-                                .await
-                                {
-                                    Ok(_) => {
-                                        dioxus::prelude::navigator().push(Route::TimeEntryList {});
-                                    }
-                                    // MAPPS-244: surface the server's day-cap
-                                    // rejection (409/422 from PMS-396, e.g. a
-                                    // race past the pre-flight check) and any
-                                    // other validation message in the banner.
-                                    Err(e) => {
-                                        error.set(format!(
-                                            "Could not save time entry: {}",
-                                            e.user_message()
-                                        ));
-                                    }
+                                // MAPPS-244: surface the server's day-cap
+                                // rejection (409/422 from PMS-396, e.g. a
+                                // race past the pre-flight check) and any
+                                // other validation message in the banner.
+                                Err(e) => {
+                                    error.set(format!(
+                                        "Could not save time entry: {}",
+                                        e.user_message()
+                                    ));
                                 }
                             }
-                            is_submitting.set(false);
-                        });
-                    },
-
-                    if !err.is_empty() {
-                        div { class: "rounded-md bg-red-50 dark:bg-red-900/20 p-3",
-                            p { class: "text-sm text-red-600 dark:text-red-400", "{err}" }
                         }
-                    }
+                        is_submitting.set(false);
+                    });
+                },
 
-                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
-                        Select {
-                            name: "work_item",
-                            label: "Work Item",
-                            options: work_item_options,
-                            value: work_item.read().clone(),
-                            placeholder: "Select work item",
-                            required: true,
-                            rules: vec![Rule::Required],
-                            error: work_item_error.read().clone(),
-                            help: work_item_help.to_string(),
-                            onchange: move |e: FormEvent| {
-                                work_item_error.set(String::new());
-                                work_item.set(e.value());
-                                // Reset the task when the work item changes so a
-                                // stale task from a previous project isn't kept.
-                                task.set(String::new());
-                            },
-                        }
-                        Select {
-                            name: "work_type",
-                            label: "Work Type",
-                            options: work_type_options,
-                            value: work_type.read().clone(),
-                            placeholder: "Select work type",
-                            required: true,
-                            rules: vec![Rule::Required],
-                            error: work_type_error.read().clone(),
-                            onchange: move |e: FormEvent| {
-                                work_type_error.set(String::new());
-                                work_type.set(e.value());
-                            },
-                        }
+                if !err.is_empty() {
+                    div { class: "rounded-md bg-red-50 dark:bg-red-900/20 p-3",
+                        p { class: "text-sm text-red-600 dark:text-red-400", "{err}" }
                     }
+                }
 
-                    if is_project_item {
-                        Select {
-                            name: "task",
-                            label: "Task (optional)",
-                            options: task_options,
-                            value: task.read().clone(),
-                            onchange: move |e: FormEvent| task.set(e.value()),
-                        }
-                    }
-
-                    crate::components::Input {
-                        name: "hours",
-                        label: "Hours",
-                        // Free-text so H:MM (e.g. "0:30") can be typed; a
-                        // type="number" input blocks the colon. PMS-314.
-                        // Validation lives in the submit handler (free-text
-                        // parse, not a simple `rules` rule), surfaced inline
-                        // via `hours_error` (PMS-518).
-                        r#type: "text",
-                        placeholder: "2, 2.5, or 1:30",
-                        help: "Decimal hours or H:MM.",
-                        required: true,
-                        error: hours_error.read().clone(),
-                        value: hours.read().clone(),
-                        oninput: move |e: FormEvent| {
-                            hours_error.set(String::new());
-                            hours.set(e.value());
-                        },
-                    }
-
-                    crate::components::Textarea {
-                        name: "description",
-                        label: "Description",
-                        placeholder: "What did you work on?",
-                        rows: 3,
+                div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
+                    Select {
+                        name: "work_item",
+                        label: "Work Item",
+                        options: work_item_options,
+                        value: work_item.read().clone(),
+                        placeholder: "Select work item",
                         required: true,
                         rules: vec![Rule::Required],
-                        error: description_error.read().clone(),
-                        value: description.read().clone(),
-                        oninput: move |e: FormEvent| {
-                            description_error.set(String::new());
-                            description.set(e.value());
+                        error: work_item_error.read().clone(),
+                        help: work_item_help.to_string(),
+                        onchange: move |e: FormEvent| {
+                            work_item_error.set(String::new());
+                            work_item.set(e.value());
+                            // Reset the task when the work item changes so a
+                            // stale task from a previous project isn't kept.
+                            task.set(String::new());
                         },
                     }
-
-                    crate::components::Checkbox {
-                        name: "billable",
-                        label: "Billable",
-                        checked: *is_billable.read(),
-                        help: "Mark this time entry as billable to the customer",
-                        // PMS-571: drive state from the event's actual checked
-                        // value (re-anchoring to the DOM) instead of inverting
-                        // stored state, which could desync a controlled checkbox
-                        // so clicks appeared to do nothing. Matches the working
-                        // `certified` checkbox.
-                        onchange: move |e: FormEvent| is_billable.set(e.checked()),
+                    Select {
+                        name: "work_type",
+                        label: "Work Type",
+                        options: work_type_options,
+                        value: work_type.read().clone(),
+                        placeholder: "Select work type",
+                        required: true,
+                        rules: vec![Rule::Required],
+                        error: work_type_error.read().clone(),
+                        onchange: move |e: FormEvent| {
+                            work_type_error.set(String::new());
+                            work_type.set(e.value());
+                        },
                     }
+                }
 
-                    div { class: "flex justify-end space-x-3",
-                        Link {
-                            to: Route::TimeEntryList {},
-                            Button {
-                                variant: ButtonVariant::Secondary,
-                                "Cancel"
-                            }
-                        }
+                if is_project_item {
+                    Select {
+                        name: "task",
+                        label: "Task (optional)",
+                        options: task_options,
+                        value: task.read().clone(),
+                        onchange: move |e: FormEvent| task.set(e.value()),
+                    }
+                }
+
+                crate::components::Input {
+                    name: "hours",
+                    label: "Hours",
+                    // Free-text so H:MM (e.g. "0:30") can be typed; a
+                    // type="number" input blocks the colon. PMS-314.
+                    // Validation lives in the submit handler (free-text
+                    // parse, not a simple `rules` rule), surfaced inline
+                    // via `hours_error` (PMS-518).
+                    r#type: "text",
+                    placeholder: "2, 2.5, or 1:30",
+                    help: "Decimal hours or H:MM.",
+                    required: true,
+                    error: hours_error.read().clone(),
+                    value: hours.read().clone(),
+                    oninput: move |e: FormEvent| {
+                        hours_error.set(String::new());
+                        hours.set(e.value());
+                    },
+                }
+
+                crate::components::Textarea {
+                    name: "description",
+                    label: "Description",
+                    placeholder: "What did you work on?",
+                    rows: 3,
+                    required: true,
+                    rules: vec![Rule::Required],
+                    error: description_error.read().clone(),
+                    value: description.read().clone(),
+                    oninput: move |e: FormEvent| {
+                        description_error.set(String::new());
+                        description.set(e.value());
+                    },
+                }
+
+                crate::components::Checkbox {
+                    name: "billable",
+                    label: "Billable",
+                    checked: *is_billable.read(),
+                    help: "Mark this time entry as billable to the customer",
+                    // PMS-571: drive state from the event's actual checked
+                    // value (re-anchoring to the DOM) instead of inverting
+                    // stored state, which could desync a controlled checkbox
+                    // so clicks appeared to do nothing. Matches the working
+                    // `certified` checkbox.
+                    onchange: move |e: FormEvent| is_billable.set(e.checked()),
+                }
+
+                div { class: "flex justify-end space-x-3",
+                    Link {
+                        to: Route::TimeEntryList {},
                         Button {
-                            r#type: "submit",
-                            variant: ButtonVariant::Primary,
-                            loading: *is_submitting.read(),
-                            // MAPPS-357: block submit while the server is down.
-                            disabled: !can_mutate,
-                            title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
-                            "Save Time Entry"
+                            variant: ButtonVariant::Secondary,
+                            "Cancel"
                         }
+                    }
+                    Button {
+                        r#type: "submit",
+                        variant: ButtonVariant::Primary,
+                        loading: *is_submitting.read(),
+                        // MAPPS-357: block submit while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
+                        "Save Time Entry"
                     }
                 }
             }
@@ -976,6 +974,7 @@ pub fn TimeEntryNewPage() -> Element {
 /// shows the week's approval status, and wires the Submit action.
 #[component]
 pub fn TimesheetsPage() -> Element {
+    use_page_title("Timesheets");
     let auth = crate::hooks::auth::use_auth();
     let today = Utc::now().date_naive();
     let mut week_start = use_signal(|| monday_of_week(today));
@@ -1162,373 +1161,371 @@ pub fn TimesheetsPage() -> Element {
     let err = action_err.read().clone();
 
     rsx! {
-        AppLayout { title: "Timesheets",
-            PageHeader {
-                title: "Timesheets",
-                subtitle: "Weekly timesheet management",
-                actions: rsx! {
-                    div { class: "flex items-center gap-3",
-                        Badge { variant: status_variant, "{status_text}" }
-                        if is_pending {
-                            // Submitted, not yet approved: allow withdrawal.
-                            Button {
-                                variant: ButtonVariant::Secondary,
-                                loading: withdrawing,
-                                // MAPPS-357: block withdraw while the server is down.
-                                disabled: !can_mutate,
-                                title: (!can_mutate).then(|| "Can't withdraw while the server is unreachable".to_string()),
-                                onclick: move |_| {
-                                    action_msg.set(String::new());
-                                    action_err.set(String::new());
-                                    let start = week_start();
-                                    let user_id = match auth.read().user.as_ref().map(|u| u.id) {
-                                        Some(id) => id,
-                                        None => {
-                                            action_err.set("Not signed in.".to_string());
-                                            return;
-                                        }
-                                    };
-                                    is_withdrawing.set(true);
-                                    let mut sr = summary_resource;
-                                    let mut er = entries_resource;
-                                    spawn(async move {
-                                        #[cfg(feature = "web")]
-                                        {
-                                            let path = format!("/timesheets/{user_id}/{start}/withdraw");
-                                            match crate::hooks::fetch::api::post_authed::<
-                                                serde_json::Value,
-                                                _,
-                                            >(&path, &serde_json::json!({}))
-                                                .await
-                                            {
-                                                Ok(_) => {
-                                                    action_msg
-                                                        .set("Timesheet withdrawn back to draft.".to_string());
-                                                    sr.restart();
-                                                    er.restart();
-                                                }
-                                                Err(e) => {
-                                                    action_err
-                                                        .set(format!("Could not withdraw timesheet: {e}"));
-                                                }
-                                            }
-                                        }
-                                        is_withdrawing.set(false);
-                                    });
-                                },
-                                "Withdraw"
-                            }
-                        } else {
-                            // Draft / rejected: open the submit confirmation modal.
-                            // Column so the disabled reason (PMS-310) can sit
-                            // directly under the button, right-aligned with it.
-                            div { class: "flex flex-col items-end gap-1",
-                                Button {
-                                    variant: ButtonVariant::Primary,
-                                    // MAPPS-357: also block while the server is down.
-                                    disabled: already_approved || !has_entries || !can_mutate,
-                                    title: if already_approved {
-                                        Some("This timesheet has already been approved.".to_string())
-                                    } else if !has_entries {
-                                        Some("No time logged this week yet.".to_string())
-                                    } else if !can_mutate {
-                                        Some("Can't submit while the server is unreachable".to_string())
-                                    } else {
-                                        None
-                                    },
-                                    onclick: move |_| {
-                                        action_msg.set(String::new());
-                                        action_err.set(String::new());
-                                        certified.set(false);
-                                        show_submit_modal.set(true);
-                                    },
-                                    "Submit Timesheet"
-                                }
-                                if show_no_entries_hint {
-                                    span { class: "text-xs text-muted",
-                                        "No time logged this week yet."
+        PageHeader {
+            title: "Timesheets",
+            subtitle: "Weekly timesheet management",
+            actions: rsx! {
+                div { class: "flex items-center gap-3",
+                    Badge { variant: status_variant, "{status_text}" }
+                    if is_pending {
+                        // Submitted, not yet approved: allow withdrawal.
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            loading: withdrawing,
+                            // MAPPS-357: block withdraw while the server is down.
+                            disabled: !can_mutate,
+                            title: (!can_mutate).then(|| "Can't withdraw while the server is unreachable".to_string()),
+                            onclick: move |_| {
+                                action_msg.set(String::new());
+                                action_err.set(String::new());
+                                let start = week_start();
+                                let user_id = match auth.read().user.as_ref().map(|u| u.id) {
+                                    Some(id) => id,
+                                    None => {
+                                        action_err.set("Not signed in.".to_string());
+                                        return;
                                     }
-                                }
-                            }
-                        }
-                    }
-                },
-            }
-
-            if !msg.is_empty() {
-                div { class: "mb-4 rounded-md bg-green-50 dark:bg-green-900/20 p-3",
-                    p { class: "text-sm text-green-700 dark:text-green-400", "{msg}" }
-                }
-            }
-            if !err.is_empty() {
-                div { class: "mb-4 rounded-md bg-red-50 dark:bg-red-900/20 p-3",
-                    p { class: "text-sm text-red-600 dark:text-red-400", "{err}" }
-                }
-            }
-
-            // Week selector
-            Card { class: "mb-6",
-                div { class: "flex items-center justify-between",
-                    button {
-                        r#type: "button",
-                        class: "p-2 text-subtle hover:text-content",
-                        title: "Previous week",
-                        onclick: move |_| {
-                            action_msg.set(String::new());
-                            action_err.set(String::new());
-                            week_start.set(week_start() - Duration::days(7));
-                        },
-                        ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
-                    }
-                    div { class: "flex flex-col items-center gap-1",
-                        span { class: "text-lg font-medium text-content",
-                            "{week_label}"
-                        }
-                        // PMS-310: one-click return to the current week (only
-                        // shown when paged away from it), so a future/empty
-                        // week is not a dead end.
-                        if !is_current_week {
-                            button {
-                                r#type: "button",
-                                class: "text-xs font-medium text-accent hover:opacity-90",
-                                onclick: move |_| {
-                                    action_msg.set(String::new());
-                                    action_err.set(String::new());
-                                    week_start.set(current_week);
-                                },
-                                "Jump to current week"
-                            }
-                        }
-                    }
-                    button {
-                        r#type: "button",
-                        class: "p-2 text-subtle hover:text-content",
-                        title: "Next week",
-                        onclick: move |_| {
-                            action_msg.set(String::new());
-                            action_err.set(String::new());
-                            week_start.set(week_start() + Duration::days(7));
-                        },
-                        ChevronRightIcon { class: "h-5 w-5".to_string() }
-                    }
-                }
-            }
-
-            // Weekly grid
-            Card { padding: false,
-                div { class: "overflow-x-auto",
-                    table { class: "min-w-full divide-y divide-line",
-                        thead { class: "bg-surface-2",
-                            tr {
-                                th { class: "px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider",
-                                    "Work Item"
-                                }
-                                th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
-                                    "Mon"
-                                }
-                                th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
-                                    "Tue"
-                                }
-                                th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
-                                    "Wed"
-                                }
-                                th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
-                                    "Thu"
-                                }
-                                th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
-                                    "Fri"
-                                }
-                                th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
-                                    "Sat"
-                                }
-                                th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
-                                    "Sun"
-                                }
-                                th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
-                                    "Total"
-                                }
-                            }
-                        }
-                        tbody { class: "bg-surface divide-y divide-line",
-                            if is_loading {
-                                // PMS-353: shimmer rows (matching the shared
-                                // skeleton style) instead of a bare text line.
-                                // This timesheet is a bespoke weekly grid, not
-                                // the shared Table, so it can't use TableLoading.
-                                for _ in 0..4 {
-                                    tr {
-                                        td { class: "px-6 py-4", colspan: "9",
-                                            div { class: "h-4 bg-surface-2 rounded animate-pulse" }
-                                        }
-                                    }
-                                }
-                            } else if load_failed {
-                                tr {
-                                    td {
-                                        class: "px-6 py-8 text-center text-sm text-red-500",
-                                        colspan: "9",
-                                        "Could not load timesheet. The time-tracking service may be unavailable."
-                                    }
-                                }
-                            } else if !has_entries {
-                                // MAPPS-201: empty-week prompt + one-click path
-                                // to a new entry for the current week. Submit
-                                // stays disabled until an entry exists.
-                                tr {
-                                    td {
-                                        class: "px-6 py-8 text-center",
-                                        colspan: "9",
-                                        p { class: "text-sm text-muted",
-                                            "No time logged this week yet. Select a time to log for this week."
-                                        }
-                                        div { class: "mt-3",
-                                            Link {
-                                                to: Route::TimeEntryNew {},
-                                                Button {
-                                                    variant: ButtonVariant::Primary,
-                                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                                    "Log Time"
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                for (label , route , buckets) in rows.iter() {
+                                };
+                                is_withdrawing.set(true);
+                                let mut sr = summary_resource;
+                                let mut er = entries_resource;
+                                spawn(async move {
+                                    #[cfg(feature = "web")]
                                     {
-                                        let row_total = buckets.iter().sum::<i64>();
-                                        rsx! {
-                                            tr {
-                                                td { class: "px-6 py-3 text-sm",
-                                                    // MAPPS-206: link the work item to its detail.
-                                                    if let Some(r) = route {
-                                                        Link {
-                                                            to: r.clone(),
-                                                            class: "font-medium text-accent hover:opacity-90",
-                                                            "{label}"
-                                                        }
-                                                    } else {
-                                                        span { class: "text-content", "{label}" }
-                                                    }
-                                                }
-                                                for m in buckets.iter() {
-                                                    td { class: "px-4 py-3 text-center text-sm",
-                                                        if *m == 0 {
-                                                            span { class: "text-subtle", "-" }
-                                                        } else {
-                                                            span { class: "text-content", "{fmt_hours(*m)}" }
-                                                        }
-                                                    }
-                                                }
-                                                td { class: "px-4 py-3 text-center text-sm font-medium text-content",
-                                                    "{fmt_hours(row_total)}"
-                                                }
+                                        let path = format!("/timesheets/{user_id}/{start}/withdraw");
+                                        match crate::hooks::fetch::api::post_authed::<
+                                            serde_json::Value,
+                                            _,
+                                        >(&path, &serde_json::json!({}))
+                                            .await
+                                        {
+                                            Ok(_) => {
+                                                action_msg
+                                                    .set("Timesheet withdrawn back to draft.".to_string());
+                                                sr.restart();
+                                                er.restart();
+                                            }
+                                            Err(e) => {
+                                                action_err
+                                                    .set(format!("Could not withdraw timesheet: {e}"));
                                             }
                                         }
                                     }
-                                }
-                                tr { class: "bg-surface-2 font-medium",
-                                    td { class: "px-6 py-3 text-sm text-content",
-                                        "Daily Total"
-                                    }
-                                    for m in daily_totals.iter() {
-                                        td { class: "px-4 py-3 text-center text-sm text-content",
-                                            if *m == 0 {
-                                                span { class: "text-muted", "0" }
-                                            } else {
-                                                "{fmt_hours(*m)}"
-                                            }
-                                        }
-                                    }
-                                    td { class: "px-4 py-3 text-center text-sm font-bold text-accent",
-                                        "{fmt_hours(grand_total)}"
-                                    }
-                                }
-                            }
+                                    is_withdrawing.set(false);
+                                });
+                            },
+                            "Withdraw"
                         }
-                    }
-                }
-            }
-
-            // PMS-183 submit confirmation with required certification.
-            {
-                let do_submit = move |_| {
-                    if !certified() || submitting {
-                        return;
-                    }
-                    let start = week_start();
-                    let user_id = match auth.read().user.as_ref().map(|u| u.id) {
-                        Some(id) => id,
-                        None => {
-                            action_err.set("Not signed in.".to_string());
-                            return;
-                        }
-                    };
-                    is_submitting.set(true);
-                    let mut sr = summary_resource;
-                    let mut er = entries_resource;
-                    spawn(async move {
-                        #[cfg(feature = "web")]
-                        {
-                            let path = format!("/timesheets/{user_id}/{start}/submit");
-                            match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
-                                &path,
-                                &serde_json::json!({}),
-                            )
-                            .await
-                            {
-                                Ok(_) => {
-                                    action_msg
-                                        .set("Timesheet submitted for approval.".to_string());
-                                    show_submit_modal.set(false);
-                                    sr.restart();
-                                    er.restart();
-                                }
-                                Err(e) => {
-                                    action_err.set(format!("Could not submit timesheet: {e}"));
-                                }
-                            }
-                        }
-                        is_submitting.set(false);
-                    });
-                };
-                rsx! {
-                    Modal {
-                        open: show_submit_modal(),
-                        title: "Submit Timesheet",
-                        size: crate::components::ModalSize::Medium,
-                        onclose: move |_| show_submit_modal.set(false),
-                        footer: rsx! {
-                            Button {
-                                variant: ButtonVariant::Secondary,
-                                onclick: move |_| show_submit_modal.set(false),
-                                "Cancel"
-                            }
+                    } else {
+                        // Draft / rejected: open the submit confirmation modal.
+                        // Column so the disabled reason (PMS-310) can sit
+                        // directly under the button, right-aligned with it.
+                        div { class: "flex flex-col items-end gap-1",
                             Button {
                                 variant: ButtonVariant::Primary,
-                                loading: submitting,
                                 // MAPPS-357: also block while the server is down.
-                                disabled: !certified() || !can_mutate,
-                                title: if !can_mutate {
+                                disabled: already_approved || !has_entries || !can_mutate,
+                                title: if already_approved {
+                                    Some("This timesheet has already been approved.".to_string())
+                                } else if !has_entries {
+                                    Some("No time logged this week yet.".to_string())
+                                } else if !can_mutate {
                                     Some("Can't submit while the server is unreachable".to_string())
                                 } else {
-                                    (!certified())
-                                        .then(|| "Check the certification box to submit.".to_string())
+                                    None
                                 },
-                                onclick: do_submit,
-                                "Submit for Approval"
+                                onclick: move |_| {
+                                    action_msg.set(String::new());
+                                    action_err.set(String::new());
+                                    certified.set(false);
+                                    show_submit_modal.set(true);
+                                },
+                                "Submit Timesheet"
                             }
-                        },
-                        div { class: "space-y-4",
-                            p { class: "text-sm text-content",
-                                "Once submitted, this timesheet goes to your manager for approval. You can withdraw it back to draft until it is approved."
+                            if show_no_entries_hint {
+                                span { class: "text-xs text-muted",
+                                    "No time logged this week yet."
+                                }
                             }
-                            Checkbox {
-                                name: "certify",
-                                label: "I certify that the timesheet I am submitting is correct.",
-                                checked: certified(),
-                                onchange: move |e: FormEvent| certified.set(e.checked()),
+                        }
+                    }
+                }
+            },
+        }
+
+        if !msg.is_empty() {
+            div { class: "mb-4 rounded-md bg-green-50 dark:bg-green-900/20 p-3",
+                p { class: "text-sm text-green-700 dark:text-green-400", "{msg}" }
+            }
+        }
+        if !err.is_empty() {
+            div { class: "mb-4 rounded-md bg-red-50 dark:bg-red-900/20 p-3",
+                p { class: "text-sm text-red-600 dark:text-red-400", "{err}" }
+            }
+        }
+
+        // Week selector
+        Card { class: "mb-6",
+            div { class: "flex items-center justify-between",
+                button {
+                    r#type: "button",
+                    class: "p-2 text-subtle hover:text-content",
+                    title: "Previous week",
+                    onclick: move |_| {
+                        action_msg.set(String::new());
+                        action_err.set(String::new());
+                        week_start.set(week_start() - Duration::days(7));
+                    },
+                    ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
+                }
+                div { class: "flex flex-col items-center gap-1",
+                    span { class: "text-lg font-medium text-content",
+                        "{week_label}"
+                    }
+                    // PMS-310: one-click return to the current week (only
+                    // shown when paged away from it), so a future/empty
+                    // week is not a dead end.
+                    if !is_current_week {
+                        button {
+                            r#type: "button",
+                            class: "text-xs font-medium text-accent hover:opacity-90",
+                            onclick: move |_| {
+                                action_msg.set(String::new());
+                                action_err.set(String::new());
+                                week_start.set(current_week);
+                            },
+                            "Jump to current week"
+                        }
+                    }
+                }
+                button {
+                    r#type: "button",
+                    class: "p-2 text-subtle hover:text-content",
+                    title: "Next week",
+                    onclick: move |_| {
+                        action_msg.set(String::new());
+                        action_err.set(String::new());
+                        week_start.set(week_start() + Duration::days(7));
+                    },
+                    ChevronRightIcon { class: "h-5 w-5".to_string() }
+                }
+            }
+        }
+
+        // Weekly grid
+        Card { padding: false,
+            div { class: "overflow-x-auto",
+                table { class: "min-w-full divide-y divide-line",
+                    thead { class: "bg-surface-2",
+                        tr {
+                            th { class: "px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider",
+                                "Work Item"
                             }
+                            th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
+                                "Mon"
+                            }
+                            th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
+                                "Tue"
+                            }
+                            th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
+                                "Wed"
+                            }
+                            th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
+                                "Thu"
+                            }
+                            th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
+                                "Fri"
+                            }
+                            th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
+                                "Sat"
+                            }
+                            th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
+                                "Sun"
+                            }
+                            th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
+                                "Total"
+                            }
+                        }
+                    }
+                    tbody { class: "bg-surface divide-y divide-line",
+                        if is_loading {
+                            // PMS-353: shimmer rows (matching the shared
+                            // skeleton style) instead of a bare text line.
+                            // This timesheet is a bespoke weekly grid, not
+                            // the shared Table, so it can't use TableLoading.
+                            for _ in 0..4 {
+                                tr {
+                                    td { class: "px-6 py-4", colspan: "9",
+                                        div { class: "h-4 bg-surface-2 rounded animate-pulse" }
+                                    }
+                                }
+                            }
+                        } else if load_failed {
+                            tr {
+                                td {
+                                    class: "px-6 py-8 text-center text-sm text-red-500",
+                                    colspan: "9",
+                                    "Could not load timesheet. The time-tracking service may be unavailable."
+                                }
+                            }
+                        } else if !has_entries {
+                            // MAPPS-201: empty-week prompt + one-click path
+                            // to a new entry for the current week. Submit
+                            // stays disabled until an entry exists.
+                            tr {
+                                td {
+                                    class: "px-6 py-8 text-center",
+                                    colspan: "9",
+                                    p { class: "text-sm text-muted",
+                                        "No time logged this week yet. Select a time to log for this week."
+                                    }
+                                    div { class: "mt-3",
+                                        Link {
+                                            to: Route::TimeEntryNew {},
+                                            Button {
+                                                variant: ButtonVariant::Primary,
+                                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                                "Log Time"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            for (label , route , buckets) in rows.iter() {
+                                {
+                                    let row_total = buckets.iter().sum::<i64>();
+                                    rsx! {
+                                        tr {
+                                            td { class: "px-6 py-3 text-sm",
+                                                // MAPPS-206: link the work item to its detail.
+                                                if let Some(r) = route {
+                                                    Link {
+                                                        to: r.clone(),
+                                                        class: "font-medium text-accent hover:opacity-90",
+                                                        "{label}"
+                                                    }
+                                                } else {
+                                                    span { class: "text-content", "{label}" }
+                                                }
+                                            }
+                                            for m in buckets.iter() {
+                                                td { class: "px-4 py-3 text-center text-sm",
+                                                    if *m == 0 {
+                                                        span { class: "text-subtle", "-" }
+                                                    } else {
+                                                        span { class: "text-content", "{fmt_hours(*m)}" }
+                                                    }
+                                                }
+                                            }
+                                            td { class: "px-4 py-3 text-center text-sm font-medium text-content",
+                                                "{fmt_hours(row_total)}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            tr { class: "bg-surface-2 font-medium",
+                                td { class: "px-6 py-3 text-sm text-content",
+                                    "Daily Total"
+                                }
+                                for m in daily_totals.iter() {
+                                    td { class: "px-4 py-3 text-center text-sm text-content",
+                                        if *m == 0 {
+                                            span { class: "text-muted", "0" }
+                                        } else {
+                                            "{fmt_hours(*m)}"
+                                        }
+                                    }
+                                }
+                                td { class: "px-4 py-3 text-center text-sm font-bold text-accent",
+                                    "{fmt_hours(grand_total)}"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // PMS-183 submit confirmation with required certification.
+        {
+            let do_submit = move |_| {
+                if !certified() || submitting {
+                    return;
+                }
+                let start = week_start();
+                let user_id = match auth.read().user.as_ref().map(|u| u.id) {
+                    Some(id) => id,
+                    None => {
+                        action_err.set("Not signed in.".to_string());
+                        return;
+                    }
+                };
+                is_submitting.set(true);
+                let mut sr = summary_resource;
+                let mut er = entries_resource;
+                spawn(async move {
+                    #[cfg(feature = "web")]
+                    {
+                        let path = format!("/timesheets/{user_id}/{start}/submit");
+                        match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
+                            &path,
+                            &serde_json::json!({}),
+                        )
+                        .await
+                        {
+                            Ok(_) => {
+                                action_msg
+                                    .set("Timesheet submitted for approval.".to_string());
+                                show_submit_modal.set(false);
+                                sr.restart();
+                                er.restart();
+                            }
+                            Err(e) => {
+                                action_err.set(format!("Could not submit timesheet: {e}"));
+                            }
+                        }
+                    }
+                    is_submitting.set(false);
+                });
+            };
+            rsx! {
+                Modal {
+                    open: show_submit_modal(),
+                    title: "Submit Timesheet",
+                    size: crate::components::ModalSize::Medium,
+                    onclose: move |_| show_submit_modal.set(false),
+                    footer: rsx! {
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            onclick: move |_| show_submit_modal.set(false),
+                            "Cancel"
+                        }
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            loading: submitting,
+                            // MAPPS-357: also block while the server is down.
+                            disabled: !certified() || !can_mutate,
+                            title: if !can_mutate {
+                                Some("Can't submit while the server is unreachable".to_string())
+                            } else {
+                                (!certified())
+                                    .then(|| "Check the certification box to submit.".to_string())
+                            },
+                            onclick: do_submit,
+                            "Submit for Approval"
+                        }
+                    },
+                    div { class: "space-y-4",
+                        p { class: "text-sm text-content",
+                            "Once submitted, this timesheet goes to your manager for approval. You can withdraw it back to draft until it is approved."
+                        }
+                        Checkbox {
+                            name: "certify",
+                            label: "I certify that the timesheet I am submitting is correct.",
+                            checked: certified(),
+                            onchange: move |e: FormEvent| certified.set(e.checked()),
                         }
                     }
                 }
@@ -1771,6 +1768,7 @@ struct HistoryTarget {
 /// Manager/admin timesheet approvals queue.
 #[component]
 pub fn TimesheetApprovalsPage() -> Element {
+    use_page_title("Timesheet Approvals & History");
     let auth = crate::hooks::auth::use_auth();
     // Match the server's `RequireManager` gate on approve/reject (manager,
     // admin, super_admin). The page re-checks server-side, so this is a UX
@@ -1861,15 +1859,13 @@ pub fn TimesheetApprovalsPage() -> Element {
 
     if !can_manage {
         return rsx! {
-            AppLayout { title: "Timesheet Approvals & History",
-                PageHeader {
-                    title: "Timesheet Approvals & History",
-                    subtitle: "Review submitted timesheets and audit past decisions",
-                }
-                Card {
-                    p { class: "text-sm text-muted",
-                        "You need a manager or admin role to review timesheets."
-                    }
+            PageHeader {
+                title: "Timesheet Approvals & History",
+                subtitle: "Review submitted timesheets and audit past decisions",
+            }
+            Card {
+                p { class: "text-sm text-muted",
+                    "You need a manager or admin role to review timesheets."
                 }
             }
         };
@@ -1940,317 +1936,315 @@ pub fn TimesheetApprovalsPage() -> Element {
     let err = action_err.read().clone();
 
     rsx! {
-        AppLayout { title: "Timesheet Approvals & History",
-            PageHeader {
-                title: "Timesheet Approvals & History",
-                subtitle: "Review submitted timesheets and audit past decisions",
-                actions: rsx! {
-                    Badge { variant: BadgeVariant::Gray, "{header_badge_label}" }
-                },
-            }
+        PageHeader {
+            title: "Timesheet Approvals & History",
+            subtitle: "Review submitted timesheets and audit past decisions",
+            actions: rsx! {
+                Badge { variant: BadgeVariant::Gray, "{header_badge_label}" }
+            },
+        }
 
-            if !msg.is_empty() {
-                div { class: "mb-4 rounded-md bg-green-50 dark:bg-green-900/20 p-3",
-                    p { class: "text-sm text-green-700 dark:text-green-400", "{msg}" }
-                }
+        if !msg.is_empty() {
+            div { class: "mb-4 rounded-md bg-green-50 dark:bg-green-900/20 p-3",
+                p { class: "text-sm text-green-700 dark:text-green-400", "{msg}" }
             }
-            if !err.is_empty() {
-                div { class: "mb-4 rounded-md bg-red-50 dark:bg-red-900/20 p-3",
-                    p { class: "text-sm text-red-600 dark:text-red-400", "{err}" }
-                }
+        }
+        if !err.is_empty() {
+            div { class: "mb-4 rounded-md bg-red-50 dark:bg-red-900/20 p-3",
+                p { class: "text-sm text-red-600 dark:text-red-400", "{err}" }
             }
+        }
 
-            // PMS-506: status filter + range-mode toggle. The status
-            // Select defaults to `pending` so the action queue stays the
-            // first-visit surface; admins flip to `approved` / `all` to
-            // see history. The range checkbox swaps the single-week
-            // selector for a from/to date pair pre-seeded to the last
-            // 12 weeks.
-            Card { class: "mb-4",
-                div { class: "flex flex-wrap items-end gap-4",
-                    div { class: "min-w-[180px]",
-                        Select {
-                            name: "ts_status",
-                            label: "Status",
-                            options: vec![
-                                SelectOption::new("pending", "Pending (action queue)"),
-                                SelectOption::new("approved", "Approved"),
-                                SelectOption::new("rejected", "Rejected"),
-                                SelectOption::new("all", "All"),
-                            ],
-                            value: status_filter.read().clone(),
-                            onchange: move |e: FormEvent| {
-                                action_msg.set(String::new());
-                                action_err.set(String::new());
-                                status_filter.set(e.value());
+        // PMS-506: status filter + range-mode toggle. The status
+        // Select defaults to `pending` so the action queue stays the
+        // first-visit surface; admins flip to `approved` / `all` to
+        // see history. The range checkbox swaps the single-week
+        // selector for a from/to date pair pre-seeded to the last
+        // 12 weeks.
+        Card { class: "mb-4",
+            div { class: "flex flex-wrap items-end gap-4",
+                div { class: "min-w-[180px]",
+                    Select {
+                        name: "ts_status",
+                        label: "Status",
+                        options: vec![
+                            SelectOption::new("pending", "Pending (action queue)"),
+                            SelectOption::new("approved", "Approved"),
+                            SelectOption::new("rejected", "Rejected"),
+                            SelectOption::new("all", "All"),
+                        ],
+                        value: status_filter.read().clone(),
+                        onchange: move |e: FormEvent| {
+                            action_msg.set(String::new());
+                            action_err.set(String::new());
+                            status_filter.set(e.value());
+                        },
+                    }
+                }
+                div { class: "pt-6",
+                    Checkbox {
+                        name: "ts_range_mode",
+                        label: "Range mode",
+                        checked: in_range_mode,
+                        help: "Span multiple weeks. Server caps the scan at 26 weeks.",
+                        onchange: move |e: FormEvent| {
+                            action_msg.set(String::new());
+                            action_err.set(String::new());
+                            range_mode.set(e.checked());
+                        },
+                    }
+                }
+                if in_range_mode {
+                    div { class: "min-w-[160px]",
+                        crate::components::Input {
+                            name: "ts_from",
+                            label: "From",
+                            r#type: "date".to_string(),
+                            value: range_from().format("%Y-%m-%d").to_string(),
+                            oninput: move |e: FormEvent| {
+                                if let Ok(d) = NaiveDate::parse_from_str(&e.value(), "%Y-%m-%d") {
+                                    range_from.set(monday_of_week(d));
+                                }
                             },
                         }
                     }
-                    div { class: "pt-6",
-                        Checkbox {
-                            name: "ts_range_mode",
-                            label: "Range mode",
-                            checked: in_range_mode,
-                            help: "Span multiple weeks. Server caps the scan at 26 weeks.",
-                            onchange: move |e: FormEvent| {
-                                action_msg.set(String::new());
-                                action_err.set(String::new());
-                                range_mode.set(e.checked());
+                    div { class: "min-w-[160px]",
+                        crate::components::Input {
+                            name: "ts_to",
+                            label: "To",
+                            r#type: "date".to_string(),
+                            value: range_to().format("%Y-%m-%d").to_string(),
+                            oninput: move |e: FormEvent| {
+                                if let Ok(d) = NaiveDate::parse_from_str(&e.value(), "%Y-%m-%d") {
+                                    range_to.set(monday_of_week(d));
+                                }
                             },
                         }
                     }
-                    if in_range_mode {
-                        div { class: "min-w-[160px]",
-                            crate::components::Input {
-                                name: "ts_from",
-                                label: "From",
-                                r#type: "date".to_string(),
-                                value: range_from().format("%Y-%m-%d").to_string(),
-                                oninput: move |e: FormEvent| {
-                                    if let Ok(d) = NaiveDate::parse_from_str(&e.value(), "%Y-%m-%d") {
-                                        range_from.set(monday_of_week(d));
-                                    }
-                                },
-                            }
-                        }
-                        div { class: "min-w-[160px]",
-                            crate::components::Input {
-                                name: "ts_to",
-                                label: "To",
-                                r#type: "date".to_string(),
-                                value: range_to().format("%Y-%m-%d").to_string(),
-                                oninput: move |e: FormEvent| {
-                                    if let Ok(d) = NaiveDate::parse_from_str(&e.value(), "%Y-%m-%d") {
-                                        range_to.set(monday_of_week(d));
-                                    }
-                                },
-                            }
+                }
+            }
+        }
+
+        // Single-week selector. Hidden in range mode (the from/to
+        // date inputs above take its place).
+        if !in_range_mode {
+        Card { class: "mb-6",
+            div { class: "flex items-center justify-between",
+                button {
+                    r#type: "button",
+                    class: "p-2 text-subtle hover:text-content",
+                    title: "Previous week",
+                    onclick: move |_| {
+                        action_msg.set(String::new());
+                        action_err.set(String::new());
+                        week_start.set(week_start() - Duration::days(7));
+                    },
+                    ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
+                }
+                div { class: "flex flex-col items-center gap-1",
+                    span { class: "text-lg font-medium text-content",
+                        "{week_label}"
+                    }
+                    if !is_current_week {
+                        button {
+                            r#type: "button",
+                            class: "text-xs font-medium text-accent hover:opacity-90",
+                            onclick: move |_| {
+                                action_msg.set(String::new());
+                                action_err.set(String::new());
+                                week_start.set(current_week);
+                            },
+                            "Jump to current week"
                         }
                     }
                 }
-            }
-
-            // Single-week selector. Hidden in range mode (the from/to
-            // date inputs above take its place).
-            if !in_range_mode {
-            Card { class: "mb-6",
-                div { class: "flex items-center justify-between",
-                    button {
-                        r#type: "button",
-                        class: "p-2 text-subtle hover:text-content",
-                        title: "Previous week",
-                        onclick: move |_| {
-                            action_msg.set(String::new());
-                            action_err.set(String::new());
-                            week_start.set(week_start() - Duration::days(7));
-                        },
-                        ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
-                    }
-                    div { class: "flex flex-col items-center gap-1",
-                        span { class: "text-lg font-medium text-content",
-                            "{week_label}"
-                        }
-                        if !is_current_week {
-                            button {
-                                r#type: "button",
-                                class: "text-xs font-medium text-accent hover:opacity-90",
-                                onclick: move |_| {
-                                    action_msg.set(String::new());
-                                    action_err.set(String::new());
-                                    week_start.set(current_week);
-                                },
-                                "Jump to current week"
-                            }
-                        }
-                    }
-                    button {
-                        r#type: "button",
-                        class: "p-2 text-subtle hover:text-content",
-                        title: "Next week",
-                        onclick: move |_| {
-                            action_msg.set(String::new());
-                            action_err.set(String::new());
-                            week_start.set(week_start() + Duration::days(7));
-                        },
-                        ChevronRightIcon { class: "h-5 w-5".to_string() }
-                    }
+                button {
+                    r#type: "button",
+                    class: "p-2 text-subtle hover:text-content",
+                    title: "Next week",
+                    onclick: move |_| {
+                        action_msg.set(String::new());
+                        action_err.set(String::new());
+                        week_start.set(week_start() + Duration::days(7));
+                    },
+                    ChevronRightIcon { class: "h-5 w-5".to_string() }
                 }
             }
-            } // PMS-506: end `if !in_range_mode` single-week selector.
+        }
+        } // PMS-506: end `if !in_range_mode` single-week selector.
 
-            DataTable {
-                total_items: rows_count,
-                current_page: 1,
-                per_page: if rows_count == 0 { 25 } else { rows_count },
-                columns: 7,
-                Table {
-                    TableHead {
+        DataTable {
+            total_items: rows_count,
+            current_page: 1,
+            per_page: if rows_count == 0 { 25 } else { rows_count },
+            columns: 7,
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Employee" }
+                        TableHeader { "Week" }
+                        TableHeader { "Status" }
+                        TableHeader { "Total" }
+                        TableHeader { "Billable" }
+                        TableHeader { "Decision" }
+                        TableHeader { "" }
+                    }
+                }
+                TableBody {
+                    if is_loading {
                         TableRow {
-                            TableHeader { "Employee" }
-                            TableHeader { "Week" }
-                            TableHeader { "Status" }
-                            TableHeader { "Total" }
-                            TableHeader { "Billable" }
-                            TableHeader { "Decision" }
-                            TableHeader { "" }
+                            TableCell { class: "text-subtle", "Loading…" }
                         }
-                    }
-                    TableBody {
-                        if is_loading {
-                            TableRow {
-                                TableCell { class: "text-subtle", "Loading…" }
+                    } else if load_failed {
+                        TableRow {
+                            TableCell { class: "text-red-500",
+                                "Could not load timesheets. The time-tracking service may be unavailable."
                             }
-                        } else if load_failed {
-                            TableRow {
-                                TableCell { class: "text-red-500",
-                                    "Could not load timesheets. The time-tracking service may be unavailable."
+                        }
+                    } else if rows.is_empty() {
+                        TableRow {
+                            TableCell { class: "text-subtle italic",
+                                if active_status == "pending" {
+                                    "No timesheets awaiting approval for this scope."
+                                } else {
+                                    "No timesheets match the current filter."
                                 }
                             }
-                        } else if rows.is_empty() {
-                            TableRow {
-                                TableCell { class: "text-subtle italic",
-                                    if active_status == "pending" {
-                                        "No timesheets awaiting approval for this scope."
-                                    } else {
-                                        "No timesheets match the current filter."
-                                    }
-                                }
-                            }
-                        } else {
-                            for s in rows.iter() {
-                                {
-                                    let uid = s.user_id;
-                                    let row_week = s.week_start.unwrap_or(start);
-                                    let name = name_of(uid);
-                                    let name_for_reject = name.clone();
-                                    let total = fmt_hours(s.total_minutes);
-                                    let billable = fmt_hours(s.billable_minutes);
-                                    let row_busy = approving_id == Some(uid) || is_rejecting();
-                                    let row_pending = s.approval_status == "pending";
-                                    let (status_variant, status_label) = match s.approval_status.as_str() {
-                                        "approved" => (BadgeVariant::Green, "Approved"),
-                                        "rejected" => (BadgeVariant::Red, "Rejected"),
-                                        "pending" => (BadgeVariant::Yellow, "Pending"),
-                                        _ => (BadgeVariant::Gray, "-"),
-                                    };
-                                    let week_label_row = row_week.format("%b %-d, %Y").to_string();
-                                    let decided_at_label = s
-                                        .decided_at
-                                        .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
-                                        .unwrap_or_default();
-                                    let decided_by_label = s
-                                        .decided_by_id
-                                        .map(name_of)
-                                        .unwrap_or_default();
-                                    let rejection = s.rejection_reason.clone().unwrap_or_default();
-                                    // MAPPS-340: everything the History modal needs, cloned out
-                                    // of the row before it is moved into the button handler.
-                                    let name_for_history = name.clone();
-                                    let history_status = s.approval_status.clone();
-                                    let history_decided_at = s.decided_at;
-                                    let history_decided_by = decided_by_label.clone();
-                                    let history_reason = s.rejection_reason.clone();
-                                    let row_key = format!("{uid}-{row_week}");
-                                    rsx! {
-                                        TableRow { key: "{row_key}",
-                                            TableCell { class: "font-medium text-content", "{name}" }
-                                            TableCell { class: "text-muted", "{week_label_row}" }
-                                            TableCell { Badge { variant: status_variant, "{status_label}" } }
-                                            TableCell { "{total}" }
-                                            TableCell { class: "text-green-600", "{billable}" }
-                                            TableCell { class: "text-xs text-muted",
-                                                if row_pending {
-                                                    "-"
-                                                } else {
-                                                    if !decided_by_label.is_empty() {
-                                                        div { "by {decided_by_label}" }
-                                                    }
-                                                    if !decided_at_label.is_empty() {
-                                                        div { "{decided_at_label}" }
-                                                    }
-                                                    if !rejection.is_empty() {
-                                                        div { class: "italic mt-1", "\"{rejection}\"" }
-                                                    }
+                        }
+                    } else {
+                        for s in rows.iter() {
+                            {
+                                let uid = s.user_id;
+                                let row_week = s.week_start.unwrap_or(start);
+                                let name = name_of(uid);
+                                let name_for_reject = name.clone();
+                                let total = fmt_hours(s.total_minutes);
+                                let billable = fmt_hours(s.billable_minutes);
+                                let row_busy = approving_id == Some(uid) || is_rejecting();
+                                let row_pending = s.approval_status == "pending";
+                                let (status_variant, status_label) = match s.approval_status.as_str() {
+                                    "approved" => (BadgeVariant::Green, "Approved"),
+                                    "rejected" => (BadgeVariant::Red, "Rejected"),
+                                    "pending" => (BadgeVariant::Yellow, "Pending"),
+                                    _ => (BadgeVariant::Gray, "-"),
+                                };
+                                let week_label_row = row_week.format("%b %-d, %Y").to_string();
+                                let decided_at_label = s
+                                    .decided_at
+                                    .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
+                                    .unwrap_or_default();
+                                let decided_by_label = s
+                                    .decided_by_id
+                                    .map(name_of)
+                                    .unwrap_or_default();
+                                let rejection = s.rejection_reason.clone().unwrap_or_default();
+                                // MAPPS-340: everything the History modal needs, cloned out
+                                // of the row before it is moved into the button handler.
+                                let name_for_history = name.clone();
+                                let history_status = s.approval_status.clone();
+                                let history_decided_at = s.decided_at;
+                                let history_decided_by = decided_by_label.clone();
+                                let history_reason = s.rejection_reason.clone();
+                                let row_key = format!("{uid}-{row_week}");
+                                rsx! {
+                                    TableRow { key: "{row_key}",
+                                        TableCell { class: "font-medium text-content", "{name}" }
+                                        TableCell { class: "text-muted", "{week_label_row}" }
+                                        TableCell { Badge { variant: status_variant, "{status_label}" } }
+                                        TableCell { "{total}" }
+                                        TableCell { class: "text-green-600", "{billable}" }
+                                        TableCell { class: "text-xs text-muted",
+                                            if row_pending {
+                                                "-"
+                                            } else {
+                                                if !decided_by_label.is_empty() {
+                                                    div { "by {decided_by_label}" }
+                                                }
+                                                if !decided_at_label.is_empty() {
+                                                    div { "{decided_at_label}" }
+                                                }
+                                                if !rejection.is_empty() {
+                                                    div { class: "italic mt-1", "\"{rejection}\"" }
                                                 }
                                             }
-                                            TableCell {
-                                                div { class: "flex justify-end gap-2",
-                                                    // MAPPS-340: History opens the reviewable
-                                                    // submit/change/approve/reject timeline. It is a
-                                                    // read-only view, so it stays enabled while the
-                                                    // server is down (it fetches on open) and is
-                                                    // present on decided rows too, so an approved
-                                                    // timesheet's history stays reachable.
+                                        }
+                                        TableCell {
+                                            div { class: "flex justify-end gap-2",
+                                                // MAPPS-340: History opens the reviewable
+                                                // submit/change/approve/reject timeline. It is a
+                                                // read-only view, so it stays enabled while the
+                                                // server is down (it fetches on open) and is
+                                                // present on decided rows too, so an approved
+                                                // timesheet's history stays reachable.
+                                                Button {
+                                                    variant: ButtonVariant::Secondary,
+                                                    onclick: move |_| {
+                                                        action_msg.set(String::new());
+                                                        action_err.set(String::new());
+                                                        history_target
+                                                            .set(
+                                                                Some(HistoryTarget {
+                                                                    uid,
+                                                                    week: row_week,
+                                                                    employee: name_for_history.clone(),
+                                                                    status: history_status.clone(),
+                                                                    decided_at: history_decided_at,
+                                                                    decided_by: history_decided_by.clone(),
+                                                                    rejection_reason: history_reason.clone(),
+                                                                }),
+                                                            );
+                                                    },
+                                                    "History"
+                                                }
+                                                if row_pending {
                                                     Button {
                                                         variant: ButtonVariant::Secondary,
+                                                        // MAPPS-357: also block while the server is down.
+                                                        disabled: row_busy || !can_mutate,
+                                                        title: (!can_mutate).then(|| "Can't reject while the server is unreachable".to_string()),
                                                         onclick: move |_| {
                                                             action_msg.set(String::new());
                                                             action_err.set(String::new());
-                                                            history_target
-                                                                .set(
-                                                                    Some(HistoryTarget {
-                                                                        uid,
-                                                                        week: row_week,
-                                                                        employee: name_for_history.clone(),
-                                                                        status: history_status.clone(),
-                                                                        decided_at: history_decided_at,
-                                                                        decided_by: history_decided_by.clone(),
-                                                                        rejection_reason: history_reason.clone(),
-                                                                    }),
-                                                                );
+                                                            reject_reason.set(String::new());
+                                                            reject_target.set(Some((uid, row_week, name_for_reject.clone())));
                                                         },
-                                                        "History"
+                                                        "Reject"
                                                     }
-                                                    if row_pending {
-                                                        Button {
-                                                            variant: ButtonVariant::Secondary,
-                                                            // MAPPS-357: also block while the server is down.
-                                                            disabled: row_busy || !can_mutate,
-                                                            title: (!can_mutate).then(|| "Can't reject while the server is unreachable".to_string()),
-                                                            onclick: move |_| {
-                                                                action_msg.set(String::new());
-                                                                action_err.set(String::new());
-                                                                reject_reason.set(String::new());
-                                                                reject_target.set(Some((uid, row_week, name_for_reject.clone())));
-                                                            },
-                                                            "Reject"
-                                                        }
-                                                        Button {
-                                                            variant: ButtonVariant::Primary,
-                                                            loading: approving_id == Some(uid),
-                                                            // MAPPS-357: also block while the server is down.
-                                                            disabled: row_busy || !can_mutate,
-                                                            title: (!can_mutate).then(|| "Can't approve while the server is unreachable".to_string()),
-                                                            onclick: move |_| {
-                                                                action_msg.set(String::new());
-                                                                action_err.set(String::new());
-                                                                approving.set(Some(uid));
-                                                                let mut sr = summaries_resource;
-                                                                spawn(async move {
-                                                                    #[cfg(feature = "web")]
+                                                    Button {
+                                                        variant: ButtonVariant::Primary,
+                                                        loading: approving_id == Some(uid),
+                                                        // MAPPS-357: also block while the server is down.
+                                                        disabled: row_busy || !can_mutate,
+                                                        title: (!can_mutate).then(|| "Can't approve while the server is unreachable".to_string()),
+                                                        onclick: move |_| {
+                                                            action_msg.set(String::new());
+                                                            action_err.set(String::new());
+                                                            approving.set(Some(uid));
+                                                            let mut sr = summaries_resource;
+                                                            spawn(async move {
+                                                                #[cfg(feature = "web")]
+                                                                {
+                                                                    let path = format!("/timesheets/{uid}/{row_week}/approve");
+                                                                    match crate::hooks::fetch::api::post_authed::<
+                                                                        serde_json::Value,
+                                                                        _,
+                                                                    >(&path, &serde_json::json!({}))
+                                                                        .await
                                                                     {
-                                                                        let path = format!("/timesheets/{uid}/{row_week}/approve");
-                                                                        match crate::hooks::fetch::api::post_authed::<
-                                                                            serde_json::Value,
-                                                                            _,
-                                                                        >(&path, &serde_json::json!({}))
-                                                                            .await
-                                                                        {
-                                                                            Ok(_) => {
-                                                                                action_msg.set("Timesheet approved.".to_string());
-                                                                                sr.restart();
-                                                                            }
-                                                                        Err(e) => {
-                                                                            action_err
-                                                                                .set(format!("Could not approve timesheet: {e}"));
+                                                                        Ok(_) => {
+                                                                            action_msg.set("Timesheet approved.".to_string());
+                                                                            sr.restart();
                                                                         }
+                                                                    Err(e) => {
+                                                                        action_err
+                                                                            .set(format!("Could not approve timesheet: {e}"));
                                                                     }
                                                                 }
-                                                                approving.set(None);
-                                                            });
-                                                        },
-                                                        "Approve"
-                                                    }
+                                                            }
+                                                            approving.set(None);
+                                                        });
+                                                    },
+                                                    "Approve"
                                                 }
                                             }
                                         }
@@ -2261,121 +2255,121 @@ pub fn TimesheetApprovalsPage() -> Element {
                     }
                 }
             }
-            } // PMS-506: close DataTable
+        }
+        } // PMS-506: close DataTable
 
-            // Reject reason modal (MAPPS-189: in-app modal, not window.prompt).
-            {
-                let target = reject_target.read().clone();
-                let open = target.is_some();
-                let reject_name = target
-                    .as_ref()
-                    .map(|(_, _, n)| n.clone())
-                    .unwrap_or_default();
-                let rejecting = is_rejecting();
-                let reason_empty = reject_reason.read().trim().is_empty();
-                let do_reject = move |_| {
-                    let Some((uid, week, _)) = reject_target.read().clone() else {
-                        return;
-                    };
-                    let reason = reject_reason.read().trim().to_string();
-                    if reason.is_empty() || rejecting {
-                        return;
-                    }
-                    is_rejecting.set(true);
-                    let mut sr = summaries_resource;
-                    spawn(async move {
-                        #[cfg(feature = "web")]
+        // Reject reason modal (MAPPS-189: in-app modal, not window.prompt).
+        {
+            let target = reject_target.read().clone();
+            let open = target.is_some();
+            let reject_name = target
+                .as_ref()
+                .map(|(_, _, n)| n.clone())
+                .unwrap_or_default();
+            let rejecting = is_rejecting();
+            let reason_empty = reject_reason.read().trim().is_empty();
+            let do_reject = move |_| {
+                let Some((uid, week, _)) = reject_target.read().clone() else {
+                    return;
+                };
+                let reason = reject_reason.read().trim().to_string();
+                if reason.is_empty() || rejecting {
+                    return;
+                }
+                is_rejecting.set(true);
+                let mut sr = summaries_resource;
+                spawn(async move {
+                    #[cfg(feature = "web")]
+                    {
+                        let path = format!("/timesheets/{uid}/{week}/reject");
+                        match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
+                            &path,
+                            &serde_json::json!({ "reason": reason }),
+                        )
+                        .await
                         {
-                            let path = format!("/timesheets/{uid}/{week}/reject");
-                            match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(
-                                &path,
-                                &serde_json::json!({ "reason": reason }),
-                            )
-                            .await
-                            {
-                                Ok(_) => {
-                                    action_msg
-                                        .set("Timesheet rejected; the employee will see the reason.".to_string());
-                                    reject_target.set(None);
-                                    reject_reason.set(String::new());
-                                    sr.restart();
-                                }
-                                Err(e) => {
-                                    action_err.set(format!("Could not reject timesheet: {e}"));
-                                }
+                            Ok(_) => {
+                                action_msg
+                                    .set("Timesheet rejected; the employee will see the reason.".to_string());
+                                reject_target.set(None);
+                                reject_reason.set(String::new());
+                                sr.restart();
+                            }
+                            Err(e) => {
+                                action_err.set(format!("Could not reject timesheet: {e}"));
                             }
                         }
-                        is_rejecting.set(false);
-                    });
-                };
-                rsx! {
-                    Modal {
-                        open,
-                        title: "Reject Timesheet",
-                        size: crate::components::ModalSize::Medium,
-                        onclose: move |_| {
-                            if !is_rejecting() {
-                                reject_target.set(None);
-                            }
-                        },
-                        footer: rsx! {
-                            Button {
-                                variant: ButtonVariant::Secondary,
-                                disabled: rejecting,
-                                onclick: move |_| {
-                                    if !is_rejecting() {
-                                        reject_target.set(None);
-                                    }
-                                },
-                                "Cancel"
-                            }
-                            Button {
-                                variant: ButtonVariant::Danger,
-                                loading: rejecting,
-                                // MAPPS-357: also block while the server is down.
-                                disabled: reason_empty || !can_mutate,
-                                title: if !can_mutate {
-                                    Some("Can't reject while the server is unreachable".to_string())
-                                } else {
-                                    reason_empty
-                                        .then(|| "Enter a reason to reject this timesheet.".to_string())
-                                },
-                                onclick: do_reject,
-                                "Reject Timesheet"
-                            }
-                        },
-                        div { class: "space-y-4",
-                            p { class: "text-sm text-content",
-                                "Reject {reject_name}'s timesheet for this week. A reason is required and is shown to the employee so they can correct and resubmit."
-                            }
-                            crate::components::Textarea {
-                                name: "reject_reason",
-                                label: "Reason",
-                                placeholder: "Explain what needs to change before resubmitting.",
-                                rows: 3,
-                                required: true,
-                                value: reject_reason.read().clone(),
-                                oninput: move |e: FormEvent| reject_reason.set(e.value()),
-                            }
+                    }
+                    is_rejecting.set(false);
+                });
+            };
+            rsx! {
+                Modal {
+                    open,
+                    title: "Reject Timesheet",
+                    size: crate::components::ModalSize::Medium,
+                    onclose: move |_| {
+                        if !is_rejecting() {
+                            reject_target.set(None);
+                        }
+                    },
+                    footer: rsx! {
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            disabled: rejecting,
+                            onclick: move |_| {
+                                if !is_rejecting() {
+                                    reject_target.set(None);
+                                }
+                            },
+                            "Cancel"
+                        }
+                        Button {
+                            variant: ButtonVariant::Danger,
+                            loading: rejecting,
+                            // MAPPS-357: also block while the server is down.
+                            disabled: reason_empty || !can_mutate,
+                            title: if !can_mutate {
+                                Some("Can't reject while the server is unreachable".to_string())
+                            } else {
+                                reason_empty
+                                    .then(|| "Enter a reason to reject this timesheet.".to_string())
+                            },
+                            onclick: do_reject,
+                            "Reject Timesheet"
+                        }
+                    },
+                    div { class: "space-y-4",
+                        p { class: "text-sm text-content",
+                            "Reject {reject_name}'s timesheet for this week. A reason is required and is shown to the employee so they can correct and resubmit."
+                        }
+                        crate::components::Textarea {
+                            name: "reject_reason",
+                            label: "Reason",
+                            placeholder: "Explain what needs to change before resubmitting.",
+                            rows: 3,
+                            required: true,
+                            value: reject_reason.read().clone(),
+                            oninput: move |e: FormEvent| reject_reason.set(e.value()),
                         }
                     }
                 }
             }
+        }
 
-            // MAPPS-340: reviewable submit/change/approve/reject history for the
-            // clicked row. Mounted on demand so the entry + rules fetches only
-            // fire when a manager actually opens the timeline.
-            if let Some(t) = history_target.read().clone() {
-                TimesheetHistoryModal {
-                    uid: t.uid,
-                    week: t.week,
-                    employee: t.employee.clone(),
-                    status: t.status.clone(),
-                    decided_at: t.decided_at,
-                    decided_by: t.decided_by.clone(),
-                    rejection_reason: t.rejection_reason.clone(),
-                    onclose: move |_| history_target.set(None),
-                }
+        // MAPPS-340: reviewable submit/change/approve/reject history for the
+        // clicked row. Mounted on demand so the entry + rules fetches only
+        // fire when a manager actually opens the timeline.
+        if let Some(t) = history_target.read().clone() {
+            TimesheetHistoryModal {
+                uid: t.uid,
+                week: t.week,
+                employee: t.employee.clone(),
+                status: t.status.clone(),
+                decided_at: t.decided_at,
+                decided_by: t.decided_by.clone(),
+                rejection_reason: t.rejection_reason.clone(),
+                onclose: move |_| history_target.set(None),
             }
         }
     }

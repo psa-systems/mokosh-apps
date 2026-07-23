@@ -20,7 +20,7 @@ use chrono::{DateTime, Utc};
 use dioxus::prelude::*;
 
 use crate::components::{
-    kb_article_status_badge, AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card,
+    kb_article_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card,
     ChevronRightIcon, CollapsibleRail, ConfirmDialog, DataTable, IconSize, Modal, ModalSize,
     OverflowActions, PageHeader, PencilIcon, PlusIcon, RailSide, SearchInput, Select, SelectOption,
     Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
@@ -250,6 +250,7 @@ fn date_only(ts: &Option<DateTime<Utc>>) -> String {
 /// Knowledge base home page: category grid + recent articles.
 #[component]
 pub fn KBHomePage() -> Element {
+    use_page_title("Knowledge Base");
     let mut search = use_signal(String::new);
     let navigator = use_navigator();
 
@@ -355,205 +356,203 @@ pub fn KBHomePage() -> Element {
     };
 
     rsx! {
-        AppLayout { title: "Knowledge Base",
-            PageHeader {
-                title: "Knowledge Base",
-                subtitle: "Documentation and troubleshooting guides",
-                actions: rsx! {
+        PageHeader {
+            title: "Knowledge Base",
+            subtitle: "Documentation and troubleshooting guides",
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    // MAPPS-357: block category creation while the server is down.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't create a category while the server is unreachable".to_string()),
+                    onclick: move |_| category_form.set(Some(CategoryEdit::New)),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "New Category"
+                }
+                Link {
+                    to: Route::KBArticleNew {},
                     Button {
-                        variant: ButtonVariant::Secondary,
-                        // MAPPS-357: block category creation while the server is down.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't create a category while the server is unreachable".to_string()),
-                        onclick: move |_| category_form.set(Some(CategoryEdit::New)),
+                        variant: ButtonVariant::Primary,
                         PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Category"
+                        "New Article"
                     }
-                    Link {
-                        to: Route::KBArticleNew {},
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                            "New Article"
-                        }
-                    }
-                },
-            }
+                }
+            },
+        }
 
-            // Search: a submit jumps to the full article list (which owns
-            // the live `?q=` filter against the server).
-            Card { class: "mb-6",
-                form {
-                    onsubmit: go_search,
-                    SearchInput {
-                        value: search.read().clone(),
-                        placeholder: "Search articles...",
-                        oninput: move |e: FormEvent| search.set(e.value()),
+        // Search: a submit jumps to the full article list (which owns
+        // the live `?q=` filter against the server).
+        Card { class: "mb-6",
+            form {
+                onsubmit: go_search,
+                SearchInput {
+                    value: search.read().clone(),
+                    placeholder: "Search articles...",
+                    oninput: move |e: FormEvent| search.set(e.value()),
+                }
+            }
+        }
+
+        // Categories
+        if categories_loading {
+            div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8",
+                for _ in 0..3 {
+                    Card {
+                        div { class: "h-16 bg-surface-2 rounded animate-pulse" }
                     }
                 }
             }
+        } else if categories.is_empty() {
+            Card { class: "mb-8",
+                div { class: "py-8 text-center text-sm text-muted",
+                    "No categories yet."
+                }
+            }
+        } else {
+            div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8",
+                for category in categories.iter().cloned() {
+                    CategoryCard {
+                        key: "{category.id}",
+                        category: category.clone(),
+                        can_mutate,
+                        on_edit: move |c: KbCategory| category_form.set(Some(CategoryEdit::Existing(c))),
+                        on_delete: move |c: KbCategory| {
+                            delete_error.set(String::new());
+                            deleting_category.set(Some(c));
+                        },
+                    }
+                }
+            }
+        }
 
-            // Categories
-            if categories_loading {
-                div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8",
+        // PMS-485: Top ticket-driving articles widget. Reads
+        // tickets joined to kb_articles on `source_kb_article_id`
+        // (stamped on ticket create by PMS-482), grouped + ordered
+        // by count over the trailing 90 days.
+        Card { title: "Top ticket-driving articles",
+            if top_driving_loading {
+                div { class: "space-y-2",
                     for _ in 0..3 {
-                        Card {
-                            div { class: "h-16 bg-surface-2 rounded animate-pulse" }
-                        }
+                        div { class: "h-8 bg-surface-2 rounded animate-pulse" }
                     }
                 }
-            } else if categories.is_empty() {
-                Card { class: "mb-8",
-                    div { class: "py-8 text-center text-sm text-muted",
-                        "No categories yet."
-                    }
+            } else if top_driving.is_empty() {
+                div { class: "py-6 text-center text-sm text-muted",
+                    "No ticket-driving articles yet. Use 'Open ticket about this article' on a KB page to start tracking."
                 }
             } else {
-                div { class: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8",
-                    for category in categories.iter().cloned() {
-                        CategoryCard {
-                            key: "{category.id}",
-                            category: category.clone(),
-                            can_mutate,
-                            on_edit: move |c: KbCategory| category_form.set(Some(CategoryEdit::Existing(c))),
-                            on_delete: move |c: KbCategory| {
-                                delete_error.set(String::new());
-                                deleting_category.set(Some(c));
-                            },
+                ul { class: "divide-y divide-border",
+                    for row in top_driving.iter().cloned() {
+                        li { class: "py-2 flex items-center justify-between gap-3",
+                            Link {
+                                to: Route::KBArticleDetail { id: row.id.to_string() },
+                                class: "text-accent hover:underline truncate",
+                                "{row.title}"
+                            }
+                            Badge { variant: BadgeVariant::Gray, "{row.ticket_count}" }
                         }
                     }
                 }
             }
+        }
 
-            // PMS-485: Top ticket-driving articles widget. Reads
-            // tickets joined to kb_articles on `source_kb_article_id`
-            // (stamped on ticket create by PMS-482), grouped + ordered
-            // by count over the trailing 90 days.
-            Card { title: "Top ticket-driving articles",
-                if top_driving_loading {
-                    div { class: "space-y-2",
-                        for _ in 0..3 {
-                            div { class: "h-8 bg-surface-2 rounded animate-pulse" }
+        // Recent articles
+        Card { title: "Recent Articles",
+            if recent_failed {
+                div { class: "py-8 text-center text-sm text-red-600 dark:text-red-300",
+                    "Could not load recent articles."
+                }
+            } else if recent_loading {
+                div { class: "space-y-4",
+                    for _ in 0..3 {
+                        div { class: "h-10 bg-surface-2 rounded animate-pulse" }
+                    }
+                }
+            } else if recent.is_empty() {
+                div { class: "py-8 text-center text-sm text-muted",
+                    "No articles yet. Click New Article to create one."
+                }
+            } else {
+                div { class: "space-y-4",
+                    for article in recent.iter().cloned() {
+                        ArticleItem {
+                            key: "{article.id}",
+                            id: article.id.to_string(),
+                            title: article.title,
+                            updated: date_only(&article.updated_at),
                         }
                     }
-                } else if top_driving.is_empty() {
-                    div { class: "py-6 text-center text-sm text-muted",
-                        "No ticket-driving articles yet. Use 'Open ticket about this article' on a KB page to start tracking."
-                    }
-                } else {
-                    ul { class: "divide-y divide-border",
-                        for row in top_driving.iter().cloned() {
-                            li { class: "py-2 flex items-center justify-between gap-3",
-                                Link {
-                                    to: Route::KBArticleDetail { id: row.id.to_string() },
-                                    class: "text-accent hover:underline truncate",
-                                    "{row.title}"
-                                }
-                                Badge { variant: BadgeVariant::Gray, "{row.ticket_count}" }
+                }
+            }
+        }
+
+        // Create / edit category modal (MAPPS-230).
+        if let Some(edit) = category_form() {
+            CategoryFormModal {
+                edit,
+                categories: categories.clone(),
+                on_close: move |_| category_form.set(None),
+                on_saved: move |_| {
+                    category_form.set(None);
+                    categories_resource.restart();
+                },
+            }
+        }
+
+        // Delete category confirmation (MAPPS-230).
+        ConfirmDialog {
+            open: deleting_category.read().is_some(),
+            title: "Delete category".to_string(),
+            message: {
+                let name = deleting_category
+                    .read()
+                    .as_ref()
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default();
+                let mut msg = format!(
+                    "Delete the \"{name}\" category? Articles filed under it are not deleted; \
+                     they become uncategorized."
+                );
+                if !delete_error.read().is_empty() {
+                    msg.push_str(&format!("\n\n{}", delete_error.read()));
+                }
+                msg
+            },
+            confirm_text: "Delete".to_string(),
+            destructive: true,
+            loading: *delete_busy.read(),
+            oncancel: move |_| {
+                deleting_category.set(None);
+                delete_error.set(String::new());
+            },
+            onconfirm: move |_| {
+                let Some(target) = deleting_category.read().clone() else {
+                    return;
+                };
+                if *delete_busy.read() {
+                    return;
+                }
+                delete_busy.set(true);
+                delete_error.set(String::new());
+                spawn(async move {
+                    #[cfg(feature = "web")]
+                    {
+                        let path = format!("/kb/categories/{}", target.id);
+                        match crate::hooks::fetch::api::delete_authed(&path).await {
+                            Ok(()) => {
+                                deleting_category.set(None);
+                                categories_resource.restart();
+                            }
+                            Err(err) => {
+                                delete_error.set(format!("Could not delete category: {err}"));
                             }
                         }
                     }
-                }
-            }
-
-            // Recent articles
-            Card { title: "Recent Articles",
-                if recent_failed {
-                    div { class: "py-8 text-center text-sm text-red-600 dark:text-red-300",
-                        "Could not load recent articles."
-                    }
-                } else if recent_loading {
-                    div { class: "space-y-4",
-                        for _ in 0..3 {
-                            div { class: "h-10 bg-surface-2 rounded animate-pulse" }
-                        }
-                    }
-                } else if recent.is_empty() {
-                    div { class: "py-8 text-center text-sm text-muted",
-                        "No articles yet. Click New Article to create one."
-                    }
-                } else {
-                    div { class: "space-y-4",
-                        for article in recent.iter().cloned() {
-                            ArticleItem {
-                                key: "{article.id}",
-                                id: article.id.to_string(),
-                                title: article.title,
-                                updated: date_only(&article.updated_at),
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Create / edit category modal (MAPPS-230).
-            if let Some(edit) = category_form() {
-                CategoryFormModal {
-                    edit,
-                    categories: categories.clone(),
-                    on_close: move |_| category_form.set(None),
-                    on_saved: move |_| {
-                        category_form.set(None);
-                        categories_resource.restart();
-                    },
-                }
-            }
-
-            // Delete category confirmation (MAPPS-230).
-            ConfirmDialog {
-                open: deleting_category.read().is_some(),
-                title: "Delete category".to_string(),
-                message: {
-                    let name = deleting_category
-                        .read()
-                        .as_ref()
-                        .map(|c| c.name.clone())
-                        .unwrap_or_default();
-                    let mut msg = format!(
-                        "Delete the \"{name}\" category? Articles filed under it are not deleted; \
-                         they become uncategorized."
-                    );
-                    if !delete_error.read().is_empty() {
-                        msg.push_str(&format!("\n\n{}", delete_error.read()));
-                    }
-                    msg
-                },
-                confirm_text: "Delete".to_string(),
-                destructive: true,
-                loading: *delete_busy.read(),
-                oncancel: move |_| {
-                    deleting_category.set(None);
-                    delete_error.set(String::new());
-                },
-                onconfirm: move |_| {
-                    let Some(target) = deleting_category.read().clone() else {
-                        return;
-                    };
-                    if *delete_busy.read() {
-                        return;
-                    }
-                    delete_busy.set(true);
-                    delete_error.set(String::new());
-                    spawn(async move {
-                        #[cfg(feature = "web")]
-                        {
-                            let path = format!("/kb/categories/{}", target.id);
-                            match crate::hooks::fetch::api::delete_authed(&path).await {
-                                Ok(()) => {
-                                    deleting_category.set(None);
-                                    categories_resource.restart();
-                                }
-                                Err(err) => {
-                                    delete_error.set(format!("Could not delete category: {err}"));
-                                }
-                            }
-                        }
-                        #[cfg(not(feature = "web"))]
-                        let _ = &target;
-                        delete_busy.set(false);
-                    });
-                },
-            }
+                    #[cfg(not(feature = "web"))]
+                    let _ = &target;
+                    delete_busy.set(false);
+                });
+            },
         }
     }
 }
@@ -688,6 +687,7 @@ pub fn KBArticleListPage(
     #[props(default)] initial_tag: String,
     #[props(default)] initial_category: String,
 ) -> Element {
+    use_page_title("Articles");
     let mut search = use_signal(|| initial_q.clone());
     let mut category_filter = use_signal(|| initial_category.clone());
     let mut tag_filter = use_signal(|| initial_tag.clone());
@@ -854,140 +854,138 @@ pub fn KBArticleListPage(
     };
 
     rsx! {
-        AppLayout { title: "Articles",
-            PageHeader {
-                title: "{heading}",
-                actions: rsx! {
-                    Link {
-                        to: Route::KBArticleNew {},
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                            "New Article"
-                        }
-                    }
-                },
-            }
-
-            div { class: "flex gap-6 items-start",
-                CollapsibleRail { side: RailSide::Left, collapsed: left_collapsed, open_overlay,
-                    KbTreeNav {
-                        categories: categories.clone(),
-                        articles: tree_articles.clone(),
-                        current_id: String::new(),
+        PageHeader {
+            title: "{heading}",
+            actions: rsx! {
+                Link {
+                    to: Route::KBArticleNew {},
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "New Article"
                     }
                 }
-                div { class: "flex-1 min-w-0",
-                    // Filters
-                    Card { class: "mb-6",
-                        div { class: "flex flex-col sm:flex-row gap-4",
-                            div { class: "flex-1",
-                                SearchInput {
-                                    value: search.read().clone(),
-                                    placeholder: "Search articles...",
-                                    oninput: move |e: FormEvent| {
-                                        search.set(e.value());
-                                        page.set(1);
-                                    },
-                                }
-                            }
-                            Select {
-                                name: "category",
-                                options: category_options,
-                                value: category_filter.read().clone(),
-                                onchange: move |e: FormEvent| {
-                                    let value = e.value();
-                                    category_filter.set(value.clone());
+            },
+        }
+
+        div { class: "flex gap-6 items-start",
+            CollapsibleRail { side: RailSide::Left, collapsed: left_collapsed, open_overlay,
+                KbTreeNav {
+                    categories: categories.clone(),
+                    articles: tree_articles.clone(),
+                    current_id: String::new(),
+                }
+            }
+            div { class: "flex-1 min-w-0",
+                // Filters
+                Card { class: "mb-6",
+                    div { class: "flex flex-col sm:flex-row gap-4",
+                        div { class: "flex-1",
+                            SearchInput {
+                                value: search.read().clone(),
+                                placeholder: "Search articles...",
+                                oninput: move |e: FormEvent| {
+                                    search.set(e.value());
                                     page.set(1);
-                                    // Reflect the chosen category in the URL so the filtered
-                                    // view is shareable and survives the back button. Clearing
-                                    // to "All Categories" pushes an empty `?category=`.
-                                    navigator.push(Route::KBArticleList {
-                                        q: search.read().trim().to_string(),
-                                        tag: tag_filter.read().trim().to_string(),
-                                        category: value,
-                                    });
                                 },
                             }
                         }
-                    }
-
-                    if tag_active {
-                        div { class: "mb-4 flex items-center flex-wrap gap-2 text-sm",
-                            span { class: "text-muted", "Filtered by tag:" }
-                            Badge { variant: BadgeVariant::Blue, "#{tag_text}" }
-                            Link {
-                                to: Route::KBArticleList { q: search_text.clone(), tag: String::new(), category: category_text.clone() },
-                                class: "text-accent hover:opacity-90",
-                                "Clear filter"
-                            }
+                        Select {
+                            name: "category",
+                            options: category_options,
+                            value: category_filter.read().clone(),
+                            onchange: move |e: FormEvent| {
+                                let value = e.value();
+                                category_filter.set(value.clone());
+                                page.set(1);
+                                // Reflect the chosen category in the URL so the filtered
+                                // view is shareable and survives the back button. Clearing
+                                // to "All Categories" pushes an empty `?category=`.
+                                navigator.push(Route::KBArticleList {
+                                    q: search.read().trim().to_string(),
+                                    tag: tag_filter.read().trim().to_string(),
+                                    category: value,
+                                });
+                            },
                         }
                     }
+                }
 
-                    if fetch_failed {
-                        div {
-                            class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                            "Could not load articles. Refresh the page to retry."
+                if tag_active {
+                    div { class: "mb-4 flex items-center flex-wrap gap-2 text-sm",
+                        span { class: "text-muted", "Filtered by tag:" }
+                        Badge { variant: BadgeVariant::Blue, "#{tag_text}" }
+                        Link {
+                            to: Route::KBArticleList { q: search_text.clone(), tag: String::new(), category: category_text.clone() },
+                            class: "text-accent hover:opacity-90",
+                            "Clear filter"
                         }
                     }
+                }
 
-                    DataTable {
-                        loading: is_loading,
-                        total_items: total as usize,
-                        current_page,
-                        per_page: PER_PAGE,
-                        columns: 4,
-                        onpagechange: move |p| page.set(p),
-                        Table {
-                            striped: true,
-                            TableHead {
-                                TableRow {
-                                    TableHeader { "Title" }
-                                    TableHeader { "Status" }
-                                    TableHeader { "Visibility" }
-                                    TableHeader { "Updated" }
-                                }
+                if fetch_failed {
+                    div {
+                        class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                        "Could not load articles. Refresh the page to retry."
+                    }
+                }
+
+                DataTable {
+                    loading: is_loading,
+                    total_items: total as usize,
+                    current_page,
+                    per_page: PER_PAGE,
+                    columns: 4,
+                    onpagechange: move |p| page.set(p),
+                    Table {
+                        striped: true,
+                        TableHead {
+                            TableRow {
+                                TableHeader { "Title" }
+                                TableHeader { "Status" }
+                                TableHeader { "Visibility" }
+                                TableHeader { "Updated" }
                             }
-                            if is_loading {
-                                TableLoading { columns: 4, rows: 5 }
-                            } else if page_rows.is_empty() {
-                                if has_filters {
-                                    // Filtered to nothing: no CTA (creating won't help);
-                                    // guide the user back to the filters.
-                                    TableEmpty {
-                                        columns: 4,
-                                        title: "No articles match your filters".to_string(),
-                                        description: "Try clearing or adjusting the filters above.".to_string(),
-                                    }
-                                } else {
-                                    TableEmpty {
-                                        columns: 4,
-                                        title: "No articles yet".to_string(),
-                                        description: "Write your first knowledge base article.".to_string(),
-                                        actions: rsx! {
-                                            Link {
-                                                to: Route::KBArticleNew {},
-                                                Button {
-                                                    variant: ButtonVariant::Primary,
-                                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                                    "New Article"
-                                                }
-                                            }
-                                        },
-                                    }
+                        }
+                        if is_loading {
+                            TableLoading { columns: 4, rows: 5 }
+                        } else if page_rows.is_empty() {
+                            if has_filters {
+                                // Filtered to nothing: no CTA (creating won't help);
+                                // guide the user back to the filters.
+                                TableEmpty {
+                                    columns: 4,
+                                    title: "No articles match your filters".to_string(),
+                                    description: "Try clearing or adjusting the filters above.".to_string(),
                                 }
                             } else {
-                                TableBody {
-                                    for article in page_rows.iter().cloned() {
-                                        ArticleRow {
-                                            key: "{article.id}",
-                                            id: article.id.to_string(),
-                                            title: article.title,
-                                            status: article.status,
-                                            visibility: article.visibility,
-                                            updated: date_only(&article.updated_at),
-                                            tags: article.tags,
+                                TableEmpty {
+                                    columns: 4,
+                                    title: "No articles yet".to_string(),
+                                    description: "Write your first knowledge base article.".to_string(),
+                                    actions: rsx! {
+                                        Link {
+                                            to: Route::KBArticleNew {},
+                                            Button {
+                                                variant: ButtonVariant::Primary,
+                                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                                "New Article"
+                                            }
                                         }
+                                    },
+                                }
+                            }
+                        } else {
+                            TableBody {
+                                for article in page_rows.iter().cloned() {
+                                    ArticleRow {
+                                        key: "{article.id}",
+                                        id: article.id.to_string(),
+                                        title: article.title,
+                                        status: article.status,
+                                        visibility: article.visibility,
+                                        updated: date_only(&article.updated_at),
+                                        tags: article.tags,
                                     }
                                 }
                             }
@@ -1186,6 +1184,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
         Some(Some(a)) => a.title.clone(),
         _ => "Article".to_string(),
     };
+    use_page_title(header_title.clone());
 
     // MAPPS-357: the fetched article is this detail page's PRIMARY resource.
     // A failed load while the server is flagged down is an outage, not a
@@ -1210,194 +1209,192 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     let id_for_delete = props.id.clone();
 
     rsx! {
-        AppLayout { title: "{header_title}",
-            // MAPPS-309: confirm-before-delete dialog for the article.
-            // Rendered at the AppLayout root so it overlays every
-            // match arm of the article snapshot.
-            crate::components::ConfirmDialog {
-                open: confirming_delete(),
-                title: "Delete article".to_string(),
-                message: {
-                    let mut msg = if title_for_dialog.is_empty() {
-                        "Delete this article? This cannot be undone.".to_string()
-                    } else {
-                        format!("Delete \"{title_for_dialog}\"? This cannot be undone.")
-                    };
-                    if !delete_error.read().is_empty() {
-                        msg.push_str(&format!("\n\n{}", delete_error.read()));
-                    }
-                    msg
-                },
-                confirm_text: "Delete".to_string(),
-                cancel_text: "Cancel".to_string(),
-                destructive: true,
-                loading: delete_busy(),
-                oncancel: move |_| {
-                    if !delete_busy() {
-                        confirming_delete.set(false);
-                        delete_error.set(String::new());
-                    }
-                },
-                onconfirm: move |_| {
-                    if delete_busy() { return; }
-                    delete_busy.set(true);
+        // MAPPS-309: confirm-before-delete dialog for the article.
+        // Rendered at the page-body root so it overlays every
+        // match arm of the article snapshot.
+        crate::components::ConfirmDialog {
+            open: confirming_delete(),
+            title: "Delete article".to_string(),
+            message: {
+                let mut msg = if title_for_dialog.is_empty() {
+                    "Delete this article? This cannot be undone.".to_string()
+                } else {
+                    format!("Delete \"{title_for_dialog}\"? This cannot be undone.")
+                };
+                if !delete_error.read().is_empty() {
+                    msg.push_str(&format!("\n\n{}", delete_error.read()));
+                }
+                msg
+            },
+            confirm_text: "Delete".to_string(),
+            cancel_text: "Cancel".to_string(),
+            destructive: true,
+            loading: delete_busy(),
+            oncancel: move |_| {
+                if !delete_busy() {
+                    confirming_delete.set(false);
                     delete_error.set(String::new());
-                    let id = id_for_delete.clone();
-                    spawn(async move {
-                        #[cfg(feature = "web")]
-                        {
-                            let path = format!("/kb/articles/{id}");
-                            match crate::hooks::fetch::api::delete_authed(&path).await {
-                                Ok(()) => {
-                                    crate::hooks::toast::push_toast(
-                                        crate::components::AlertType::Success,
-                                        "Article deleted.",
-                                    );
-                                    confirming_delete.set(false);
-                                    nav_after_delete.push(Route::KBHome {});
-                                }
-                                Err(err) => {
-                                    delete_error.set(format!("Could not delete article: {err}"));
-                                }
+                }
+            },
+            onconfirm: move |_| {
+                if delete_busy() { return; }
+                delete_busy.set(true);
+                delete_error.set(String::new());
+                let id = id_for_delete.clone();
+                spawn(async move {
+                    #[cfg(feature = "web")]
+                    {
+                        let path = format!("/kb/articles/{id}");
+                        match crate::hooks::fetch::api::delete_authed(&path).await {
+                            Ok(()) => {
+                                crate::hooks::toast::push_toast(
+                                    crate::components::AlertType::Success,
+                                    "Article deleted.",
+                                );
+                                confirming_delete.set(false);
+                                nav_after_delete.push(Route::KBHome {});
                             }
-                        }
-                        #[cfg(not(feature = "web"))]
-                        let _ = &id;
-                        delete_busy.set(false);
-                    });
-                },
-            }
-            match &*article_snapshot {
-                None => rsx! {
-                    // PMS-353
-                    crate::components::DetailSkeleton {}
-                },
-                Some(None) => rsx! {
-                    Card {
-                        div { class: "py-8 text-center",
-                            p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load article." }
-                            Link {
-                                to: Route::KBHome {},
-                                class: "text-sm text-accent hover:opacity-90",
-                                "Back to knowledge base"
+                            Err(err) => {
+                                delete_error.set(format!("Could not delete article: {err}"));
                             }
                         }
                     }
-                },
-                Some(Some(article)) => {
-                    let (vis_label, vis_variant) = visibility_label(&article.visibility);
-                    let status_raw = if article.status.is_empty() {
-                        "draft"
-                    } else {
-                        &article.status
-                    };
-                    let (status_variant, status_label) = kb_article_status_badge(status_raw);
-                    let updated = date_only(&article.updated_at);
-                    let content = article.content.clone();
-                    let path = resolve_category_path(article.category_id, &categories);
-                    // Density drives BOTH the line spacing (leading-*) and the
-                    // gap between paragraphs ([&_p]:my-*): comfortable reads
-                    // airy, compact reads dense. The arbitrary `[&_p]:` variant
-                    // overrides the prose plugin's default paragraph margins.
-                    let prose_density = if comfortable() {
-                        "prose-base leading-relaxed [&_p]:my-5"
-                    } else {
-                        "prose-sm leading-snug [&_p]:my-2"
-                    };
-                    rsx! {
-                        div { class: "flex gap-6 items-start",
-                            CollapsibleRail { side: RailSide::Left, collapsed: left_collapsed, open_overlay,
-                                KbTreeNav {
-                                    categories: categories.clone(),
-                                    articles: tree_articles.clone(),
-                                    current_id: props.id.clone(),
-                                }
+                    #[cfg(not(feature = "web"))]
+                    let _ = &id;
+                    delete_busy.set(false);
+                });
+            },
+        }
+        match &*article_snapshot {
+            None => rsx! {
+                // PMS-353
+                crate::components::DetailSkeleton {}
+            },
+            Some(None) => rsx! {
+                Card {
+                    div { class: "py-8 text-center",
+                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load article." }
+                        Link {
+                            to: Route::KBHome {},
+                            class: "text-sm text-accent hover:opacity-90",
+                            "Back to knowledge base"
+                        }
+                    }
+                }
+            },
+            Some(Some(article)) => {
+                let (vis_label, vis_variant) = visibility_label(&article.visibility);
+                let status_raw = if article.status.is_empty() {
+                    "draft"
+                } else {
+                    &article.status
+                };
+                let (status_variant, status_label) = kb_article_status_badge(status_raw);
+                let updated = date_only(&article.updated_at);
+                let content = article.content.clone();
+                let path = resolve_category_path(article.category_id, &categories);
+                // Density drives BOTH the line spacing (leading-*) and the
+                // gap between paragraphs ([&_p]:my-*): comfortable reads
+                // airy, compact reads dense. The arbitrary `[&_p]:` variant
+                // overrides the prose plugin's default paragraph margins.
+                let prose_density = if comfortable() {
+                    "prose-base leading-relaxed [&_p]:my-5"
+                } else {
+                    "prose-sm leading-snug [&_p]:my-2"
+                };
+                rsx! {
+                    div { class: "flex gap-6 items-start",
+                        CollapsibleRail { side: RailSide::Left, collapsed: left_collapsed, open_overlay,
+                            KbTreeNav {
+                                categories: categories.clone(),
+                                articles: tree_articles.clone(),
+                                current_id: props.id.clone(),
                             }
-                            div { class: "flex-1 min-w-0",
-                                div { class: "flex items-center justify-between gap-2",
-                                    KbBreadcrumb { path: path.clone(), title: article.title.clone() }
-                                    ReadModeButton { left_collapsed, right_collapsed }
-                                }
-                                div { class: "mt-2 flex items-center justify-between gap-3 flex-wrap",
-                                    h1 { class: "text-2xl font-semibold text-content truncate", "{article.title}" }
-                                    OverflowActions {
-                                        RatingBar {
-                                            article_id: props.id.clone(),
-                                            counts: rating,
-                                            my_vote,
-                                        }
-                                        Badge { variant: status_variant, "{status_label}" }
-                                        Badge { variant: vis_variant, "{vis_label}" }
-                                        // PMS-482: "Open ticket about this
-                                        // article". Navigates to the ticket-
-                                        // new form with the article id +
-                                        // title + URL on the query string;
-                                        // the form pre-fills its title /
-                                        // description and stamps
-                                        // `source_kb_article_id` on the
-                                        // create body. Plain `<a>` so the
-                                        // query string survives intact and
-                                        // the user can right-click to open
-                                        // in a new tab.
-                                        {
-                                            let qs = format!(
-                                                "from_kb_article={}&from_kb_title={}&from_kb_url={}",
-                                                props.id,
-                                                crate::utils::url::urlencoding_minimal(&article.title),
-                                                crate::utils::url::urlencoding_minimal(&format!("/kb/articles/{}", props.id)),
-                                            );
-                                            rsx! {
-                                                a {
-                                                    href: "/tickets/new?{qs}",
-                                                    class: "inline-flex items-center px-3 py-2 text-sm font-medium rounded-md border border-line hover:bg-surface-2 text-content",
-                                                    "Open ticket about this article"
-                                                }
+                        }
+                        div { class: "flex-1 min-w-0",
+                            div { class: "flex items-center justify-between gap-2",
+                                KbBreadcrumb { path: path.clone(), title: article.title.clone() }
+                                ReadModeButton { left_collapsed, right_collapsed }
+                            }
+                            div { class: "mt-2 flex items-center justify-between gap-3 flex-wrap",
+                                h1 { class: "text-2xl font-semibold text-content truncate", "{article.title}" }
+                                OverflowActions {
+                                    RatingBar {
+                                        article_id: props.id.clone(),
+                                        counts: rating,
+                                        my_vote,
+                                    }
+                                    Badge { variant: status_variant, "{status_label}" }
+                                    Badge { variant: vis_variant, "{vis_label}" }
+                                    // PMS-482: "Open ticket about this
+                                    // article". Navigates to the ticket-
+                                    // new form with the article id +
+                                    // title + URL on the query string;
+                                    // the form pre-fills its title /
+                                    // description and stamps
+                                    // `source_kb_article_id` on the
+                                    // create body. Plain `<a>` so the
+                                    // query string survives intact and
+                                    // the user can right-click to open
+                                    // in a new tab.
+                                    {
+                                        let qs = format!(
+                                            "from_kb_article={}&from_kb_title={}&from_kb_url={}",
+                                            props.id,
+                                            crate::utils::url::urlencoding_minimal(&article.title),
+                                            crate::utils::url::urlencoding_minimal(&format!("/kb/articles/{}", props.id)),
+                                        );
+                                        rsx! {
+                                            a {
+                                                href: "/tickets/new?{qs}",
+                                                class: "inline-flex items-center px-3 py-2 text-sm font-medium rounded-md border border-line hover:bg-surface-2 text-content",
+                                                "Open ticket about this article"
                                             }
                                         }
-                                        Link { to: Route::KBArticleEdit { id: props.id.clone() },
-                                            Button { variant: ButtonVariant::Secondary, "Edit" }
-                                        }
-                                        // MAPPS-309: delete affordance. Gated by
-                                        // `ConfirmDialog` rendered at the page
-                                        // root; success navigates back to the KB
-                                        // landing.
-                                        Button {
-                                            variant: ButtonVariant::Danger,
-                                            // MAPPS-357: block delete while the server is unreachable.
-                                            disabled: delete_busy() || !can_mutate,
-                                            title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
-                                            onclick: move |_| {
-                                                delete_error.set(String::new());
-                                                confirming_delete.set(true);
-                                            },
-                                            "Delete"
-                                        }
-                                        DensityToggle { comfortable }
                                     }
-                                }
-                                p { class: "mt-1 text-xs text-subtle", "Updated {updated}" }
-                                if !article.tags.is_empty() {
-                                    TagChips { tags: article.tags.clone(), class: "mt-3".to_string() }
-                                }
-                                article {
-                                    class: "mt-4 prose dark:prose-invert max-w-none {prose_density}",
-                                    dangerous_inner_html: crate::utils::markdown::render_markdown(&content),
+                                    Link { to: Route::KBArticleEdit { id: props.id.clone() },
+                                        Button { variant: ButtonVariant::Secondary, "Edit" }
+                                    }
+                                    // MAPPS-309: delete affordance. Gated by
+                                    // `ConfirmDialog` rendered at the page
+                                    // root; success navigates back to the KB
+                                    // landing.
+                                    Button {
+                                        variant: ButtonVariant::Danger,
+                                        // MAPPS-357: block delete while the server is unreachable.
+                                        disabled: delete_busy() || !can_mutate,
+                                        title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
+                                        onclick: move |_| {
+                                            delete_error.set(String::new());
+                                            confirming_delete.set(true);
+                                        },
+                                        "Delete"
+                                    }
+                                    DensityToggle { comfortable }
                                 }
                             }
-                            CollapsibleRail { side: RailSide::Right, collapsed: right_collapsed, open_overlay,
-                                VersionHistoryCard {
-                                    article_id: props.id.clone(),
-                                    versions_resource,
-                                    on_restored: move |_| {
-                                        article_resource.restart();
-                                        versions_resource.restart();
-                                    },
-                                }
+                            p { class: "mt-1 text-xs text-subtle", "Updated {updated}" }
+                            if !article.tags.is_empty() {
+                                TagChips { tags: article.tags.clone(), class: "mt-3".to_string() }
+                            }
+                            article {
+                                class: "mt-4 prose dark:prose-invert max-w-none {prose_density}",
+                                dangerous_inner_html: crate::utils::markdown::render_markdown(&content),
+                            }
+                        }
+                        CollapsibleRail { side: RailSide::Right, collapsed: right_collapsed, open_overlay,
+                            VersionHistoryCard {
+                                article_id: props.id.clone(),
+                                versions_resource,
+                                on_restored: move |_| {
+                                    article_resource.restart();
+                                    versions_resource.restart();
+                                },
                             }
                         }
                     }
-                },
-            }
+                }
+            },
         }
     }
 }
@@ -1509,22 +1506,21 @@ enum ArticleFormMode {
 /// New article page.
 #[component]
 pub fn KBArticleNewPage() -> Element {
+    use_page_title("New Article");
     // MAPPS-357: N/A for a ContentUnavailable swap - this page fetches no
     // primary resource of its own (it is a static wrapper around the create
     // form). ArticleForm owns the only mutation (Publish) and disables it via
     // `can_mutate`; its category dropdown is a secondary lookup that degrades
     // to "Uncategorized".
     rsx! {
-        AppLayout { title: "New Article",
-            PageHeader { title: "New Article", subtitle: "Create a new knowledge base article" }
-            ArticleForm {
-                initial: ArticleFormValues {
-                    visibility: "internal".to_string(),
-                    status: "draft".to_string(),
-                    ..Default::default()
-                },
-                mode: ArticleFormMode::Create,
-            }
+        PageHeader { title: "New Article", subtitle: "Create a new knowledge base article" }
+        ArticleForm {
+            initial: ArticleFormValues {
+                visibility: "internal".to_string(),
+                status: "draft".to_string(),
+                ..Default::default()
+            },
+            mode: ArticleFormMode::Create,
         }
     }
 }
@@ -1537,6 +1533,7 @@ pub struct KBArticleEditPageProps {
 
 #[component]
 pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
+    use_page_title("Edit Article");
     let id_for_resource = props.id.clone();
     let id_for_form = props.id.clone();
     let article_resource = use_resource(move || {
@@ -1568,53 +1565,51 @@ pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Edit Article",
-            PageHeader { title: "Edit Article" }
-            match &*snap {
-                None => rsx! {
-                    // PMS-353
-                    crate::components::DetailSkeleton {}
-                },
-                Some(None) => rsx! {
-                    Card {
-                        div { class: "py-8 text-center",
-                            p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load article." }
-                            Link {
-                                to: Route::KBHome {},
-                                class: "text-sm text-accent hover:opacity-90",
-                                "Back to knowledge base"
-                            }
+        PageHeader { title: "Edit Article" }
+        match &*snap {
+            None => rsx! {
+                // PMS-353
+                crate::components::DetailSkeleton {}
+            },
+            Some(None) => rsx! {
+                Card {
+                    div { class: "py-8 text-center",
+                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "Could not load article." }
+                        Link {
+                            to: Route::KBHome {},
+                            class: "text-sm text-accent hover:opacity-90",
+                            "Back to knowledge base"
                         }
                     }
-                },
-                Some(Some(article)) => {
-                    let initial = ArticleFormValues {
-                        title: article.title.clone(),
-                        slug: article.slug.clone(),
-                        summary: article.summary.clone().unwrap_or_default(),
-                        category_id: article.category_id.map(|c| c.to_string()).unwrap_or_default(),
-                        visibility: if article.visibility.is_empty() {
-                            "internal".to_string()
-                        } else {
-                            article.visibility.clone()
-                        },
-                        status: if article.status.is_empty() {
-                            "draft".to_string()
-                        } else {
-                            article.status.clone()
-                        },
-                        content: article.content.clone(),
-                        tags: article.tags.join(", "),
-                    };
-                    let id = id_for_form.clone();
-                    rsx! {
-                        ArticleForm {
-                            initial,
-                            mode: ArticleFormMode::Edit { id },
-                        }
+                }
+            },
+            Some(Some(article)) => {
+                let initial = ArticleFormValues {
+                    title: article.title.clone(),
+                    slug: article.slug.clone(),
+                    summary: article.summary.clone().unwrap_or_default(),
+                    category_id: article.category_id.map(|c| c.to_string()).unwrap_or_default(),
+                    visibility: if article.visibility.is_empty() {
+                        "internal".to_string()
+                    } else {
+                        article.visibility.clone()
+                    },
+                    status: if article.status.is_empty() {
+                        "draft".to_string()
+                    } else {
+                        article.status.clone()
+                    },
+                    content: article.content.clone(),
+                    tags: article.tags.join(", "),
+                };
+                let id = id_for_form.clone();
+                rsx! {
+                    ArticleForm {
+                        initial,
+                        mode: ArticleFormMode::Edit { id },
                     }
-                },
-            }
+                }
+            },
         }
     }
 }

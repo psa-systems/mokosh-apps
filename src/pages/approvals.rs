@@ -18,7 +18,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::components::{
-    AlertType, AppLayout, Badge, BadgeVariant, Button, ButtonVariant, Card, PageHeader,
+    use_page_title, AlertType, Badge, BadgeVariant, Button, ButtonVariant, Card, PageHeader,
 };
 
 /// Polymorphic approval row as `/approvals/pending` returns it
@@ -61,6 +61,7 @@ impl PendingApproval {
 
 #[component]
 pub fn ApprovalsPage() -> Element {
+    use_page_title("My Approvals");
     let mut version = use_signal(|| 0u32);
     let mut decision_error = use_signal(String::new);
 
@@ -125,134 +126,132 @@ pub fn ApprovalsPage() -> Element {
     };
 
     rsx! {
-        AppLayout { title: "My Approvals",
-            PageHeader {
-                title: "My Approvals",
-                subtitle: "Pending decisions assigned to you (or to a role you hold)",
-            }
+        PageHeader {
+            title: "My Approvals",
+            subtitle: "Pending decisions assigned to you (or to a role you hold)",
+        }
 
-            if !decision_error().is_empty() {
-                Card { class: "mb-4 border-red-300 dark:border-red-700",
-                    p { class: "text-sm text-red-600 dark:text-red-300", "{decision_error}" }
+        if !decision_error().is_empty() {
+            Card { class: "mb-4 border-red-300 dark:border-red-700",
+                p { class: "text-sm text-red-600 dark:text-red-300", "{decision_error}" }
+            }
+        }
+
+        if loading {
+            Card { p { class: "text-sm text-muted py-6 text-center", "Loading..." } }
+        } else if fetch_failed {
+            Card {
+                p { class: "text-sm text-red-600 dark:text-red-300 py-6 text-center",
+                    "Could not load pending approvals."
                 }
             }
-
-            if loading {
-                Card { p { class: "text-sm text-muted py-6 text-center", "Loading..." } }
-            } else if fetch_failed {
-                Card {
-                    p { class: "text-sm text-red-600 dark:text-red-300 py-6 text-center",
-                        "Could not load pending approvals."
+        } else if rows.is_empty() {
+            Card {
+                div { class: "py-10 text-center",
+                    p { class: "text-sm text-muted",
+                        "No pending approvals. You're all caught up."
                     }
                 }
-            } else if rows.is_empty() {
-                Card {
-                    div { class: "py-10 text-center",
-                        p { class: "text-sm text-muted",
-                            "No pending approvals. You're all caught up."
-                        }
-                    }
-                }
-            } else {
-                div { class: "space-y-3",
-                    for row in rows.iter().cloned() {
-                        {
-                            let key = row.id.to_string();
-                            let row_id = row.id;
-                            let target = row.target.clone();
-                            let entity = row.entity();
-                            let requester = row
-                                .requested_by_name
-                                .clone()
-                                .filter(|s| !s.trim().is_empty())
-                                .unwrap_or_else(|| "(unknown requester)".to_string());
-                            let approver_label = match (
-                                row.approver_user_name.clone(),
-                                row.approver_role.clone(),
-                            ) {
-                                (Some(n), _) if !n.trim().is_empty() => format!("To: {n}"),
-                                (_, Some(r)) if !r.trim().is_empty() => format!("Role: {r}"),
-                                _ => "(unassigned approver)".to_string(),
-                            };
-                            let when = row
-                                .requested_at
-                                .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
-                                .unwrap_or_default();
-                            let notes = row.notes.clone().unwrap_or_default();
-                            // Pretty target labels for the badge. Unknown
-                            // targets fall through to the raw string so a
-                            // future server-side surface still renders.
-                            let target_label = match target.as_str() {
-                                "ticket" => "Ticket",
-                                "time_entry" => "Time entry",
-                                "change_request" => "Change request",
-                                "quote" => "Quote",
-                                other => other,
-                            };
-                            // Link to the parent ticket when target is
-                            // ticket and we have an id. For non-ticket
-                            // targets we render the entity id verbatim
-                            // (no client routes for those yet).
-                            let entity_chip = match (target.as_str(), entity) {
-                                ("ticket", Some(t)) => rsx! {
-                                    a {
-                                        href: "/tickets/{t}",
-                                        class: "text-sm text-accent hover:opacity-90 font-mono",
-                                        "{t}"
-                                    }
-                                },
-                                (_, Some(e)) => rsx! {
-                                    span { class: "text-sm text-content font-mono", "{e}" }
-                                },
-                                _ => rsx! { span { class: "text-sm text-subtle", "-" } },
-                            };
-                            rsx! {
-                                Card { key: "{key}",
-                                    div { class: "flex items-start justify-between gap-4 flex-wrap",
-                                        div { class: "min-w-0 flex-1",
-                                            div { class: "flex items-center gap-2 mb-2 flex-wrap",
-                                                Badge { variant: BadgeVariant::Yellow, "Pending" }
-                                                Badge { variant: BadgeVariant::Gray, "{target_label}" }
-                                                {entity_chip}
-                                            }
-                                            p { class: "text-sm text-content",
-                                                strong { "From: " }
-                                                "{requester}"
-                                            }
-                                            p { class: "text-xs text-subtle mt-1", "{approver_label}" }
-                                            if !when.is_empty() {
-                                                p { class: "text-xs text-subtle mt-1", "Requested {when}" }
-                                            }
-                                            if !notes.is_empty() {
-                                                p { class: "mt-2 text-sm text-muted whitespace-pre-wrap",
-                                                    "{notes}"
-                                                }
+            }
+        } else {
+            div { class: "space-y-3",
+                for row in rows.iter().cloned() {
+                    {
+                        let key = row.id.to_string();
+                        let row_id = row.id;
+                        let target = row.target.clone();
+                        let entity = row.entity();
+                        let requester = row
+                            .requested_by_name
+                            .clone()
+                            .filter(|s| !s.trim().is_empty())
+                            .unwrap_or_else(|| "(unknown requester)".to_string());
+                        let approver_label = match (
+                            row.approver_user_name.clone(),
+                            row.approver_role.clone(),
+                        ) {
+                            (Some(n), _) if !n.trim().is_empty() => format!("To: {n}"),
+                            (_, Some(r)) if !r.trim().is_empty() => format!("Role: {r}"),
+                            _ => "(unassigned approver)".to_string(),
+                        };
+                        let when = row
+                            .requested_at
+                            .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
+                            .unwrap_or_default();
+                        let notes = row.notes.clone().unwrap_or_default();
+                        // Pretty target labels for the badge. Unknown
+                        // targets fall through to the raw string so a
+                        // future server-side surface still renders.
+                        let target_label = match target.as_str() {
+                            "ticket" => "Ticket",
+                            "time_entry" => "Time entry",
+                            "change_request" => "Change request",
+                            "quote" => "Quote",
+                            other => other,
+                        };
+                        // Link to the parent ticket when target is
+                        // ticket and we have an id. For non-ticket
+                        // targets we render the entity id verbatim
+                        // (no client routes for those yet).
+                        let entity_chip = match (target.as_str(), entity) {
+                            ("ticket", Some(t)) => rsx! {
+                                a {
+                                    href: "/tickets/{t}",
+                                    class: "text-sm text-accent hover:opacity-90 font-mono",
+                                    "{t}"
+                                }
+                            },
+                            (_, Some(e)) => rsx! {
+                                span { class: "text-sm text-content font-mono", "{e}" }
+                            },
+                            _ => rsx! { span { class: "text-sm text-subtle", "-" } },
+                        };
+                        rsx! {
+                            Card { key: "{key}",
+                                div { class: "flex items-start justify-between gap-4 flex-wrap",
+                                    div { class: "min-w-0 flex-1",
+                                        div { class: "flex items-center gap-2 mb-2 flex-wrap",
+                                            Badge { variant: BadgeVariant::Yellow, "Pending" }
+                                            Badge { variant: BadgeVariant::Gray, "{target_label}" }
+                                            {entity_chip}
+                                        }
+                                        p { class: "text-sm text-content",
+                                            strong { "From: " }
+                                            "{requester}"
+                                        }
+                                        p { class: "text-xs text-subtle mt-1", "{approver_label}" }
+                                        if !when.is_empty() {
+                                            p { class: "text-xs text-subtle mt-1", "Requested {when}" }
+                                        }
+                                        if !notes.is_empty() {
+                                            p { class: "mt-2 text-sm text-muted whitespace-pre-wrap",
+                                                "{notes}"
                                             }
                                         }
-                                        div { class: "flex items-center gap-2",
-                                            // MAPPS-351: block decisions while the server is
-                                            // unreachable, with an explanatory tooltip, so a
-                                            // click cannot silently fail (edits are discarded,
-                                            // not queued - hold-and-replay is scaffolded in
-                                            // crate::hooks::edit_queue for the local-first epic).
-                                            if !can_mutate {
-                                                span { class: "text-xs text-muted self-center mr-1",
-                                                    "Server unreachable" }
-                                            }
-                                            Button {
-                                                variant: ButtonVariant::Secondary,
-                                                disabled: !can_mutate,
-                                                title: (!can_mutate).then(|| "Can't record a decision while the server is unreachable".to_string()),
-                                                onclick: move |_| decide(row_id, "reject"),
-                                                "Reject"
-                                            }
-                                            Button {
-                                                variant: ButtonVariant::Primary,
-                                                disabled: !can_mutate,
-                                                title: (!can_mutate).then(|| "Can't record a decision while the server is unreachable".to_string()),
-                                                onclick: move |_| decide(row_id, "approve"),
-                                                "Approve"
-                                            }
+                                    }
+                                    div { class: "flex items-center gap-2",
+                                        // MAPPS-351: block decisions while the server is
+                                        // unreachable, with an explanatory tooltip, so a
+                                        // click cannot silently fail (edits are discarded,
+                                        // not queued - hold-and-replay is scaffolded in
+                                        // crate::hooks::edit_queue for the local-first epic).
+                                        if !can_mutate {
+                                            span { class: "text-xs text-muted self-center mr-1",
+                                                "Server unreachable" }
+                                        }
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            disabled: !can_mutate,
+                                            title: (!can_mutate).then(|| "Can't record a decision while the server is unreachable".to_string()),
+                                            onclick: move |_| decide(row_id, "reject"),
+                                            "Reject"
+                                        }
+                                        Button {
+                                            variant: ButtonVariant::Primary,
+                                            disabled: !can_mutate,
+                                            title: (!can_mutate).then(|| "Can't record a decision while the server is unreachable".to_string()),
+                                            onclick: move |_| decide(row_id, "approve"),
+                                            "Approve"
                                         }
                                     }
                                 }

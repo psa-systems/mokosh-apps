@@ -1,6 +1,7 @@
 //! Mokosh Platform - Cross-platform Dioxus client
 
 use dioxus::prelude::*;
+use mokosh_apps::components::use_page_title_provider;
 use mokosh_apps::hooks::{
     use_apply_theme, use_auth_heartbeat, use_auth_provider, use_bfcache_invalidator,
     use_current_user_loader, use_memberships_loader, use_server_status_monitor,
@@ -44,6 +45,10 @@ fn App() -> Element {
     // root, alongside the scroll offset above, so it survives the AppLayout
     // re-mount on each navigation instead of resetting to expanded every click.
     use_sidebar_collapsed_provider();
+    // MAPPS-366: hold the current page title at the App root so the persistent
+    // AppShell top bar and document.title read it while each page sets it via
+    // use_page_title. Mounted once, alongside the sidebar providers above.
+    use_page_title_provider();
     // MAPPS-203: cache the result of GET /api/v1/version at App root so
     // the admin UpdateBanner does not re-run its async fetch (and the
     // 200ms reserve-then-collapse animation that goes with the

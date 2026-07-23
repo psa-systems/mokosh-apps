@@ -32,8 +32,8 @@ use dioxus::prelude::*;
 use crate::utils::datetime::{user_timezone, user_today};
 
 use crate::components::{
-    AppLayout, Button, ButtonVariant, Card, ChevronRightIcon, EmptyState, IconSize, Input, Modal,
-    ModalSize, PageHeader, PencilIcon, PlusIcon, Select, SelectOption, SwatchIcon, Textarea,
+    use_page_title, Button, ButtonVariant, Card, ChevronRightIcon, EmptyState, IconSize, Input,
+    Modal, ModalSize, PageHeader, PencilIcon, PlusIcon, Select, SelectOption, SwatchIcon, Textarea,
 };
 use crate::modules::calendar::{
     AppointmentResponse, CreateAppointmentRequest, CreateSchedulingTemplateRequest,
@@ -658,6 +658,7 @@ fn use_users_resource() -> Resource<Vec<RemoteUser>> {
 /// Calendar page: month / week / day views over real appointments.
 #[component]
 pub fn CalendarPage() -> Element {
+    use_page_title("Calendar");
     let today_real = user_today();
     let mut active_date = use_signal(|| today_real);
     let mut view = use_signal(|| CalendarView::Month);
@@ -774,133 +775,131 @@ pub fn CalendarPage() -> Element {
     };
 
     rsx! {
-        AppLayout { title: "Calendar",
-            PageHeader {
-                title: "Calendar",
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        // MAPPS-357: block creating an appointment while the server is down.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't create an appointment while the server is unreachable".to_string()),
-                        onclick: move |_| form_state.set(Some(None)),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Appointment"
-                    }
-                },
-            }
+        PageHeader {
+            title: "Calendar",
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block creating an appointment while the server is down.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't create an appointment while the server is unreachable".to_string()),
+                    onclick: move |_| form_state.set(Some(None)),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "New Appointment"
+                }
+            },
+        }
 
-            div { class: "grid grid-cols-1 lg:grid-cols-4 gap-6",
-                div { class: "lg:col-span-3",
-                    Card { padding: false,
-                        // Toolbar
-                        div { class: "flex items-center justify-between p-4 border-b border-line",
-                            div { class: "flex items-center space-x-4",
-                                button {
-                                    r#type: "button",
-                                    class: "p-2 hover:bg-surface-2 rounded",
-                                    title: "Previous",
-                                    aria_label: "Previous",
-                                    onclick: go_prev,
-                                    ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
-                                }
-                                h2 { class: "text-lg font-semibold text-content",
-                                    "{header_label}"
-                                }
-                                button {
-                                    r#type: "button",
-                                    class: "p-2 hover:bg-surface-2 rounded",
-                                    title: "Next",
-                                    aria_label: "Next",
-                                    onclick: go_next,
-                                    ChevronRightIcon { class: "h-5 w-5".to_string() }
-                                }
+        div { class: "grid grid-cols-1 lg:grid-cols-4 gap-6",
+            div { class: "lg:col-span-3",
+                Card { padding: false,
+                    // Toolbar
+                    div { class: "flex items-center justify-between p-4 border-b border-line",
+                        div { class: "flex items-center space-x-4",
+                            button {
+                                r#type: "button",
+                                class: "p-2 hover:bg-surface-2 rounded",
+                                title: "Previous",
+                                aria_label: "Previous",
+                                onclick: go_prev,
+                                ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
                             }
-                            div { class: "flex space-x-2",
-                                Button {
-                                    variant: ButtonVariant::Secondary,
-                                    onclick: move |_| active_date.set(today_real),
-                                    "Today"
+                            h2 { class: "text-lg font-semibold text-content",
+                                "{header_label}"
+                            }
+                            button {
+                                r#type: "button",
+                                class: "p-2 hover:bg-surface-2 rounded",
+                                title: "Next",
+                                aria_label: "Next",
+                                onclick: go_next,
+                                ChevronRightIcon { class: "h-5 w-5".to_string() }
+                            }
+                        }
+                        div { class: "flex space-x-2",
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                onclick: move |_| active_date.set(today_real),
+                                "Today"
+                            }
+                            div { class: "flex border border-line rounded-md overflow-hidden",
+                                ViewToggleButton {
+                                    label: "Month",
+                                    active: view() == CalendarView::Month,
+                                    onclick: move |_| view.set(CalendarView::Month),
                                 }
-                                div { class: "flex border border-line rounded-md overflow-hidden",
-                                    ViewToggleButton {
-                                        label: "Month",
-                                        active: view() == CalendarView::Month,
-                                        onclick: move |_| view.set(CalendarView::Month),
-                                    }
-                                    ViewToggleButton {
-                                        label: "Week",
-                                        active: view() == CalendarView::Week,
-                                        onclick: move |_| view.set(CalendarView::Week),
-                                    }
-                                    ViewToggleButton {
-                                        label: "Day",
-                                        active: view() == CalendarView::Day,
-                                        onclick: move |_| view.set(CalendarView::Day),
-                                    }
+                                ViewToggleButton {
+                                    label: "Week",
+                                    active: view() == CalendarView::Week,
+                                    onclick: move |_| view.set(CalendarView::Week),
+                                }
+                                ViewToggleButton {
+                                    label: "Day",
+                                    active: view() == CalendarView::Day,
+                                    onclick: move |_| view.set(CalendarView::Day),
                                 }
                             }
                         }
+                    }
 
-                        div { class: "p-4",
-                            if fetch_failed {
-                                div {
-                                    class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                                    "Could not load appointments. Refresh the page to retry."
-                                }
+                    div { class: "p-4",
+                        if fetch_failed {
+                            div {
+                                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                                "Could not load appointments. Refresh the page to retry."
                             }
-                            if is_loading {
-                                div { class: "py-12 text-center text-sm text-muted", "Loading appointments..." }
-                            } else {
-                                match view() {
-                                    CalendarView::Month => rsx! {
-                                        MonthGrid {
-                                            active_date: active_date(),
-                                            today: today_real,
-                                            appointments: appointments.clone(),
-                                            onpick: move |a| form_state.set(Some(Some(a))),
-                                            oncreate: move |d: NaiveDate| {
-                                                active_date.set(d);
-                                                form_state.set(Some(None));
-                                            },
-                                        }
-                                    },
-                                    CalendarView::Week => rsx! {
-                                        WeekGrid {
-                                            active_date: active_date(),
-                                            today: today_real,
-                                            appointments: appointments.clone(),
-                                            onpick: move |a| form_state.set(Some(Some(a))),
-                                            oncreate: move |d: NaiveDate| {
-                                                active_date.set(d);
-                                                form_state.set(Some(None));
-                                            },
-                                        }
-                                    },
-                                    CalendarView::Day => rsx! {
-                                        DayGrid {
-                                            active_date: active_date(),
-                                            appointments: appointments.clone(),
-                                            onpick: move |a| form_state.set(Some(Some(a))),
-                                            oncreate: move |d: NaiveDate| {
-                                                active_date.set(d);
-                                                form_state.set(Some(None));
-                                            },
-                                        }
-                                    },
-                                }
+                        }
+                        if is_loading {
+                            div { class: "py-12 text-center text-sm text-muted", "Loading appointments..." }
+                        } else {
+                            match view() {
+                                CalendarView::Month => rsx! {
+                                    MonthGrid {
+                                        active_date: active_date(),
+                                        today: today_real,
+                                        appointments: appointments.clone(),
+                                        onpick: move |a| form_state.set(Some(Some(a))),
+                                        oncreate: move |d: NaiveDate| {
+                                            active_date.set(d);
+                                            form_state.set(Some(None));
+                                        },
+                                    }
+                                },
+                                CalendarView::Week => rsx! {
+                                    WeekGrid {
+                                        active_date: active_date(),
+                                        today: today_real,
+                                        appointments: appointments.clone(),
+                                        onpick: move |a| form_state.set(Some(Some(a))),
+                                        oncreate: move |d: NaiveDate| {
+                                            active_date.set(d);
+                                            form_state.set(Some(None));
+                                        },
+                                    }
+                                },
+                                CalendarView::Day => rsx! {
+                                    DayGrid {
+                                        active_date: active_date(),
+                                        appointments: appointments.clone(),
+                                        onpick: move |a| form_state.set(Some(Some(a))),
+                                        oncreate: move |d: NaiveDate| {
+                                            active_date.set(d);
+                                            form_state.set(Some(None));
+                                        },
+                                    }
+                                },
                             }
                         }
                     }
                 }
+            }
 
-                // Sidebar: agenda for the focused day (the active date).
-                div { class: "space-y-6",
-                    AgendaCard {
-                        date: active_date(),
-                        appointments: appointments.clone(),
-                        users: users.clone(),
-                    }
+            // Sidebar: agenda for the focused day (the active date).
+            div { class: "space-y-6",
+                AgendaCard {
+                    date: active_date(),
+                    appointments: appointments.clone(),
+                    users: users.clone(),
                 }
             }
         }
@@ -2266,6 +2265,7 @@ fn optional(value: &str) -> Option<String> {
 /// on-call context surfaced alongside.
 #[component]
 pub fn DispatchBoardPage() -> Element {
+    use_page_title("Dispatch Board");
     let today_real = user_today();
     let mut active_day = use_signal(|| today_real);
     let mut form_state = use_signal(|| None::<Option<AppointmentResponse>>);
@@ -2377,144 +2377,142 @@ pub fn DispatchBoardPage() -> Element {
     };
 
     rsx! {
-        AppLayout { title: "Dispatch Board",
-            PageHeader {
-                title: "Dispatch Board",
-                subtitle: "A per-technician day view: each technician's appointments, availability, time off, and on-call status laid out on one timeline. Schedule on-site work here, or start from a dispatch template.",
-                actions: rsx! {
+        PageHeader {
+            title: "Dispatch Board",
+            subtitle: "A per-technician day view: each technician's appointments, availability, time off, and on-call status laid out on one timeline. Schedule on-site work here, or start from a dispatch template.",
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block scheduling while the server is down.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't schedule an appointment while the server is unreachable".to_string()),
+                    onclick: move |_| form_state.set(Some(None)),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "Schedule Appointment"
+                }
+            },
+        }
+
+        // On-call banner (who is covering right now).
+        if let Some(d) = dispatch.as_ref() {
+            if !d.on_call.is_empty() {
+                OnCallBanner { on_call: d.on_call.clone(), users: users.clone() }
+            }
+        }
+
+        Card { padding: false,
+            div { class: "flex items-center justify-between p-4 border-b border-line",
+                div { class: "flex items-center space-x-4",
+                    button {
+                        r#type: "button",
+                        class: "p-2 hover:bg-surface-2 rounded",
+                        title: "Previous",
+                        aria_label: "Previous",
+                        onclick: move |_| {
+                            let v = *view.read();
+                            let step = match v {
+                                CalendarView::Day => Duration::days(1),
+                                CalendarView::Week => Duration::days(7),
+                                CalendarView::Month => Duration::days(28),
+                            };
+                            active_day.set(active_day() - step);
+                        },
+                        ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
+                    }
+                    h2 { class: "text-lg font-semibold text-content", "{title}" }
+                    button {
+                        r#type: "button",
+                        class: "p-2 hover:bg-surface-2 rounded",
+                        title: "Next",
+                        aria_label: "Next",
+                        onclick: move |_| {
+                            let v = *view.read();
+                            let step = match v {
+                                CalendarView::Day => Duration::days(1),
+                                CalendarView::Week => Duration::days(7),
+                                CalendarView::Month => Duration::days(28),
+                            };
+                            active_day.set(active_day() + step);
+                        },
+                        ChevronRightIcon { class: "h-5 w-5".to_string() }
+                    }
+                }
+                div { class: "flex space-x-2",
                     Button {
-                        variant: ButtonVariant::Primary,
-                        // MAPPS-357: block scheduling while the server is down.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't schedule an appointment while the server is unreachable".to_string()),
-                        onclick: move |_| form_state.set(Some(None)),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "Schedule Appointment"
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| active_day.set(today_real),
+                        "Today"
                     }
-                },
-            }
-
-            // On-call banner (who is covering right now).
-            if let Some(d) = dispatch.as_ref() {
-                if !d.on_call.is_empty() {
-                    OnCallBanner { on_call: d.on_call.clone(), users: users.clone() }
-                }
-            }
-
-            Card { padding: false,
-                div { class: "flex items-center justify-between p-4 border-b border-line",
-                    div { class: "flex items-center space-x-4",
-                        button {
-                            r#type: "button",
-                            class: "p-2 hover:bg-surface-2 rounded",
-                            title: "Previous",
-                            aria_label: "Previous",
-                            onclick: move |_| {
-                                let v = *view.read();
-                                let step = match v {
-                                    CalendarView::Day => Duration::days(1),
-                                    CalendarView::Week => Duration::days(7),
-                                    CalendarView::Month => Duration::days(28),
-                                };
-                                active_day.set(active_day() - step);
-                            },
-                            ChevronRightIcon { class: "h-5 w-5 rotate-180".to_string() }
+                    // MAPPS-280: Day / Week / Month view toggle.
+                    // Day = per-technician swimlane (existing rich
+                    // render). Week / Month re-use the calendar
+                    // grids over the dispatch appointments so a
+                    // dispatcher can plan a week without leaving
+                    // the surface; per-technician week swimlanes
+                    // are tracked as a follow-up under this ticket.
+                    div { class: "flex border border-line rounded-md overflow-hidden",
+                        ViewToggleButton {
+                            label: "Day",
+                            active: view() == CalendarView::Day,
+                            onclick: move |_| view.set(CalendarView::Day),
                         }
-                        h2 { class: "text-lg font-semibold text-content", "{title}" }
-                        button {
-                            r#type: "button",
-                            class: "p-2 hover:bg-surface-2 rounded",
-                            title: "Next",
-                            aria_label: "Next",
-                            onclick: move |_| {
-                                let v = *view.read();
-                                let step = match v {
-                                    CalendarView::Day => Duration::days(1),
-                                    CalendarView::Week => Duration::days(7),
-                                    CalendarView::Month => Duration::days(28),
-                                };
-                                active_day.set(active_day() + step);
-                            },
-                            ChevronRightIcon { class: "h-5 w-5".to_string() }
+                        ViewToggleButton {
+                            label: "Week",
+                            active: view() == CalendarView::Week,
+                            onclick: move |_| view.set(CalendarView::Week),
                         }
-                    }
-                    div { class: "flex space-x-2",
-                        Button {
-                            variant: ButtonVariant::Secondary,
-                            onclick: move |_| active_day.set(today_real),
-                            "Today"
-                        }
-                        // MAPPS-280: Day / Week / Month view toggle.
-                        // Day = per-technician swimlane (existing rich
-                        // render). Week / Month re-use the calendar
-                        // grids over the dispatch appointments so a
-                        // dispatcher can plan a week without leaving
-                        // the surface; per-technician week swimlanes
-                        // are tracked as a follow-up under this ticket.
-                        div { class: "flex border border-line rounded-md overflow-hidden",
-                            ViewToggleButton {
-                                label: "Day",
-                                active: view() == CalendarView::Day,
-                                onclick: move |_| view.set(CalendarView::Day),
-                            }
-                            ViewToggleButton {
-                                label: "Week",
-                                active: view() == CalendarView::Week,
-                                onclick: move |_| view.set(CalendarView::Week),
-                            }
-                            ViewToggleButton {
-                                label: "Month",
-                                active: view() == CalendarView::Month,
-                                onclick: move |_| view.set(CalendarView::Month),
-                            }
+                        ViewToggleButton {
+                            label: "Month",
+                            active: view() == CalendarView::Month,
+                            onclick: move |_| view.set(CalendarView::Month),
                         }
                     }
                 }
+            }
 
-                div { class: "p-4",
-                    if fetch_failed {
-                        div {
-                            class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                            "Could not load the dispatch board. Refresh the page to retry."
-                        }
+            div { class: "p-4",
+                if fetch_failed {
+                    div {
+                        class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                        "Could not load the dispatch board. Refresh the page to retry."
                     }
-                    if is_loading {
-                        div { class: "py-12 text-center text-sm text-muted", "Loading dispatch board..." }
-                    } else if let Some(d) = dispatch.as_ref() {
-                        match view() {
-                            CalendarView::Day => rsx! {
-                                DispatchTimeline {
-                                    day,
-                                    dispatch: d.clone(),
-                                    users: users.clone(),
-                                    onpick: move |a| form_state.set(Some(Some(a))),
-                                }
-                            },
-                            CalendarView::Week => rsx! {
-                                WeekGrid {
-                                    active_date: day,
-                                    today: today_real,
-                                    appointments: d.appointments.clone(),
-                                    onpick: move |a| form_state.set(Some(Some(a))),
-                                    oncreate: move |d: NaiveDate| {
-                                        active_day.set(d);
-                                        form_state.set(Some(None));
-                                    },
-                                }
-                            },
-                            CalendarView::Month => rsx! {
-                                MonthGrid {
-                                    active_date: day,
-                                    today: today_real,
-                                    appointments: d.appointments.clone(),
-                                    onpick: move |a| form_state.set(Some(Some(a))),
-                                    oncreate: move |d: NaiveDate| {
-                                        active_day.set(d);
-                                        form_state.set(Some(None));
-                                    },
-                                }
-                            },
-                        }
+                }
+                if is_loading {
+                    div { class: "py-12 text-center text-sm text-muted", "Loading dispatch board..." }
+                } else if let Some(d) = dispatch.as_ref() {
+                    match view() {
+                        CalendarView::Day => rsx! {
+                            DispatchTimeline {
+                                day,
+                                dispatch: d.clone(),
+                                users: users.clone(),
+                                onpick: move |a| form_state.set(Some(Some(a))),
+                            }
+                        },
+                        CalendarView::Week => rsx! {
+                            WeekGrid {
+                                active_date: day,
+                                today: today_real,
+                                appointments: d.appointments.clone(),
+                                onpick: move |a| form_state.set(Some(Some(a))),
+                                oncreate: move |d: NaiveDate| {
+                                    active_day.set(d);
+                                    form_state.set(Some(None));
+                                },
+                            }
+                        },
+                        CalendarView::Month => rsx! {
+                            MonthGrid {
+                                active_date: day,
+                                today: today_real,
+                                appointments: d.appointments.clone(),
+                                onpick: move |a| form_state.set(Some(Some(a))),
+                                oncreate: move |d: NaiveDate| {
+                                    active_day.set(d);
+                                    form_state.set(Some(None));
+                                },
+                            }
+                        },
                     }
                 }
             }
@@ -2802,6 +2800,7 @@ const TEMPLATE_TITLE_MAX: i64 = 255;
 /// Reachable from the sidebar and from the appointment form's picker.
 #[component]
 pub fn SchedulingTemplatesPage() -> Element {
+    use_page_title("Scheduling Templates");
     // Modal state: None = closed, Some(None) = creating, Some(Some(t)) =
     // editing that template (mirrors the appointment form's `form_state`).
     let mut form_state = use_signal(|| None::<Option<SchedulingTemplateResponse>>);
@@ -2852,77 +2851,75 @@ pub fn SchedulingTemplatesPage() -> Element {
     }
 
     rsx! {
-        AppLayout { title: "Scheduling Templates",
-            PageHeader {
-                title: "Scheduling Templates",
-                subtitle: "Reusable appointment shapes. Pick one on the appointment form to pre-fill the type, duration, title, and location, then just choose a start time. Dispatch templates are for on-site work; calendar templates are for client calls and status updates.",
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        // MAPPS-357: block creating a template while the server is down.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't create a template while the server is unreachable".to_string()),
-                        onclick: move |_| form_state.set(Some(None)),
-                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                        "New Template"
-                    }
-                },
-            }
+        PageHeader {
+            title: "Scheduling Templates",
+            subtitle: "Reusable appointment shapes. Pick one on the appointment form to pre-fill the type, duration, title, and location, then just choose a start time. Dispatch templates are for on-site work; calendar templates are for client calls and status updates.",
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block creating a template while the server is down.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't create a template while the server is unreachable".to_string()),
+                    onclick: move |_| form_state.set(Some(None)),
+                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                    "New Template"
+                }
+            },
+        }
 
-            Card { padding: false,
-                if is_loading {
-                    div { class: "py-12 text-center text-sm text-muted", "Loading templates..." }
-                } else if templates.is_empty() {
-                    div { class: "p-6",
-                        EmptyState {
-                            icon: rsx! { SwatchIcon { size: IconSize::Large } },
-                            title: "No templates yet".to_string(),
-                            description: "Create a dispatch or calendar template to speed up scheduling. Templates pre-fill an appointment so you only pick a start time.".to_string(),
-                            actions: rsx! {
-                                Button {
-                                    variant: ButtonVariant::Primary,
-                                    // MAPPS-357: block creating a template while the server is down.
-                                    disabled: !can_mutate,
-                                    title: (!can_mutate).then(|| "Can't create a template while the server is unreachable".to_string()),
-                                    onclick: move |_| form_state.set(Some(None)),
-                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                    "New Template"
-                                }
-                            },
-                        }
+        Card { padding: false,
+            if is_loading {
+                div { class: "py-12 text-center text-sm text-muted", "Loading templates..." }
+            } else if templates.is_empty() {
+                div { class: "p-6",
+                    EmptyState {
+                        icon: rsx! { SwatchIcon { size: IconSize::Large } },
+                        title: "No templates yet".to_string(),
+                        description: "Create a dispatch or calendar template to speed up scheduling. Templates pre-fill an appointment so you only pick a start time.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: block creating a template while the server is down.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't create a template while the server is unreachable".to_string()),
+                                onclick: move |_| form_state.set(Some(None)),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Template"
+                            }
+                        },
                     }
-                } else {
-                    ul { class: "divide-y divide-line",
-                        for t in templates.iter() {
-                            {
-                                let row = t.clone();
-                                let edit_row = t.clone();
-                                let kind_label = template_kind_label(&t.kind);
-                                let type_label = t.appointment_type.clone();
-                                let duration = humanize_minutes(t.duration_minutes);
-                                let buffer = travel_buffer_help(t);
-                                let name = t.name.clone();
-                                rsx! {
-                                    li { key: "{row.id}", class: "flex items-center justify-between gap-4 p-4",
-                                        div { class: "min-w-0",
-                                            div { class: "flex items-center gap-2",
-                                                span { class: "font-medium text-content", "{name}" }
-                                                span { class: "text-xs rounded-full bg-surface-2 text-muted px-2 py-0.5", "{kind_label}" }
-                                            }
-                                            p { class: "text-sm text-muted",
-                                                "{type_label} - {duration}"
-                                            }
-                                            if let Some(b) = buffer {
-                                                p { class: "text-xs text-muted", "{b}" }
-                                            }
+                }
+            } else {
+                ul { class: "divide-y divide-line",
+                    for t in templates.iter() {
+                        {
+                            let row = t.clone();
+                            let edit_row = t.clone();
+                            let kind_label = template_kind_label(&t.kind);
+                            let type_label = t.appointment_type.clone();
+                            let duration = humanize_minutes(t.duration_minutes);
+                            let buffer = travel_buffer_help(t);
+                            let name = t.name.clone();
+                            rsx! {
+                                li { key: "{row.id}", class: "flex items-center justify-between gap-4 p-4",
+                                    div { class: "min-w-0",
+                                        div { class: "flex items-center gap-2",
+                                            span { class: "font-medium text-content", "{name}" }
+                                            span { class: "text-xs rounded-full bg-surface-2 text-muted px-2 py-0.5", "{kind_label}" }
                                         }
-                                        div { class: "flex items-center gap-2 shrink-0",
-                                            Button {
-                                                variant: ButtonVariant::Secondary,
-                                                onclick: move |_| form_state.set(Some(Some(edit_row.clone()))),
-                                                PencilIcon { size: IconSize::Small, class: "mr-1".to_string() }
-                                                "Edit"
-                                            }
+                                        p { class: "text-sm text-muted",
+                                            "{type_label} - {duration}"
+                                        }
+                                        if let Some(b) = buffer {
+                                            p { class: "text-xs text-muted", "{b}" }
+                                        }
+                                    }
+                                    div { class: "flex items-center gap-2 shrink-0",
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            onclick: move |_| form_state.set(Some(Some(edit_row.clone()))),
+                                            PencilIcon { size: IconSize::Small, class: "mr-1".to_string() }
+                                            "Edit"
                                         }
                                     }
                                 }

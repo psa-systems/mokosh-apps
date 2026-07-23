@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::components::{
-    AlertType, AppLayout, Button, ButtonVariant, Card, Modal, PageHeader, Table, TableBody,
+    use_page_title, AlertType, Button, ButtonVariant, Card, Modal, PageHeader, Table, TableBody,
     TableCell, TableHead, TableHeader, TableRow,
 };
 use crate::Route;
@@ -48,6 +48,7 @@ struct UpdateDashboardBody {
 
 #[component]
 pub fn SavedDashboardsPage() -> Element {
+    use_page_title("Dashboards");
     let mut version = use_signal(|| 0u32);
     // MAPPS-357: primary resource -> explicit unavailable state on outage.
     // Refetch stays driven by the `version` bump after each mutation (the
@@ -154,84 +155,82 @@ pub fn SavedDashboardsPage() -> Element {
     };
 
     rsx! {
-        AppLayout {
-            PageHeader {
-                title: "Dashboards".to_string(),
-                subtitle: "Pin one as your post-login landing page. Widgets coming soon."
-                    .to_string(),
-                actions: rsx! {
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        // MAPPS-357: block the create entry point while down.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't create a dashboard while the server is unreachable".to_string()),
-                        onclick: move |_| show_create.set(true),
-                        "New dashboard"
-                    }
-                },
-            }
-            Card {
-                if rows.is_empty() {
-                    div { class: "p-6 text-center text-muted",
-                        "No saved dashboards yet. Click 'New dashboard' to create your first."
-                    }
-                } else {
-                    Table {
-                        TableHead {
-                            TableRow {
-                                TableHeader { "Name" }
-                                TableHeader { "Default" }
-                                TableHeader { "Updated" }
-                                TableHeader { class: "text-right".to_string(), "Actions" }
-                            }
+        PageHeader {
+            title: "Dashboards".to_string(),
+            subtitle: "Pin one as your post-login landing page. Widgets coming soon."
+                .to_string(),
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    // MAPPS-357: block the create entry point while down.
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't create a dashboard while the server is unreachable".to_string()),
+                    onclick: move |_| show_create.set(true),
+                    "New dashboard"
+                }
+            },
+        }
+        Card {
+            if rows.is_empty() {
+                div { class: "p-6 text-center text-muted",
+                    "No saved dashboards yet. Click 'New dashboard' to create your first."
+                }
+            } else {
+                Table {
+                    TableHead {
+                        TableRow {
+                            TableHeader { "Name" }
+                            TableHeader { "Default" }
+                            TableHeader { "Updated" }
+                            TableHeader { class: "text-right".to_string(), "Actions" }
                         }
-                        TableBody {
-                            for row in rows.iter().cloned() {
-                                {
-                                    let id = row.id;
-                                    let row_default = row.is_default;
-                                    let row_name = row.name.clone();
-                                    let updated = row.updated_at.format("%Y-%m-%d %H:%M UTC").to_string();
-                                    let on_pin = on_pin_default;
-                                    let on_del = on_delete;
-                                    rsx! {
-                                        TableRow { key: "{id}",
-                                            TableCell { "{row_name}" }
-                                            TableCell {
-                                                if row_default {
-                                                    span { class: "text-success font-medium", "Default" }
-                                                } else {
-                                                    span { class: "text-muted", "-" }
-                                                }
+                    }
+                    TableBody {
+                        for row in rows.iter().cloned() {
+                            {
+                                let id = row.id;
+                                let row_default = row.is_default;
+                                let row_name = row.name.clone();
+                                let updated = row.updated_at.format("%Y-%m-%d %H:%M UTC").to_string();
+                                let on_pin = on_pin_default;
+                                let on_del = on_delete;
+                                rsx! {
+                                    TableRow { key: "{id}",
+                                        TableCell { "{row_name}" }
+                                        TableCell {
+                                            if row_default {
+                                                span { class: "text-success font-medium", "Default" }
+                                            } else {
+                                                span { class: "text-muted", "-" }
                                             }
-                                            TableCell { "{updated}" }
-                                            TableCell { class: "text-right".to_string(),
-                                                div { class: "inline-flex gap-2",
-                                                    Link {
-                                                        to: Route::SavedDashboardView { id: id.to_string() },
-                                                        Button {
-                                                            variant: ButtonVariant::Secondary,
-                                                            "View"
-                                                        }
-                                                    }
-                                                    if !row_default {
-                                                        Button {
-                                                            variant: ButtonVariant::Secondary,
-                                                            // MAPPS-357: block pin while down.
-                                                            disabled: !can_mutate,
-                                                            title: (!can_mutate).then(|| "Can't change the default while the server is unreachable".to_string()),
-                                                            onclick: move |_| on_pin(id),
-                                                            "Pin default"
-                                                        }
-                                                    }
+                                        }
+                                        TableCell { "{updated}" }
+                                        TableCell { class: "text-right".to_string(),
+                                            div { class: "inline-flex gap-2",
+                                                Link {
+                                                    to: Route::SavedDashboardView { id: id.to_string() },
                                                     Button {
-                                                        variant: ButtonVariant::Danger,
-                                                        // MAPPS-357: block delete while down.
-                                                        disabled: !can_mutate,
-                                                        title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
-                                                        onclick: move |_| on_del(id),
-                                                        "Delete"
+                                                        variant: ButtonVariant::Secondary,
+                                                        "View"
                                                     }
+                                                }
+                                                if !row_default {
+                                                    Button {
+                                                        variant: ButtonVariant::Secondary,
+                                                        // MAPPS-357: block pin while down.
+                                                        disabled: !can_mutate,
+                                                        title: (!can_mutate).then(|| "Can't change the default while the server is unreachable".to_string()),
+                                                        onclick: move |_| on_pin(id),
+                                                        "Pin default"
+                                                    }
+                                                }
+                                                Button {
+                                                    variant: ButtonVariant::Danger,
+                                                    // MAPPS-357: block delete while down.
+                                                    disabled: !can_mutate,
+                                                    title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
+                                                    onclick: move |_| on_del(id),
+                                                    "Delete"
                                                 }
                                             }
                                         }
@@ -242,43 +241,43 @@ pub fn SavedDashboardsPage() -> Element {
                     }
                 }
             }
+        }
 
-            Modal {
-                open: *show_create.read(),
-                title: "New dashboard".to_string(),
-                onclose: move |_| show_create.set(false),
-                div { class: "space-y-4",
-                    div {
-                        label { class: "block text-sm font-medium mb-1", "Name" }
-                        input {
-                            class: "input input-bordered w-full",
-                            r#type: "text",
-                            value: "{new_name}",
-                            oninput: move |e| new_name.set(e.value()),
-                        }
+        Modal {
+            open: *show_create.read(),
+            title: "New dashboard".to_string(),
+            onclose: move |_| show_create.set(false),
+            div { class: "space-y-4",
+                div {
+                    label { class: "block text-sm font-medium mb-1", "Name" }
+                    input {
+                        class: "input input-bordered w-full",
+                        r#type: "text",
+                        value: "{new_name}",
+                        oninput: move |e| new_name.set(e.value()),
                     }
-                    label { class: "flex items-center gap-2",
-                        input {
-                            r#type: "checkbox",
-                            checked: *new_is_default.read(),
-                            oninput: move |e| new_is_default.set(e.value() == "true"),
-                        }
-                        span { class: "text-sm", "Pin as my default dashboard" }
+                }
+                label { class: "flex items-center gap-2",
+                    input {
+                        r#type: "checkbox",
+                        checked: *new_is_default.read(),
+                        oninput: move |e| new_is_default.set(e.value() == "true"),
                     }
-                    div { class: "flex justify-end gap-2 pt-2",
-                        Button {
-                            variant: ButtonVariant::Secondary,
-                            onclick: move |_| show_create.set(false),
-                            "Cancel"
-                        }
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            // MAPPS-357: block submit while the server is down.
-                            disabled: !can_mutate,
-                            title: (!can_mutate).then(|| "Can't create a dashboard while the server is unreachable".to_string()),
-                            onclick: on_create_submit,
-                            "Create"
-                        }
+                    span { class: "text-sm", "Pin as my default dashboard" }
+                }
+                div { class: "flex justify-end gap-2 pt-2",
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| show_create.set(false),
+                        "Cancel"
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        // MAPPS-357: block submit while the server is down.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't create a dashboard while the server is unreachable".to_string()),
+                        onclick: on_create_submit,
+                        "Create"
                     }
                 }
             }

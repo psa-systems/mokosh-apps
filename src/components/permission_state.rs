@@ -18,7 +18,7 @@
 
 use dioxus::prelude::*;
 
-use crate::components::{AppLayout, Card, IconSize, InformationIcon, PageHeader};
+use crate::components::{use_page_title, Card, IconSize, InformationIcon, PageHeader};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct PermissionRequiredProps {
@@ -36,24 +36,25 @@ pub fn PermissionRequired(props: PermissionRequiredProps) -> Element {
         .map(|u| u.role.as_str().to_string())
         .unwrap_or_default();
     let heading = format!("{} access required", props.title);
+    // MAPPS-366: rendered as a page body inside the persistent AppShell, so it
+    // sets its own tab title rather than passing it to an AppLayout wrapper.
+    use_page_title(props.title.clone());
     rsx! {
-        AppLayout { title: "{props.title}",
-            PageHeader { title: "{props.title}" }
-            Card {
-                div { class: "py-12 px-6 mx-auto flex max-w-md flex-col items-center text-center",
-                    div { class: "mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-surface-2",
-                        InformationIcon { size: IconSize::Large, class: "text-subtle".to_string() }
-                    }
-                    h3 { class: "text-base font-medium text-content",
-                        "{heading}"
-                    }
-                    p { class: "mt-2 text-sm text-muted",
-                        "{props.body}"
-                    }
-                    if !role.is_empty() {
-                        p { class: "mt-4 text-xs text-subtle",
-                            "Your current role: {role}"
-                        }
+        PageHeader { title: "{props.title}" }
+        Card {
+            div { class: "py-12 px-6 mx-auto flex max-w-md flex-col items-center text-center",
+                div { class: "mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-surface-2",
+                    InformationIcon { size: IconSize::Large, class: "text-subtle".to_string() }
+                }
+                h3 { class: "text-base font-medium text-content",
+                    "{heading}"
+                }
+                p { class: "mt-2 text-sm text-muted",
+                    "{props.body}"
+                }
+                if !role.is_empty() {
+                    p { class: "mt-4 text-xs text-subtle",
+                        "Your current role: {role}"
                     }
                 }
             }
