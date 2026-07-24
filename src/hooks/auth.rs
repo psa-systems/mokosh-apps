@@ -262,18 +262,21 @@ fn rehydrate_standalone() -> Option<AuthContext> {
     })
 }
 
-/// Populate AuthContext.memberships with a synthetic single-tenant
-/// row sourced from the signed-in user. The previous implementation
-/// fetched `GET /v1/auth/memberships` from bunyip-api, but bunyip's
-/// `AuthenticatedUser` extractor only validates legacy HS256 access
-/// tokens; the OIDC at+jwt the SPA holds is EdDSA and fails
-/// verification with a 401. Until bunyip's auth extractors accept
-/// the OIDC at+jwt the issuer itself mints (tracked as a separate
-/// bunyip issue), the SPA stops calling the endpoint and synthesises
-/// the same single-membership payload locally that the bunyip stub
-/// returns server-side. Same default tenant id
-/// (`00000000-0000-0000-0000-000000000001`), same `tenant_kind`,
-/// same `role`, so the rest of the SPA does not notice the swap.
+/// Load `/v1/auth/memberships` from bunyip into AuthContext after
+/// sign-in. Watches the auth signal and re-fetches whenever the user
+/// transitions from "no membership list" to "have a session" (login,
+/// or a page reload that rehydrates from sessionStorage). Cheap GET,
+/// runs at most a few times per session. Mount once at the app root.
+///
+/// BUNYIP-55 extended bunyip's `AuthenticatedUser` extractor to route
+/// `typ == "at+jwt"` tokens to the OidcProvider verifier (it validates
+/// signature + `iss` + `exp` + `typ` with `validate_aud = false`), so
+/// the Mokosh-audience EdDSA at+jwt the SPA holds is now accepted at
+/// bunyip's own `/v1/*` endpoints. If the call fails (bunyip
+/// unreachable, token rejected) or returns no rows, fall back to a
+/// synthetic single membership so the switcher UI keeps working; the
+/// product is single-tenant-per-user (PMS-447), so that value is
+/// correct today.
 pub fn use_memberships_loader() {
     let mut auth = use_auth();
     use_effect(move || {
@@ -284,25 +287,67 @@ pub fn use_memberships_loader() {
         if !needs_load {
             return;
         }
-        let synthetic_tenant_id = "00000000-0000-0000-0000-000000000001".to_string();
-        let mut a = auth.write();
-        let tenant_name = a
-            .user
-            .as_ref()
-            .map(|u| u.email.clone())
-            .unwrap_or_else(|| "personal".to_string());
-        a.memberships = vec![MembershipView {
-            tenant_id: synthetic_tenant_id.clone(),
-            tenant_name,
-            tenant_kind: "personal".to_string(),
-            role: "owner".to_string(),
-            status: "active".to_string(),
-            is_active: true,
-        }];
-        if a.active_tenant_id.is_none() {
-            a.active_tenant_id = synthetic_tenant_id.parse::<uuid::Uuid>().ok();
-        }
+        spawn(async move {
+            let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
+            #[derive(serde::Deserialize)]
+            struct Body {
+                memberships: Vec<MembershipView>,
+                #[serde(default)]
+                active_tenant_id: Option<String>,
+            }
+            match crate::modules::oidc::issuer_get_authed::<Body>(&cfg, "/v1/auth/memberships")
+                .await
+            {
+                Ok(b) if !b.memberships.is_empty() => {
+                    let active = b
+                        .active_tenant_id
+                        .as_deref()
+                        .and_then(|s| s.parse::<uuid::Uuid>().ok());
+                    let mut a = auth.write();
+                    a.memberships = b.memberships;
+                    if active.is_some() {
+                        a.active_tenant_id = active;
+                    }
+                }
+                // Authenticated but bunyip returned no rows. Seed the synthetic
+                // membership so the UI has a tenant to act under and the effect
+                // stops re-firing (a persistently empty list would re-trigger
+                // this load on every render).
+                Ok(_) => synthesize_single_membership(auth),
+                Err(e) => {
+                    tracing::warn!("memberships load failed, using synthetic fallback: {e}");
+                    synthesize_single_membership(auth);
+                }
+            }
+        });
     });
+}
+
+/// Seed AuthContext with a synthetic single-tenant membership sourced
+/// from the signed-in user. Fallback for when bunyip's
+/// `/v1/auth/memberships` is unreachable or returns nothing; correct
+/// today because the product is single-tenant-per-user (PMS-447). Same
+/// default tenant id (`00000000-0000-0000-0000-000000000001`),
+/// `tenant_kind`, and `role` the bunyip stub returns server-side.
+fn synthesize_single_membership(mut auth: Signal<AuthContext>) {
+    let synthetic_tenant_id = "00000000-0000-0000-0000-000000000001".to_string();
+    let mut a = auth.write();
+    let tenant_name = a
+        .user
+        .as_ref()
+        .map(|u| u.email.clone())
+        .unwrap_or_else(|| "personal".to_string());
+    a.memberships = vec![MembershipView {
+        tenant_id: synthetic_tenant_id.clone(),
+        tenant_name,
+        tenant_kind: "personal".to_string(),
+        role: "owner".to_string(),
+        status: "active".to_string(),
+        is_active: true,
+    }];
+    if a.active_tenant_id.is_none() {
+        a.active_tenant_id = synthetic_tenant_id.parse::<uuid::Uuid>().ok();
+    }
 }
 
 /// Background token-refresh loop. Mount once near the root of the app
