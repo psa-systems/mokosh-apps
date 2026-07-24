@@ -4586,8 +4586,13 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                             spawn(async move {
                                 let path = format!("/contacts/contacts/{id}");
                                 let body = serde_json::json!({ "is_portal_user": false });
-                                let _ = crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await;
-                                on_change.call(());
+                                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await {
+                                    Ok(_) => on_change.call(()),
+                                    Err(err) => crate::hooks::toast::push_toast(
+                                        crate::components::AlertType::Error,
+                                        format!("Could not revoke portal access: {err}"),
+                                    ),
+                                }
                                 toggling.set(false);
                             });
                         },
@@ -4615,8 +4620,13 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                             spawn(async move {
                                 let path = format!("/contacts/contacts/{id}");
                                 let body = serde_json::json!({ "is_portal_user": true });
-                                let _ = crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await;
-                                on_change.call(());
+                                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await {
+                                    Ok(_) => on_change.call(()),
+                                    Err(err) => crate::hooks::toast::push_toast(
+                                        crate::components::AlertType::Error,
+                                        format!("Could not grant portal access: {err}"),
+                                    ),
+                                }
                                 toggling.set(false);
                             });
                         },

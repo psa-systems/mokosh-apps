@@ -29,9 +29,8 @@ pub struct AuthContext {
     /// OIDC tokens. Held in memory only; never persisted (XSS protection).
     /// `None` until the user completes the authorize-redirect-callback dance.
     pub tokens: Option<Tokens>,
-    /// Tenant the user is currently acting under. Sourced from the
-    /// `mokosh_active_tenant` claim in the access token; updated on
-    /// switch. None before sign-in.
+    /// Tenant the user is currently acting under. Seeded from the home
+    /// tenant at sign-in and updated on switch. None before sign-in.
     pub active_tenant_id: Option<uuid::Uuid>,
     /// Every membership the user has. Loaded from /v1/auth/memberships
     /// after sign-in; powers the tenant switcher UI. Empty before
@@ -51,11 +50,6 @@ impl AuthContext {
     /// Check if user is authenticated
     pub fn is_authenticated(&self) -> bool {
         self.user.is_some()
-    }
-
-    /// Get the current user, panics if not authenticated
-    pub fn user(&self) -> &CurrentUser {
-        self.user.as_ref().expect("User not authenticated")
     }
 
     /// Check if user has a specific role
@@ -188,23 +182,14 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
         .as_deref()
         .and_then(|s| s.parse::<uuid::Uuid>().ok())
         .unwrap_or_else(uuid::Uuid::nil);
-    // Parse via UserRole::from_str so every variant the server can
-    // return (super_admin / admin / manager / technician / dispatcher /
-    // sales / finance) round-trips. The inline match above missed
-    // super_admin + technician + dispatcher + sales and silently
-    // downgraded those users to the Technician default, which denied
-    // billing access to legitimate super_admins.
-    let role = claims
-        .role
-        .as_deref()
-        .and_then(crate::modules::auth::UserRole::from_str)
-        .unwrap_or_default();
+    // Role comes from `/api/v1/auth/me` (PMS-158); the id_token carries no
+    // usable role claim post-cutover, so seed the Technician default and let
+    // the post-rehydrate /me fetch reconcile it within a tick.
+    let role = crate::modules::auth::UserRole::default();
 
-    let active_tenant_id = claims
-        .active_tenant_id
-        .as_deref()
-        .and_then(|s| s.parse::<uuid::Uuid>().ok())
-        .or(Some(tenant_id));
+    // The id_token has no active-tenant claim; seed the active tenant from the
+    // home tenant. A tenant switch (or the memberships load) updates it.
+    let active_tenant_id = Some(tenant_id);
     crate::hooks::fetch::api::set_access_token(Some(tokens.access_token.clone()));
     Some(AuthContext {
         user: Some(CurrentUser {
