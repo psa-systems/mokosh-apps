@@ -2189,7 +2189,7 @@ dependencies = [
 
 [[package]]
 name = "mokosh-apps"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "ammonia",
  "base64",
