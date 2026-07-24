@@ -128,6 +128,8 @@ fn initial_auth_context() -> AuthContext {
                 avatar_url: None,
                 profile_completed: true,
                 date_format_string: None,
+                theme_base_mode: None,
+                theme_accent_id: None,
                 own_company_id: None,
             }),
             is_loading: false,
@@ -205,6 +207,10 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
             // matching note in pages/auth_callback.rs.
             profile_completed: true,
             date_format_string: None,
+            // Optimistic None; the post-rehydrate /me fetch reconciles the
+            // authoritative theme prefs within a tick.
+            theme_base_mode: None,
+            theme_accent_id: None,
             // The id_token has no own-company claim; the post-rehydrate
             // /me fetch (use_current_user_loader) fills it in within a tick.
             own_company_id: None,

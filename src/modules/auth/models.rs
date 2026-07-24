@@ -194,6 +194,14 @@ pub struct CurrentUser {
     /// "use the browser locale" (the legacy rendering behaviour).
     #[serde(default)]
     pub date_format_string: Option<String>,
+    /// PMS-410: per-user theme base mode. One of `light`, `dark`,
+    /// `system`. `None` = unset; the client treats it as `system`.
+    #[serde(default)]
+    pub theme_base_mode: Option<String>,
+    /// PMS-410: per-user accent id (opaque; the accent catalog lives in
+    /// the SPA). `None` = unset; the client falls back to its default accent.
+    #[serde(default)]
+    pub theme_accent_id: Option<String>,
     /// PMS-413: the tenant's own-company id, surfaced on the `/auth/me`
     /// (and login) user payload so the SPA can attribute a General /
     /// overhead time entry (no ticket, no project) without an extra
@@ -268,6 +276,10 @@ impl User {
             // conversion never traps a user in onboarding.
             profile_completed: true,
             date_format_string: self.date_format_string.clone(),
+            // The client-side `User` snapshot carries no theme columns; the
+            // live values reach the SPA via the `/auth/me` payload.
+            theme_base_mode: None,
+            theme_accent_id: None,
             // The client-side `User` is a legacy snapshot with no
             // own-company column; the live value reaches the SPA via the
             // `/auth/me` payload (see `MeBody` in hooks/auth.rs).
@@ -431,6 +443,8 @@ mod tests {
             avatar_url: None,
             profile_completed: true,
             date_format_string: None,
+            theme_base_mode: None,
+            theme_accent_id: None,
             own_company_id: None,
         };
         let tenant_id = user.tenant_id;
@@ -454,6 +468,8 @@ mod tests {
             avatar_url: None,
             profile_completed: true,
             date_format_string: None,
+            theme_base_mode: None,
+            theme_accent_id: None,
             own_company_id: None,
         };
         let tenant_id = user.tenant_id;
@@ -477,6 +493,8 @@ mod tests {
             avatar_url: None,
             profile_completed: true,
             date_format_string: None,
+            theme_base_mode: None,
+            theme_accent_id: None,
             own_company_id: None,
         };
 
@@ -496,6 +514,8 @@ mod tests {
             avatar_url: None,
             profile_completed: true,
             date_format_string: None,
+            theme_base_mode: None,
+            theme_accent_id: None,
             own_company_id: None,
         };
 
@@ -518,6 +538,8 @@ mod tests {
             avatar_url: None,
             profile_completed: true,
             date_format_string: None,
+            theme_base_mode: None,
+            theme_accent_id: None,
             own_company_id: None,
         };
         let tenant_id = user.tenant_id;
@@ -541,6 +563,8 @@ mod tests {
             avatar_url: None,
             profile_completed: true,
             date_format_string: None,
+            theme_base_mode: None,
+            theme_accent_id: None,
             own_company_id: None,
         };
         let tenant_id = user.tenant_id;

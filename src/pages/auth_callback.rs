@@ -113,6 +113,10 @@ pub fn AuthCallbackPage() -> Element {
                         // onboarding gate redirects them.
                         profile_completed: true,
                         date_format_string: None,
+                        // Optimistic None; the post-login /me fetch reconciles
+                        // the authoritative theme prefs within a tick.
+                        theme_base_mode: None,
+                        theme_accent_id: None,
                         // The id_token carries no own-company claim; the
                         // post-login /me fetch fills it within a tick.
                         own_company_id: None,
