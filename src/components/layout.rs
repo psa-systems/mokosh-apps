@@ -1025,10 +1025,13 @@ fn NotificationRow(item: NotificationItem, on_read: EventHandler<()>) -> Element
             onclick: move |_| {
                 if is_unread {
                     spawn(async move {
-                        let _ = crate::hooks::fetch::api::post_authed_no_content(
+                        if let Err(err) = crate::hooks::fetch::api::post_authed_no_content(
                                 &format!("/notifications/{id}/read"),
                             )
-                            .await;
+                            .await
+                        {
+                            tracing::warn!("failed to mark notification {id} read: {err}");
+                        }
                         on_read.call(());
                     });
                 }

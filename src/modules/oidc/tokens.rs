@@ -20,6 +20,10 @@ pub struct Tokens {
 }
 
 /// Subset of OIDC ID-token claims we surface to the UI.
+///
+/// Role and active-tenant are intentionally not read here: post-cutover
+/// bunyip-as-OP does not emit usable `mokosh_role` / `mokosh_active_tenant`
+/// claims, and `/api/v1/auth/me` is the source of truth for both (PMS-158).
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct IdTokenClaims {
     pub sub: String,
@@ -29,13 +33,6 @@ pub struct IdTokenClaims {
     pub email_verified: Option<bool>,
     #[serde(default, rename = "mokosh_tenant_id")]
     pub tenant_id: Option<String>,
-    /// Tenant the user is currently acting under. Set by the server
-    /// at login / switch / refresh. Older servers omit this field;
-    /// the SPA falls back to `tenant_id` (home tenant) in that case.
-    #[serde(default, rename = "mokosh_active_tenant")]
-    pub active_tenant_id: Option<String>,
-    #[serde(default, rename = "mokosh_role")]
-    pub role: Option<String>,
     /// OIDC `nonce` echoed back from the authorize request. Compared
     /// against the stored `PendingFlow.nonce` in `complete_login` to
     /// bind the id_token to this browser's login attempt (replay

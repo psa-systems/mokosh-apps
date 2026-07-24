@@ -262,11 +262,16 @@ pub fn TeamPage() -> Element {
                 spawn(async move {
                     #[cfg(feature = "web")]
                     {
-                        let _ = crate::hooks::fetch::api::delete_authed(&format!(
+                        match crate::hooks::fetch::api::delete_authed(&format!(
                             "/invitations/{id}"
                         ))
-                        .await;
-                        invites_for_confirm.restart();
+                        .await
+                        {
+                            Ok(()) => invites_for_confirm.restart(),
+                            Err(err) => {
+                                error.set(format!("Could not revoke invitation: {err}"))
+                            }
+                        }
                     }
                     #[cfg(not(feature = "web"))]
                     {

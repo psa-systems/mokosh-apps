@@ -62,19 +62,11 @@ pub fn AuthCallbackPage() -> Element {
                     .as_deref()
                     .and_then(|s| s.parse::<uuid::Uuid>().ok())
                     .unwrap_or_else(uuid::Uuid::nil);
-                // Map mokosh-server's role string onto the client enum via
-                // the single canonical `UserRole::parse_role` parser (PMS-158,
-                // same path used at auth.rs:206 / :424). The inline match it
-                // replaces only handled admin/manager/finance and silently
-                // downgraded super_admin/technician/dispatcher/sales to the
-                // default role on the OIDC-callback path. Unknown / unset
-                // values fall back to Technician (the default service role)
-                // so a fresh user still gets a usable session.
-                let role = claims
-                    .role
-                    .as_deref()
-                    .map(UserRole::parse_role)
-                    .unwrap_or_default();
+                // Role comes from `/api/v1/auth/me` (PMS-158); the id_token
+                // carries no usable role claim post-cutover, so seed the
+                // Technician default and let the post-login /me fetch reconcile
+                // it within a tick.
+                let role = UserRole::default();
                 // Make the access token available to api::*_authed
                 // helpers across the app. Stored in the same in-memory
                 // holder used by every authed fetch call; no localStorage.
