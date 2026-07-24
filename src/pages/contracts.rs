@@ -125,6 +125,14 @@ pub fn ContractListPage() -> Element {
         };
     }
 
+    // MAPPS-377: mount the data body only past the permission gate so its
+    // fetch hooks run unconditionally within it (and never fire for a
+    // non-finance role, preserving the pre-fix behaviour).
+    rsx! { ContractListBody {} }
+}
+
+#[component]
+fn ContractListBody() -> Element {
     // MAPPS-249: seed the company filter from `?company_id=<uuid>` so a context
     // card's "View All" lands here scoped to that company (the dropdown also
     // reflects the selection once its options load).
@@ -2446,6 +2454,14 @@ pub fn RateCardListPage(
         };
     }
 
+    // MAPPS-377: mount the data body only past the permission gate so its
+    // fetch hooks run unconditionally within it. `open_create` and the
+    // already-computed `can_edit` flag are threaded through as props.
+    rsx! { RateCardListBody { open_create, can_edit } }
+}
+
+#[component]
+fn RateCardListBody(open_create: bool, can_edit: bool) -> Element {
     let navigator = use_navigator();
     let mut page = use_signal(|| 1usize);
     let mut editing = use_signal(move || {

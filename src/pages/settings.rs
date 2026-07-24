@@ -764,6 +764,10 @@ struct ImportSummary {
 #[component]
 pub fn ImportExportSettingsPage() -> Element {
     use_page_title("Import & Export");
+    // MAPPS-377: read auth before the admin gate so the hook set stays stable
+    // across renders; it only reads context and feeds the tenant-name
+    // confirmation used past the gate.
+    let auth = crate::hooks::use_auth();
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Import & Export" } };
     }
@@ -771,7 +775,6 @@ pub fn ImportExportSettingsPage() -> Element {
     // The import confirmation must equal the tenant's name (the backend compares
     // `confirm` to `tenants.name`); use the active org name the user already
     // sees in the org switcher.
-    let auth = crate::hooks::use_auth();
     let tenant_name = auth
         .read()
         .active_org_name()
@@ -1164,6 +1167,11 @@ pub fn SchedulingSettingsPage() -> Element {
         return rsx! { AdminOnlyNotice { title: "Scheduling" } };
     }
 
+    rsx! { SchedulingSettingsBody {} }
+}
+
+#[component]
+fn SchedulingSettingsBody() -> Element {
     let resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         // MAPPS-357: subscribe to reachability so the setting auto-refetches the
@@ -1358,6 +1366,11 @@ pub fn MaxHoursPerDaySettingsPage() -> Element {
         return rsx! { AdminOnlyNotice { title: "Time Tracking" } };
     }
 
+    rsx! { MaxHoursPerDaySettingsBody {} }
+}
+
+#[component]
+fn MaxHoursPerDaySettingsBody() -> Element {
     let resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         // MAPPS-357: subscribe to reachability so the setting auto-refetches the
@@ -1557,6 +1570,11 @@ pub fn WorkTypesSettingsPage() -> Element {
         return rsx! { AdminOnlyNotice { title: "Work Types" } };
     }
 
+    rsx! { WorkTypesSettingsBody {} }
+}
+
+#[component]
+fn WorkTypesSettingsBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut editing = use_signal(|| None::<WorkTypeFormState>);
     let current_page = (*page.read()).max(1);
@@ -1901,6 +1919,11 @@ pub fn TaskStatusesSettingsPage() -> Element {
         return rsx! { AdminOnlyNotice { title: "Task Statuses" } };
     }
 
+    rsx! { TaskStatusesSettingsBody {} }
+}
+
+#[component]
+fn TaskStatusesSettingsBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut editing = use_signal(|| None::<TaskStatusFormState>);
     let current_page = (*page.read()).max(1);
@@ -2217,6 +2240,11 @@ pub fn AssetTypesSettingsPage() -> Element {
         return rsx! { AdminOnlyNotice { title: "Asset Types" } };
     }
 
+    rsx! { AssetTypesSettingsBody {} }
+}
+
+#[component]
+fn AssetTypesSettingsBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut editing = use_signal(|| None::<AssetTypeFormState>);
     let current_page = (*page.read()).max(1);
@@ -2532,6 +2560,11 @@ pub fn CompanyIndustriesSettingsPage() -> Element {
         return rsx! { AdminOnlyNotice { title: "Company Industries" } };
     }
 
+    rsx! { CompanyIndustriesSettingsBody {} }
+}
+
+#[component]
+fn CompanyIndustriesSettingsBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut editing = use_signal(|| None::<CompanyIndustryFormState>);
     let current_page = (*page.read()).max(1);
@@ -2809,6 +2842,11 @@ pub fn ProjectTypesSettingsPage() -> Element {
         return rsx! { AdminOnlyNotice { title: "Project Types" } };
     }
 
+    rsx! { ProjectTypesSettingsBody {} }
+}
+
+#[component]
+fn ProjectTypesSettingsBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut editing = use_signal(|| None::<ProjectTypeFormState>);
     let current_page = (*page.read()).max(1);
@@ -3134,6 +3172,11 @@ pub fn PaymentTermsSettingsPage() -> Element {
         return rsx! { AdminOnlyNotice { title: "Payment Terms" } };
     }
 
+    rsx! { PaymentTermsSettingsBody {} }
+}
+
+#[component]
+fn PaymentTermsSettingsBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut editing = use_signal(|| None::<PaymentTermFormState>);
     let current_page = (*page.read()).max(1);
@@ -3440,6 +3483,11 @@ pub fn TicketStatusesSettingsPage() -> Element {
         return rsx! { AdminOnlyNotice { title: "Ticket Statuses" } };
     }
 
+    rsx! { TicketStatusesSettingsBody {} }
+}
+
+#[component]
+fn TicketStatusesSettingsBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut editing = use_signal(|| None::<TicketStatusFormState>);
     let current_page = (*page.read()).max(1);
@@ -3771,6 +3819,11 @@ pub fn TicketPrioritiesSettingsPage() -> Element {
         return rsx! { AdminOnlyNotice { title: "Ticket Priorities" } };
     }
 
+    rsx! { TicketPrioritiesSettingsBody {} }
+}
+
+#[component]
+fn TicketPrioritiesSettingsBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut editing = use_signal(|| None::<TicketPriorityFormState>);
     let current_page = (*page.read()).max(1);
@@ -4117,6 +4170,11 @@ pub fn TicketTypesSettingsPage() -> Element {
         return rsx! { AdminOnlyNotice { title: "Ticket Types" } };
     }
 
+    rsx! { TicketTypesSettingsBody {} }
+}
+
+#[component]
+fn TicketTypesSettingsBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut editing = use_signal(|| None::<TicketTypeFormState>);
     let current_page = (*page.read()).max(1);
@@ -4434,6 +4492,11 @@ pub fn TicketQueuesSettingsPage() -> Element {
         return rsx! { AdminOnlyNotice { title: "Ticket Queues" } };
     }
 
+    rsx! { TicketQueuesSettingsBody {} }
+}
+
+#[component]
+fn TicketQueuesSettingsBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut editing = use_signal(|| None::<TicketQueueFormState>);
     let current_page = (*page.read()).max(1);
@@ -4770,6 +4833,11 @@ pub fn TicketCategoriesSettingsPage() -> Element {
         return rsx! { AdminOnlyNotice { title: "Ticket Categories" } };
     }
 
+    rsx! { TicketCategoriesSettingsBody {} }
+}
+
+#[component]
+fn TicketCategoriesSettingsBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut editing = use_signal(|| None::<TicketCategoryFormState>);
     let current_page = (*page.read()).max(1);
@@ -5209,6 +5277,11 @@ pub fn RmmConnectionsSettingsPage() -> Element {
         return rsx! { AdminOnlyNotice { title: "RMM Connections" } };
     }
 
+    rsx! { RmmConnectionsSettingsBody {} }
+}
+
+#[component]
+fn RmmConnectionsSettingsBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut editing = use_signal(|| None::<RmmConnectionFormState>);
     let current_page = (*page.read()).max(1);
@@ -5698,6 +5771,11 @@ pub fn RmmDeviceMappingsSettingsPage() -> Element {
         return rsx! { AdminOnlyNotice { title: "RMM Device Mappings" } };
     }
 
+    rsx! { RmmDeviceMappingsSettingsBody {} }
+}
+
+#[component]
+fn RmmDeviceMappingsSettingsBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut creating = use_signal(|| false);
     let mut deleting_id = use_signal(|| None::<Uuid>);
@@ -6110,6 +6188,11 @@ pub fn RmmAlertRulesSettingsPage() -> Element {
         return rsx! { AdminOnlyNotice { title: "RMM Alert Rules" } };
     }
 
+    rsx! { RmmAlertRulesSettingsBody {} }
+}
+
+#[component]
+fn RmmAlertRulesSettingsBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut creating = use_signal(|| false);
     let mut deleting_id = use_signal(|| None::<Uuid>);

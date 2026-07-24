@@ -1857,6 +1857,12 @@ pub fn TimesheetApprovalsPage() -> Element {
             .unwrap_or_default()
     });
 
+    // MAPPS-377: read reachability before the manager / outage early returns
+    // below so the hook set stays stable across renders. Both only read global
+    // signals and take no post-return state.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+
     if !can_manage {
         return rsx! {
             PageHeader {
@@ -1894,8 +1900,6 @@ pub fn TimesheetApprovalsPage() -> Element {
     // + banner) instead of an empty approvals table. A fetch that fails while
     // still reachable keeps the inline "Could not load" row below. Writes are
     // blocked while down; `can_mutate` disables Approve / Reject.
-    let reachable = crate::hooks::use_server_reachable();
-    let can_mutate = crate::hooks::use_can_mutate();
     if load_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Timesheet Approvals & History".to_string() }

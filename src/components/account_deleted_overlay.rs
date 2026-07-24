@@ -72,78 +72,90 @@ fn build_hub_logout_url() -> String {
 pub fn AccountDeletedOverlay() -> Element {
     #[cfg(feature = "web")]
     {
-        let is_deleted = use_account_deleted();
-        if !is_deleted {
+        if !use_account_deleted() {
             return rsx! {};
         }
-
-        // Countdown state: decrements once a second while the overlay is
-        // mounted. When it hits 0, `use_effect` triggers the redirect.
-        let mut remaining = use_signal(|| COUNTDOWN_SECS);
-
-        // Clear local OIDC tokens the moment the overlay mounts so a
-        // subsequent request cannot re-arm the tombstoned bearer. Runs
-        // exactly once (per mount) because it reads no signal.
-        use_effect(move || {
-            crate::modules::oidc::storage::clear_auth();
-        });
-
-        // Countdown driver: schedule the next tick via a spawned task
-        // with a 1-second timeout. When the remaining seconds reach 0,
-        // hard-navigate to bunyip's logout endpoint.
-        use_effect(move || {
-            let secs = *remaining.read();
-            if secs == 0 {
-                if let Some(win) = web_sys::window() {
-                    let _ = win.location().replace(&build_hub_logout_url());
-                }
-                return;
-            }
-            spawn(async move {
-                gloo_timers::future::TimeoutFuture::new(1000).await;
-                let now = *remaining.peek();
-                if now > 0 {
-                    remaining.set(now - 1);
-                }
-            });
-        });
-
-        let sign_out_now = move |_| {
-            if let Some(win) = web_sys::window() {
-                let _ = win.location().replace(&build_hub_logout_url());
-            }
-        };
-
-        let secs = *remaining.read();
-        return rsx! {
-            div {
-                class: "fixed inset-0 z-50 flex items-center justify-center bg-app/95 backdrop-blur",
-                role: "alertdialog",
-                aria_modal: "true",
-                aria_labelledby: "account-deleted-title",
-                div { class: "max-w-md w-full mx-4 rounded-lg bg-raised shadow-xl ring-1 ring-line p-6 text-center space-y-4",
-                    h2 {
-                        id: "account-deleted-title",
-                        class: "text-lg font-semibold text-content",
-                        "Your account has been deleted."
-                    }
-                    p { class: "text-sm text-muted",
-                        "Signing you out in "
-                        span { class: "font-semibold text-content", "{secs}" }
-                        " seconds..."
-                    }
-                    button {
-                        r#type: "button",
-                        class: "inline-flex items-center justify-center px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2",
-                        onclick: sign_out_now,
-                        "Sign out now"
-                    }
-                }
-            }
-        };
+        // MAPPS-377: mount the terminal body as a child so its countdown and
+        // token-clearing hooks run unconditionally within it. Hoisting them
+        // above the `!is_deleted` return would instead fire the logout redirect
+        // and clear the OIDC tokens on every healthy render.
+        return rsx! { AccountDeletedTerminal {} };
     }
     #[cfg(not(feature = "web"))]
     {
         rsx! {}
+    }
+}
+
+/// The terminal "your account has been deleted" body, mounted only once the
+/// `ACCOUNT_DELETED` signal has flipped (MAPPS-377). Split out of
+/// `AccountDeletedOverlay` so its countdown / redirect hooks run
+/// unconditionally within it rather than after the parent's early return.
+#[cfg(feature = "web")]
+#[component]
+fn AccountDeletedTerminal() -> Element {
+    // Countdown state: decrements once a second while the overlay is
+    // mounted. When it hits 0, `use_effect` triggers the redirect.
+    let mut remaining = use_signal(|| COUNTDOWN_SECS);
+
+    // Clear local OIDC tokens the moment the overlay mounts so a
+    // subsequent request cannot re-arm the tombstoned bearer. Runs
+    // exactly once (per mount) because it reads no signal.
+    use_effect(move || {
+        crate::modules::oidc::storage::clear_auth();
+    });
+
+    // Countdown driver: schedule the next tick via a spawned task
+    // with a 1-second timeout. When the remaining seconds reach 0,
+    // hard-navigate to bunyip's logout endpoint.
+    use_effect(move || {
+        let secs = *remaining.read();
+        if secs == 0 {
+            if let Some(win) = web_sys::window() {
+                let _ = win.location().replace(&build_hub_logout_url());
+            }
+            return;
+        }
+        spawn(async move {
+            gloo_timers::future::TimeoutFuture::new(1000).await;
+            let now = *remaining.peek();
+            if now > 0 {
+                remaining.set(now - 1);
+            }
+        });
+    });
+
+    let sign_out_now = move |_| {
+        if let Some(win) = web_sys::window() {
+            let _ = win.location().replace(&build_hub_logout_url());
+        }
+    };
+
+    let secs = *remaining.read();
+    rsx! {
+        div {
+            class: "fixed inset-0 z-50 flex items-center justify-center bg-app/95 backdrop-blur",
+            role: "alertdialog",
+            aria_modal: "true",
+            aria_labelledby: "account-deleted-title",
+            div { class: "max-w-md w-full mx-4 rounded-lg bg-raised shadow-xl ring-1 ring-line p-6 text-center space-y-4",
+                h2 {
+                    id: "account-deleted-title",
+                    class: "text-lg font-semibold text-content",
+                    "Your account has been deleted."
+                }
+                p { class: "text-sm text-muted",
+                    "Signing you out in "
+                    span { class: "font-semibold text-content", "{secs}" }
+                    " seconds..."
+                }
+                button {
+                    r#type: "button",
+                    class: "inline-flex items-center justify-center px-4 py-2 rounded-md bg-accent text-white text-sm font-medium hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2",
+                    onclick: sign_out_now,
+                    "Sign out now"
+                }
+            }
+        }
     }
 }

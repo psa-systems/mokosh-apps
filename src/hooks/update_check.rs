@@ -124,16 +124,23 @@ fn reload_now() {}
 /// build hash is unknown (dev builds) or `web_sys` is unavailable.
 #[cfg(feature = "web")]
 pub fn use_update_check() {
-    let Some(my_sha) = baseline_sha() else {
-        return;
-    };
+    // MAPPS-377: `baseline_sha()` is a compile-time constant (None only on dev
+    // builds), so its value never varies across renders; still, call every hook
+    // unconditionally and no-op inside when there is no baseline instead of
+    // returning before the hooks, so the hook set stays stable.
+    let baseline = baseline_sha();
     let mut pending_reload = use_signal(|| false);
     let mut detected_at_secs: Signal<Option<f64>> = use_signal(|| None);
 
     // Background polling loop.
+    let baseline_for_future = baseline.clone();
     use_future(move || {
-        let baseline = my_sha.clone();
+        let baseline = baseline_for_future.clone();
         async move {
+            // Dev build (no baseline): nothing to poll for.
+            let Some(baseline) = baseline else {
+                return;
+            };
             loop {
                 gloo_timers::future::TimeoutFuture::new(POLL_INTERVAL_SECS as u32 * 1000).await;
                 if pending_reload() {
@@ -164,6 +171,10 @@ pub fn use_update_check() {
     // yet caught up (covers the "tab was backgrounded across a deploy"
     // case so users probe immediately on return).
     use_effect(move || {
+        // Dev build (no baseline): register no visibilitychange listener.
+        if baseline.is_none() {
+            return;
+        }
         let Some(win) = web_sys::window() else {
             return;
         };
