@@ -231,37 +231,6 @@ pub struct Ticket {
     pub updated_at: DateTime<Utc>,
 }
 
-/// Create ticket request
-#[derive(Debug, Clone, Deserialize, Validate)]
-pub struct CreateTicketRequest {
-    #[validate(length(min = 1, max = 500))]
-    pub title: String,
-    pub description: Option<String>,
-    pub priority_id: Option<Uuid>,
-    pub type_id: Option<Uuid>,
-    pub category_id: Option<Uuid>,
-    pub queue_id: Option<Uuid>,
-    #[serde(default)]
-    pub source: TicketSource,
-    pub company_id: Uuid,
-    pub contact_id: Option<Uuid>,
-    pub site_id: Option<Uuid>,
-    pub assigned_to_id: Option<Uuid>,
-    pub team_id: Option<Uuid>,
-    pub contract_id: Option<Uuid>,
-    pub sla_id: Option<Uuid>,
-    pub scheduled_start: Option<DateTime<Utc>>,
-    pub scheduled_end: Option<DateTime<Utc>>,
-    pub estimated_hours: Option<f64>,
-    #[serde(default = "crate::utils::default_true")]
-    pub is_billable: bool,
-    pub asset_id: Option<Uuid>,
-    #[serde(default)]
-    pub custom_fields: serde_json::Value,
-    #[serde(default)]
-    pub tags: Vec<String>,
-}
-
 /// Update ticket request
 #[derive(Debug, Clone, Deserialize, Validate)]
 pub struct UpdateTicketRequest {
@@ -287,52 +256,6 @@ pub struct UpdateTicketRequest {
     pub asset_id: Option<Uuid>,
     pub custom_fields: Option<serde_json::Value>,
     pub tags: Option<Vec<String>>,
-}
-
-/// Ticket response for API
-#[derive(Debug, Clone, Serialize)]
-pub struct TicketResponse {
-    pub id: Uuid,
-    pub ticket_number: String,
-    pub title: String,
-    pub description: Option<String>,
-    pub status: TicketStatusSummary,
-    pub priority: TicketPrioritySummary,
-    pub type_name: Option<String>,
-    pub category_name: Option<String>,
-    pub queue_name: String,
-    pub source: TicketSource,
-    pub company_id: Uuid,
-    pub company_name: String,
-    pub contact_id: Option<Uuid>,
-    pub contact_name: Option<String>,
-    pub assigned_to_id: Option<Uuid>,
-    pub assigned_to_name: Option<String>,
-    pub sla_due_date: Option<DateTime<Utc>>,
-    pub sla_status: SlaStatus,
-    pub is_billable: bool,
-    pub billing_status: BillingStatus,
-    pub estimated_hours: Option<f64>,
-    pub actual_hours: f64,
-    pub tags: Vec<String>,
-    pub created_by_name: String,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct TicketStatusSummary {
-    pub id: Uuid,
-    pub name: String,
-    pub color: String,
-    pub is_closed: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct TicketPrioritySummary {
-    pub id: Uuid,
-    pub name: String,
-    pub color: String,
 }
 
 /// SLA status indicator
@@ -392,6 +315,11 @@ pub struct TicketNote {
     pub email_sent_at: Option<DateTime<Utc>>,
     pub created_by_id: Uuid,
     pub created_by_name: Option<String>,
+    /// PMS-468 / PMS-449 phase 2: set when the note was originated by a
+    /// portal contact (not an agent). `is_some()` distinguishes
+    /// "Customer:" vs "Agent:" attribution.
+    #[serde(default)]
+    pub created_by_contact_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -419,6 +347,11 @@ pub struct TicketNoteResponse {
     // Matches `TicketNote.created_by_name`: the join is nullable, so a NULL
     // author name stays representable instead of panicking / coercing to "".
     pub created_by_name: Option<String>,
+    /// PMS-468 / PMS-449 phase 2: set when the note was originated by a
+    /// portal contact. SPA reads this to distinguish customer vs agent
+    /// comments without a display-name heuristic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by_contact_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
 }
 
