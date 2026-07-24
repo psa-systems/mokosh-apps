@@ -241,6 +241,11 @@ pub fn InvoiceListPage() -> Element {
         return rsx! { NoFinancePermission { title: "Invoices" } };
     }
 
+    rsx! { InvoiceListBody {} }
+}
+
+#[component]
+fn InvoiceListBody() -> Element {
     // MAPPS-249: seed the company filter from `?company_id=<uuid>` so a context
     // card's "View All" lands here scoped to that company.
     let mut company_filter =
@@ -1573,6 +1578,11 @@ pub fn PaymentListPage() -> Element {
         return rsx! { NoFinancePermission { title: "Payments" } };
     }
 
+    rsx! { PaymentListBody {} }
+}
+
+#[component]
+fn PaymentListBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut recording = use_signal(|| false);
     // Some(payment) while the edit modal is open, seeded from that row (MAPPS-235).
@@ -2797,6 +2807,11 @@ pub fn TaxRateListPage() -> Element {
         return rsx! { NoFinancePermission { title: "Tax Rates" } };
     }
 
+    rsx! { TaxRateListBody {} }
+}
+
+#[component]
+fn TaxRateListBody() -> Element {
     let mut page = use_signal(|| 1usize);
     // `Some` => the create/edit modal is open with this state.
     let mut editing = use_signal(|| None::<TaxRateFormState>);
@@ -3280,6 +3295,11 @@ pub fn PaymentGatewayConfigPage() -> Element {
         return rsx! { NoFinancePermission { title: "Payment Gateways" } };
     }
 
+    rsx! { PaymentGatewayConfigBody {} }
+}
+
+#[component]
+fn PaymentGatewayConfigBody() -> Element {
     let mut editing = use_signal(|| None::<GatewayFormState>);
 
     let mut gateways_resource = use_resource(move || async move {

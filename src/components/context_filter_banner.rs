@@ -92,6 +92,11 @@ pub fn ContextFilterBanner(props: ContextFilterBannerProps) -> Element {
         }
     });
 
+    // MAPPS-377: `use_navigator` must run on every render, so read it here
+    // (before the two early returns below) instead of just above the final
+    // rsx. It takes no post-return state and only reads router context.
+    let nav = use_navigator();
+
     // No filter -> render nothing. The banner is invisible on the
     // ordinary list view; it only appears when the user arrived via a
     // context "View all" link.
@@ -111,7 +116,6 @@ pub fn ContextFilterBanner(props: ContextFilterBannerProps) -> Element {
 
     let label = props.scope.label();
     let clear_route = props.scope.clear_route();
-    let nav = use_navigator();
     rsx! {
         div { class: "mb-4 flex items-center gap-3 rounded-md border border-line bg-surface-2/50 px-3 py-2",
             Badge { variant: BadgeVariant::Blue, "Scope" }

@@ -328,9 +328,29 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
     };
     use_page_title(report_title);
 
+    // MAPPS-357: the normalised report view is this page's PRIMARY resource.
+    // It flows through `use_remote_resource`, which preserves a failed fetch
+    // (instead of the old `.unwrap_or_default()` that made an outage look like
+    // an empty report) and auto-refetches on reconnect. `build_view` returns a
+    // raw `Result`; a failure while the server is still reachable (e.g. a
+    // role-gated billing 403) degrades to an empty view inside `build_view`, so
+    // only a genuine outage reaches `Unavailable`. The hook reads
+    // `active_tenant_generation` internally, so the explicit subscription the
+    // old hand-rolled resource carried is no longer needed here.
+    //
+    // MAPPS-377: call this hook BEFORE the report-builder early return below so
+    // hook order stays stable when the route param flips this instance between
+    // the builder and a fixed report. `build_view` is a pure no-op
+    // (ReportKind::Unsupported -> default) for the builder type, so hoisting it
+    // fires no network for that path.
+    let report_type = props.report_type.clone();
+    let view_data = crate::hooks::use_remote_resource(move || {
+        let rt = report_type.clone();
+        async move { build_view(&rt).await }
+    });
+
     // The custom report builder is its own interactive surface, not a
-    // fixed report. `report_type` is a route param fixed for this mount, so
-    // returning before the hooks below keeps hook order stable.
+    // fixed report.
     if props.report_type == "report-builder" {
         return rsx! {
             PageHeader {
@@ -341,20 +361,6 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
         };
     }
 
-    // MAPPS-357: the normalised report view is this page's PRIMARY resource.
-    // It flows through `use_remote_resource`, which preserves a failed fetch
-    // (instead of the old `.unwrap_or_default()` that made an outage look like
-    // an empty report) and auto-refetches on reconnect. `build_view` returns a
-    // raw `Result`; a failure while the server is still reachable (e.g. a
-    // role-gated billing 403) degrades to an empty view inside `build_view`, so
-    // only a genuine outage reaches `Unavailable`. The hook reads
-    // `active_tenant_generation` internally, so the explicit subscription the
-    // old hand-rolled resource carried is no longer needed here.
-    let report_type = props.report_type.clone();
-    let view_data = crate::hooks::use_remote_resource(move || {
-        let rt = report_type.clone();
-        async move { build_view(&rt).await }
-    });
     let is_loading = view_data.is_loading();
     if view_data.is_unavailable() {
         return rsx! {

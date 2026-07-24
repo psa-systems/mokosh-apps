@@ -134,6 +134,14 @@ pub fn TeamPage() -> Element {
         });
     };
 
+    // MAPPS-377: every hook must run before the admin / outage early returns
+    // below, so hoist the reachability reads and the revoke-dialog signals to
+    // the top. None of them depend on post-return state.
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    let mut pending_revoke = use_signal::<Option<(uuid::Uuid, String)>>(|| None);
+    let mut revoking = use_signal(|| false);
+
     if !is_admin {
         return rsx! {
             PageHeader {
@@ -161,8 +169,6 @@ pub fn TeamPage() -> Element {
     // the nav + banner) instead of an empty invitations table. A fetch that
     // fails while still reachable (a 4xx) keeps the normal empty-state below.
     // Writes are blocked while down; `can_mutate` disables the buttons.
-    let reachable = crate::hooks::use_server_reachable();
-    let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Team".to_string() }
@@ -175,9 +181,6 @@ pub fn TeamPage() -> Element {
     // now stages the target id and email into `pending_revoke`, which
     // opens a ConfirmDialog; only the explicit Revoke press inside the
     // dialog fires the DELETE. Cancel and the X both clear the signal.
-    let mut pending_revoke = use_signal::<Option<(uuid::Uuid, String)>>(|| None);
-    let mut revoking = use_signal(|| false);
-
     rsx! {
         PageHeader {
             title: "Team",

@@ -123,6 +123,14 @@ pub fn QuoteListPage() -> Element {
         return permission_required();
     }
 
+    // MAPPS-377: mount the data body only past the permission gate so its
+    // fetch hooks run unconditionally within it (and never fire for a
+    // non-finance role, preserving the pre-fix behaviour).
+    rsx! { QuoteListBody {} }
+}
+
+#[component]
+fn QuoteListBody() -> Element {
     let mut company_filter =
         use_signal(|| crate::utils::url::current_query_param("company_id").unwrap_or_default());
     let mut status_filter = use_signal(String::new);
@@ -385,6 +393,14 @@ pub fn QuoteDetailPage(id: String) -> Element {
         return permission_required();
     }
 
+    // MAPPS-377: mount the data body only past the permission gate so its
+    // fetch hooks run unconditionally within it (and never fire for a
+    // non-finance role, preserving the pre-fix behaviour).
+    rsx! { QuoteDetailBody { id } }
+}
+
+#[component]
+fn QuoteDetailBody(id: String) -> Element {
     let mut version = use_signal(|| 0u32);
     // Not `mut` locally: these are handed by value to the action helpers,
     // which take their own mutable binding.
@@ -413,13 +429,15 @@ pub fn QuoteDetailPage(id: String) -> Element {
     };
     let fetch_failed = matches!(*snapshot, Some(None));
 
+    // MAPPS-377: read this before the outage early return so every hook in
+    // this component runs unconditionally; it only reads a global signal.
+    let can_mutate = use_can_mutate();
+
     if fetch_failed {
         return rsx! {
             crate::components::ContentUnavailable { title: "Quote".to_string() }
         };
     }
-
-    let can_mutate = use_can_mutate();
 
     rsx! {
         if loading {
