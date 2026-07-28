@@ -836,7 +836,12 @@ fn UserMenu() -> Element {
                     let next = !*open.read();
                     open.set(next);
                 },
-                UserCircleIcon { size: IconSize::Large, class: "text-subtle".to_string() }
+                // No color class on the icon: it inherits `currentColor` from
+                // the button (`text-subtle`, `hover:text-content`) so it
+                // brightens on hover like the sibling top-bar icons. Pinning
+                // `text-subtle` here would override the button's hover color and
+                // leave the icon looking dead on hover (MAPPS-384 follow-up).
+                UserCircleIcon { size: IconSize::Large }
             }
             if *open.read() {
                 // MAPPS-384: full-screen outside-click backdrop, same pattern as
@@ -1220,7 +1225,12 @@ fn PortalUserMenu() -> Element {
                     let next = !*open.read();
                     open.set(next);
                 },
-                UserCircleIcon { size: IconSize::Large, class: "text-subtle".to_string() }
+                // No color class on the icon: it inherits `currentColor` from
+                // the button (`text-subtle`, `hover:text-content`) so it
+                // brightens on hover like the sibling top-bar icons. Pinning
+                // `text-subtle` here would override the button's hover color and
+                // leave the icon looking dead on hover (MAPPS-384 follow-up).
+                UserCircleIcon { size: IconSize::Large }
             }
             if *open.read() {
                 // MAPPS-384: outside-click backdrop (see `UserMenu`).
