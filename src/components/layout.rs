@@ -724,6 +724,21 @@ pub fn TopBar(props: TopBarProps) -> Element {
 #[component]
 fn UserMenu() -> Element {
     let mut open = use_signal(|| false);
+    // MAPPS-384: dismiss the dropdown on navigation. UserMenu lives in the
+    // persistent AppShell (MAPPS-366), so a route change re-renders the routed
+    // subtree WITHOUT re-mounting this component; without this the menu would
+    // stay open across screens. `use_reactive!` re-runs the effect whenever the
+    // current route changes, and only then.
+    let route: Route = use_route();
+    use_effect(use_reactive!(|route| {
+        // `route` is the reactive dependency: every navigation changes it and
+        // re-fires this effect to close the menu. `peek` reads `open` without
+        // subscribing the effect to it (which would defeat the purpose).
+        let _ = &route;
+        if *open.peek() {
+            open.set(false);
+        }
+    }));
     // No `mut auth` binding here on purpose. `use_auth` is the read-only
     // hook; logout deliberately does NOT mutate the auth signal (see the
     // ordering comment on the `logout` closure below).
@@ -803,9 +818,20 @@ fn UserMenu() -> Element {
 
     rsx! {
         div { class: "relative",
+            // MAPPS-384: match the sibling top-bar icons (theme picker /
+            // notification bell, MAPPS-359 surface tokens) so the profile
+            // control highlights on hover and carries a tooltip. `title` is the
+            // hover/focus tooltip; `aria_label` the accessible name. IconButton
+            // was considered but its `rounded-md` + blue focus-ring base would
+            // visually diverge from the `rounded-full` top-bar icons this is
+            // meant to sit beside, so matching the sibling convention wins.
             button {
-                class: "flex items-center focus:outline-none",
+                r#type: "button",
+                class: "p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2 focus:outline-none",
                 aria_label: "User menu",
+                title: "User menu",
+                aria_expanded: if open() { "true" } else { "false" },
+                aria_haspopup: "menu",
                 onclick: move |_| {
                     let next = !*open.read();
                     open.set(next);
@@ -813,6 +839,15 @@ fn UserMenu() -> Element {
                 UserCircleIcon { size: IconSize::Large, class: "text-subtle".to_string() }
             }
             if *open.read() {
+                // MAPPS-384: full-screen outside-click backdrop, same pattern as
+                // GlobalSearch (MAPPS-346). Sits below the dropdown (z-10 < z-20)
+                // so menu entries stay clickable while any click elsewhere hits
+                // this and dismisses. It unmounts with the dropdown, so there is
+                // no document-level listener that could leak.
+                div {
+                    class: "fixed inset-0 z-10",
+                    onclick: move |_| open.set(false),
+                }
                 div {
                     class: "absolute right-0 mt-2 w-52 rounded-md shadow-lg bg-raised ring-1 ring-black ring-opacity-5 z-20 p-1",
                     role: "menu",
@@ -1129,6 +1164,16 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
 #[component]
 fn PortalUserMenu() -> Element {
     let mut open = use_signal(|| false);
+    // MAPPS-384: dismiss on navigation, same as the app-side `UserMenu`. The
+    // portal chrome is likewise persistent, so a route change does not re-mount
+    // this component.
+    let route: Route = use_route();
+    use_effect(use_reactive!(|route| {
+        let _ = &route;
+        if *open.peek() {
+            open.set(false);
+        }
+    }));
     let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
     // Account Settings lives on the bunyip hub (cross-origin identity:
     // email, password, MFA), so it is a top-level `<a>` rather than an
@@ -1162,9 +1207,15 @@ fn PortalUserMenu() -> Element {
 
     rsx! {
         div { class: "relative",
+            // MAPPS-384: same hover-highlight + tooltip treatment as the
+            // app-side `UserMenu`, matching the sibling top-bar icons.
             button {
-                class: "flex items-center focus:outline-none",
+                r#type: "button",
+                class: "p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2 focus:outline-none",
                 aria_label: "User menu",
+                title: "User menu",
+                aria_expanded: if open() { "true" } else { "false" },
+                aria_haspopup: "menu",
                 onclick: move |_| {
                     let next = !*open.read();
                     open.set(next);
@@ -1172,6 +1223,11 @@ fn PortalUserMenu() -> Element {
                 UserCircleIcon { size: IconSize::Large, class: "text-subtle".to_string() }
             }
             if *open.read() {
+                // MAPPS-384: outside-click backdrop (see `UserMenu`).
+                div {
+                    class: "fixed inset-0 z-10",
+                    onclick: move |_| open.set(false),
+                }
                 div {
                     class: "absolute right-0 mt-2 w-52 rounded-md shadow-lg bg-raised ring-1 ring-black ring-opacity-5 z-20 p-1",
                     role: "menu",
