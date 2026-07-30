@@ -7,7 +7,7 @@ use serde::Deserialize;
 use crate::components::{
     use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, Checkbox, ChevronRightIcon,
     DataTable, IconSize, Modal, PageHeader, PlusIcon, Select, SelectOption, Table, TableBody,
-    TableCell, TableHead, TableHeader, TableRow,
+    TableCell, TableEmptyRow, TableHead, TableHeader, TableRow,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
@@ -303,9 +303,8 @@ pub fn TimeEntryListPage() -> Element {
                     if is_loading {
                         TableRow { TableCell { class: "text-subtle", "Loading…" } }
                     } else if entries.is_empty() {
-                        TableRow {
-                            TableCell { class: "text-subtle italic", "No time logged yet." }
-                        }
+                        // MAPPS-388: centered across the table, not left-aligned.
+                        TableEmptyRow { columns: 6, class: "text-subtle italic", "No time logged yet." }
                     } else {
                         for e in entries.iter() {
                             {
@@ -2106,13 +2105,12 @@ pub fn TimesheetApprovalsPage() -> Element {
                             }
                         }
                     } else if rows.is_empty() {
-                        TableRow {
-                            TableCell { class: "text-subtle italic",
-                                if active_status == "pending" {
-                                    "No timesheets awaiting approval for this scope."
-                                } else {
-                                    "No timesheets match the current filter."
-                                }
+                        // MAPPS-388: centered across the table, not left-aligned.
+                        TableEmptyRow { columns: 7, class: "text-subtle italic",
+                            if active_status == "pending" {
+                                "No timesheets awaiting approval for this scope."
+                            } else {
+                                "No timesheets match the current filter."
                             }
                         }
                     } else {
