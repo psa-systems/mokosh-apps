@@ -1182,7 +1182,10 @@ fn WeekGrid(props: WeekGridProps) -> Element {
                     }
                 }
                 // Body: hour-labeled gutter + 7 positioned day columns.
-                div { class: "grid grid-cols-[60px_repeat(7,1fr)]",
+                // MAPPS-387: pad the top by the gutter labels' `-mt-2` pull so
+                // the first label (12 AM) clears the sticky header instead of
+                // being tucked behind it at scroll-top.
+                div { class: "grid grid-cols-[60px_repeat(7,1fr)] pt-2",
                     // Hour gutter.
                     div { class: "relative",
                         for hour in GRID_START_HOUR..GRID_END_HOUR {
@@ -1460,7 +1463,9 @@ fn DayGrid(props: DayGridProps) -> Element {
         div {
             id: "calendar-grid-scroll-day",
             class: "overflow-y-auto max-h-[70vh]",
-            div { class: "grid grid-cols-[80px_1fr]",
+            // MAPPS-387: `pt-2` offsets the gutter labels' `-mt-2` pull so the
+            // first label (12 AM) is not clipped at the scroll-box top edge.
+            div { class: "grid grid-cols-[80px_1fr] pt-2",
             // Hour gutter.
             div {
                 for hour in GRID_START_HOUR..GRID_END_HOUR {
