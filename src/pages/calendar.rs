@@ -2700,6 +2700,11 @@ fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
     // 0=Sunday .. 6=Saturday for matching availability windows.
     let dow = props.day.weekday().num_days_from_sunday() as i32;
 
+    // MAPPS-387: the 24-hour timeline scrolls horizontally inside its box,
+    // opening on the working-hours window rather than at midnight.
+    #[cfg(feature = "web")]
+    use_effect(|| scroll_grid_to_work_hours("calendar-dispatch-scroll", false));
+
     if user_ids.is_empty() {
         return rsx! {
             div { class: "py-12 text-center text-sm text-muted",
@@ -2709,8 +2714,11 @@ fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
     }
 
     rsx! {
-        div { class: "overflow-x-auto",
-            div { class: "min-w-[800px]",
+        div {
+            id: "calendar-dispatch-scroll",
+            class: "overflow-x-auto",
+            // Wider min-width now the axis is 24 hourly columns (MAPPS-387).
+            div { class: "min-w-[1400px]",
                 // Hour header.
                 div { class: "grid border-b border-line",
                     style: "grid-template-columns: 200px repeat({GRID_END_HOUR - GRID_START_HOUR}, 1fr);",
@@ -2718,8 +2726,11 @@ fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
                     for hour in GRID_START_HOUR..GRID_END_HOUR {
                         {
                             let label = hour_label(hour);
+                            // Working hours read as plain surface; off-hours are
+                            // muted so they recede (MAPPS-387).
+                            let bg = if is_work_hour(hour) { "bg-surface" } else { "bg-surface-2" };
                             rsx! {
-                                div { class: "p-2 bg-surface-2 text-center text-xs text-muted border-l border-line",
+                                div { class: "p-2 {bg} text-center text-xs text-muted border-l border-line",
                                     "{label}"
                                 }
                             }
@@ -2810,11 +2821,12 @@ fn DispatchRow(props: DispatchRowProps) -> Element {
             // Timeline area spanning the hour columns.
             div { class: "relative border-l border-line",
                 style: "grid-column: 2 / -1; min-height: 4rem;",
-                // Hour divider lines.
+                // Hour divider lines; out-of-hours columns are muted so the
+                // working-hours window reads as emphasized (MAPPS-387).
                 div { class: "absolute inset-0 grid",
                     style: "grid-template-columns: repeat({cols}, 1fr);",
-                    for _ in 0..cols {
-                        div { class: "border-l border-line first:border-l-0" }
+                    for hour in GRID_START_HOUR..GRID_END_HOUR {
+                        div { class: "border-l border-line first:border-l-0 {hour_shade_class(hour)}" }
                     }
                 }
                 // Availability shading (one band per available window today).
