@@ -219,6 +219,20 @@ jobs:
             ^docker buildx imagetools create --tag $"($public_reg)/($image):($tag)" $"($private_reg)/($image):($tag)"
           }
 
+      - name: Warn if the public mirror was skipped
+        # PSA-58: the mirror step above is gated on
+        # PSA_SYSTEMS_PUBLIC_PACKAGE_OWNER, so when that var is unset the step is
+        # SKIPPED and the job still goes green - the public `:latest` then
+        # silently freezes while private builds keep succeeding (this is how the
+        # public path drifted stale, noticed during PMS-687). Make the skip loud
+        # on a real (non-dry-run) push so it is a deliberate choice, not a silent
+        # gap. `::warning` surfaces as a run annotation; it does not fail the
+        # build, because an intentionally-unset owner (no public image yet) is a
+        # valid config.
+        if: vars.PSA_SYSTEMS_PUBLIC_PACKAGE_OWNER == '' && steps.resolve.outputs.dry_run == 'false'
+        run: |
+          echo "::warning title=Public mirror skipped::PSA_SYSTEMS_PUBLIC_PACKAGE_OWNER is empty, so mokosh-www:${{ steps.resolve.outputs.tag }} was NOT mirrored to the public registry. Set the var to publish a public image, or leave it unset intentionally if no public mirror is wanted."
+
       - name: Print image URLs
         shell: nu {0}
         run: |
