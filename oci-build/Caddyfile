@@ -13,8 +13,15 @@
     file_server
 
     header {
-        # Cache hashed assets (wasm/js/css) aggressively
-        ?Cache-Control "public, max-age=31536000, immutable"
+        # Default: never pin a response in the browser. index.html, the
+        # runtime-config shim, and every client-side route (served
+        # index.html via `try_files`, i.e. a path with no file on disk)
+        # must always revalidate. Caching a route response `immutable` is
+        # what let a stale/corrupted /auth/callback page survive both a
+        # redeploy and a server restart (PMS-687): a browser cache cannot
+        # be cleared by restarting the server. Content-addressed build
+        # assets opt back into long-lived caching below.
+        ?Cache-Control "no-cache, no-store, must-revalidate"
 
         # Security hardening headers (MAPPS-308). Sent on every response.
         # These four are safe to hardcode because they do not depend on the
@@ -54,12 +61,22 @@
         # Strip the server banner so the Caddy version is not advertised.
         -Server
     }
-    # index.html and the runtime-config shim are regenerated per
-    # container start, so they must never be cached. The bare `/`
-    # match is needed because Caddy's path matcher evaluates the
-    # request URI before `try_files` rewrites it, so a request to `/`
-    # would otherwise miss the `*.html` glob and pick up the
-    # immutable header from the block above.
-    @no-cache path / *.html /_mokosh_config.js
-    header @no-cache Cache-Control "no-cache, no-store, must-revalidate"
+    # Content-addressed build assets opt back into long-lived caching.
+    # dx emits JS/WASM/CSS under /assets and /wasm with a content hash in
+    # the filename, so a new build ships new URLs - safe to cache for a
+    # year. Caddy's path matcher sees the pre-`try_files` request URI
+    # (a missing asset that falls back to index.html keeps its original
+    # non-matching path), so index.html and every client-side route stay
+    # no-cache via the default above.
+    @immutable {
+        path /assets/* /wasm/*
+        file {path}
+    }
+    header @immutable Cache-Control "public, max-age=31536000, immutable"
+    # `theme-init.js` is the one stable-named (non-hashed) script under
+    # /assets - a raw <script src> in index.html, not an `asset!()` - so
+    # it must keep revalidating. Excepted back to no-cache after the
+    # immutable block (a later matching header directive wins).
+    @stable-asset path /assets/theme-init.js
+    header @stable-asset Cache-Control "no-cache, no-store, must-revalidate"
 }
