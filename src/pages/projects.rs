@@ -561,8 +561,9 @@ pub fn ProjectListPage() -> Element {
             }
         }
 
-        // Filters
-        Card { class: "mb-6",
+        // MAPPS-388: de-boxed. Search + type controls sit directly on the
+        // page; the surrounding Card was much larger than the controls it held.
+        div { class: "mb-6",
             div { class: "flex flex-col sm:flex-row gap-4",
                 div { class: "flex-1",
                     SearchInput {
