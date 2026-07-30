@@ -99,6 +99,14 @@ COPY assets/favicon.svg assets/favicon.ico assets/apple-touch-icon.png \
      assets/manifest.webmanifest assets/icon-192.png assets/icon-512.png \
      assets/icon-maskable-512.png /usr/share/caddy/
 
+# theme-init.js is a raw `<script src="/assets/theme-init.js">` in index.html
+# (early theme application to avoid a flash), NOT an `asset!()`, so `dx build`
+# does not emit it into web/public. Without this copy the file 404s and Caddy's
+# `try_files` serves index.html for it as text/html, which the browser rejects
+# with "Uncaught SyntaxError: Unexpected token '<'". Copy it into the web root's
+# /assets so file_server serves it as JS before the SPA fallback (PMS-687).
+COPY assets/theme-init.js /usr/share/caddy/assets/theme-init.js
+
 # Pre-create /etc/caddy with the default 0755 mode. The Caddyfile
 # COPY below pins --chmod=0644 so the file is readable by appuser
 # regardless of what the host's umask did to the source file in the
