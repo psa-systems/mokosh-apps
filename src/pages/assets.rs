@@ -8,8 +8,8 @@ use serde::Deserialize;
 use crate::components::{
     asset_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card,
     DataTable, IconSize, Input, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select,
-    SelectOption, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, Textarea,
-    TrashIcon,
+    SelectOption, Table, TableBody, TableCell, TableEmptyRow, TableHead, TableHeader, TableRow,
+    Textarea, TrashIcon,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
@@ -644,13 +644,12 @@ pub fn AssetListPage() -> Element {
                     if is_loading {
                         TableRow { TableCell { class: "text-subtle", "Loading…" } }
                     } else if filtered.is_empty() {
-                        TableRow {
-                            TableCell { class: "text-subtle italic",
-                                if assets.is_empty() {
-                                    "No assets yet. Create one to get started."
-                                } else {
-                                    "No assets match the search."
-                                }
+                        // MAPPS-388: centered across the table, not left-aligned.
+                        TableEmptyRow { columns: 5, class: "text-subtle italic",
+                            if assets.is_empty() {
+                                "No assets yet. Create one to get started."
+                            } else {
+                                "No assets match the search."
                             }
                         }
                     } else {

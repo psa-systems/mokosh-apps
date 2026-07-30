@@ -302,6 +302,37 @@ pub fn TableEmpty(props: TableEmptyProps) -> Element {
     }
 }
 
+/// Full-width empty-state row props (MAPPS-388).
+#[derive(Props, Clone, PartialEq)]
+pub struct TableEmptyRowProps {
+    /// Number of columns to span so the message centers across the whole
+    /// table instead of sitting left-aligned in the first cell.
+    columns: usize,
+    children: Element,
+    /// Extra classes (e.g. `text-subtle italic`) appended after the base
+    /// centering classes, so each caller keeps its own text treatment.
+    #[props(default)]
+    class: String,
+}
+
+/// A single horizontally-centered empty-state row, for use INSIDE an existing
+/// `TableBody { if empty { .. } }` branch (MAPPS-388). Unlike [`TableEmpty`] it
+/// does not wrap its own `TableBody`, so it drops into the empty branch without
+/// nesting one body inside another. The cell spans every column (`colspan`) and
+/// centers its text, fixing the left-aligned "No … yet." states on the list and
+/// dashboard tables.
+#[component]
+pub fn TableEmptyRow(props: TableEmptyRowProps) -> Element {
+    let class = format!("px-6 py-8 text-center text-sm {}", props.class);
+    rsx! {
+        tr {
+            td { colspan: "{props.columns}", class: "{class}",
+                {props.children}
+            }
+        }
+    }
+}
+
 /// Pagination props
 #[derive(Props, Clone, PartialEq)]
 pub struct PaginationProps {
@@ -519,5 +550,41 @@ pub fn Badge(props: BadgeProps) -> Element {
         span { class: "{class}",
             {props.children}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TableEmptyRow;
+    use dioxus::prelude::*;
+
+    #[component]
+    fn Harness() -> Element {
+        rsx! {
+            TableEmptyRow { columns: 6, class: "text-subtle italic", "No time logged yet." }
+        }
+    }
+
+    #[test]
+    fn empty_row_spans_all_columns_and_centers() {
+        // MAPPS-388 regression: the shared empty-state row (used by the time,
+        // dashboard, timesheet-approval, and assets tables) must span every
+        // column and center its text rather than sit left-aligned in the first
+        // cell. Render to HTML and assert the colspan + centering survive.
+        let mut dom = VirtualDom::new(Harness);
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+        assert!(
+            html.contains(r#"colspan="6""#),
+            "empty row must span all 6 columns; got: {html}"
+        );
+        assert!(
+            html.contains("text-center"),
+            "empty row must be horizontally centered; got: {html}"
+        );
+        assert!(
+            html.contains("No time logged yet."),
+            "empty row must render its message; got: {html}"
+        );
     }
 }

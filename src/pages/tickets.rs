@@ -2580,7 +2580,8 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                             span { class: "text-lg font-semibold", "{total_hours_label}" }
                         }
                         if time_entries.is_empty() {
-                            p { class: "text-sm text-subtle italic", "No time logged yet." }
+                            // MAPPS-388: centered empty state.
+                            p { class: "text-sm text-subtle italic text-center", "No time logged yet." }
                         } else {
                             div { class: "space-y-2 text-sm text-muted",
                                 for e in time_entries.iter() {

@@ -6,8 +6,8 @@ use serde::Deserialize;
 
 use crate::components::{
     ticket_status_badge, use_page_title, Badge, BadgeVariant, Card, ClockIcon, FolderIcon,
-    PageHeader, StatCard, StatCardTone, Table, TableBody, TableCell, TableHead, TableHeader,
-    TableRow, TicketIcon,
+    PageHeader, StatCard, StatCardTone, Table, TableBody, TableCell, TableEmptyRow, TableHead,
+    TableHeader, TableRow, TicketIcon,
 };
 use crate::modules::calendar::DispatchResponse;
 use crate::utils::Paginated;
@@ -215,9 +215,8 @@ pub fn DashboardPage() -> Element {
                         }
                         TableBody {
                             if recent_tickets.is_empty() {
-                                TableRow {
-                                    TableCell { class: "text-subtle italic", "No tickets yet." }
-                                }
+                                // MAPPS-388: centered across the table.
+                                TableEmptyRow { columns: 3, class: "text-subtle italic", "No tickets yet." }
                             } else {
                                 for t in recent_tickets.iter() {
                                     {
@@ -305,9 +304,8 @@ pub fn DashboardPage() -> Element {
                         }
                         TableBody {
                             if recent_time.is_empty() {
-                                TableRow {
-                                    TableCell { class: "text-subtle italic", "No time logged yet." }
-                                }
+                                // MAPPS-388: centered across the table.
+                                TableEmptyRow { columns: 3, class: "text-subtle italic", "No time logged yet." }
                             } else {
                                 for e in recent_time.iter() {
                                     {
