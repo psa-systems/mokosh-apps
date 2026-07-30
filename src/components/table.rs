@@ -90,14 +90,16 @@ pub struct TableRowProps {
 
 #[component]
 pub fn TableRow(props: TableRowProps) -> Element {
-    // MAPPS-263: every row gets a subtle hover (not just clickable ones) so
-    // dense, non-clickable tables are easier to scan. Clickable rows add the
-    // pointer cursor on top. `transition-colors` softens the change; on touch
-    // devices (no hover) this is simply inert.
+    // MAPPS-389: hover feedback is scoped to interactive (clickable) rows only.
+    // A non-clickable row gets no hover background, so moving the cursor over a
+    // non-interactive row or the whitespace in its cells no longer lights up.
+    // This reverses MAPPS-263's "hover every row" (which Vas reported as the
+    // page reacting to hover over dead space); clickable rows still get the
+    // hover + pointer affordance, softened by `transition-colors`.
     let base_class = if props.clickable {
         "hover:bg-surface-2 cursor-pointer transition-colors"
     } else {
-        "hover:bg-surface-2 transition-colors"
+        ""
     };
     let class = format!("{} {}", base_class, props.class);
 
@@ -555,7 +557,7 @@ pub fn Badge(props: BadgeProps) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use super::TableEmptyRow;
+    use super::{TableCell, TableEmptyRow, TableRow};
     use dioxus::prelude::*;
 
     #[component]
@@ -563,6 +565,42 @@ mod tests {
         rsx! {
             TableEmptyRow { columns: 6, class: "text-subtle italic", "No time logged yet." }
         }
+    }
+
+    #[component]
+    fn ClickableRow() -> Element {
+        rsx! {
+            TableRow { clickable: true, TableCell { "x" } }
+        }
+    }
+
+    #[component]
+    fn PlainRow() -> Element {
+        rsx! {
+            TableRow { TableCell { "x" } }
+        }
+    }
+
+    #[test]
+    fn hover_is_scoped_to_clickable_rows() {
+        // MAPPS-389 regression: hover feedback belongs only on interactive
+        // (clickable) rows. A non-clickable row must carry no hover class so the
+        // cursor over non-interactive rows / whitespace does not light up.
+        let mut dom = VirtualDom::new(ClickableRow);
+        dom.rebuild_in_place();
+        let clickable = dioxus_ssr::render(&dom);
+        assert!(
+            clickable.contains("hover:bg-surface-2"),
+            "clickable rows keep their hover affordance; got: {clickable}"
+        );
+
+        let mut dom = VirtualDom::new(PlainRow);
+        dom.rebuild_in_place();
+        let plain = dioxus_ssr::render(&dom);
+        assert!(
+            !plain.contains("hover:"),
+            "non-clickable rows must have no hover feedback; got: {plain}"
+        );
     }
 
     #[test]
