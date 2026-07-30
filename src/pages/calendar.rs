@@ -46,12 +46,60 @@ use crate::Route;
 // Shared helpers
 // ============================================================================
 
-/// The day-view / week-view time grid spans 7:00 .. 19:00 (12 hours).
-/// Appointments outside that window are clamped to the edges so they
-/// stay visible rather than overflowing the grid.
-const GRID_START_HOUR: u32 = 7;
-const GRID_END_HOUR: u32 = 19;
+/// The day/week time grid and the dispatch timeline span a full 24-hour
+/// day, midnight to midnight (MAPPS-387). Every hour is schedulable: an
+/// appointment at any time renders at its true offset rather than being
+/// clamped into a fixed daytime window, and the grid scrolls inside its
+/// own box (opening on the working-hours window below) instead of the
+/// page scrolling. Axis labels stay 12-hour AM/PM via `hour_label`.
+const GRID_START_HOUR: u32 = 0;
+const GRID_END_HOUR: u32 = 24;
 const GRID_TOTAL_HOURS: f64 = (GRID_END_HOUR - GRID_START_HOUR) as f64;
+
+/// Typical working-hours window (MAPPS-387). Drives the grid's initial
+/// scroll position and the in-hours emphasis; hours outside it stay fully
+/// selectable, just visually de-emphasized (never struck through). This is
+/// the default until working hours become a per-user / per-workspace
+/// setting (filed separately); it is a display hint only, not a bound on
+/// what can be scheduled. 7 AM to 7 PM.
+const WORK_START_HOUR: u32 = 7;
+const WORK_END_HOUR: u32 = 19;
+
+/// True for an hour inside the working-hours window (MAPPS-387).
+fn is_work_hour(hour: u32) -> bool {
+    (WORK_START_HOUR..WORK_END_HOUR).contains(&hour)
+}
+
+/// Background class for one hour row/column: plain inside working hours,
+/// muted (`bg-surface-2`) outside so out-of-hours slots recede without a
+/// strike-through, while staying selectable (MAPPS-387).
+fn hour_shade_class(hour: u32) -> &'static str {
+    if is_work_hour(hour) {
+        ""
+    } else {
+        "bg-surface-2"
+    }
+}
+
+/// MAPPS-387: on first mount, scroll a grid container so the working-hours
+/// window is in view rather than midnight. `vertical` selects scrollTop
+/// (day/week grids) vs scrollLeft (the horizontal dispatch timeline).
+/// No-op off the web build and when the element is not (yet) in the DOM.
+#[cfg(feature = "web")]
+fn scroll_grid_to_work_hours(id: &str, vertical: bool) {
+    let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(id))
+    else {
+        return;
+    };
+    let frac = WORK_START_HOUR as f64 / GRID_TOTAL_HOURS;
+    if vertical {
+        el.set_scroll_top((el.scroll_height() as f64 * frac).round() as i32);
+    } else {
+        el.set_scroll_left((el.scroll_width() as f64 * frac).round() as i32);
+    }
+}
 
 /// Which calendar layout is active. Month is the default; Week and Day
 /// are now real views (previously disabled "coming soon" stubs).
@@ -1100,12 +1148,20 @@ struct WeekGridProps {
 #[component]
 fn WeekGrid(props: WeekGridProps) -> Element {
     let dates = week_dates(props.active_date);
+    // MAPPS-387: default the scroll to the working-hours window on mount.
+    #[cfg(feature = "web")]
+    use_effect(|| scroll_grid_to_work_hours("calendar-grid-scroll-week", true));
     rsx! {
         div { class: "overflow-x-auto",
             div { class: "min-w-[700px]",
-                // Day-of-week header row (time gutter + 7 day columns).
-                div { class: "grid grid-cols-[60px_repeat(7,1fr)] border-b border-line",
-                    div { class: "p-2" }
+                // MAPPS-387: the 24-hour grid scrolls inside this box rather
+                // than the page; the day-of-week header sticks to the top.
+                div {
+                    id: "calendar-grid-scroll-week",
+                    class: "overflow-y-auto max-h-[70vh]",
+                    // Day-of-week header row (time gutter + 7 day columns).
+                    div { class: "grid grid-cols-[60px_repeat(7,1fr)] border-b border-line sticky top-0 z-10 bg-surface",
+                        div { class: "p-2" }
                     for d in dates.iter() {
                         {
                             let is_today = *d == props.today;
@@ -1161,6 +1217,7 @@ fn WeekGrid(props: WeekGridProps) -> Element {
                         }
                     }
                 }
+                }
             }
         }
     }
@@ -1201,9 +1258,10 @@ fn DayColumn(props: DayColumnProps) -> Element {
             tabindex: "0",
             aria_label: "Create appointment on this day",
             onclick: move |_| props.oncreate.call(day),
-            // Hour grid lines.
-            for _ in 0..rows {
-                div { class: "h-12 border-b border-line" }
+            // Hour grid lines; out-of-hours rows are muted, not struck
+            // through, and remain selectable (MAPPS-387).
+            for hour in GRID_START_HOUR..GRID_END_HOUR {
+                div { class: "h-12 border-b border-line {hour_shade_class(hour)}" }
             }
             // Appointment blocks. PMS-598: lane layout so concurrent events sit
             // side by side instead of stacking; `key` keeps Dioxus from collapsing
@@ -1243,16 +1301,41 @@ fn DayColumn(props: DayColumnProps) -> Element {
     }
 }
 
-/// Top offset + height as percentages of the GRID_START_HOUR..GRID_END_HOUR
-/// window for an appointment, clamped so out-of-window events stay visible.
+/// MAPPS-387: offset% + size% of a `[start_h, end_h)` hour span within the
+/// full midnight-to-midnight grid. Shared by the vertical day/week blocks
+/// and the horizontal dispatch bars: both map hour-of-day linearly onto
+/// 0..100% with NO clamp into a working-hours sub-window, so a 2 AM or
+/// 11 PM slot lands at its true position instead of being pinned to the
+/// old 7 AM / 7 PM edges. Values are clamped only to the grid itself
+/// (`0..24`). `min_size` floors the visible extent so a short or
+/// zero-length item stays tappable.
+fn span_geometry(start_h: f64, end_h: f64, min_size: f64) -> (f64, f64) {
+    let start = start_h.clamp(0.0, GRID_TOTAL_HOURS);
+    let end = end_h.clamp(start, GRID_TOTAL_HOURS);
+    let offset = start / GRID_TOTAL_HOURS * 100.0;
+    let size = ((end - start) / GRID_TOTAL_HOURS * 100.0).max(min_size);
+    (offset, size)
+}
+
+/// Start/end hour-of-day (profile tz) for an appointment on its start date.
+/// An event whose end falls on a later local date (crosses midnight) is
+/// extended to end-of-grid so it fills to the bottom of the day rather than
+/// inverting once its end hour wraps below the start (MAPPS-387).
+fn local_hour_span(appt: &AppointmentResponse) -> (f64, f64) {
+    let start = local_hour_f(appt.start_time);
+    let end = if local_date(appt.end_time) > local_date(appt.start_time) {
+        GRID_TOTAL_HOURS
+    } else {
+        local_hour_f(appt.end_time)
+    };
+    (start, end)
+}
+
+/// Top offset + height as percentages of the full-day grid for a week/day
+/// appointment block.
 fn block_geometry(appt: &AppointmentResponse) -> (f64, f64) {
-    let start = local_hour_f(appt.start_time).clamp(GRID_START_HOUR as f64, GRID_END_HOUR as f64);
-    let end = local_hour_f(appt.end_time).clamp(start, GRID_END_HOUR as f64);
-    let top = (start - GRID_START_HOUR as f64) / GRID_TOTAL_HOURS * 100.0;
-    // Floor the visible height so a zero-length / all-day item still
-    // shows a tappable sliver.
-    let height = (((end - start) / GRID_TOTAL_HOURS) * 100.0).max(3.0);
-    (top.max(0.0), height)
+    let (start, end) = local_hour_span(appt);
+    span_geometry(start, end, 3.0)
 }
 
 /// PMS-598: split overlapping appointments into side-by-side lanes so concurrent
@@ -1364,12 +1447,20 @@ fn DayGrid(props: DayGridProps) -> Element {
         .cloned()
         .collect();
     let rows = (GRID_END_HOUR - GRID_START_HOUR) as usize;
+    // MAPPS-387: default the scroll to the working-hours window on mount.
+    #[cfg(feature = "web")]
+    use_effect(|| scroll_grid_to_work_hours("calendar-grid-scroll-day", true));
 
     rsx! {
         if day_appts.is_empty() {
             div { class: "mb-3 text-sm text-muted", "No appointments scheduled for this day." }
         }
-        div { class: "grid grid-cols-[80px_1fr]",
+        // MAPPS-387: the 24-hour grid scrolls inside its own box, opening on
+        // the working-hours window, rather than the whole page scrolling.
+        div {
+            id: "calendar-grid-scroll-day",
+            class: "overflow-y-auto max-h-[70vh]",
+            div { class: "grid grid-cols-[80px_1fr]",
             // Hour gutter.
             div {
                 for hour in GRID_START_HOUR..GRID_END_HOUR {
@@ -1390,8 +1481,8 @@ fn DayGrid(props: DayGridProps) -> Element {
                 tabindex: "0",
                 aria_label: "Create appointment on this day",
                 onclick: move |_| props.oncreate.call(day),
-                for _ in 0..rows {
-                    div { class: "h-16 border-b border-line" }
+                for hour in GRID_START_HOUR..GRID_END_HOUR {
+                    div { class: "h-16 border-b border-line {hour_shade_class(hour)}" }
                 }
                 // PMS-598: lane layout so concurrent events sit side by side;
                 // `key` keeps Dioxus from collapsing sibling blocks.
@@ -1430,6 +1521,7 @@ fn DayGrid(props: DayGridProps) -> Element {
                         }
                     }
                 }
+            }
             }
         }
     }
@@ -2608,6 +2700,11 @@ fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
     // 0=Sunday .. 6=Saturday for matching availability windows.
     let dow = props.day.weekday().num_days_from_sunday() as i32;
 
+    // MAPPS-387: the 24-hour timeline scrolls horizontally inside its box,
+    // opening on the working-hours window rather than at midnight.
+    #[cfg(feature = "web")]
+    use_effect(|| scroll_grid_to_work_hours("calendar-dispatch-scroll", false));
+
     if user_ids.is_empty() {
         return rsx! {
             div { class: "py-12 text-center text-sm text-muted",
@@ -2617,8 +2714,11 @@ fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
     }
 
     rsx! {
-        div { class: "overflow-x-auto",
-            div { class: "min-w-[800px]",
+        div {
+            id: "calendar-dispatch-scroll",
+            class: "overflow-x-auto",
+            // Wider min-width now the axis is 24 hourly columns (MAPPS-387).
+            div { class: "min-w-[1400px]",
                 // Hour header.
                 div { class: "grid border-b border-line",
                     style: "grid-template-columns: 200px repeat({GRID_END_HOUR - GRID_START_HOUR}, 1fr);",
@@ -2626,8 +2726,11 @@ fn DispatchTimeline(props: DispatchTimelineProps) -> Element {
                     for hour in GRID_START_HOUR..GRID_END_HOUR {
                         {
                             let label = hour_label(hour);
+                            // Working hours read as plain surface; off-hours are
+                            // muted so they recede (MAPPS-387).
+                            let bg = if is_work_hour(hour) { "bg-surface" } else { "bg-surface-2" };
                             rsx! {
-                                div { class: "p-2 bg-surface-2 text-center text-xs text-muted border-l border-line",
+                                div { class: "p-2 {bg} text-center text-xs text-muted border-l border-line",
                                     "{label}"
                                 }
                             }
@@ -2718,11 +2821,12 @@ fn DispatchRow(props: DispatchRowProps) -> Element {
             // Timeline area spanning the hour columns.
             div { class: "relative border-l border-line",
                 style: "grid-column: 2 / -1; min-height: 4rem;",
-                // Hour divider lines.
+                // Hour divider lines; out-of-hours columns are muted so the
+                // working-hours window reads as emphasized (MAPPS-387).
                 div { class: "absolute inset-0 grid",
                     style: "grid-template-columns: repeat({cols}, 1fr);",
-                    for _ in 0..cols {
-                        div { class: "border-l border-line first:border-l-0" }
+                    for hour in GRID_START_HOUR..GRID_END_HOUR {
+                        div { class: "border-l border-line first:border-l-0 {hour_shade_class(hour)}" }
                     }
                 }
                 // Availability shading (one band per available window today).
@@ -2764,25 +2868,18 @@ fn DispatchRow(props: DispatchRowProps) -> Element {
     }
 }
 
-/// Horizontal left/width percentages for an appointment on the
-/// GRID_START_HOUR..GRID_END_HOUR dispatch timeline.
+/// Horizontal left/width percentages for an appointment on the full-day
+/// dispatch timeline (MAPPS-387: no clamp into a daytime sub-window).
 fn appointment_h_geometry(appt: &AppointmentResponse) -> (f64, f64) {
-    let start = local_hour_f(appt.start_time).clamp(GRID_START_HOUR as f64, GRID_END_HOUR as f64);
-    let end = local_hour_f(appt.end_time).clamp(start, GRID_END_HOUR as f64);
-    let left = (start - GRID_START_HOUR as f64) / GRID_TOTAL_HOURS * 100.0;
-    let width = (((end - start) / GRID_TOTAL_HOURS) * 100.0).max(2.0);
-    (left.max(0.0), width)
+    let (start, end) = local_hour_span(appt);
+    span_geometry(start, end, 2.0)
 }
 
 /// Horizontal band geometry for an availability window (NaiveTime based).
 fn availability_geometry(w: &UserAvailabilityResponse) -> (f64, f64) {
-    let start = (w.start_time.hour() as f64 + w.start_time.minute() as f64 / 60.0)
-        .clamp(GRID_START_HOUR as f64, GRID_END_HOUR as f64);
-    let end = (w.end_time.hour() as f64 + w.end_time.minute() as f64 / 60.0)
-        .clamp(start, GRID_END_HOUR as f64);
-    let left = (start - GRID_START_HOUR as f64) / GRID_TOTAL_HOURS * 100.0;
-    let width = ((end - start) / GRID_TOTAL_HOURS) * 100.0;
-    (left.max(0.0), width.max(0.0))
+    let start = w.start_time.hour() as f64 + w.start_time.minute() as f64 / 60.0;
+    let end = w.end_time.hour() as f64 + w.end_time.minute() as f64 / 60.0;
+    span_geometry(start, end, 0.0)
 }
 
 // ============================================================================
@@ -3570,5 +3667,89 @@ mod template_tests {
         assert_eq!(parse_nonneg_i32("   "), Some(0));
         assert_eq!(parse_nonneg_i32("-1"), None);
         assert_eq!(parse_nonneg_i32("x"), None);
+    }
+}
+
+#[cfg(test)]
+mod grid_geometry_tests {
+    use super::{
+        hour_shade_class, is_work_hour, span_geometry, GRID_END_HOUR, GRID_START_HOUR,
+        WORK_END_HOUR, WORK_START_HOUR,
+    };
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-6
+    }
+
+    #[test]
+    fn grid_spans_full_midnight_to_midnight_day() {
+        // MAPPS-387: the axis is a full 24-hour day, not a 7-19 window.
+        assert_eq!(GRID_START_HOUR, 0);
+        assert_eq!(GRID_END_HOUR, 24);
+        let (off, size) = span_geometry(0.0, 24.0, 0.0);
+        assert!(close(off, 0.0));
+        assert!(close(size, 100.0));
+    }
+
+    #[test]
+    fn in_hours_span_maps_to_true_fraction() {
+        // 9:00-10:00 -> 9/24 offset, 1/24 size.
+        let (off, size) = span_geometry(9.0, 10.0, 0.0);
+        assert!(close(off, 9.0 / 24.0 * 100.0));
+        assert!(close(size, 1.0 / 24.0 * 100.0));
+    }
+
+    #[test]
+    fn out_of_hours_slots_render_at_true_offset_not_clamped() {
+        // 2 AM used to clamp to the 7 AM edge (offset 0); now it sits at 2/24.
+        let (early, _) = span_geometry(2.0, 3.0, 0.0);
+        assert!(early > 0.0);
+        assert!(close(early, 2.0 / 24.0 * 100.0));
+        // 10 PM used to clamp to the 7 PM edge; now near the bottom of the day.
+        let (late, _) = span_geometry(22.0, 23.0, 0.0);
+        assert!(close(late, 22.0 / 24.0 * 100.0));
+    }
+
+    #[test]
+    fn span_extending_past_working_hours_keeps_its_true_extent() {
+        // A 6 AM-8 PM appointment spans past both old edges without being
+        // squeezed into 7-19: offset 6/24, size 14/24.
+        let (off, size) = span_geometry(6.0, 20.0, 0.0);
+        assert!(close(off, 6.0 / 24.0 * 100.0));
+        assert!(close(size, 14.0 / 24.0 * 100.0));
+    }
+
+    #[test]
+    fn clamps_only_to_the_grid_edges_never_inverts() {
+        // Defensive: out-of-grid inputs clamp to 0..24.
+        let (off, size) = span_geometry(-1.0, 25.0, 0.0);
+        assert!(close(off, 0.0));
+        assert!(close(size, 100.0));
+        // End before start collapses to zero width at the start offset.
+        let (off2, size2) = span_geometry(10.0, 9.0, 0.0);
+        assert!(close(off2, 10.0 / 24.0 * 100.0));
+        assert!(close(size2, 0.0));
+    }
+
+    #[test]
+    fn min_size_floors_short_or_zero_length_spans() {
+        let (_, size) = span_geometry(9.0, 9.0, 3.0);
+        assert!(close(size, 3.0));
+    }
+
+    #[test]
+    fn working_hours_window_and_shading() {
+        assert_eq!((WORK_START_HOUR, WORK_END_HOUR), (7, 19));
+        // Inclusive start, exclusive end.
+        assert!(!is_work_hour(6));
+        assert!(is_work_hour(7));
+        assert!(is_work_hour(18));
+        assert!(!is_work_hour(19));
+        assert!(!is_work_hour(0));
+        assert!(!is_work_hour(23));
+        // In-hours plain, out-of-hours muted (never struck through).
+        assert_eq!(hour_shade_class(9), "");
+        assert_eq!(hour_shade_class(2), "bg-surface-2");
+        assert_eq!(hour_shade_class(22), "bg-surface-2");
     }
 }
