@@ -1148,12 +1148,20 @@ struct WeekGridProps {
 #[component]
 fn WeekGrid(props: WeekGridProps) -> Element {
     let dates = week_dates(props.active_date);
+    // MAPPS-387: default the scroll to the working-hours window on mount.
+    #[cfg(feature = "web")]
+    use_effect(|| scroll_grid_to_work_hours("calendar-grid-scroll-week", true));
     rsx! {
         div { class: "overflow-x-auto",
             div { class: "min-w-[700px]",
-                // Day-of-week header row (time gutter + 7 day columns).
-                div { class: "grid grid-cols-[60px_repeat(7,1fr)] border-b border-line",
-                    div { class: "p-2" }
+                // MAPPS-387: the 24-hour grid scrolls inside this box rather
+                // than the page; the day-of-week header sticks to the top.
+                div {
+                    id: "calendar-grid-scroll-week",
+                    class: "overflow-y-auto max-h-[70vh]",
+                    // Day-of-week header row (time gutter + 7 day columns).
+                    div { class: "grid grid-cols-[60px_repeat(7,1fr)] border-b border-line sticky top-0 z-10 bg-surface",
+                        div { class: "p-2" }
                     for d in dates.iter() {
                         {
                             let is_today = *d == props.today;
@@ -1209,6 +1217,7 @@ fn WeekGrid(props: WeekGridProps) -> Element {
                         }
                     }
                 }
+                }
             }
         }
     }
@@ -1249,9 +1258,10 @@ fn DayColumn(props: DayColumnProps) -> Element {
             tabindex: "0",
             aria_label: "Create appointment on this day",
             onclick: move |_| props.oncreate.call(day),
-            // Hour grid lines.
-            for _ in 0..rows {
-                div { class: "h-12 border-b border-line" }
+            // Hour grid lines; out-of-hours rows are muted, not struck
+            // through, and remain selectable (MAPPS-387).
+            for hour in GRID_START_HOUR..GRID_END_HOUR {
+                div { class: "h-12 border-b border-line {hour_shade_class(hour)}" }
             }
             // Appointment blocks. PMS-598: lane layout so concurrent events sit
             // side by side instead of stacking; `key` keeps Dioxus from collapsing
@@ -1437,12 +1447,20 @@ fn DayGrid(props: DayGridProps) -> Element {
         .cloned()
         .collect();
     let rows = (GRID_END_HOUR - GRID_START_HOUR) as usize;
+    // MAPPS-387: default the scroll to the working-hours window on mount.
+    #[cfg(feature = "web")]
+    use_effect(|| scroll_grid_to_work_hours("calendar-grid-scroll-day", true));
 
     rsx! {
         if day_appts.is_empty() {
             div { class: "mb-3 text-sm text-muted", "No appointments scheduled for this day." }
         }
-        div { class: "grid grid-cols-[80px_1fr]",
+        // MAPPS-387: the 24-hour grid scrolls inside its own box, opening on
+        // the working-hours window, rather than the whole page scrolling.
+        div {
+            id: "calendar-grid-scroll-day",
+            class: "overflow-y-auto max-h-[70vh]",
+            div { class: "grid grid-cols-[80px_1fr]",
             // Hour gutter.
             div {
                 for hour in GRID_START_HOUR..GRID_END_HOUR {
@@ -1463,8 +1481,8 @@ fn DayGrid(props: DayGridProps) -> Element {
                 tabindex: "0",
                 aria_label: "Create appointment on this day",
                 onclick: move |_| props.oncreate.call(day),
-                for _ in 0..rows {
-                    div { class: "h-16 border-b border-line" }
+                for hour in GRID_START_HOUR..GRID_END_HOUR {
+                    div { class: "h-16 border-b border-line {hour_shade_class(hour)}" }
                 }
                 // PMS-598: lane layout so concurrent events sit side by side;
                 // `key` keeps Dioxus from collapsing sibling blocks.
@@ -1503,6 +1521,7 @@ fn DayGrid(props: DayGridProps) -> Element {
                         }
                     }
                 }
+            }
             }
         }
     }
