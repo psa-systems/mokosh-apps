@@ -132,6 +132,13 @@ features = [
     "Node",
 ]
 
+[dev-dependencies]
+# MAPPS-388: render components to an HTML string in unit tests so layout
+# regressions (e.g. an empty-state row losing its colspan / center) are caught
+# on the host `cargo test`. Host-only: dev-deps are not built for the
+# `wasm32-unknown-unknown` check.
+dioxus-ssr = "0.7.7"
+
 [profile.release]
 lto = true
 codegen-units = 1
