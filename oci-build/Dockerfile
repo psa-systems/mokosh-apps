@@ -18,28 +18,29 @@ ARG CARGO_BUILD_JOBS=2
 ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 RUN echo "build parallelism: CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS} (host nproc=$(nproc))"
 
-# Pre-stage wasm-opt so `dx build --release` does not download it from
-# a GitHub release every build. The runtime download failed in CI
-# with "connection reset" during the wasm-opt install: every build
-# was one GitHub-availability flake away from a red badge.
+# Pre-stage wasm-opt so `dx build --release` never downloads it from a GitHub
+# release: that download has failed CI with "connection reset", and in MAPPS-381
+# it silently unpacked nothing and dx died with "Failed to run wasm-opt".
 #
-# dx 0.7.3's `wasm_opt::get_binary_path` (packages/cli/src/wasm_opt.rs)
-# checks for an already-installed binary at
-# `<DX_HOME>/binaryen/bin/wasm-opt` BEFORE touching the network, so
-# placing the Debian-packaged binary there short-circuits the
-# install. `DX_HOME` is read by `workspace::dioxus_data_dir` and
-# overrides the OS-default data dir; pinning it to a stable path
-# here means the symlink keeps working regardless of which user the
-# build container runs as. Not using `NO_DOWNLOADS=1` because that
-# also blocks dx's wasm-bindgen-cli + esbuild fetches, which still
-# need to succeed (wasm-bindgen-cli is version-pinned per dx
-# release and is not packaged in trixie).
+# dx 0.7.7's `wasm_opt::get_binary_path` returns early when
+# `<DX_HOME>/tools/binaryen-<BINARYEN_VERSION>/bin/wasm-opt` exists, before
+# touching the network, so the Debian binary parked there short-circuits it.
+# Not `NO_DOWNLOADS=1`: that also blocks the wasm-bindgen-cli + esbuild fetches,
+# which are version-pinned per dx release and must still succeed.
+#
+# DX_BINARYEN_VERSION mirrors dx's BINARYEN_VERSION constant. The `dx doctor`
+# assertion fails this cheap layer when a dx bump moves that path, instead of
+# silently reverting to the flaky download (MAPPS-381: dx 0.7.7 moved it from
+# `<DX_HOME>/binaryen/bin` and the stale symlink went unnoticed).
 ENV DX_HOME=/opt/dx-cache
+ARG DX_BINARYEN_VERSION=129
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends binaryen \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir --parents "${DX_HOME}/binaryen/bin" \
-    && ln --symbolic /usr/bin/wasm-opt "${DX_HOME}/binaryen/bin/wasm-opt"
+    && mkdir --parents "${DX_HOME}/tools/binaryen-${DX_BINARYEN_VERSION}/bin" \
+    && ln --symbolic /usr/bin/wasm-opt "${DX_HOME}/tools/binaryen-${DX_BINARYEN_VERSION}/bin/wasm-opt" \
+    && { dx doctor | grep --text --quiet "wasm-opt:.*${DX_HOME}/tools/binaryen-${DX_BINARYEN_VERSION}/bin/wasm-opt" \
+         || { echo "ERROR: dx does not see the pre-staged wasm-opt at ${DX_HOME}/tools/binaryen-${DX_BINARYEN_VERSION}/bin; check dx's BINARYEN_VERSION and update DX_BINARYEN_VERSION." >&2; exit 1; }; }
 
 # --- Dependency caching (no source) ---
 COPY Cargo.toml Cargo.lock ./
