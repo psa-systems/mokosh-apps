@@ -7,10 +7,13 @@
 //! session so a page reload survives. Deployments that DO configure an issuer
 //! never reach this page; they use the bunyip OIDC redirect exactly as before.
 //!
+//! Two second-step challenges share the endpoint and the re-POST shape: the
+//! MFA code (`mfa_required`) and the emailed sign-in approval code
+//! (`approval_required`, PMS-658 / MAPPS-397).
+//!
 //! Deferred (follow-ups, called out in the PR): silent token refresh via
 //! `POST /api/v1/auth/refresh` (standalone sessions currently last the
-//! access-token TTL, ~1h), and the MFA second factor (two-factor accounts are
-//! told to sign in through their identity provider).
+//! access-token TTL, ~1h).
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -31,6 +34,10 @@ struct LoginBody {
     /// first attempt reported `mfa_required`. Omitted otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     mfa_code: Option<String>,
+    /// MAPPS-397: the emailed single-use approval code, sent on the re-POST
+    /// after a first attempt reported `approval_required`. Omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    approval_code: Option<String>,
 }
 
 /// The fields of mokosh-server's `LoginResponse` this SPA consumes. Unknown
@@ -45,6 +52,10 @@ struct LoginResp {
     user: Option<CurrentUser>,
     #[serde(default)]
     mfa_required: bool,
+    /// PMS-658: the suspicious-login gate emailed a code and withheld the
+    /// tokens. Defaulted so a server that predates the field still decodes.
+    #[serde(default)]
+    approval_required: bool,
 }
 
 #[component]
@@ -60,6 +71,9 @@ pub fn StandaloneLogin() -> Element {
     // reports `mfa_required`; the second submit resends with the code.
     let mut mfa_code = use_signal(String::new);
     let mut mfa_needed = use_signal(|| false);
+    // MAPPS-397: same two-step shape for the emailed sign-in approval code.
+    let mut approval_code = use_signal(String::new);
+    let mut approval_needed = use_signal(|| false);
 
     let mut handle_submit = move |_| {
         if saving() {
@@ -73,6 +87,8 @@ pub fn StandaloneLogin() -> Element {
         }
         let code = mfa_code.read().trim().to_string();
         let mfa = if code.is_empty() { None } else { Some(code) };
+        let appr = approval_code.read().trim().to_string();
+        let approval = if appr.is_empty() { None } else { Some(appr) };
         saving.set(true);
         error.set(String::new());
 
@@ -85,10 +101,22 @@ pub fn StandaloneLogin() -> Element {
                     password: pw.clone(),
                     remember_me: false,
                     mfa_code: mfa.clone(),
+                    approval_code: approval.clone(),
                 };
                 match crate::hooks::fetch::api::post_typed::<LoginResp, _>("/auth/login", &body)
                     .await
                 {
+                    // MAPPS-397: the sign-in was flagged and a single-use code
+                    // emailed; the tokens are empty and `user` is None, so this
+                    // must be handled before the `resp.user` match below or the
+                    // form shows "no account was returned" and locks the user
+                    // out. The next submit resends with `approval_code`.
+                    Ok(resp) if resp.approval_required => {
+                        approval_needed.set(true);
+                        error.set(
+                            "Enter the code we emailed you to approve this sign-in.".to_string(),
+                        );
+                    }
                     // MFA enrolled but no valid code yet: reveal the code field
                     // and prompt. The next submit resends with `mfa_code`.
                     Ok(resp) if resp.mfa_required => {
@@ -131,6 +159,15 @@ pub fn StandaloneLogin() -> Element {
                             );
                         }
                     },
+                    // MAPPS-397: past the approval challenge the password has
+                    // already passed, so a 401 means the emailed code was wrong
+                    // or expired, not bad credentials.
+                    Err(ApiError::Status { code: 401, .. }) if approval_needed() => {
+                        error.set(
+                            "That code is not valid, check the email or try signing in again."
+                                .to_string(),
+                        );
+                    }
                     Err(ApiError::Status { code: 401, .. }) => {
                         error.set("Invalid email or password.".to_string());
                     }
@@ -144,7 +181,7 @@ pub fn StandaloneLogin() -> Element {
             }
             #[cfg(not(feature = "web"))]
             {
-                let _ = (em, pw, mfa);
+                let _ = (em, pw, mfa, approval);
             }
             saving.set(false);
         });
@@ -208,6 +245,20 @@ pub fn StandaloneLogin() -> Element {
                             }
                         }
 
+                        if approval_needed() {
+                            Input {
+                                name: "approval_code",
+                                label: "Approval code",
+                                r#type: "text".to_string(),
+                                value: approval_code(),
+                                disabled: saving(),
+                                oninput: move |e: FormEvent| {
+                                    error.set(String::new());
+                                    approval_code.set(e.value());
+                                },
+                            }
+                        }
+
                         if !error().is_empty() {
                             p { class: "text-sm text-red-600 dark:text-red-400", "{error}" }
                         }
@@ -226,5 +277,109 @@ pub fn StandaloneLogin() -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// MAPPS-397 recurrence gate: exhaustive destructuring of the server's wire
+    /// types. A field added to `mokosh_types::auth::LoginResponse` /
+    /// `LoginRequest` fails this build instead of being silently dropped by
+    /// serde, the way `approval_required` was.
+    ///
+    /// These are the shape checks that stand in for using the shared types
+    /// directly: `LoginResponse` derives only `Serialize` and `LoginRequest`
+    /// only `Deserialize`, so neither can be used on the client side of the
+    /// wire until mokosh-types derives both.
+    #[allow(dead_code)]
+    fn login_response_fields_are_all_read(resp: mokosh_types::auth::LoginResponse) {
+        let mokosh_types::auth::LoginResponse {
+            access_token,
+            refresh_token,
+            expires_at,
+            user,
+            mfa_required,
+            approval_required,
+        } = resp;
+        let _ = LoginResp {
+            access_token,
+            refresh_token: Some(refresh_token),
+            expires_at,
+            // The SPA still carries its own hand copy of the user payload.
+            user: None,
+            mfa_required,
+            approval_required,
+        };
+        let _: Option<mokosh_types::auth::CurrentUser> = user;
+    }
+
+    #[allow(dead_code)]
+    fn login_request_fields_are_all_considered(req: mokosh_types::auth::LoginRequest) {
+        let mokosh_types::auth::LoginRequest {
+            email,
+            password,
+            remember_me,
+            mfa_code,
+            recovery_code,
+            approval_code,
+            device_id,
+            tenant_id,
+        } = req;
+        let _ = LoginBody {
+            email,
+            password,
+            remember_me,
+            mfa_code,
+            approval_code,
+        };
+        // Deliberately not sent by the standalone form: the MFA recovery code,
+        // the per-browser device id, and the hostname-derived tenant hint.
+        let _ = (recovery_code, device_id, tenant_id);
+    }
+
+    #[test]
+    fn decodes_approval_required() {
+        let resp: LoginResp = serde_json::from_str(
+            r#"{"access_token":"","refresh_token":"","expires_at":"2026-07-30T00:00:00Z",
+                "mfa_required":false,"approval_required":true}"#,
+        )
+        .expect("approval challenge decodes");
+        assert!(resp.approval_required);
+        assert!(!resp.mfa_required);
+        assert!(resp.user.is_none());
+    }
+
+    #[test]
+    fn approval_required_defaults_false_when_absent() {
+        let resp: LoginResp = serde_json::from_str(
+            r#"{"access_token":"t","refresh_token":"r","expires_at":"2026-07-30T00:00:00Z",
+                "mfa_required":false}"#,
+        )
+        .expect("legacy response decodes");
+        assert!(!resp.approval_required);
+    }
+
+    fn body(approval_code: Option<&str>) -> LoginBody {
+        LoginBody {
+            email: "user@example.com".to_string(),
+            password: "pw".to_string(),
+            remember_me: false,
+            mfa_code: None,
+            approval_code: approval_code.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn approval_code_is_omitted_when_absent() {
+        let json = serde_json::to_string(&body(None)).expect("serializes");
+        assert!(!json.contains("approval_code"), "{json}");
+    }
+
+    #[test]
+    fn approval_code_is_sent_when_present() {
+        let json = serde_json::to_string(&body(Some("123456"))).expect("serializes");
+        assert!(json.contains(r#""approval_code":"123456""#), "{json}");
     }
 }
