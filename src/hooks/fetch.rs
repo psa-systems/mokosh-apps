@@ -222,9 +222,21 @@ pub mod api {
     }
 
     /// Read the portal session token. `None` until a portal contact signs in.
+    ///
+    /// Only the `_portal_authed` helpers below call this; anything that merely
+    /// needs to know whether a session exists (the route guard) asks
+    /// [`has_portal_session`] instead, so the token itself stays inside this
+    /// module.
     #[cfg(feature = "web")]
     pub fn current_portal_access_token() -> Option<String> {
         PORTAL_ACCESS_TOKEN.with(|t| t.borrow().clone())
+    }
+
+    /// Whether a portal session is held. The predicate `PortalGuard` gates
+    /// `/portal/*` on, without handing the token out.
+    #[cfg(feature = "web")]
+    pub fn has_portal_session() -> bool {
+        PORTAL_ACCESS_TOKEN.with(|t| t.borrow().is_some())
     }
 
     // The web-only API helpers below are grouped under this `api`
@@ -987,6 +999,7 @@ mod tests {
     const PORTAL_TOKEN_READERS: &[&str] = &[
         "set_portal_access_token",
         "current_portal_access_token",
+        "has_portal_session",
         "get_portal_authed",
         "post_portal_authed",
         "post_portal_authed_typed",

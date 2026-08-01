@@ -165,7 +165,7 @@ pub fn AuthGuard() -> Element {
 pub fn PortalGuard() -> Element {
     let nav = use_navigator();
     #[cfg(feature = "web")]
-    let signed_in = hooks::fetch::api::current_portal_access_token().is_some();
+    let signed_in = hooks::fetch::api::has_portal_session();
     // The portal fetch helpers only exist in the `web` build, so a non-web
     // build has no portal session to hold.
     #[cfg(not(feature = "web"))]
