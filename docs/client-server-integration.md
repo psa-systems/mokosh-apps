@@ -26,34 +26,37 @@ single highest-leverage move in either repo.
 
 ## DTO sharing
 
-Both repos define types under `src/modules/<module>/models.rs`. As of
-2026-05-06 the four real-module trees are **byte-identical** between
-this repo and `mokosh-server`:
+The shared-crate option is now live for part of the tree. MAPPS-383
+added a git dependency on `mokosh-types` (the workspace crate inside
+`mokosh-server`) and re-exports two module trees straight from it, so
+the compiler enforces the wire contract instead of a human diffing two
+copies:
 
 ```
-src/modules/auth/{mod,models,routes,service,middleware,bootstrap}.rs
-src/modules/contacts/{mod,models,routes,service}.rs
-src/modules/tenants/{mod,models,routes,service}.rs
-src/modules/tickets/{mod,models,routes,service,automation}.rs
+src/modules/contacts/mod.rs      -> pub use mokosh_types::contacts::*;
+src/modules/time_tracking/mod.rs -> pub use mokosh_types::time_tracking::*;
 ```
 
-Each `mod.rs` uses `#[cfg(feature = "server")]` so this WASM build
-omits the handler / service / middleware / bootstrap files and keeps
-only the model types. This is **manual sync via copy-paste**, not a
-shared crate, not codegen.
+The remaining shared modules are still hand-copied under
+`src/modules/<module>/models.rs` and can silently drift the moment one
+side is edited without porting:
 
-The pattern is currently in lock-step. It will silently drift the
-moment one side is edited without porting. Three options:
+```
+src/modules/auth/models.rs
+src/modules/tenants/models.rs
+src/modules/tickets/models.rs
+```
 
-- **(a) Shared crate.** Extract a `mokosh-types` workspace crate;
-  both repos depend on it. Best long-term answer.
-- **(b) Drift CI.** Keep the copy-paste, formalize it: a CI check
-  that diffs the four shared modules between repos and fails the
-  build on non-zero. Cheapest today.
-- **(c) Manual sync.** Lowest setup cost, highest drift risk.
+Those copies use `#[cfg(feature = "server")]` on the handler / service
+files so the WASM build keeps only the model types. Note that the
+`server` feature cannot actually compile here: this crate has no axum
+or sqlx dependency, so those files are dead weight and are deleted as
+each module moves to `mokosh-types`.
 
-Recommendation: **(b) today, (a) when a fifth shared module is
-added.**
+Direction of travel: migrate the remaining three the same way. The
+crate is fetched over anonymous HTTPS rather than `ssh://`, because
+neither the pre-commit container nor the Forgejo check runner carries
+SSH credentials.
 
 ## Section-by-section gap
 
@@ -93,7 +96,9 @@ exists.
    `use_api()` hook with a base URL from env is prerequisite to
    removing every `// TODO: Call API` stub. Highest-leverage single
    move in either repo.
-2. **DTO sharing via copy-paste.** See
+2. **DTO sharing is half copy-paste.** `contacts` and `time_tracking`
+   come from the `mokosh-types` crate; `auth`, `tenants`, and
+   `tickets` are still hand-copied. See
    [DTO sharing](#dto-sharing) above.
 3. **Auth bypass + mocked client = the server is never exercised
    end-to-end.** The client has a hardcoded login bypass at
@@ -122,8 +127,10 @@ focused day.
 2. **Add `src/api/<module>.rs`** for each of the four wireable
    modules (auth, tickets, contacts, tenants). Each is a thin
    wrapper that calls `client.get/post/put/delete` and decodes into
-   the DTOs already in
-   [`src/modules/<module>/models.rs`](../src/modules/).
+   the DTOs already exposed by
+   [`src/modules/<module>`](../src/modules/) (re-exported from
+   `mokosh-types` for contacts, hand-copied in `models.rs` for the
+   rest).
 3. **Replace `hooks/auth.rs:90-118` mocked login** with a real
    `api::auth::login(...)` call. Persist
    `LoginResponse.access_token` to localStorage. Keep the bypass
@@ -158,8 +165,9 @@ A pattern that fits the existing dev-bypass plumbing:
 
 Either way the seed data in
 [`mokosh-server/migrations/002_seed_data.sql`](../../mokosh-server/migrations/002_seed_data.sql)
-is the natural backing for the "real" path - shapes match because
-the DTOs are byte-identical across repos.
+is the natural backing for the "real" path - shapes match because the
+DTOs are either shared through `mokosh-types` or hand-copied to be
+byte-identical across repos.
 
 ## Smoke check
 

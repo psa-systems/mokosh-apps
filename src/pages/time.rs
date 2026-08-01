@@ -11,6 +11,10 @@ use crate::components::{
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
+// MAPPS-383: the enum behind `TimeEntryResponse.billing_status`.
+// `mokosh_types::time_tracking` imports it privately, so it is reached here
+// through its defining module.
+use mokosh_types::tickets::BillingStatus;
 
 /// A time entry (`GET /api/v1/time-entries`). The work-item names (ticket
 /// number/title, project name, task title) are joined server-side (PMS-332),
@@ -47,8 +51,10 @@ struct RemoteTimeEntry {
     notes: Option<String>,
     #[serde(default)]
     is_billable: bool,
+    // MAPPS-383: the shared enum, not a free `String`, so an unknown wire tag
+    // fails decoding instead of reaching the UI as raw text.
     #[serde(default)]
-    billing_status: String,
+    billing_status: BillingStatus,
     // MAPPS-340: creation / last-edit timestamps (server `TimeEntryResponse`
     // always carries them; `Option` tolerates an older server that omits
     // them). The approvals history derives a "Logged" event from `created_at`
@@ -129,6 +135,16 @@ struct ProjectOption {
 struct RemoteTimesheet {
     #[serde(default)]
     approval_status: String,
+}
+
+/// Human label for the shared `BillingStatus`. MAPPS-383: the entry row used
+/// to print the raw wire tag, so a billed-ready entry read "ready_to_bill".
+fn billing_status_label(status: BillingStatus) -> &'static str {
+    match status {
+        BillingStatus::NotBilled => "Not Billed",
+        BillingStatus::ReadyToBill => "Ready to Bill",
+        BillingStatus::Billed => "Billed",
+    }
 }
 
 /// Start of the Monday-Sunday week that contains `date`.
@@ -314,7 +330,7 @@ pub fn TimeEntryListPage() -> Element {
                                     .clone()
                                     .filter(|s| !s.is_empty())
                                     .unwrap_or_else(|| "-".to_string());
-                                let status = e.billing_status.clone();
+                                let status = e.billing_status;
                                 let wi_label = work_item_label(e);
                                 let wt_label = e
                                     .work_type_id
@@ -370,8 +386,8 @@ pub fn TimeEntryListPage() -> Element {
                                             } else {
                                                 Badge { variant: BadgeVariant::Gray, "Non-Billable" }
                                             }
-                                            if !status.is_empty() && status != "not_billed" {
-                                                span { class: "ml-2 text-xs text-subtle", "{status}" }
+                                            if status != BillingStatus::NotBilled {
+                                                span { class: "ml-2 text-xs text-subtle", "{billing_status_label(status)}" }
                                             }
                                         }
                                     }
@@ -2921,7 +2937,7 @@ mod tests {
             task_title: None,
             notes: None,
             is_billable: false,
-            billing_status: String::new(),
+            billing_status: BillingStatus::NotBilled,
             created_at: None,
             updated_at: None,
         }
@@ -3104,5 +3120,40 @@ mod tests {
         assert_eq!(h[0].kind, HistoryKind::Logged);
         assert_eq!(h[1].kind, HistoryKind::Logged);
         assert_eq!(h[2].kind, HistoryKind::Edited);
+    }
+
+    /// MAPPS-383: the entry row printed the raw wire tag while
+    /// `billing_status` was a `String`. The match is exhaustive over the
+    /// shared enum, so a new variant fails to compile rather than leaking.
+    #[test]
+    fn billing_status_labels_every_shared_variant() {
+        assert_eq!(billing_status_label(BillingStatus::NotBilled), "Not Billed");
+        assert_eq!(
+            billing_status_label(BillingStatus::ReadyToBill),
+            "Ready to Bill"
+        );
+        assert_eq!(billing_status_label(BillingStatus::Billed), "Billed");
+    }
+
+    /// The wire tags the server sends must decode into the shared enum; an
+    /// unknown tag is a decode failure, not a silently rendered string.
+    #[test]
+    fn billing_status_decodes_from_the_wire_tags() {
+        let decoded: RemoteTimeEntry = serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::nil(),
+            "date": "2026-06-18",
+            "billing_status": "ready_to_bill",
+        }))
+        .expect("wire tag decodes");
+        assert_eq!(decoded.billing_status, BillingStatus::ReadyToBill);
+
+        assert!(
+            serde_json::from_value::<RemoteTimeEntry>(serde_json::json!({
+                "id": uuid::Uuid::nil(),
+                "date": "2026-06-18",
+                "billing_status": "invoiced",
+            }))
+            .is_err()
+        );
     }
 }
