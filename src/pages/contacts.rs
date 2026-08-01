@@ -158,9 +158,9 @@ fn contact_sort_query(
     Some((field, dir))
 }
 
-/// Map the server's lowercased `CompanyType` enum tag (`"client"`,
-/// `"prospect"`, `"vendor"`, `"partner"`) to the title-case label that
-/// `CompanyRow` keys its badge variant on. Unknown values fall through
+/// Map the server's lowercased `CompanyType` enum tag to the title-case label
+/// that `CompanyRow` keys its badge variant on. Covers every variant of
+/// `mokosh_types::contacts::CompanyType`; unknown values fall through
 /// unchanged so future variants don't disappear.
 fn humanize_company_type(raw: &str) -> String {
     match raw {
@@ -168,6 +168,9 @@ fn humanize_company_type(raw: &str) -> String {
         "prospect" => "Prospect".to_string(),
         "vendor" => "Vendor".to_string(),
         "partner" => "Partner".to_string(),
+        // MAPPS-383: the tenant's own company (PMS-413). Without this arm it
+        // rendered as the raw lowercase tag.
+        "internal" => "Internal".to_string(),
         other => other.to_string(),
     }
 }
@@ -733,12 +736,27 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     });
     crate::hooks::use_unsaved_guard(dirty.into());
 
-    let type_options = vec![
-        SelectOption::new("client", "Client"),
-        SelectOption::new("prospect", "Prospect"),
-        SelectOption::new("vendor", "Vendor"),
-        SelectOption::new("partner", "Partner"),
-    ];
+    // MAPPS-383: `CompanyType::Internal` is provisioned server-side for the
+    // tenant's own company and is not user-selectable, but editing such a
+    // company must not silently retype it. Preserve the current value as its
+    // own option when it is outside the customer-facing list (same idiom as
+    // `state_options` below).
+    let type_options = {
+        let current = company_type.read().clone();
+        let mut opts = vec![
+            SelectOption::new("client", "Client"),
+            SelectOption::new("prospect", "Prospect"),
+            SelectOption::new("vendor", "Vendor"),
+            SelectOption::new("partner", "Partner"),
+        ];
+        if !current.is_empty() && !opts.iter().any(|o| o.value == current) {
+            opts.push(SelectOption::new(
+                current.clone(),
+                humanize_company_type(&current),
+            ));
+        }
+        opts
+    };
 
     // PMS-581: US-state dropdown options. Leading blank = "no state". Preserve
     // any existing non-code value (legacy free text) as its own option so an
@@ -4637,6 +4655,48 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod company_type_tests {
+    use super::humanize_company_type;
+    use crate::modules::contacts::CompanyType;
+
+    /// Exhaustive over the shared enum: adding a `CompanyType` variant
+    /// upstream stops this compiling, so a new variant cannot silently reach
+    /// the UI as a raw snake_case tag (which is how `Internal` surfaced).
+    fn expected_label(variant: CompanyType) -> &'static str {
+        match variant {
+            CompanyType::Client => "Client",
+            CompanyType::Prospect => "Prospect",
+            CompanyType::Vendor => "Vendor",
+            CompanyType::Partner => "Partner",
+            CompanyType::Internal => "Internal",
+        }
+    }
+
+    /// MAPPS-383: every `CompanyType` the shared crate can send gets a
+    /// title-case label, including the added `Internal`.
+    #[test]
+    fn every_shared_variant_has_a_title_case_label() {
+        for variant in [
+            CompanyType::Client,
+            CompanyType::Prospect,
+            CompanyType::Vendor,
+            CompanyType::Partner,
+            CompanyType::Internal,
+        ] {
+            assert_eq!(
+                humanize_company_type(variant.as_str()),
+                expected_label(variant)
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_tag_falls_through_unchanged() {
+        assert_eq!(humanize_company_type("franchisee"), "franchisee");
     }
 }
 

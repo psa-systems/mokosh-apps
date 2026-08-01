@@ -52,6 +52,14 @@ rand = "0.9"
 pulldown-cmark = "0.12"
 ammonia = "4"
 
+# MAPPS-383: shared wire-format DTOs, the single source of truth for types
+# crossing the mokosh-server / mokosh-apps boundary. The URL is HTTPS, not
+# ssh://, because the pre-commit container and the Forgejo check runner have
+# no SSH credentials; anonymous HTTPS read needs none. The exact commit is
+# pinned in Cargo.lock.
+[dependencies.mokosh-types]
+git = "https://dev.a8n.run/psa-systems/mokosh-server.git"
+
 [dependencies.dioxus]
 version = "0.7.7"
 features = [
