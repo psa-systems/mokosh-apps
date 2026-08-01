@@ -186,9 +186,45 @@ pub mod api {
     }
 
     /// Read the current access token. Returns `None` before sign-in.
+    ///
+    /// This is the AGENT token (`typ: "access"`). It is never the portal
+    /// session token: `/portal/*` runs on a separate identity (a `contacts`
+    /// row) and its own holder, [`current_portal_access_token`].
     #[cfg(feature = "web")]
     pub fn current_access_token() -> Option<String> {
         ACCESS_TOKEN.with(|t| t.borrow().clone())
+    }
+
+    // MAPPS-395: the client-portal session token, a separate token class from
+    // `ACCESS_TOKEN`. mokosh-server mints it at `POST /portal/auth/login` with
+    // `typ: "portal_access"` over a `contacts` row, and every `/portal/*` route
+    // rejects an agent bearer (`typ: "access"`) with 401. The two holders never
+    // cross-populate: the agent sign-in paths write only `ACCESS_TOKEN`, and
+    // only the `_portal_authed` helpers below read this one.
+    //
+    // Memory-only like its sibling, so a reload returns the visitor to
+    // `/portal/login` rather than leaving a bearer in storage.
+    #[cfg(feature = "web")]
+    thread_local! {
+        static PORTAL_ACCESS_TOKEN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// Set the portal session token. Called from the portal login page on a
+    /// successful `POST /portal/auth/login`, and with `None` to end the
+    /// session.
+    ///
+    /// Deliberately does NOT bump [`super::TENANT_GENERATION`]: that counter is
+    /// the agent-side "active tenant changed" signal, and the portal pages
+    /// mount fresh after the post-login navigation anyway.
+    #[cfg(feature = "web")]
+    pub fn set_portal_access_token(token: Option<String>) {
+        PORTAL_ACCESS_TOKEN.with(|t| *t.borrow_mut() = token);
+    }
+
+    /// Read the portal session token. `None` until a portal contact signs in.
+    #[cfg(feature = "web")]
+    pub fn current_portal_access_token() -> Option<String> {
+        PORTAL_ACCESS_TOKEN.with(|t| t.borrow().clone())
     }
 
     // The web-only API helpers below are grouped under this `api`
@@ -540,6 +576,63 @@ pub mod api {
         post_no_content_with_auth(path, &t).await
     }
 
+    // --- Portal-authed wrappers (MAPPS-395) ------------------------------
+    //
+    // The `/portal/*` tree is guarded by mokosh-server's
+    // `portal_auth_middleware`, which decodes the bearer and rejects anything
+    // whose `typ` is not `portal_access`. Sending the agent bearer there is a
+    // guaranteed 401, so these helpers read ONLY `PORTAL_ACCESS_TOKEN` and
+    // fail fast when there is no portal session instead of falling back to the
+    // agent token or firing an anonymous request. They are the only functions
+    // that may read the portal token (pinned by the tests at the bottom of
+    // this file).
+
+    /// Error for a `/portal/*` call made with no portal session. Surfaced
+    /// through the same `Result<_, String>` channel the pages already render.
+    #[cfg(feature = "web")]
+    fn portal_not_signed_in() -> String {
+        "not signed in to the portal".to_string()
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn get_portal_authed<T: DeserializeOwned>(path: &str) -> Result<T, String> {
+        let t = current_portal_access_token().ok_or_else(portal_not_signed_in)?;
+        get_with_auth(path, &t).await
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn post_portal_authed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, String> {
+        let t = current_portal_access_token().ok_or_else(portal_not_signed_in)?;
+        post_with_auth(path, body, &t).await
+    }
+
+    /// Typed sibling of [`post_portal_authed`], for the portal call sites that
+    /// need the status code (the ticket reply form).
+    #[cfg(feature = "web")]
+    pub async fn post_portal_authed_typed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let t = current_portal_access_token().ok_or_else(|| ApiError::Status {
+            code: 401,
+            message: String::new(),
+            fields: Vec::new(),
+        })?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::post(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
     // --- Typed error layer ----------------------------------------------
     //
     // The string-returning helpers above are kept so existing callers
@@ -878,6 +971,142 @@ pub mod api {
                 message,
                 fields,
             })
+        }
+    }
+}
+
+/// MAPPS-395 recurrence gates: keep the agent bearer and the portal session
+/// token in separate lanes. Both tests are source scans plus a holder check,
+/// because the request helpers themselves need a browser to run.
+#[cfg(test)]
+mod tests {
+    const FETCH_SRC: &str = include_str!("fetch.rs");
+    const PORTAL_PAGE_SRC: &str = include_str!("../pages/portal.rs");
+
+    /// The only functions allowed to touch the portal token holder.
+    const PORTAL_TOKEN_READERS: &[&str] = &[
+        "set_portal_access_token",
+        "current_portal_access_token",
+        "get_portal_authed",
+        "post_portal_authed",
+        "post_portal_authed_typed",
+    ];
+
+    /// Agent-token helpers. None of them may appear in the portal page: a
+    /// `typ: "access"` bearer is a guaranteed 401 on every `/portal/*` route.
+    const AGENT_HELPERS: &[&str] = &[
+        "get_authed",
+        "post_authed",
+        "put_authed",
+        "patch_authed",
+        "delete_authed",
+        "current_access_token",
+    ];
+
+    /// This file minus its test module, which names the same symbols in its
+    /// own fixtures.
+    fn production_src() -> &'static str {
+        FETCH_SRC
+            .split("#[cfg(test)]")
+            .next()
+            .expect("split always yields a first segment")
+    }
+
+    /// Name of the function a `fn` line declares, if it declares one.
+    fn fn_name(trimmed: &str) -> Option<String> {
+        let idx = if trimmed.starts_with("fn ") {
+            0
+        } else {
+            trimmed.find(" fn ")? + 1
+        };
+        let name: String = trimmed[idx + 3..]
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        (!name.is_empty()).then_some(name)
+    }
+
+    #[test]
+    fn only_the_portal_helpers_read_the_portal_token() {
+        let mut current_fn = String::new();
+        let mut offenders: Vec<String> = Vec::new();
+        for line in production_src().lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            if let Some(name) = fn_name(trimmed) {
+                current_fn = name;
+            }
+            if !line.contains("PORTAL_ACCESS_TOKEN")
+                && !line.contains("current_portal_access_token")
+            {
+                continue;
+            }
+            // The holder's own declaration sits in a `thread_local!` block,
+            // outside any function.
+            if trimmed.starts_with("static PORTAL_ACCESS_TOKEN") {
+                continue;
+            }
+            if !PORTAL_TOKEN_READERS.contains(&current_fn.as_str()) {
+                offenders.push(format!("{current_fn}(): {trimmed}"));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "only {PORTAL_TOKEN_READERS:?} may read the portal token, but it is read by: {offenders:?}"
+        );
+    }
+
+    #[test]
+    fn agent_helpers_never_read_the_portal_token() {
+        // The mirror of the test above: the agent-side auto-authed wrappers
+        // resolve their bearer through `current_access_token` only, so
+        // `get_authed` cannot send a portal token even when one is held.
+        for helper in ["get_authed", "post_authed", "put_authed"] {
+            let body = production_src()
+                .split(&format!("pub async fn {helper}"))
+                .nth(1)
+                .unwrap_or_else(|| panic!("{helper} is defined in this file"));
+            let body = &body[..body.find("\n    #[cfg").unwrap_or(body.len())];
+            assert!(
+                !body.contains("portal"),
+                "{helper} must not reference the portal token: {body}"
+            );
+        }
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn the_token_holders_are_independent() {
+        use super::api::{
+            current_access_token, current_portal_access_token, set_portal_access_token,
+        };
+        set_portal_access_token(Some("portal-token".to_string()));
+        assert_eq!(
+            current_portal_access_token().as_deref(),
+            Some("portal-token")
+        );
+        // The bearer every agent helper sends is unchanged by a portal
+        // sign-in: the two holders are separate cells.
+        assert_eq!(
+            current_access_token(),
+            None,
+            "a portal sign-in must not populate the agent token"
+        );
+        set_portal_access_token(None);
+        assert_eq!(current_portal_access_token(), None);
+    }
+
+    #[test]
+    fn portal_pages_use_only_the_portal_helpers() {
+        for helper in AGENT_HELPERS {
+            assert!(
+                !PORTAL_PAGE_SRC.contains(helper),
+                "src/pages/portal.rs must not reference `{helper}`: every /portal/* route \
+                 rejects the agent bearer, so portal fetches go through the \
+                 `_portal_authed` helpers"
+            );
         }
     }
 }

@@ -398,7 +398,7 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
             // MAPPS-357: subscribe to reachability so the ticket auto-refetches
             // the instant the server comes back (paired with the recovery poll).
             let _reachable = crate::hooks::use_server_reachable();
-            crate::hooks::fetch::api::get_authed::<PortalTicketDetail>(&format!(
+            crate::hooks::fetch::api::get_portal_authed::<PortalTicketDetail>(&format!(
                 "/portal/tickets/{id}"
             ))
             .await
@@ -554,9 +554,9 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
         // MAPPS-357: subscribe to reachability so the thread auto-refetches
         // the instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_authed::<crate::utils::Paginated<PortalNote>>(&format!(
-            "/portal/tickets/{id_for_fetch}/notes?page=1&per_page=200"
-        ))
+        crate::hooks::fetch::api::get_portal_authed::<crate::utils::Paginated<PortalNote>>(
+            &format!("/portal/tickets/{id_for_fetch}/notes?page=1&per_page=200"),
+        )
         .await
         .map(|p| p.data)
         .ok()
@@ -594,7 +594,7 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
             #[cfg(feature = "web")]
             {
                 let body = serde_json::json!({ "content": content_v });
-                match crate::hooks::fetch::api::post_authed_typed::<PortalNote, _>(
+                match crate::hooks::fetch::api::post_portal_authed_typed::<PortalNote, _>(
                     &format!("/portal/tickets/{id}/notes"),
                     &body,
                 )
@@ -819,7 +819,7 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
             // MAPPS-357: subscribe to reachability so the invoice auto-refetches
             // the instant the server comes back (paired with the recovery poll).
             let _reachable = crate::hooks::use_server_reachable();
-            crate::hooks::fetch::api::get_authed::<PortalInvoiceDetail>(&format!(
+            crate::hooks::fetch::api::get_portal_authed::<PortalInvoiceDetail>(&format!(
                 "/portal/invoices/{id}"
             ))
             .await
@@ -985,11 +985,9 @@ struct PortalKbArticle {
 /// `/api/v1/portal` router guarded by `portal_auth_middleware`, whose
 /// identity is the authenticated *contacts* row (not a `users` row) and
 /// which scopes results to published, portal-visible articles for the
-/// caller's company. The SPA only holds the OIDC bearer token, so we send
-/// it via `get_authed`; the portal middleware is the server-side gate.
-/// (Other portal pages here are still demo and do not fetch yet, so there
-/// is no portal-token helper to mirror; `get_authed` is the available
-/// path.)
+/// caller's company. MAPPS-395: the request carries the portal session
+/// token from `/portal/login`, never the agent bearer, which that
+/// middleware rejects on its `typ` claim.
 #[component]
 pub fn PortalKBPage() -> Element {
     let mut search = use_signal(String::new);
@@ -999,9 +997,11 @@ pub fn PortalKBPage() -> Element {
         // MAPPS-357: subscribe to reachability so the feed auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_authed::<PortalKbFeed>("/portal/kb?page=1&per_page=100")
-            .await
-            .ok()
+        crate::hooks::fetch::api::get_portal_authed::<PortalKbFeed>(
+            "/portal/kb?page=1&per_page=100",
+        )
+        .await
+        .ok()
     });
 
     let snap = feed_resource.read_unchecked();
@@ -1140,7 +1140,7 @@ pub fn PortalQuoteListPage() -> Element {
     let quotes_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_authed::<Paginated<QuoteResponse>>(
+        crate::hooks::fetch::api::get_portal_authed::<Paginated<QuoteResponse>>(
             "/portal/quotes?page=1&per_page=50",
         )
         .await
@@ -1247,9 +1247,11 @@ pub fn PortalQuoteDetailPage(props: PortalQuoteDetailPageProps) -> Element {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let _reachable = crate::hooks::use_server_reachable();
             let _v = version.read();
-            crate::hooks::fetch::api::get_authed::<QuoteResponse>(&format!("/portal/quotes/{id}"))
-                .await
-                .ok()
+            crate::hooks::fetch::api::get_portal_authed::<QuoteResponse>(&format!(
+                "/portal/quotes/{id}"
+            ))
+            .await
+            .ok()
         }
     });
 
@@ -1277,7 +1279,7 @@ pub fn PortalQuoteDetailPage(props: PortalQuoteDetailPageProps) -> Element {
             let body = PortalQuoteDecisionRequest {
                 notes: (!note_text.is_empty()).then_some(note_text),
             };
-            match crate::hooks::fetch::api::post_authed::<QuoteResponse, _>(
+            match crate::hooks::fetch::api::post_portal_authed::<QuoteResponse, _>(
                 &format!("/portal/quotes/{qid}/{action}"),
                 &body,
             )

@@ -151,6 +151,38 @@ pub fn AuthGuard() -> Element {
     }
 }
 
+/// MAPPS-395: layout component gating the client-portal routes.
+///
+/// The portal runs on its own identity (a `contacts` row) and its own token
+/// class: mokosh-server's `portal_auth_middleware` rejects any bearer whose
+/// `typ` is not `portal_access`, so an agent session is worth exactly as much
+/// here as no session at all. Both cases redirect to `/portal/login` rather
+/// than rendering a page whose every fetch would 401.
+///
+/// Declared before the `Route` enum for the same reason [`AuthGuard`] is: the
+/// `Routable` derive expands `#[layout(PortalGuard)]` at the enum site.
+#[component]
+pub fn PortalGuard() -> Element {
+    let nav = use_navigator();
+    #[cfg(feature = "web")]
+    let signed_in = hooks::fetch::api::current_portal_access_token().is_some();
+    // The portal fetch helpers only exist in the `web` build, so a non-web
+    // build has no portal session to hold.
+    #[cfg(not(feature = "web"))]
+    let signed_in = false;
+    if !signed_in {
+        nav.replace(Route::PortalLogin {});
+        return rsx! {
+            div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
+                "Redirecting to the portal sign-in..."
+            }
+        };
+    }
+    rsx! {
+        Outlet::<Route> {}
+    }
+}
+
 /// MAPPS-318: full-screen fallback rendered when the route-level
 /// `ErrorBoundary` catches a propagated error. Sidebar / topbar live
 /// inside each route's `AppLayout`, so they are not present here; the
@@ -614,14 +646,27 @@ pub enum Route {
     #[end_layout]
 
     // Client Portal Routes (separate layout)
-    #[route("/portal")]
-    PortalHome {},
+    //
+    // The two public entry points come first: both are reachable without a
+    // portal session by construction, so they sit outside `PortalGuard`.
+
+    // MAPPS-395: portal sign-in. Issues the `typ: "portal_access"` token the
+    // guarded routes below need.
+    #[route("/portal/login")]
+    PortalLogin {},
 
     // MAPPS-396: the destination of the portal setup email mokosh-server
     // sends on a portal-access grant. Public by construction: the emailed
     // single-use token in `?token=` is the only credential the visitor has.
     #[route("/portal/set-password")]
     PortalSetPassword {},
+
+    // MAPPS-395: everything below needs a portal session. Without the guard a
+    // signed-out visitor (or an agent, whose bearer is the wrong token class)
+    // renders the page and collects a 401 from every fetch.
+    #[layout(PortalGuard)]
+    #[route("/portal")]
+    PortalHome {},
 
     #[route("/portal/tickets")]
     PortalTicketList {},
@@ -646,6 +691,9 @@ pub enum Route {
 
     #[route("/portal/kb")]
     PortalKB {},
+
+    // End of PortalGuard scope.
+    #[end_layout]
 
     // Catch-all 404
     #[route("/:..route")]
@@ -1243,6 +1291,11 @@ fn PortalHome() -> Element {
 }
 
 #[component]
+fn PortalLogin() -> Element {
+    rsx! { portal_login::PortalLoginPage {} }
+}
+
+#[component]
 fn PortalSetPassword() -> Element {
     rsx! { portal_set_password::PortalSetPasswordPage {} }
 }
@@ -1337,6 +1390,25 @@ mod emailed_link_routes {
                 "{emitter} emails {path}, which falls through to the 404 catch-all",
             );
         }
+    }
+}
+
+/// MAPPS-395: the portal sign-in route exists and is public. `/portal/login`
+/// is where `PortalGuard` sends a visitor with no portal session, so a typo in
+/// the route (or a stray `#[layout(PortalGuard)]` above it) would bounce the
+/// redirect back into itself.
+#[cfg(test)]
+mod portal_login_route {
+    use super::Route;
+    use std::str::FromStr;
+
+    #[test]
+    fn portal_login_resolves_to_its_own_route() {
+        let route = Route::from_str("/portal/login").expect("/portal/login parses");
+        assert!(
+            matches!(route, Route::PortalLogin {}),
+            "/portal/login must resolve to PortalLogin, got {route:?}"
+        );
     }
 }
 
