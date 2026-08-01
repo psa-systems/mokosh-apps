@@ -617,6 +617,12 @@ pub enum Route {
     #[route("/portal")]
     PortalHome {},
 
+    // MAPPS-396: the destination of the portal setup email mokosh-server
+    // sends on a portal-access grant. Public by construction: the emailed
+    // single-use token in `?token=` is the only credential the visitor has.
+    #[route("/portal/set-password")]
+    PortalSetPassword {},
+
     #[route("/portal/tickets")]
     PortalTicketList {},
 
@@ -1237,6 +1243,11 @@ fn PortalHome() -> Element {
 }
 
 #[component]
+fn PortalSetPassword() -> Element {
+    rsx! { portal_set_password::PortalSetPasswordPage {} }
+}
+
+#[component]
 fn PortalTicketList() -> Element {
     rsx! { portal::PortalTicketListPage {} }
 }
@@ -1279,6 +1290,54 @@ fn PortalKB() -> Element {
 #[component]
 fn NotFound(route: Vec<String>) -> Element {
     rsx! { not_found::NotFoundPage { route } }
+}
+
+/// MAPPS-396 recurrence gate: every link mokosh-server builds on the SPA
+/// origin (`CLIENT_ORIGIN`, wired into the services in `src/api/router.rs`)
+/// and emails to a user must resolve to a real route here, not the catch-all
+/// `NotFound`. The `/portal/set-password` link had been in customers' inboxes
+/// since PMS-136 with no page behind it.
+///
+/// The list is the full set of emitters on mokosh-server `main`, verified at
+/// 38c8945. Adding an emailed link server-side without adding its route here
+/// fails this test.
+#[cfg(test)]
+mod emailed_link_routes {
+    use super::Route;
+    use std::str::FromStr;
+
+    /// (server emitter, path as the customer receives it). Path parameters
+    /// carry a representative value; the query string is dropped because the
+    /// router matches on the path.
+    const EMAILED_LINKS: &[(&str, &str)] = &[
+        // src/modules/contacts/service.rs: portal-access grant setup link.
+        ("contacts::send_setup_email", "/portal/set-password"),
+        // src/modules/quotes/service.rs: client quote sign-off link.
+        (
+            "quotes::send_quote_ready",
+            "/portal/quotes/2f1c2f1e-0000-4000-8000-00000000abcd",
+        ),
+        // src/modules/auth/service.rs: password reset + staff welcome links.
+        (
+            "auth::request_password_reset",
+            "/reset-password/Zt4kQ1p9Zt4kQ1p9Zt4kQ1p9Zt4kQ1p9",
+        ),
+        // src/modules/auth/service.rs (security notice) and
+        // src/modules/invitations/service.rs (invite): the bare SPA origin.
+        ("auth::security_notice / invitations::create", "/"),
+    ];
+
+    #[test]
+    fn every_emailed_link_resolves_to_a_route() {
+        for (emitter, path) in EMAILED_LINKS {
+            let route = Route::from_str(path)
+                .unwrap_or_else(|e| panic!("{emitter} emails {path}, which does not parse: {e}"));
+            assert!(
+                !matches!(route, Route::NotFound { .. }),
+                "{emitter} emails {path}, which falls through to the 404 catch-all",
+            );
+        }
+    }
 }
 
 /// Prelude module for common imports
