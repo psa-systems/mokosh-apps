@@ -793,6 +793,39 @@ pub mod api {
         handle_response(resp).await
     }
 
+    /// MAPPS-396: unauthed typed POST for an endpoint that answers 204 with no
+    /// body (`POST /portal/auth/setup-password`). [`post_typed`] would fail to
+    /// decode the empty payload, so this variant only inspects the status and
+    /// keeps the typed error so the caller can tell 410 (replayed link) from
+    /// 400 (expired / unknown link).
+    #[cfg(feature = "web")]
+    pub async fn post_typed_no_content<B: Serialize>(path: &str, body: &B) -> Result<(), ApiError> {
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::post(&url)
+            .header("Content-Type", "application/json")
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        let status = resp.status();
+        super::note_response_status(status);
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+        let body = resp.text().await.unwrap_or_default();
+        let (message, fields) =
+            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
+                Ok(env) => (env.error.message, env.error.errors.unwrap_or_default()),
+                Err(_) => (body.chars().take(200).collect(), Vec::new()),
+            };
+        Err(ApiError::Status {
+            code: status,
+            message,
+            fields,
+        })
+    }
+
     #[cfg(feature = "web")]
     pub async fn put_authed_typed<T: DeserializeOwned, B: Serialize>(
         path: &str,
