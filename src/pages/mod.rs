@@ -28,6 +28,7 @@ pub mod login;
 pub mod not_found;
 pub mod onboarding;
 pub mod portal;
+pub mod portal_login;
 pub mod portal_set_password;
 pub mod profile;
 pub mod projects;

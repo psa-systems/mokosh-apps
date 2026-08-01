@@ -124,13 +124,13 @@ pub fn PortalSetPasswordPage() -> Element {
                             p { class: "mt-2 text-sm text-content",
                                 "You can now sign in to the customer portal with your email and this password."
                             }
-                            // MAPPS-395 adds the portal sign-in page at
-                            // /portal/login; until it lands the portal entry
-                            // point is the closest real destination.
+                            // MAPPS-395: the portal sign-in page, which mints
+                            // the `typ: "portal_access"` token every portal
+                            // page needs.
                             Link {
-                                to: Route::PortalHome {},
+                                to: Route::PortalLogin {},
                                 class: "mt-6 inline-flex items-center justify-center rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:opacity-90",
-                                "Go to the portal"
+                                "Sign in to the portal"
                             }
                         }
                     } else {
