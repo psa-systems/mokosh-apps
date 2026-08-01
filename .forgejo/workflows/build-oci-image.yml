@@ -36,6 +36,8 @@ on:
 jobs:
   build-and-push:
     name: Build and push mokosh-www image
+    # Base label: every compile happens inside buildx containers, so the runner
+    # only needs docker and never links on the host.
     runs-on: ${{ vars.RUNS_ON_OPENSUSE_BASE_LATEST }}
     permissions:
       contents: read

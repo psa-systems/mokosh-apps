@@ -15,7 +15,9 @@ on:
 jobs:
   check:
     name: fmt + clippy + tests
-    runs-on: ${{ vars.RUNS_ON_OPENSUSE_BASE_LATEST }}
+    # Dev label: this job compiles Rust on the runner, and only the dev image
+    # ships the C toolchain (cc/gcc/ld) that rustc drives linking through.
+    runs-on: ${{ vars.RUNS_ON_OPENSUSE_DEV_LATEST }}
 
     steps:
       - name: Clone the repository
@@ -24,15 +26,6 @@ jobs:
       - name: Cap build parallelism
         # nproc/2 cap: never claim more than half the host (see CI.md "Concurrency cap").
         run: echo "CARGO_BUILD_JOBS=$(($(nproc) / 2))" >> "$GITHUB_ENV"
-
-      - name: Ensure C toolchain
-        # The RUNS_ON_OPENSUSE_BASE_LATEST image stopped shipping a C compiler,
-        # so every build-script / proc-macro link fails with `linker cc not
-        # found`. rustc drives linking through `cc`, which the `gcc` package
-        # provides. The runner user is unprivileged, so zypper needs sudo.
-        # Same defensive pattern as e2e.yml's Chromium-deps note: install what
-        # a trimmed base image dropped rather than assume it.
-        run: sudo zypper --non-interactive install --no-recommends gcc
 
       - name: Cache Rust build
         uses: https://github.com/Swatinem/rust-cache@v2
@@ -46,6 +39,9 @@ jobs:
       # built by oci-build/Dockerfile for deployment.
       - name: Stub generated CSS asset
         run: mkdir -p assets && touch assets/styles.css
+
+      - name: Runner-label guard
+        run: bash scripts/check-runner-labels.sh
 
       - name: Check formatting
         run: cargo fmt --all --check

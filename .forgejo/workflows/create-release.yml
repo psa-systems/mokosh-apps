@@ -19,6 +19,7 @@ jobs:
     if: >-
       github.event.pull_request.merged == true
       && startsWith(github.event.pull_request.head.ref, 'release/v')
+    # Base label: git log plus a Forgejo API call, nothing compiles here.
     runs-on: ${{ vars.RUNS_ON_OPENSUSE_BASE_LATEST }}
     permissions:
       contents: write
