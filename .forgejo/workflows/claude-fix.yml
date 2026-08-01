@@ -47,6 +47,8 @@ concurrency:
 
 jobs:
   fix:
+    # Container runner, not an openSUSE image label: this job runs Claude in a
+    # Debian container and compiles nothing.
     runs-on: docker
     timeout-minutes: 20
 

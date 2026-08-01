@@ -47,7 +47,7 @@ pre-commit: css-build
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-web check-clippy check-fmt check-theme-tokens
+check: check-web check-clippy check-fmt check-theme-tokens check-runner-labels
 
 # Check web/WASM compilation
 [group: 'check']
@@ -58,6 +58,11 @@ check-web:
 [group: 'check']
 check-theme-tokens:
     bash scripts/check-theme-tokens.sh
+
+# MAPPS-398: keep check.yml on the dev runner label and free of run-time package installs
+[group: 'check']
+check-runner-labels:
+    bash scripts/check-runner-labels.sh
 
 # Run clippy lints
 [group: 'check']
