@@ -404,20 +404,25 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
     }
 }
 
-/// Compact build-info line shown in every layout footer so support and
-/// developers can identify the running build at a glance.
+/// Compact version indicator in the layout footer. Shows the release version
+/// alone (PMS-712) and links through to System Status, which carries the full
+/// build metadata - commit hash and build date for both the client and the API.
+/// David's call on the 2026-07-31 standup: the version number is the part useful
+/// to a general user (and the fastest way to confirm which build someone is on),
+/// while the build detail belongs on the status page, its agreed single home -
+/// so it is moved there rather than duplicated into a footer tooltip.
 #[component]
 fn VersionFooter() -> Element {
-    use crate::utils::version::{BUILD_DATE, GIT_HASH, VERSION};
+    use crate::utils::version::VERSION;
     rsx! {
         p {
-            class: "px-3 py-2 text-xs text-muted text-center break-words",
-            title: "{VERSION} commit {GIT_HASH} built {BUILD_DATE}",
-            span { "{VERSION}" }
-            span { class: "mx-1", "-" }
-            span { class: "font-mono", "{GIT_HASH}" }
-            span { class: "mx-1", "-" }
-            span { "{BUILD_DATE}" }
+            class: "px-3 py-2 text-xs text-muted text-center",
+            Link {
+                to: Route::SystemStatus {},
+                class: "hover:text-content transition-colors",
+                title: "View system status and build details",
+                "v{VERSION}"
+            }
         }
     }
 }
