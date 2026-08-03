@@ -303,26 +303,14 @@ impl Ticket {
 // TICKET NOTES
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TicketNote {
-    pub id: Uuid,
-    pub tenant_id: Uuid,
-    pub ticket_id: Uuid,
-    pub note_type: NoteType,
-    pub content: String,
-    pub content_html: Option<String>,
-    pub is_email_sent: bool,
-    pub email_sent_at: Option<DateTime<Utc>>,
-    pub created_by_id: Uuid,
-    pub created_by_name: Option<String>,
-    /// PMS-468 / PMS-449 phase 2: set when the note was originated by a
-    /// portal contact (not an agent). `is_some()` distinguishes
-    /// "Customer:" vs "Agent:" attribution.
-    #[serde(default)]
-    pub created_by_contact_id: Option<Uuid>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
+// MAPPS-378: `TicketNote` and `TicketNoteResponse` are shared wire DTOs, so
+// source them from `mokosh-types` rather than hand-copying them (their
+// `created_by_contact_id` field was the drift this adoption closes). Their
+// `note_type` is `mokosh_types::tickets::NoteType`; the SPA-local `NoteType`
+// below is an identical enum kept local because `CreateNoteRequest` and
+// `TicketActivity` (both local) use it. `CreateNoteRequest` is the SPA's own
+// request shape and stays defined below.
+pub use mokosh_types::tickets::{TicketNote, TicketNoteResponse};
 
 /// Create note request
 #[derive(Debug, Clone, Deserialize, Validate)]
@@ -334,25 +322,6 @@ pub struct CreateNoteRequest {
     /// Send email notification to contact
     #[serde(default)]
     pub send_email: bool,
-}
-
-/// Note response
-#[derive(Debug, Clone, Serialize)]
-pub struct TicketNoteResponse {
-    pub id: Uuid,
-    pub note_type: NoteType,
-    pub content: String,
-    pub is_email_sent: bool,
-    pub created_by_id: Uuid,
-    // Matches `TicketNote.created_by_name`: the join is nullable, so a NULL
-    // author name stays representable instead of panicking / coercing to "".
-    pub created_by_name: Option<String>,
-    /// PMS-468 / PMS-449 phase 2: set when the note was originated by a
-    /// portal contact. SPA reads this to distinguish customer vs agent
-    /// comments without a display-name heuristic.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub created_by_contact_id: Option<Uuid>,
-    pub created_at: DateTime<Utc>,
 }
 
 // ============================================================================

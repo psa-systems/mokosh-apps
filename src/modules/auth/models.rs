@@ -10,93 +10,15 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
-/// User role types
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum UserRole {
-    /// Platform-level administrator (SaaS only)
-    SuperAdmin,
-    /// MSP organization administrator
-    Admin,
-    /// Team/department manager
-    Manager,
-    /// Service delivery staff
-    #[default]
-    Technician,
-    /// Resource scheduling
-    Dispatcher,
-    /// Account management
-    Sales,
-    /// Billing and invoicing
-    Finance,
-}
-
-impl UserRole {
-    /// Check if this role has admin privileges
-    pub fn is_admin(&self) -> bool {
-        matches!(self, Self::SuperAdmin | Self::Admin)
-    }
-
-    /// Check if this role can manage users
-    pub fn can_manage_users(&self) -> bool {
-        matches!(self, Self::SuperAdmin | Self::Admin | Self::Manager)
-    }
-
-    /// Check if this role can view financial data
-    pub fn can_view_financials(&self) -> bool {
-        matches!(
-            self,
-            Self::SuperAdmin | Self::Admin | Self::Manager | Self::Finance
-        )
-    }
-
-    /// Check if this role can manage billing
-    pub fn can_manage_billing(&self) -> bool {
-        matches!(self, Self::SuperAdmin | Self::Admin | Self::Finance)
-    }
-
-    /// Parse from string
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "super_admin" => Some(Self::SuperAdmin),
-            "admin" => Some(Self::Admin),
-            "manager" => Some(Self::Manager),
-            "technician" => Some(Self::Technician),
-            "dispatcher" => Some(Self::Dispatcher),
-            "sales" => Some(Self::Sales),
-            "finance" => Some(Self::Finance),
-            _ => None,
-        }
-    }
-
-    /// Parse a server role string into a `UserRole`, falling back to the
-    /// default ([`UserRole::Technician`]) for unknown / unset values. This
-    /// is the single canonical role parser; every sign-in path routes
-    /// through it so no caller re-implements a partial match that silently
-    /// downgrades super_admin / dispatcher / sales (PMS-158).
-    pub fn parse_role(s: &str) -> Self {
-        Self::from_str(s).unwrap_or_default()
-    }
-
-    /// Convert to string
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::SuperAdmin => "super_admin",
-            Self::Admin => "admin",
-            Self::Manager => "manager",
-            Self::Technician => "technician",
-            Self::Dispatcher => "dispatcher",
-            Self::Sales => "sales",
-            Self::Finance => "finance",
-        }
-    }
-}
-
-impl std::fmt::Display for UserRole {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
+// MAPPS-378: `UserRole` and `CurrentUser` are the shared identity DTOs of the
+// client/server wire contract, so source them from the `mokosh-types` crate
+// instead of re-declaring them here. Drift now fails the build rather than
+// silently deserializing to a default. The prior hand-maintained copies were
+// field- and method-identical to the shared ones; the only local extra was an
+// unused `UserRole::parse_role` shim (zero call sites), which is dropped. The
+// SPA-owned `AuthState` (maps auth failure to the crate's own `AppError`),
+// `User`, `UserResponse`, `UserStatus`, and the request DTOs stay local below.
+pub use mokosh_types::auth::{CurrentUser, UserRole};
 
 /// User account status
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -172,59 +94,8 @@ impl AuthState {
     }
 }
 
-/// Current authenticated user information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CurrentUser {
-    pub id: Uuid,
-    pub tenant_id: Uuid,
-    pub email: String,
-    pub first_name: String,
-    pub last_name: String,
-    pub role: UserRole,
-    pub timezone: String,
-    pub avatar_url: Option<String>,
-    /// Server-side flag: `false` for freshly JIT-created Bunyip users
-    /// until they've confirmed first + last name through
-    /// `/onboarding/profile`. Defaults to `true` on deserialise so a
-    /// legacy server response (no field) doesn't surprise-trap users.
-    #[serde(default = "crate::utils::default_true")]
-    pub profile_completed: bool,
-    /// PMS-253: per-user date/time format string consumed by
-    /// `crate::utils::datetime::format_user_datetime`. `None` means
-    /// "use the browser locale" (the legacy rendering behaviour).
-    #[serde(default)]
-    pub date_format_string: Option<String>,
-    /// PMS-410: per-user theme base mode. One of `light`, `dark`,
-    /// `system`. `None` = unset; the client treats it as `system`.
-    #[serde(default)]
-    pub theme_base_mode: Option<String>,
-    /// PMS-410: per-user accent id (opaque; the accent catalog lives in
-    /// the SPA). `None` = unset; the client falls back to its default accent.
-    #[serde(default)]
-    pub theme_accent_id: Option<String>,
-    /// PMS-413: the tenant's own-company id, surfaced on the `/auth/me`
-    /// (and login) user payload so the SPA can attribute a General /
-    /// overhead time entry (no ticket, no project) without an extra
-    /// round-trip. Tenant-scoped, so the same value for every user in the
-    /// tenant. `None` only on a tenant that predates the backfill; the
-    /// `#[serde(default)]` keeps older server responses deserialising.
-    #[serde(default)]
-    pub own_company_id: Option<Uuid>,
-}
-
-impl CurrentUser {
-    /// Get the full name
-    pub fn full_name(&self) -> String {
-        format!("{} {}", self.first_name, self.last_name)
-    }
-
-    /// Get initials
-    pub fn initials(&self) -> String {
-        let first = self.first_name.chars().next().unwrap_or(' ');
-        let last = self.last_name.chars().next().unwrap_or(' ');
-        format!("{}{}", first, last).to_uppercase()
-    }
-}
+// `CurrentUser` (struct + `full_name` / `initials`) is re-exported from
+// `mokosh-types` at the top of this module (MAPPS-378).
 
 /// User database model
 #[derive(Debug, Clone, Serialize, Deserialize)]
