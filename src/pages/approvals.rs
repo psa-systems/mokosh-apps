@@ -132,7 +132,7 @@ pub fn ApprovalsPage() -> Element {
         }
 
         if !decision_error().is_empty() {
-            Card { class: "mb-4 border-red-300 dark:border-red-700",
+            Card { class: "mb-6 border-red-300 dark:border-red-700",
                 p { class: "text-sm text-red-600 dark:text-red-300", "{decision_error}" }
             }
         }

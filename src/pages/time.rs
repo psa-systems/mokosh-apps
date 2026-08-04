@@ -1980,7 +1980,7 @@ pub fn TimesheetApprovalsPage() -> Element {
         // see history. The range checkbox swaps the single-week
         // selector for a from/to date pair pre-seeded to the last
         // 12 weeks.
-        Card { class: "mb-4",
+        Card { class: "mb-6",
             div { class: "flex flex-wrap items-end gap-4",
                 div { class: "min-w-[180px]",
                     Select {
