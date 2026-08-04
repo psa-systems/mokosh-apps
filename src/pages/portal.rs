@@ -45,94 +45,37 @@ fn PortalUnavailable(title: String) -> Element {
 /// Portal home page
 #[component]
 pub fn PortalHomePage() -> Element {
-    // MAPPS-357: N/A because this page fetches nothing. Every stat, ticket,
-    // and invoice below is static demo copy, so there is no primary resource
-    // that could fail during an outage and no mutating control to disable.
+    // MAPPS-403: the fabricated "Welcome back, Bob" name, the demo stat cards
+    // (Open Tickets / Pending Invoices / Outstanding Balance), and the demo
+    // ticket / invoice lists were removed so no invented counts or fake
+    // TKT-/INV- rows reach a real client. Wiring these blocks to the portal
+    // API is backend-dependent and deferred (per the MAPPS-403 decision);
+    // until then the page shows only honest, non-fabricated content.
+    //
+    // MAPPS-357: N/A because this page still fetches nothing. With only a
+    // static greeting, a neutral placeholder, and navigation Links below,
+    // there is no primary resource that could fail during an outage and no
+    // mutating control to disable.
     rsx! {
         PortalLayout {
-            // Welcome section
+            // Welcome section. The portal identity is a `contacts` row behind
+            // the portal session token, not the agent `use_auth` CurrentUser,
+            // so no signed-in display name is available client-side here; the
+            // greeting stays generic rather than inventing one.
             div { class: "mb-8",
                 h1 { class: "text-2xl font-bold text-content",
-                    "Welcome back, Bob"
+                    "Welcome back"
                 }
                 p { class: "text-muted mt-1",
                     "Here's what's happening with your account."
                 }
             }
 
-            // Quick stats
-            div { class: "grid grid-cols-1 md:grid-cols-3 gap-6 mb-8",
-                Card { class: "text-center",
-                    p { class: "text-sm text-muted", "Open Tickets" }
-                    p { class: "text-3xl font-bold text-accent", "3" }
-                }
-                Card { class: "text-center",
-                    p { class: "text-sm text-muted", "Pending Invoices" }
-                    p { class: "text-3xl font-bold text-yellow-600", "1" }
-                }
-                Card { class: "text-center",
-                    p { class: "text-sm text-muted", "Outstanding Balance" }
-                    p { class: "text-3xl font-bold text-content", "$2,500" }
-                }
-            }
-
-            div { class: "grid grid-cols-1 lg:grid-cols-2 gap-6",
-                // Recent tickets
-                Card {
-                    title: "Recent Tickets",
-                    actions: rsx! {
-                        Link {
-                            to: Route::PortalTicketList {},
-                            class: "text-sm text-accent hover:opacity-90",
-                            "View all"
-                        }
-                    },
-                    div { class: "space-y-3",
-                        PortalTicketItem {
-                            number: "TKT-1234",
-                            title: "Email server not responding",
-                            status: "In Progress",
-                            updated: "5 min ago",
-                        }
-                        PortalTicketItem {
-                            number: "TKT-1231",
-                            title: "VPN connection issues",
-                            status: "Open",
-                            updated: "3 hours ago",
-                        }
-                        PortalTicketItem {
-                            number: "TKT-1228",
-                            title: "New user setup request",
-                            status: "Pending",
-                            updated: "1 day ago",
-                        }
-                    }
-                }
-
-                // Recent invoices
-                Card {
-                    title: "Recent Invoices",
-                    actions: rsx! {
-                        Link {
-                            to: Route::PortalInvoiceList {},
-                            class: "text-sm text-accent hover:opacity-90",
-                            "View all"
-                        }
-                    },
-                    div { class: "space-y-3",
-                        PortalInvoiceItem {
-                            number: "INV-2025-001",
-                            date: "Jan 1, 2025",
-                            amount: "$2,500.00",
-                            status: "Pending",
-                        }
-                        PortalInvoiceItem {
-                            number: "INV-2024-012",
-                            date: "Dec 1, 2024",
-                            amount: "$2,500.00",
-                            status: "Paid",
-                        }
-                    }
+            // Neutral placeholder in place of the removed demo stats and
+            // lists: no fabricated numbers or rows until the portal API lands.
+            Card {
+                p { class: "text-sm text-muted",
+                    "Your tickets and invoices will appear here."
                 }
             }
 
@@ -160,64 +103,6 @@ pub fn PortalHomePage() -> Element {
                         CurrencyIcon { class: "h-6 w-6 text-purple-600 mr-3".to_string() }
                         span { class: "font-medium text-purple-900 dark:text-purple-100", "Pay Invoice" }
                     }
-                }
-            }
-        }
-    }
-}
-
-#[derive(Props, Clone, PartialEq)]
-struct PortalTicketItemProps {
-    number: String,
-    title: String,
-    status: String,
-    updated: String,
-}
-
-#[component]
-fn PortalTicketItem(props: PortalTicketItemProps) -> Element {
-    let status_variant = ticket_status_badge(&props.status);
-
-    rsx! {
-        div { class: "flex items-center justify-between p-3 bg-surface-2 rounded-lg",
-            div {
-                div { class: "flex items-center",
-                    span { class: "font-medium text-accent", "{props.number}" }
-                    Badge { variant: status_variant, class: "ml-2", "{props.status}" }
-                }
-                p { class: "text-sm text-muted mt-1", "{props.title}" }
-            }
-            span { class: "text-xs text-subtle", "{props.updated}" }
-        }
-    }
-}
-
-#[derive(Props, Clone, PartialEq)]
-struct PortalInvoiceItemProps {
-    number: String,
-    date: String,
-    amount: String,
-    status: String,
-}
-
-#[component]
-fn PortalInvoiceItem(props: PortalInvoiceItemProps) -> Element {
-    let status_variant = if props.status == "Paid" {
-        BadgeVariant::Green
-    } else {
-        BadgeVariant::Yellow
-    };
-
-    rsx! {
-        div { class: "flex items-center justify-between p-3 bg-surface-2 rounded-lg",
-            div {
-                span { class: "font-medium text-content", "{props.number}" }
-                p { class: "text-sm text-muted", "{props.date}" }
-            }
-            div { class: "text-right",
-                span { class: "font-medium text-content", "{props.amount}" }
-                div { class: "mt-1",
-                    Badge { variant: status_variant, "{props.status}" }
                 }
             }
         }
