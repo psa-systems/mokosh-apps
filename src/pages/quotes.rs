@@ -566,7 +566,7 @@ fn QuoteDetailBody(id: String) -> Element {
                                             dd {
                                                 Link {
                                                     to: Route::ProjectDetail { id: project_id.to_string() },
-                                                    class: "text-primary hover:underline",
+                                                    class: "text-accent hover:underline",
                                                     "View project"
                                                 }
                                             }
