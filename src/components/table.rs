@@ -479,7 +479,7 @@ pub struct DataTableProps {
 #[component]
 pub fn DataTable(props: DataTableProps) -> Element {
     rsx! {
-        div { class: "overflow-hidden shadow ring-1 ring-black ring-opacity-5 sm:rounded-lg",
+        div { class: "overflow-hidden shadow ring-1 ring-black/5 sm:rounded-lg",
             Table {
                 {props.children}
             }
