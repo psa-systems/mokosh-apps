@@ -131,6 +131,10 @@ pub fn DashboardPage() -> Element {
             crate::components::ContentUnavailable { title: "Dashboard".to_string(), show_dashboard_link: false }
         };
     }
+    // MAPPS-404: capture the loading state before value_or_default() consumes
+    // the resource, so the body below can gate on the primary report's first
+    // fetch and show a skeleton instead of zeroed stats / empty tables.
+    let is_loading = report_data.is_loading();
     let report = report_data.value_or_default();
 
     // Stat values.
@@ -167,6 +171,27 @@ pub fn DashboardPage() -> Element {
                 },
             }
 
+            if is_loading {
+                // MAPPS-404: while the primary dashboard report is still
+                // loading, show a shape-matching skeleton (stat-row + content
+                // cards) instead of zeroed StatCards ("0") and empty
+                // "No ... yet." tables that then pop to real data once the
+                // fetch resolves. Reuses the shared shimmer style from
+                // components/skeleton.rs so it matches the other loading views.
+                div { class: "grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 mb-8",
+                    for _ in 0..4 {
+                        div { class: "rounded-lg border border-line bg-surface p-6 space-y-4",
+                            div { class: "h-4 w-1/2 bg-surface-2 rounded animate-pulse" }
+                            div { class: "h-6 w-1/3 bg-surface-2 rounded animate-pulse" }
+                        }
+                    }
+                }
+                div { class: "grid grid-cols-1 lg:grid-cols-2 gap-6",
+                    for _ in 0..4 {
+                        crate::components::DetailSkeleton {}
+                    }
+                }
+            } else {
             // Stats row
             div { class: "grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 mb-8",
                 StatCard {
@@ -329,6 +354,7 @@ pub fn DashboardPage() -> Element {
                         }
                     }
                 }
+            }
             }
     }
 }

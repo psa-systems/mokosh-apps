@@ -79,6 +79,10 @@ pub fn SavedDashboardsPage() -> Element {
             crate::components::ContentUnavailable { title: "Dashboards".to_string() }
         };
     }
+    // MAPPS-404: capture the loading state before value_or_default() consumes
+    // the resource, so the list below shows a loading table on the first fetch
+    // instead of the "No saved dashboards" empty state.
+    let is_loading = rows_resource.is_loading();
     let rows = rows_resource.value_or_default();
 
     let on_pin_default = move |id: Uuid| {
@@ -171,7 +175,23 @@ pub fn SavedDashboardsPage() -> Element {
             },
         }
         Card {
-            if rows.is_empty() {
+            if is_loading {
+                // MAPPS-404: shimmer table rows while the first fetch is in
+                // flight, instead of the "No saved dashboards yet" empty state
+                // that then pops to the real table once the list resolves. The
+                // header mirrors the populated table's columns.
+                Table {
+                    TableHead {
+                        TableRow {
+                            TableHeader { "Name" }
+                            TableHeader { "Default" }
+                            TableHeader { "Updated" }
+                            TableHeader { class: "text-right".to_string(), "Actions" }
+                        }
+                    }
+                    crate::components::TableLoading { columns: 4 }
+                }
+            } else if rows.is_empty() {
                 div { class: "p-6 text-center text-muted",
                     "No saved dashboards yet. Click 'New dashboard' to create your first."
                 }
