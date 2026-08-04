@@ -515,11 +515,11 @@ fn local_hour_f(dt: DateTime<Utc>) -> f64 {
 /// for unknown types so a future server-side type still renders.
 fn type_color(appointment_type: &str) -> &'static str {
     match appointment_type {
-        "ticket" => "bg-blue-500",
-        "project" => "bg-green-500",
-        "meeting" => "bg-purple-500",
-        "other" => "bg-gray-500", // theme-guard-allow: event-type data-viz dot palette
-        _ => "bg-slate-500",
+        "ticket" => "bg-blue-600",
+        "project" => "bg-green-700", // green-600 is 3.22:1 on white text (AA fail); -700 = 4.95:1
+        "meeting" => "bg-purple-600",
+        "other" => "bg-gray-600", // theme-guard-allow: event-type data-viz dot palette
+        _ => "bg-slate-600",
     }
 }
 
