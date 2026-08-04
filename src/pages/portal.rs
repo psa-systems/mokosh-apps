@@ -3,9 +3,9 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    invoice_status_badge, ticket_status_badge, Badge, BadgeVariant, BookIcon, Button,
-    ButtonVariant, Card, CurrencyIcon, IconSize, PlusIcon, PortalLayout, SearchInput, Table,
-    TableBody, TableCell, TableHead, TableHeader, TableRow,
+    invoice_status_badge, Badge, BadgeVariant, BookIcon, Button, ButtonVariant, Card,
+    CurrencyIcon, IconSize, PlusIcon, PortalLayout, SearchInput, Table, TableBody, TableCell,
+    TableHead, TableHeader, TableRow,
 };
 use crate::Route;
 
@@ -112,10 +112,18 @@ pub fn PortalHomePage() -> Element {
 /// Portal ticket list page
 #[component]
 pub fn PortalTicketListPage() -> Element {
-    // MAPPS-357: N/A because the ticket rows below are static demo data (no
-    // fetch), so there is no primary resource to gate on an outage. The "New
-    // Ticket" control is a plain navigation Link, not a mutation, so it stays
-    // enabled.
+    // MAPPS-414: the hardcoded demo ticket rows were removed so no fabricated
+    // tickets reach a real client (the same defect MAPPS-403 fixed on
+    // PortalHomePage). Until the portal ticket-list endpoint is wired, the page
+    // shows an honest empty state.
+    //
+    // Eventual fix: fetch the portal ticket-list endpoint via `use_resource` +
+    // `get_portal_authed` + `use_server_reachable`, mirroring
+    // `PortalInvoiceDetailPage`, then render the rows and the outage-aware
+    // states from the live payload (gated off now, wire later, ref MAPPS-414).
+    //
+    // MAPPS-357: N/A while the page fetches nothing. The "New Ticket" control
+    // is a plain navigation Link, not a mutation, so it stays enabled.
     rsx! {
         // Title is rendered once below alongside the "New Ticket"
         // action button (P1-10 dedup).
@@ -132,76 +140,12 @@ pub fn PortalTicketListPage() -> Element {
                 }
             }
 
-            Card { padding: false,
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Ticket" }
-                            TableHeader { "Status" }
-                            TableHeader { "Updated" }
-                        }
-                    }
-                    TableBody {
-                        PortalTicketRow {
-                            id: "1234",
-                            number: "TKT-1234",
-                            subject: "Email server not responding",
-                            status: "In Progress",
-                            updated: "5 min ago",
-                        }
-                        PortalTicketRow {
-                            id: "1231",
-                            number: "TKT-1231",
-                            subject: "VPN connection issues",
-                            status: "Open",
-                            updated: "3 hours ago",
-                        }
-                        PortalTicketRow {
-                            id: "1228",
-                            number: "TKT-1228",
-                            subject: "New user setup request",
-                            status: "Pending",
-                            updated: "1 day ago",
-                        }
-                    }
-                }
+            // Honest empty state in place of the removed demo rows: no
+            // fabricated tickets until the portal API lands (matches the
+            // MAPPS-403 PortalHomePage placeholder style).
+            Card {
+                p { class: "text-sm text-muted", "No tickets yet." }
             }
-        }
-    }
-}
-
-#[derive(Props, Clone, PartialEq)]
-struct PortalTicketRowProps {
-    id: String,
-    number: String,
-    subject: String,
-    status: String,
-    updated: String,
-}
-
-#[component]
-fn PortalTicketRow(props: PortalTicketRowProps) -> Element {
-    let status_variant = ticket_status_badge(&props.status);
-    let navigator = use_navigator();
-    let id_for_click = props.id.clone();
-    rsx! {
-        TableRow {
-            clickable: true,
-            onclick: move |_| {
-                navigator.push(Route::PortalTicketDetail { id: id_for_click.clone() });
-            },
-            TableCell {
-                div {
-                    Link {
-                        to: Route::PortalTicketDetail { id: props.id.clone() },
-                        class: "font-medium text-accent hover:opacity-90",
-                        "{props.number}"
-                    }
-                    p { class: "text-sm text-muted", "{props.subject}" }
-                }
-            }
-            TableCell { Badge { variant: status_variant, "{props.status}" } }
-            TableCell { class: "text-muted", "{props.updated}" }
         }
     }
 }
@@ -585,56 +529,28 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
 /// Portal invoice list page
 #[component]
 pub fn PortalInvoiceListPage() -> Element {
-    // MAPPS-357: N/A because the invoice rows below are static demo data (no
-    // fetch), so there is no primary resource to gate on an outage. The "View"
-    // buttons are decorative (no onclick / no payment flow), not mutations.
+    // MAPPS-414: the hardcoded demo invoice rows (with fabricated amounts and
+    // decorative "View" buttons) were removed so no fake invoices reach a real
+    // client (the same defect MAPPS-403 fixed on PortalHomePage). Until the
+    // portal invoice-list endpoint is wired, the page shows an honest empty
+    // state.
+    //
+    // Eventual fix: fetch the portal invoice-list endpoint via `use_resource` +
+    // `get_portal_authed` + `use_server_reachable`, mirroring
+    // `PortalInvoiceDetailPage`, then render the rows and the outage-aware
+    // states from the live payload (gated off now, wire later, ref MAPPS-414).
+    //
+    // MAPPS-357: N/A while the page fetches nothing.
     rsx! {
         // P1-10 dedup: title rendered once below.
         PortalLayout {
             h1 { class: "text-2xl font-bold text-content mb-6", "Invoices" }
 
-            Card { padding: false,
-                Table {
-                    TableHead {
-                        TableRow {
-                            TableHeader { "Invoice" }
-                            TableHeader { "Date" }
-                            TableHeader { "Amount" }
-                            TableHeader { "Status" }
-                            TableHeader { "" }
-                        }
-                    }
-                    TableBody {
-                        TableRow {
-                            TableCell { class: "font-medium", "INV-2025-001" }
-                            TableCell { "Jan 1, 2025" }
-                            TableCell { class: "font-medium", "$2,500.00" }
-                            TableCell { Badge { variant: BadgeVariant::Yellow, "Pending" } }
-                            // Audit P1-07: "Pay Now" button was decorative
-                            // (no onclick, no payment integration). Hidden
-                            // until the portal payments flow ships.
-                            TableCell { "" }
-                        }
-                        TableRow {
-                            TableCell { class: "font-medium", "INV-2024-012" }
-                            TableCell { "Dec 1, 2024" }
-                            TableCell { class: "font-medium", "$2,500.00" }
-                            TableCell { Badge { variant: BadgeVariant::Green, "Paid" } }
-                            TableCell {
-                                Button { variant: ButtonVariant::Secondary, "View" }
-                            }
-                        }
-                        TableRow {
-                            TableCell { class: "font-medium", "INV-2024-011" }
-                            TableCell { "Nov 1, 2024" }
-                            TableCell { class: "font-medium", "$2,500.00" }
-                            TableCell { Badge { variant: BadgeVariant::Green, "Paid" } }
-                            TableCell {
-                                Button { variant: ButtonVariant::Secondary, "View" }
-                            }
-                        }
-                    }
-                }
+            // Honest empty state in place of the removed demo rows: no
+            // fabricated invoices until the portal API lands (matches the
+            // MAPPS-403 PortalHomePage placeholder style).
+            Card {
+                p { class: "text-sm text-muted", "No invoices yet." }
             }
         }
     }
