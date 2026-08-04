@@ -187,6 +187,10 @@ pub fn BigTicketsPage() -> Element {
             }
         };
     }
+    // MAPPS-404: capture the loading state before value_or_default() consumes
+    // the resource, so the board below shows a loading state on the first fetch
+    // instead of the "No tickets match" empty board.
+    let is_loading = tickets_data.is_loading();
     let tickets = tickets_data.value_or_default();
     let filtered: Vec<BigTicketRow> = tickets
         .into_iter()
@@ -206,7 +210,12 @@ pub fn BigTicketsPage() -> Element {
 
     rsx! {
         BigLayout { title: "Tickets - Live Queue".to_string(),
-            if total == 0 {
+            if is_loading {
+                // MAPPS-404: shimmer card grid while the first fetch is in
+                // flight, instead of the "No tickets match" empty board that
+                // then pops to real cards once the queue resolves.
+                crate::components::CardGridSkeleton {}
+            } else if total == 0 {
                 div { class: "py-16 text-center text-2xl text-muted",
                     "No tickets match the current filter."
                 }
