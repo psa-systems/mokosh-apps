@@ -49,7 +49,7 @@ pub fn PortalHomePage() -> Element {
     // and invoice below is static demo copy, so there is no primary resource
     // that could fail during an outage and no mutating control to disable.
     rsx! {
-        PortalLayout { title: "Home",
+        PortalLayout {
             // Welcome section
             div { class: "mb-8",
                 h1 { class: "text-2xl font-bold text-content",
@@ -850,7 +850,7 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
     }
 
     rsx! {
-        PortalLayout { title: "{header_title}",
+        PortalLayout {
             div { class: "mb-6",
                 Link {
                     to: Route::PortalInvoiceList {},
@@ -1161,9 +1161,9 @@ pub fn PortalQuoteListPage() -> Element {
     }
 
     rsx! {
-        PortalLayout { title: "Quotes",
+        PortalLayout {
             div { class: "mb-6",
-                h1 { class: "text-2xl font-semibold text-content", "Quotes" }
+                h1 { class: "text-2xl font-bold text-content", "Quotes" }
                 p { class: "text-sm text-subtle mt-1",
                     "Quotes we have sent you, and what you decided."
                 }
