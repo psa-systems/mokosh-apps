@@ -169,7 +169,11 @@ impl TableAlign {
 
 #[component]
 pub fn TableHeader(props: TableHeaderProps) -> Element {
-    let pad = if props.compact { "px-4 py-3" } else { "px-6 py-3" };
+    let pad = if props.compact {
+        "px-4 py-3"
+    } else {
+        "px-6 py-3"
+    };
     let base_class = format!(
         "{pad} {} text-xs font-medium text-muted uppercase tracking-wider",
         props.align.text_class()
@@ -271,7 +275,11 @@ pub fn TableCell(props: TableCellProps) -> Element {
     // overflow horizontally and push other columns off-screen. Callers that
     // need single-line cells opt back in via `class` (e.g. `whitespace-nowrap`
     // or `truncate`), which is appended last and wins.
-    let pad = if props.compact { "px-4 py-3" } else { "px-6 py-4" };
+    let pad = if props.compact {
+        "px-4 py-3"
+    } else {
+        "px-6 py-4"
+    };
     let class = format!("{pad} break-words text-sm text-content {}", props.class);
 
     rsx! {
