@@ -1317,7 +1317,7 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                 ReadModeButton { left_collapsed, right_collapsed }
                             }
                             div { class: "mt-2 flex items-center justify-between gap-3 flex-wrap",
-                                h1 { class: "text-2xl font-semibold text-content truncate", "{article.title}" }
+                                h1 { class: "text-2xl sm:text-3xl font-bold text-content truncate", "{article.title}" }
                                 OverflowActions {
                                     RatingBar {
                                         article_id: props.id.clone(),
