@@ -302,7 +302,7 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
                         Card {
                             div { class: "flex items-start justify-between mb-6",
                                 div {
-                                    h1 { class: "text-xl font-bold text-content",
+                                    h2 { class: "text-xl font-bold text-content",
                                         "{subject}"
                                     }
                                     div { class: "flex items-center mt-2 space-x-4",
@@ -699,7 +699,7 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                         Card {
                             div { class: "flex justify-between items-start mb-6",
                                 div {
-                                    h2 { class: "text-2xl font-bold text-content",
+                                    h2 { class: "text-xl font-bold text-content",
                                         "{header_title}"
                                     }
                                     if !issued.is_empty() || !due.is_empty() {
@@ -1130,7 +1130,7 @@ pub fn PortalQuoteDetailPage(props: PortalQuoteDetailPageProps) -> Element {
                         Card { class: "mb-6",
                             div { class: "flex items-start justify-between gap-4 mb-4",
                                 div {
-                                    h1 { class: "text-xl font-semibold text-content",
+                                    h2 { class: "text-xl font-bold text-content",
                                         "{q.quote_number.clone().unwrap_or_else(|| \"Quote\".to_string())}"
                                     }
                                     p { class: "text-sm text-subtle", "{q.title}" }
