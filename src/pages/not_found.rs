@@ -52,6 +52,12 @@ pub fn NotFoundPage(props: NotFoundPageProps) -> Element {
                             "Go to Home"
                         }
                     }
+                    Link {
+                        to: Route::PortalHome {},
+                        Button { variant: ButtonVariant::Secondary,
+                            "Go to Client Portal"
+                        }
+                    }
                 }
 
                 // Help text
@@ -60,7 +66,7 @@ pub fn NotFoundPage(props: NotFoundPageProps) -> Element {
                     Link {
                         to: Route::KBHome {},
                         class: "text-accent hover:opacity-90",
-                        "Browse the knowledge base"
+                        "Browse the Knowledge Base"
                     }
                 }
             }

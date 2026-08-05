@@ -4590,7 +4590,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                         Badge { variant: BadgeVariant::Green, "Granted" }
                     }
                     p { class: "text-xs text-muted",
-                        "This contact can sign in to the customer portal once a password has been issued from Settings > Portal Users."
+                        "This contact can sign in to the Client Portal once a password has been issued from Settings > Portal Users."
                     }
                     Button {
                         variant: ButtonVariant::Secondary,

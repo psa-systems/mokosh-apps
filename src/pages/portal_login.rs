@@ -109,7 +109,7 @@ pub fn PortalLoginPage() -> Element {
             div { class: "max-w-md w-full",
                 div { class: "bg-surface rounded-lg shadow-lg p-8",
                     div { class: "text-center mb-6",
-                        h1 { class: "text-2xl font-semibold text-content", "Sign in to the portal" }
+                        h1 { class: "text-2xl font-semibold text-content", "Sign in to the Client Portal" }
                         p { class: "mt-2 text-sm text-content",
                             "Use the email your account team set up for you."
                         }
