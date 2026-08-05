@@ -87,21 +87,21 @@ pub fn PortalHomePage() -> Element {
                 div { class: "grid grid-cols-1 md:grid-cols-3 gap-4",
                     Link {
                         to: Route::PortalTicketNew {},
-                        class: "flex items-center p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors",
-                        PlusIcon { class: "h-6 w-6 text-blue-600 mr-3".to_string() }
-                        span { class: "font-medium text-blue-900 dark:text-blue-100", "Submit New Ticket" }
+                        class: "flex items-center p-4 bg-accent-50 dark:bg-accent-900/20 rounded-lg hover:bg-accent-100 dark:hover:bg-accent-900/40 transition-colors",
+                        PlusIcon { class: "h-6 w-6 text-accent mr-3".to_string() }
+                        span { class: "font-medium text-accent-900 dark:text-accent-100", "Submit New Ticket" }
                     }
                     Link {
                         to: Route::PortalKB {},
-                        class: "flex items-center p-4 bg-green-50 dark:bg-green-900/20 rounded-lg hover:bg-green-100 dark:hover:bg-green-900/40 transition-colors",
-                        BookIcon { class: "h-6 w-6 text-green-600 mr-3".to_string() }
-                        span { class: "font-medium text-green-900 dark:text-green-100", "Browse Knowledge Base" }
+                        class: "flex items-center p-4 bg-accent-50 dark:bg-accent-900/20 rounded-lg hover:bg-accent-100 dark:hover:bg-accent-900/40 transition-colors",
+                        BookIcon { class: "h-6 w-6 text-accent mr-3".to_string() }
+                        span { class: "font-medium text-accent-900 dark:text-accent-100", "Browse Knowledge Base" }
                     }
                     Link {
                         to: Route::PortalInvoiceList {},
-                        class: "flex items-center p-4 bg-purple-50 dark:bg-purple-900/20 rounded-lg hover:bg-purple-100 dark:hover:bg-purple-900/40 transition-colors",
-                        CurrencyIcon { class: "h-6 w-6 text-purple-600 mr-3".to_string() }
-                        span { class: "font-medium text-purple-900 dark:text-purple-100", "Pay Invoice" }
+                        class: "flex items-center p-4 bg-accent-50 dark:bg-accent-900/20 rounded-lg hover:bg-accent-100 dark:hover:bg-accent-900/40 transition-colors",
+                        CurrencyIcon { class: "h-6 w-6 text-accent mr-3".to_string() }
+                        span { class: "font-medium text-accent-900 dark:text-accent-100", "Pay Invoice" }
                     }
                 }
             }

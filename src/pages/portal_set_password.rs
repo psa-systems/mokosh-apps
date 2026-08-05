@@ -85,7 +85,7 @@ pub fn PortalSetPasswordPage() -> Element {
                     // so point at signing in rather than at a new link.
                     Err(ApiError::Status { code: 410, .. }) => {
                         error.set(
-                            "This link was already used. Your password is set, so sign in to the portal instead."
+                            "This link was already used. Your password is set, so sign in to the Client Portal instead."
                                 .to_string(),
                         );
                     }
@@ -122,7 +122,7 @@ pub fn PortalSetPasswordPage() -> Element {
                         div { class: "text-center", role: "status", aria_live: "polite",
                             h1 { class: "text-2xl font-semibold text-content", "Password set" }
                             p { class: "mt-2 text-sm text-content",
-                                "You can now sign in to the customer portal with your email and this password."
+                                "You can now sign in to the Client Portal with your email and this password."
                             }
                             // MAPPS-395: the portal sign-in page, which mints
                             // the `typ: "portal_access"` token every portal
@@ -130,14 +130,14 @@ pub fn PortalSetPasswordPage() -> Element {
                             Link {
                                 to: Route::PortalLogin {},
                                 class: "mt-6 inline-flex items-center justify-center rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:opacity-90",
-                                "Sign in to the portal"
+                                "Sign in to the Client Portal"
                             }
                         }
                     } else {
                         div { class: "text-center mb-6",
                             h1 { class: "text-2xl font-semibold text-content", "Set your portal password" }
                             p { class: "mt-2 text-sm text-content",
-                                "Choose a password for the customer portal. It must be at least {MIN_PASSWORD_LEN} characters."
+                                "Choose a password for the Client Portal. It must be at least {MIN_PASSWORD_LEN} characters."
                             }
                         }
 
