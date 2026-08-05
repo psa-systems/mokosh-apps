@@ -138,7 +138,7 @@ pub fn ThemePicker() -> Element {
                                 .unwrap_or(0.0);
                             let tooltip = if locked {
                                 format!(
-                                    "{} — locked: contrast {:.1}:1 (needs 4.5:1 for WCAG AA)",
+                                    "{} - locked: contrast {:.1}:1 (needs 4.5:1 for WCAG AA)",
                                     a.name, ratio
                                 )
                             } else {
