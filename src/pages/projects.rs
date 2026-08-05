@@ -556,7 +556,7 @@ pub fn ProjectListPage() -> Element {
                 div { class: "flex-1",
                     SearchInput {
                         value: search.read().clone(),
-                        placeholder: "Search projects...",
+                        placeholder: "Search projects…",
                         oninput: move |e: FormEvent| search.set(e.value()),
                     }
                 }
@@ -970,7 +970,7 @@ pub fn ProjectNewPage() -> Element {
                 crate::components::Textarea {
                     name: "description",
                     label: "Description",
-                    placeholder: "Project description...",
+                    placeholder: "Project description…",
                     rows: 4,
                     maxlength: PROJECT_DESCRIPTION_MAX as i64,
                     value: description.read().clone(),

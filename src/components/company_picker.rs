@@ -156,7 +156,7 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
             Input {
                 name: "company_search",
                 label: props.label,
-                placeholder: "Search companies...",
+                placeholder: "Search companies…",
                 required: props.required,
                 // MAPPS-322: forward the parent's validation message so a
                 // blank-company submit paints the red border + inline error

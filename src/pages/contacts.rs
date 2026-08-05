@@ -352,7 +352,7 @@ pub fn CompanyListPage() -> Element {
                 div { class: "flex-1",
                     SearchInput {
                         value: search.read().clone(),
-                        placeholder: "Search companies...",
+                        placeholder: "Search companies…",
                         oninput: move |e: FormEvent| {
                             search.set(e.value());
                             page.set(1);
@@ -3409,7 +3409,7 @@ pub fn ContactListPage() -> Element {
                 div { class: "flex-1",
                     SearchInput {
                         value: search.read().clone(),
-                        placeholder: "Search contacts...",
+                        placeholder: "Search contacts…",
                         oninput: move |e: FormEvent| {
                             search.set(e.value());
                             page.set(1);

@@ -512,7 +512,7 @@ pub fn AssetListPage() -> Element {
         Card { class: "mb-6",
             SearchInput {
                 value: search.read().clone(),
-                placeholder: "Search by name or serial...",
+                placeholder: "Search by name or serial…",
                 oninput: move |e: FormEvent| search.set(e.value()),
             }
         }

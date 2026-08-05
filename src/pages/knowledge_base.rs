@@ -387,7 +387,7 @@ pub fn KBHomePage() -> Element {
                 onsubmit: go_search,
                 SearchInput {
                     value: search.read().clone(),
-                    placeholder: "Search articles...",
+                    placeholder: "Search articles…",
                     oninput: move |e: FormEvent| search.set(e.value()),
                 }
             }
@@ -883,7 +883,7 @@ pub fn KBArticleListPage(
                         div { class: "flex-1",
                             SearchInput {
                                 value: search.read().clone(),
-                                placeholder: "Search articles...",
+                                placeholder: "Search articles…",
                                 oninput: move |e: FormEvent| {
                                     search.set(e.value());
                                     page.set(1);
@@ -1807,7 +1807,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                 crate::components::Input {
                     name: "title",
                     label: "Title",
-                    placeholder: "How to ...",
+                    placeholder: "How to …",
                     required: true,
                     maxlength: TITLE_MAX as i64,
                     rules: vec![Rule::Required],
@@ -1886,7 +1886,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                             crate::components::Textarea {
                                 name: "content",
                                 label: "Body (Markdown)",
-                                placeholder: "## Overview\n\nWrite the article in Markdown...",
+                                placeholder: "## Overview\n\nWrite the article in Markdown…",
                                 rows: 16,
                                 required: true,
                                 maxlength: BODY_MAX as i64,

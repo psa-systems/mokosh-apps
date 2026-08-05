@@ -679,7 +679,7 @@ pub fn TicketListPage() -> Element {
                 div { class: "flex-1",
                     SearchInput {
                         value: search.read().clone(),
-                        placeholder: "Search tickets...",
+                        placeholder: "Search tickets…",
                         oninput: move |e: FormEvent| search.set(e.value()),
                     }
                 }
@@ -1639,7 +1639,7 @@ pub fn TicketNewPage() -> Element {
                 Textarea {
                     name: "description",
                     label: "Description",
-                    placeholder: "Provide detailed information about the issue...",
+                    placeholder: "Provide detailed information about the issue…",
                     rows: 6,
                     required: true,
                     rules: vec![Rule::Required],
@@ -2883,7 +2883,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                 Textarea {
                     name: "content",
                     label: "Content",
-                    placeholder: "Enter your note...",
+                    placeholder: "Enter your note…",
                     rows: 4,
                     required: true,
                     rules: vec![Rule::Required],

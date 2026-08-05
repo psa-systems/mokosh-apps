@@ -203,7 +203,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
             Input {
                 name: "contact_search",
                 label: props.label,
-                placeholder: "Search contacts...",
+                placeholder: "Search contacts…",
                 required: props.required,
                 value: query.read().clone(),
                 oninput: move |e: FormEvent| {
