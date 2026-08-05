@@ -3,9 +3,9 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    invoice_status_badge, Badge, BadgeVariant, BookIcon, Button, ButtonVariant, Card,
-    CurrencyIcon, IconSize, PlusIcon, PortalLayout, SearchInput, Table, TableBody, TableCell,
-    TableHead, TableHeader, TableRow,
+    invoice_status_badge, Badge, BadgeVariant, BookIcon, Button, ButtonVariant, Card, CurrencyIcon,
+    IconSize, PlusIcon, PortalLayout, SearchInput, Table, TableBody, TableCell, TableHead,
+    TableHeader, TableRow,
 };
 use crate::Route;
 
