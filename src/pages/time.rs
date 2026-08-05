@@ -7,8 +7,8 @@ use serde::Deserialize;
 use crate::components::{
     use_page_title, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, Checkbox,
     ChevronRightIcon, DataTable, ErrorBanner, IconSize, Modal, PageHeader, PlusIcon, Select,
-    SelectOption, StatCard, Table, TableBody, TableCell, TableEmptyRow, TableHead, TableHeader,
-    TableRow,
+    SelectOption, StatCard, Table, TableAlign, TableBody, TableCell, TableEmptyRow, TableHead,
+    TableHeader, TableRow,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
@@ -1314,133 +1314,103 @@ pub fn TimesheetsPage() -> Element {
 
         // Weekly grid
         Card { padding: false,
-            div { class: "overflow-x-auto",
-                table { class: "min-w-full divide-y divide-line",
-                    thead { class: "bg-surface-2",
-                        tr {
-                            th { scope: "col", class: "px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider",
-                                "Work Item"
-                            }
-                            th { scope: "col", class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
-                                "Mon"
-                            }
-                            th { scope: "col", class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
-                                "Tue"
-                            }
-                            th { scope: "col", class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
-                                "Wed"
-                            }
-                            th { scope: "col", class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
-                                "Thu"
-                            }
-                            th { scope: "col", class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
-                                "Fri"
-                            }
-                            th { scope: "col", class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
-                                "Sat"
-                            }
-                            th { scope: "col", class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
-                                "Sun"
-                            }
-                            th { scope: "col", class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
-                                "Total"
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Work Item" }
+                        TableHeader { align: TableAlign::Center, compact: true, class: "w-20", "Mon" }
+                        TableHeader { align: TableAlign::Center, compact: true, class: "w-20", "Tue" }
+                        TableHeader { align: TableAlign::Center, compact: true, class: "w-20", "Wed" }
+                        TableHeader { align: TableAlign::Center, compact: true, class: "w-20", "Thu" }
+                        TableHeader { align: TableAlign::Center, compact: true, class: "w-20", "Fri" }
+                        TableHeader { align: TableAlign::Center, compact: true, class: "w-20", "Sat" }
+                        TableHeader { align: TableAlign::Center, compact: true, class: "w-20", "Sun" }
+                        TableHeader { align: TableAlign::Center, compact: true, class: "w-20", "Total" }
+                    }
+                }
+                TableBody {
+                    if is_loading {
+                        // PMS-353: shimmer rows in the shared grid's empty body.
+                        for _ in 0..4 {
+                            TableRow {
+                                TableCell { colspan: Some(9),
+                                    div { class: "h-4 bg-surface-2 rounded animate-pulse" }
+                                }
                             }
                         }
-                    }
-                    tbody { class: "bg-surface divide-y divide-line",
-                        if is_loading {
-                            // PMS-353: shimmer rows (matching the shared
-                            // skeleton style) instead of a bare text line.
-                            // This timesheet is a bespoke weekly grid, not
-                            // the shared Table, so it can't use TableLoading.
-                            for _ in 0..4 {
-                                tr {
-                                    td { class: "px-6 py-4", colspan: "9",
-                                        div { class: "h-4 bg-surface-2 rounded animate-pulse" }
-                                    }
-                                }
+                    } else if load_failed {
+                        TableRow {
+                            TableCell { colspan: Some(9), class: "text-center text-red-500",
+                                "Could not load timesheet. The time-tracking service may be unavailable."
                             }
-                        } else if load_failed {
-                            tr {
-                                td {
-                                    class: "px-6 py-8 text-center text-sm text-red-500",
-                                    colspan: "9",
-                                    "Could not load timesheet. The time-tracking service may be unavailable."
+                        }
+                    } else if !has_entries {
+                        // MAPPS-201: empty-week prompt + one-click path to a new
+                        // entry for the week. Submit stays disabled until one exists.
+                        TableRow {
+                            TableCell { colspan: Some(9), class: "text-center",
+                                p { class: "text-sm text-muted",
+                                    "No time logged this week yet. Select a time to log for this week."
                                 }
-                            }
-                        } else if !has_entries {
-                            // MAPPS-201: empty-week prompt + one-click path
-                            // to a new entry for the current week. Submit
-                            // stays disabled until an entry exists.
-                            tr {
-                                td {
-                                    class: "px-6 py-8 text-center",
-                                    colspan: "9",
-                                    p { class: "text-sm text-muted",
-                                        "No time logged this week yet. Select a time to log for this week."
-                                    }
-                                    div { class: "mt-3",
-                                        Link {
-                                            to: Route::TimeEntryNew {},
-                                            Button {
-                                                variant: ButtonVariant::Primary,
-                                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                                "Log Time"
-                                            }
+                                div { class: "mt-3",
+                                    Link {
+                                        to: Route::TimeEntryNew {},
+                                        Button {
+                                            variant: ButtonVariant::Primary,
+                                            PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                            "Log Time"
                                         }
                                     }
                                 }
                             }
-                        } else {
-                            for (label , route , buckets) in rows.iter() {
-                                {
-                                    let row_total = buckets.iter().sum::<i64>();
-                                    rsx! {
-                                        tr {
-                                            td { class: "px-6 py-3 text-sm",
-                                                // MAPPS-206: link the work item to its detail.
-                                                if let Some(r) = route {
-                                                    Link {
-                                                        to: r.clone(),
-                                                        class: "font-medium text-accent hover:opacity-90",
-                                                        "{label}"
-                                                    }
+                        }
+                    } else {
+                        for (label , route , buckets) in rows.iter() {
+                            {
+                                let row_total = buckets.iter().sum::<i64>();
+                                rsx! {
+                                    TableRow {
+                                        TableCell {
+                                            // MAPPS-206: link the work item to its detail.
+                                            if let Some(r) = route {
+                                                Link {
+                                                    to: r.clone(),
+                                                    class: "font-medium text-accent hover:opacity-90",
+                                                    "{label}"
+                                                }
+                                            } else {
+                                                span { class: "text-content", "{label}" }
+                                            }
+                                        }
+                                        for m in buckets.iter() {
+                                            TableCell { compact: true, class: "text-center",
+                                                if *m == 0 {
+                                                    span { class: "text-subtle", "-" }
                                                 } else {
-                                                    span { class: "text-content", "{label}" }
+                                                    span { class: "text-content", "{fmt_hours(*m)}" }
                                                 }
                                             }
-                                            for m in buckets.iter() {
-                                                td { class: "px-4 py-3 text-center text-sm",
-                                                    if *m == 0 {
-                                                        span { class: "text-subtle", "-" }
-                                                    } else {
-                                                        span { class: "text-content", "{fmt_hours(*m)}" }
-                                                    }
-                                                }
-                                            }
-                                            td { class: "px-4 py-3 text-center text-sm font-medium text-content",
-                                                "{fmt_hours(row_total)}"
-                                            }
+                                        }
+                                        TableCell { compact: true, class: "text-center font-medium",
+                                            "{fmt_hours(row_total)}"
                                         }
                                     }
                                 }
                             }
-                            tr { class: "bg-surface-2 font-medium",
-                                td { class: "px-6 py-3 text-sm text-content",
-                                    "Daily Total"
-                                }
-                                for m in daily_totals.iter() {
-                                    td { class: "px-4 py-3 text-center text-sm text-content",
-                                        if *m == 0 {
-                                            span { class: "text-muted", "0" }
-                                        } else {
-                                            "{fmt_hours(*m)}"
-                                        }
+                        }
+                        TableRow { class: "bg-surface-2 font-medium",
+                            TableCell { "Daily Total" }
+                            for m in daily_totals.iter() {
+                                TableCell { compact: true, class: "text-center",
+                                    if *m == 0 {
+                                        span { class: "text-muted", "0" }
+                                    } else {
+                                        "{fmt_hours(*m)}"
                                     }
                                 }
-                                td { class: "px-4 py-3 text-center text-sm font-bold text-accent",
-                                    "{fmt_hours(grand_total)}"
-                                }
+                            }
+                            TableCell { compact: true, class: "text-center font-bold text-accent",
+                                "{fmt_hours(grand_total)}"
                             }
                         }
                     }

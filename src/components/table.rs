@@ -123,6 +123,13 @@ pub struct TableHeaderProps {
     sort_direction: Option<SortDirection>,
     #[props(default)]
     onsort: EventHandler<()>,
+    /// MAPPS-415: label alignment; drives both text-align and the inner flex
+    /// justification so a centered/right column is not left-packed.
+    #[props(default)]
+    align: TableAlign,
+    /// MAPPS-415: tighter padding (px-4 py-3) for narrow fixed-width columns.
+    #[props(default = false)]
+    compact: bool,
     #[props(default)]
     class: String,
 }
@@ -134,22 +141,53 @@ pub enum SortDirection {
     Descending,
 }
 
+/// MAPPS-415: horizontal alignment for a table header or cell.
+#[derive(Clone, Copy, PartialEq, Default)]
+pub enum TableAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
+impl TableAlign {
+    fn text_class(self) -> &'static str {
+        match self {
+            Self::Left => "text-left",
+            Self::Center => "text-center",
+            Self::Right => "text-right",
+        }
+    }
+    fn justify_class(self) -> &'static str {
+        match self {
+            Self::Left => "justify-start",
+            Self::Center => "justify-center",
+            Self::Right => "justify-end",
+        }
+    }
+}
+
 #[component]
 pub fn TableHeader(props: TableHeaderProps) -> Element {
-    let base_class = "px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider";
+    let pad = if props.compact { "px-4 py-3" } else { "px-6 py-3" };
+    let base_class = format!(
+        "{pad} {} text-xs font-medium text-muted uppercase tracking-wider",
+        props.align.text_class()
+    );
     let sortable_class = if props.sortable {
         "cursor-pointer hover:text-content"
     } else {
         ""
     };
     let class = format!("{} {} {}", base_class, sortable_class, props.class);
+    let justify = props.align.justify_class();
 
     rsx! {
         th {
             scope: "col",
             class: "{class}",
             onclick: move |_| if props.sortable { props.onsort.call(()) },
-            div { class: "flex items-center space-x-1",
+            div { class: "flex items-center space-x-1 {justify}",
                 {props.children}
                 if props.sortable {
                     span { class: "text-subtle",
@@ -214,6 +252,13 @@ pub fn TableHeader(props: TableHeaderProps) -> Element {
 #[derive(Props, Clone, PartialEq)]
 pub struct TableCellProps {
     children: Element,
+    /// MAPPS-415: span multiple columns (e.g. a full-width empty/loading/error
+    /// row in a grid). Omit for a normal single-column cell.
+    #[props(default)]
+    colspan: Option<usize>,
+    /// MAPPS-415: tighter padding (px-4 py-3) for narrow fixed-width columns.
+    #[props(default = false)]
+    compact: bool,
     #[props(default)]
     class: String,
 }
@@ -226,10 +271,13 @@ pub fn TableCell(props: TableCellProps) -> Element {
     // overflow horizontally and push other columns off-screen. Callers that
     // need single-line cells opt back in via `class` (e.g. `whitespace-nowrap`
     // or `truncate`), which is appended last and wins.
-    let class = format!("px-6 py-4 break-words text-sm text-content {}", props.class);
+    let pad = if props.compact { "px-4 py-3" } else { "px-6 py-4" };
+    let class = format!("{pad} break-words text-sm text-content {}", props.class);
 
     rsx! {
-        td { class: "{class}",
+        td {
+            class: "{class}",
+            colspan: props.colspan.map(|n| n.to_string()),
             {props.children}
         }
     }
