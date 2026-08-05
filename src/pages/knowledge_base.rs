@@ -21,10 +21,10 @@ use dioxus::prelude::*;
 
 use crate::components::{
     kb_article_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonSize,
-    ButtonVariant, Card, ChevronRightIcon, CollapsibleRail, ConfirmDialog, DataTable, IconSize,
-    Modal, ModalSize, OverflowActions, PageHeader, PencilIcon, PlusIcon, RailSide, SearchInput,
-    Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
-    TableLoading, TableRow, TrashIcon,
+    ButtonVariant, Card, ChevronRightIcon, CollapsibleRail, ConfirmDialog, DataTable, ErrorBanner,
+    IconSize, Modal, ModalSize, OverflowActions, PageHeader, PencilIcon, PlusIcon, RailSide,
+    SearchInput, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
+    TableHeader, TableLoading, TableRow, TrashIcon,
 };
 use crate::modules::kb::{
     CreateKbArticleRequest, CreateKbCategoryRequest, KbArticle, KbArticleFeedback,
@@ -924,8 +924,7 @@ pub fn KBArticleListPage(
                 }
 
                 if fetch_failed {
-                    div {
-                        class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                    ErrorBanner { class: "mb-3",
                         "Could not load articles. Refresh the page to retry."
                     }
                 }
@@ -1798,10 +1797,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                 onsubmit: handle_submit,
 
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
+                    ErrorBanner { "{error.read()}" }
                 }
 
                 crate::components::Input {
@@ -2142,10 +2138,7 @@ fn CategoryFormModal(props: CategoryFormModalProps) -> Element {
                 onsubmit: handle_submit,
 
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
+                    ErrorBanner { "{error.read()}" }
                 }
 
                 crate::components::Input {

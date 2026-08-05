@@ -9,8 +9,8 @@ use dioxus::prelude::*;
 
 use crate::components::{
     use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, ConfirmDialog, DataTable,
-    Input, PageHeader, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
-    TableHeader, TableLoading, TableRow,
+    ErrorBanner, Input, PageHeader, Select, SelectOption, Table, TableBody, TableCell, TableEmpty,
+    TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::hooks::auth::use_auth;
 use crate::modules::auth::UserRole;
@@ -190,10 +190,7 @@ pub fn TeamPage() -> Element {
         Card {
             form { class: "space-y-4", onsubmit: handle_invite,
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
+                    ErrorBanner { "{error.read()}" }
                 }
                 div {
                     class: if ROLE_ASSIGNMENT_ENABLED { "grid grid-cols-1 gap-4 sm:grid-cols-3 sm:items-end" } else { "grid grid-cols-1 gap-4 sm:grid-cols-2 sm:items-end" },

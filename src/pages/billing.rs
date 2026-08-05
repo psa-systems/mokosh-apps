@@ -22,9 +22,9 @@ use std::str::FromStr;
 
 use crate::components::{
     invoice_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant,
-    Card, DataTable, IconSize, InformationIcon, Modal, ModalSize, PageHeader, PlusIcon, Select,
-    SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
-    TableRow,
+    Card, DataTable, ErrorBanner, IconSize, InformationIcon, Modal, ModalSize, PageHeader,
+    PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
+    TableHeader, TableLoading, TableRow,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
@@ -383,10 +383,7 @@ fn InvoiceListBody() -> Element {
         }
 
         if fetch_failed {
-            div {
-                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                "Could not load invoices. Refresh the page to retry."
-            }
+            ErrorBanner { class: "mb-3", "Could not load invoices. Refresh the page to retry." }
         }
 
         DataTable {
@@ -810,10 +807,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         }
 
         if !act_err.is_empty() {
-            div {
-                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                "{act_err}"
-            }
+            ErrorBanner { class: "mb-3", "{act_err}" }
         }
 
         match &*snap {
@@ -1335,10 +1329,7 @@ pub fn InvoiceNewPage() -> Element {
                 onsubmit: handle_create,
 
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
+                    ErrorBanner { "{error.read()}" }
                 }
 
                 crate::components::CompanyPicker {
@@ -1645,10 +1636,7 @@ fn PaymentListBody() -> Element {
         }
 
         if fetch_failed {
-            div {
-                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                "Could not load payments. Refresh the page to retry."
-            }
+            ErrorBanner { class: "mb-3", "Could not load payments. Refresh the page to retry." }
         }
 
         DataTable {
@@ -2177,10 +2165,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
             footer,
             div { class: "space-y-4",
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
+                    ErrorBanner { "{error.read()}" }
                 }
                 crate::components::CompanyPicker {
                     value: company_name.read().clone(),
@@ -2580,10 +2565,7 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
             footer,
             div { class: "space-y-4",
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
+                    ErrorBanner { "{error.read()}" }
                 }
                 div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
                     crate::components::DateField {
@@ -2871,10 +2853,7 @@ fn TaxRateListBody() -> Element {
         }
 
         if fetch_failed {
-            div {
-                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                "Could not load tax rates. Refresh the page to retry."
-            }
+            ErrorBanner { class: "mb-3", "Could not load tax rates. Refresh the page to retry." }
         }
 
         DataTable {
@@ -3169,10 +3148,7 @@ fn TaxRateFormModal(props: TaxRateFormModalProps) -> Element {
             footer,
             div { class: "space-y-4",
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
+                    ErrorBanner { "{error.read()}" }
                 }
                 crate::components::Input {
                     name: "tax_rate_name",
@@ -3360,8 +3336,7 @@ fn PaymentGatewayConfigBody() -> Element {
         }
 
         if fetch_failed {
-            div {
-                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+            ErrorBanner { class: "mb-3",
                 "Could not load payment gateways. Refresh the page to retry."
             }
         }
@@ -3657,10 +3632,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
             footer,
             div { class: "space-y-4",
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
+                    ErrorBanner { "{error.read()}" }
                 }
                 Select {
                     name: "gateway_provider",

@@ -6,8 +6,9 @@ use serde::Deserialize;
 
 use crate::components::{
     use_page_title, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, Checkbox,
-    ChevronRightIcon, DataTable, IconSize, Modal, PageHeader, PlusIcon, Select, SelectOption,
-    StatCard, Table, TableBody, TableCell, TableEmptyRow, TableHead, TableHeader, TableRow,
+    ChevronRightIcon, DataTable, ErrorBanner, IconSize, Modal, PageHeader, PlusIcon, Select,
+    SelectOption, StatCard, Table, TableBody, TableCell, TableEmptyRow, TableHead, TableHeader,
+    TableRow,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
@@ -850,9 +851,7 @@ pub fn TimeEntryNewPage() -> Element {
                 },
 
                 if !err.is_empty() {
-                    div { class: "rounded-md bg-red-50 dark:bg-red-900/20 p-3",
-                        p { class: "text-sm text-red-600 dark:text-red-400", "{err}" }
-                    }
+                    ErrorBanner { "{err}" }
                 }
 
                 div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
@@ -1262,9 +1261,7 @@ pub fn TimesheetsPage() -> Element {
             }
         }
         if !err.is_empty() {
-            div { class: "mb-4 rounded-md bg-red-50 dark:bg-red-900/20 p-3",
-                p { class: "text-sm text-red-600 dark:text-red-400", "{err}" }
-            }
+            ErrorBanner { class: "mb-4", "{err}" }
         }
 
         // Week selector
@@ -1957,9 +1954,7 @@ pub fn TimesheetApprovalsPage() -> Element {
             }
         }
         if !err.is_empty() {
-            div { class: "mb-4 rounded-md bg-red-50 dark:bg-red-900/20 p-3",
-                p { class: "text-sm text-red-600 dark:text-red-400", "{err}" }
-            }
+            ErrorBanner { class: "mb-4", "{err}" }
         }
 
         // PMS-506: status filter + range-mode toggle. The status
@@ -2818,9 +2813,7 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
             },
             div { class: "space-y-4",
                 if !error.read().is_empty() {
-                    div { class: "rounded-md bg-red-50 dark:bg-red-900/20 p-3",
-                        p { class: "text-sm text-red-600 dark:text-red-400", "{error.read()}" }
-                    }
+                    ErrorBanner { "{error.read()}" }
                 }
                 p { class: "text-xs text-muted",
                     "Work item: {wi_label}. To move this entry to a different work item, delete it and log again."

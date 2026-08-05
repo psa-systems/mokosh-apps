@@ -24,9 +24,9 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, Input,
-    Modal, ModalSize, PageHeader, PlusIcon, Select, SelectOption, Table, TableBody, TableCell,
-    TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea,
+    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, ErrorBanner,
+    IconSize, Input, Modal, ModalSize, PageHeader, PlusIcon, Select, SelectOption, Table,
+    TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea,
 };
 use crate::hooks::use_can_mutate;
 use crate::modules::quotes::{
@@ -252,10 +252,7 @@ fn QuoteListBody() -> Element {
         }
 
         if fetch_failed {
-            div {
-                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                "Could not load quotes. Refresh the page to retry."
-            }
+            ErrorBanner { class: "mb-3", "Could not load quotes. Refresh the page to retry." }
         }
 
         DataTable {
@@ -469,10 +466,7 @@ fn QuoteDetailBody(id: String) -> Element {
                     }
 
                     if !action_error.read().is_empty() {
-                        div {
-                            class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                            "{action_error}"
-                        }
+                        ErrorBanner { class: "mb-3", "{action_error}" }
                     }
 
                     div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
@@ -1135,10 +1129,7 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
         }
 
         if !error.read().is_empty() {
-            div {
-                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                "{error}"
-            }
+            ErrorBanner { class: "mb-3", "{error}" }
         }
 
         Card { class: "mb-6", title: "Details",
