@@ -17,7 +17,7 @@
 use dioxus::prelude::*;
 use serde::Deserialize;
 
-use crate::components::Input;
+use crate::components::{Button, ButtonSize, ButtonVariant, Input};
 use crate::utils::url::urlencoding_minimal;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -128,9 +128,9 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                             p { class: "text-sm font-medium text-content truncate", "{name}" }
                         }
                         div { class: "flex items-center gap-1 shrink-0 ml-2",
-                            button {
-                                r#type: "button",
-                                class: "text-xs text-accent hover:opacity-90 px-2 py-1",
+                            Button {
+                                variant: ButtonVariant::Link,
+                                size: ButtonSize::Small,
                                 onclick: move |_| {
                                     query.set(String::new());
                                     editing.set(true);

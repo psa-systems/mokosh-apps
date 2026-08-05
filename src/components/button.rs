@@ -80,6 +80,11 @@ pub struct ButtonProps {
     /// Used to explain why a disabled control is not actionable (MAPPS-217).
     #[props(default)]
     title: Option<String>,
+    /// Optional accessible label, emitted as `aria-label`. For buttons whose
+    /// visible text is decorative (e.g. a bare "×"), so assistive tech
+    /// announces a meaningful name (MAPPS-416).
+    #[props(default)]
+    aria_label: Option<String>,
 }
 
 /// Reusable button component
@@ -107,6 +112,7 @@ pub fn Button(props: ButtonProps) -> Element {
             // reason for why (MAPPS-262).
             "aria-disabled": is_disabled.then_some("true"),
             title: props.title.as_deref(),
+            "aria-label": props.aria_label.as_deref(),
             "data-testid": props.data_testid.as_deref(),
             onclick: move |e| props.onclick.call(e),
             if props.loading {
