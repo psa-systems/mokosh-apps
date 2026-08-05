@@ -521,7 +521,7 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
                 textarea {
                     class: "w-full rounded-md border border-line bg-surface text-content p-2 text-sm focus:border-accent focus:ring-accent",
                     rows: 4,
-                    placeholder: "Type your message...",
+                    placeholder: "Type your message…",
                     value: "{draft}",
                     oninput: move |e: FormEvent| draft.set(e.value()),
                 }
@@ -863,7 +863,7 @@ pub fn PortalKBPage() -> Element {
             Card { class: "mb-6",
                 SearchInput {
                     value: search.read().clone(),
-                    placeholder: "Search articles...",
+                    placeholder: "Search articles…",
                     oninput: move |e: FormEvent| search.set(e.value()),
                 }
             }

@@ -520,7 +520,7 @@ pub fn SettingsHomePage() -> Element {
             div { class: "w-full sm:max-w-xs",
                 SearchInput {
                     value: query.read().clone(),
-                    placeholder: "Search settings...".to_string(),
+                    placeholder: "Search settings…".to_string(),
                     oninput: move |e: FormEvent| query.set(e.value()),
                 }
             }

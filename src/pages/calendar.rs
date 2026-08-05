@@ -1794,7 +1794,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
     };
 
     let assignee_options: Vec<SelectOption> = {
-        let mut opts = vec![SelectOption::new("", "Select technician...")];
+        let mut opts = vec![SelectOption::new("", "Select technician…")];
         for u in props.users.iter() {
             opts.push(SelectOption::new(u.id.to_string(), u.display_name()));
         }
@@ -2147,7 +2147,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                         Link {
                             to: Route::SchedulingTemplates {},
                             class: "text-accent hover:opacity-90",
-                            "Manage templates..."
+                            "Manage templates…"
                         }
                     }
                 }

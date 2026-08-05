@@ -523,7 +523,7 @@ pub fn Checkbox(props: CheckboxProps) -> Element {
 pub struct SearchInputProps {
     #[props(default)]
     value: String,
-    #[props(default = "Search...".to_string())]
+    #[props(default = "Search…".to_string())]
     placeholder: String,
     #[props(default)]
     class: String,

@@ -166,7 +166,7 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
             Input {
                 name: "asset_search",
                 label: props.label,
-                placeholder: "Search assets...",
+                placeholder: "Search assets…",
                 required: props.required,
                 value: query.read().clone(),
                 oninput: move |e: FormEvent| {
