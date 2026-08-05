@@ -17,7 +17,9 @@ impl ButtonVariant {
     fn class(&self) -> &'static str {
         match self {
             ButtonVariant::Primary => "bg-accent text-on-accent hover:opacity-90 focus:ring-accent",
-            ButtonVariant::Secondary => "bg-surface-2 text-content border border-line",
+            ButtonVariant::Secondary => {
+                "bg-surface-2 text-content border border-line hover:opacity-90 focus:ring-line-strong"
+            }
             ButtonVariant::Danger => "bg-red-600 text-white hover:bg-red-700 focus:ring-red-500",
             ButtonVariant::Ghost => "bg-transparent text-content hover:bg-surface-2",
             ButtonVariant::Link => "bg-transparent text-accent hover:opacity-90",

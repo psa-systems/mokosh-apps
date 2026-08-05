@@ -363,7 +363,7 @@ fn QuoteRow(props: QuoteRowProps) -> Element {
     let id = props.id.clone();
     rsx! {
         TableRow {
-            class: "cursor-pointer",
+            clickable: true,
             onclick: move |_| {
                 navigator.push(Route::QuoteDetail { id: id.clone() });
             },

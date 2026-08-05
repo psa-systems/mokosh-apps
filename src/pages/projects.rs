@@ -1513,7 +1513,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                 let open_task = move |_| selected_task.set(Some(task.clone()));
                                                 rsx! {
                                                     div {
-                                                        class: "flex items-center justify-between p-3 bg-surface-2 rounded-lg cursor-pointer hover:bg-surface-2 transition-colors",
+                                                        class: "flex items-center justify-between p-3 bg-surface rounded-lg cursor-pointer hover:bg-surface-2 transition-colors",
                                                         onclick: open_task,
                                                         div {
                                                             p { class: "font-medium text-content", "{t.title}" }
