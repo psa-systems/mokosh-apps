@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use crate::components::{
     clear_selection, ticket_status_badge, use_bulk_selection, use_page_title, AlertType, Badge,
-    BadgeVariant, BulkActionsBar, BulkSelection, Button, ButtonVariant, Card, ClockIcon, DataTable,
+    BadgeVariant, BulkActionsBar, BulkSelection, Button, ButtonVariant, Card, ClockIcon, DataTable, ErrorBanner,
     IconSize, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectAllHeader,
     SelectOption, SelectRowCell, SortDirection, Table, TableBody, TableCell, TableEmpty, TableHead,
     TableHeader, TableLoading, TableRow, Textarea, UserCircleIcon,
@@ -1552,10 +1552,7 @@ pub fn TicketNewPage() -> Element {
                 onsubmit: handle_submit,
 
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
+                    ErrorBanner { "{error.read()}" }
                 }
 
                 div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
@@ -2865,10 +2862,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             },
             div { class: "space-y-4",
                 if !note_error.read().is_empty() {
-                    div {
-                        class: "rounded-md bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 px-3 py-2 text-sm text-red-700 dark:text-red-300",
-                        "{note_error}"
-                    }
+                    ErrorBanner { "{note_error}" }
                 }
                 Select {
                     name: "note_type",
@@ -3270,9 +3264,7 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
             },
             div { class: "space-y-4",
                 if !request_error().is_empty() {
-                    div { class: "rounded-md bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 px-3 py-2 text-sm text-red-700 dark:text-red-300",
-                        "{request_error}"
-                    }
+                    ErrorBanner { "{request_error}" }
                 }
                 p { class: "text-xs text-subtle",
                     "Pick a specific approver OR enter a role. The server requires exactly one."

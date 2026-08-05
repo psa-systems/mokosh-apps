@@ -20,7 +20,7 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, PageHeader, Table,
+    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, ErrorBanner, PageHeader, Table,
     TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::modules::sla::{
@@ -223,10 +223,7 @@ fn SlaPoliciesTab(tab: Signal<SlaTab>) -> Element {
         }
 
         if fetch_failed {
-            div {
-                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                "Could not load SLA policies. Refresh the page to retry."
-            }
+            ErrorBanner { class: "mb-3", "Could not load SLA policies. Refresh the page to retry." }
         }
 
         DataTable {
@@ -483,10 +480,7 @@ fn PolicyFormModal(props: PolicyFormModalProps) -> Element {
             footer,
             div { class: "space-y-4",
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
+                    ErrorBanner { "{error.read()}" }
                 }
                 crate::components::Input {
                     name: "policy_name",
@@ -628,10 +622,7 @@ fn TargetsModal(props: TargetsModalProps) -> Element {
                 }
 
                 if load_failed {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "Could not load targets or priorities. Close and retry."
-                    }
+                    ErrorBanner { "Could not load targets or priorities. Close and retry." }
                 }
 
                 Table {
@@ -998,8 +989,7 @@ fn BusinessHoursTab(tab: Signal<SlaTab>) -> Element {
         }
 
         if fetch_failed {
-            div {
-                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+            ErrorBanner { class: "mb-3",
                 "Could not load business hours. Refresh the page to retry."
             }
         }
@@ -1262,10 +1252,7 @@ fn BusinessHoursFormModal(props: BusinessHoursFormModalProps) -> Element {
             footer,
             div { class: "space-y-4",
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
+                    ErrorBanner { "{error.read()}" }
                 }
                 div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
                     crate::components::Input {
@@ -1376,8 +1363,7 @@ fn HolidayCalendarsTab(tab: Signal<SlaTab>) -> Element {
         }
 
         if fetch_failed {
-            div {
-                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+            ErrorBanner { class: "mb-3",
                 "Could not load holiday calendars. Refresh the page to retry."
             }
         }
@@ -1602,10 +1588,7 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
             footer,
             div { class: "space-y-4",
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
+                    ErrorBanner { "{error.read()}" }
                 }
                 crate::components::Input {
                     name: "hol_name",

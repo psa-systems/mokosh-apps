@@ -32,7 +32,7 @@ use dioxus::prelude::*;
 use crate::utils::datetime::{user_timezone, user_today};
 
 use crate::components::{
-    use_page_title, Button, ButtonVariant, Card, ChevronRightIcon, EmptyState, IconSize, Input,
+    use_page_title, Button, ButtonVariant, Card, ChevronRightIcon, EmptyState, ErrorBanner, IconSize, Input,
     Modal, ModalSize, PageHeader, PencilIcon, PlusIcon, Select, SelectOption, SwatchIcon, Textarea,
 };
 use crate::modules::calendar::{
@@ -905,8 +905,7 @@ pub fn CalendarPage() -> Element {
 
                     div { class: "p-4",
                         if fetch_failed {
-                            div {
-                                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                            ErrorBanner { class: "mb-3",
                                 "Could not load appointments. Refresh the page to retry."
                             }
                         }
@@ -2080,10 +2079,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                     }
                 }
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
+                    ErrorBanner { "{error.read()}" }
                 }
                 // Template picker + scheduling-vs-template explainer
                 // (create mode only; MAPPS-253). Hidden when editing an
@@ -2585,8 +2581,7 @@ pub fn DispatchBoardPage() -> Element {
 
             div { class: "p-4",
                 if fetch_failed {
-                    div {
-                        class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                    ErrorBanner { class: "mb-3",
                         "Could not load the dispatch board. Refresh the page to retry."
                     }
                 }
@@ -3314,10 +3309,7 @@ fn TemplateFormModal(props: TemplateFormModalProps) -> Element {
             footer,
             div { class: "space-y-4",
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
+                    ErrorBanner { "{error.read()}" }
                 }
                 Input {
                     name: "tmpl_name",

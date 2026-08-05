@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, Input,
+    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, ErrorBanner, IconSize, Input,
     Modal, OverflowActions, PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectOption,
     StatCard, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, Textarea,
 };
@@ -934,9 +934,7 @@ pub fn ProjectNewPage() -> Element {
                 },
 
                 if !err.is_empty() {
-                    div { class: "rounded-md bg-red-50 dark:bg-red-900/20 p-3",
-                        p { class: "text-sm text-red-600 dark:text-red-400", "{err}" }
-                    }
+                    ErrorBanner { "{err}" }
                 }
 
                 crate::components::Input {
@@ -1773,9 +1771,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
             },
             div { class: "space-y-4",
                 if !t_err.is_empty() {
-                    div { class: "rounded-md bg-red-50 dark:bg-red-900/20 p-3",
-                        p { class: "text-sm text-red-600 dark:text-red-400", "{t_err}" }
-                    }
+                    ErrorBanner { "{t_err}" }
                 }
                 crate::components::Input {
                     name: "task_title",

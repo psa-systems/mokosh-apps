@@ -4,7 +4,7 @@
 
 use dioxus::prelude::*;
 
-use super::{Button, ButtonVariant};
+use super::{Button, ButtonVariant, ErrorBanner};
 
 #[derive(Props, Clone, PartialEq)]
 pub struct SettingFormModalProps {
@@ -80,10 +80,7 @@ pub fn SettingFormModal(props: SettingFormModalProps) -> Element {
             footer,
             div { class: "space-y-4",
                 if !props.error.is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{props.error}"
-                    }
+                    ErrorBanner { "{props.error}" }
                 }
                 {props.children}
             }

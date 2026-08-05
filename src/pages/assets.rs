@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use crate::components::{
     asset_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card,
-    DataTable, IconSize, Input, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select,
+    DataTable, ErrorBanner, IconSize, Input, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select,
     SelectOption, Table, TableBody, TableCell, TableEmptyRow, TableHead, TableHeader, TableRow,
     Textarea, TrashIcon,
 };
@@ -1138,9 +1138,7 @@ pub fn AssetNewPage() -> Element {
                 },
 
                 if !err.is_empty() {
-                    div { class: "rounded-md bg-red-50 dark:bg-red-900/20 p-3",
-                        p { class: "text-sm text-red-600 dark:text-red-400", "{err}" }
-                    }
+                    ErrorBanner { "{err}" }
                 }
 
                 div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",

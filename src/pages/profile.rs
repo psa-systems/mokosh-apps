@@ -26,7 +26,7 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{
-    use_page_title, Button, ButtonVariant, Card, Input, Modal, ModalSize, PageHeader, Select,
+    use_page_title, Button, ButtonVariant, Card, ErrorBanner, Input, Modal, ModalSize, PageHeader, Select,
     SelectOption,
 };
 use crate::utils::datetime::{format_user_datetime, preset_label, token_warnings, PRESET_FORMATS};
@@ -450,9 +450,7 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
                 }
 
                 if !error().is_empty() {
-                    div { class: "rounded-md bg-red-50 dark:bg-red-900/40 p-3 text-sm text-red-700 dark:text-red-300",
-                        "{error}"
-                    }
+                    ErrorBanner { "{error}" }
                 }
                 if saved() {
                     div { class: "rounded-md bg-green-50 dark:bg-green-900/40 p-3 text-sm text-green-700 dark:text-green-300",

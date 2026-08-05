@@ -32,7 +32,7 @@ use uuid::Uuid;
 
 use crate::components::{
     use_page_title, Badge, BadgeVariant, BreadcrumbItem, Breadcrumbs, Button, ButtonVariant, Card,
-    Checkbox, DataTable, IconSize, Input, PageHeader, PlusIcon, SearchInput, Select, SelectOption,
+    Checkbox, DataTable, ErrorBanner, IconSize, Input, PageHeader, PlusIcon, SearchInput, Select, SelectOption,
     SettingFormModal, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
     TableLoading, TableRow, ThemePicker,
 };
@@ -833,10 +833,7 @@ fn ExportPanel() -> Element {
                     "Download a JSON snapshot of all of this tenant's data. The file contains your records. Store it somewhere safe."
                 }
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
+                    ErrorBanner { "{error.read()}" }
                 }
                 Button {
                     variant: ButtonVariant::Primary,
@@ -958,10 +955,7 @@ fn ImportPanel(tenant_name: String) -> Element {
                 }
 
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
+                    ErrorBanner { "{error.read()}" }
                 }
 
                 if let Some(s) = summary.read().clone() {
@@ -1054,10 +1048,7 @@ fn SeedDemoPanel() -> Element {
                     "Populate this tenant with a small sample dataset (a company, two contacts, and a few tickets) so you can explore Mokosh. This only loads into an empty tenant. It never overwrites existing data."
                 }
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
+                    ErrorBanner { "{error.read()}" }
                 }
                 if let Some(r) = result.read().clone() {
                     if r.seeded {
@@ -1307,10 +1298,7 @@ fn StandardDueDateForm(initial: u32) -> Element {
                     div { class: "text-sm text-green-700 dark:text-green-300", "Scheduling settings saved." }
                 }
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error}"
-                    }
+                    ErrorBanner { "{error}" }
                 }
                 crate::components::Input {
                     name: "default_due_business_days",
@@ -1505,10 +1493,7 @@ fn MaxHoursPerDayForm(initial: u32) -> Element {
                     div { class: "text-sm text-green-700 dark:text-green-300", "Time tracking settings saved." }
                 }
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error}"
-                    }
+                    ErrorBanner { "{error}" }
                 }
                 crate::components::Input {
                     name: "max_hours_per_day",
@@ -5888,10 +5873,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
             LoadError { what: "RMM device mappings" }
         }
         if !row_error.read().is_empty() {
-            div {
-                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                "{row_error}"
-            }
+            ErrorBanner { class: "mb-3", "{row_error}" }
         }
 
         DataTable {
@@ -6303,10 +6285,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
             LoadError { what: "RMM alert rules" }
         }
         if !row_error.read().is_empty() {
-            div {
-                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                "{row_error}"
-            }
+            ErrorBanner { class: "mb-3", "{row_error}" }
         }
 
         DataTable {
@@ -6560,10 +6539,7 @@ fn RmmAlertRuleFormModal(props: RmmAlertRuleFormModalProps) -> Element {
 #[component]
 fn LoadError(what: String) -> Element {
     rsx! {
-        div {
-            class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-            "Could not load {what}. Refresh the page to retry."
-        }
+        ErrorBanner { class: "mb-3", "Could not load {what}. Refresh the page to retry." }
     }
 }
 

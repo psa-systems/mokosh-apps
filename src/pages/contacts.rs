@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use crate::components::{
     asset_status_badge, contract_status_badge, invoice_status_badge, project_status_badge,
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, CollapsibleCard, DataTable,
+    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, CollapsibleCard, DataTable, ErrorBanner,
     IconSize, Modal, PageHeader, PlusIcon, SearchInput, Select, SelectOption, SortDirection, Table,
     TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
@@ -372,10 +372,7 @@ pub fn CompanyListPage() -> Element {
         }
 
         if fetch_failed {
-            div {
-                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                "Could not load companies. Refresh the page to retry."
-            }
+            ErrorBanner { class: "mb-3", "Could not load companies. Refresh the page to retry." }
         }
 
         // Companies table
@@ -981,10 +978,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                 onsubmit: handle_submit,
 
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
+                    ErrorBanner { "{error.read()}" }
                 }
 
                 div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",
@@ -2593,10 +2587,7 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
             footer,
             div { class: "space-y-4",
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
+                    ErrorBanner { "{error.read()}" }
                 }
                 crate::components::Input {
                     name: "site_name",
@@ -3438,10 +3429,7 @@ pub fn ContactListPage() -> Element {
         }
 
         if fetch_failed {
-            div {
-                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                "Could not load contacts. Refresh the page to retry."
-            }
+            ErrorBanner { class: "mb-3", "Could not load contacts. Refresh the page to retry." }
         }
 
         // Contacts table
@@ -4039,10 +4027,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
                 onsubmit: handle_submit,
 
                 if !error.read().is_empty() {
-                    div {
-                        class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                        "{error.read()}"
-                    }
+                    ErrorBanner { "{error.read()}" }
                 }
 
                 div { class: "grid grid-cols-1 gap-6 sm:grid-cols-2",

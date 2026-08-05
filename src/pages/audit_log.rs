@@ -11,7 +11,7 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, PageHeader,
+    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, ErrorBanner, PageHeader,
     Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
     TableLoading, TableRow,
 };
@@ -509,10 +509,7 @@ fn AuditLogContent() -> Element {
         }
 
         if let Some(message) = error_message {
-            div {
-                class: "mb-3 text-xs text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
-                "{message}"
-            }
+            ErrorBanner { class: "mb-3", "{message}" }
         }
 
         // Audit table
