@@ -6,8 +6,9 @@ use serde::Deserialize;
 
 use crate::components::{
     use_page_title, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, Checkbox,
-    ChevronRightIcon, DataTable, ErrorBanner, IconSize, Modal, PageHeader, PlusIcon, Select, SelectOption,
-    StatCard, Table, TableBody, TableCell, TableEmptyRow, TableHead, TableHeader, TableRow,
+    ChevronRightIcon, DataTable, ErrorBanner, IconSize, Modal, PageHeader, PlusIcon, Select,
+    SelectOption, StatCard, Table, TableBody, TableCell, TableEmptyRow, TableHead, TableHeader,
+    TableRow,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;

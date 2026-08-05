@@ -20,8 +20,9 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, ErrorBanner, PageHeader, Table,
-    TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, ErrorBanner,
+    PageHeader, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
+    TableRow,
 };
 use crate::modules::sla::{
     BusinessHours, HolidayCalendar, SlaPolicy, SlaTarget, TicketPriorityOption,

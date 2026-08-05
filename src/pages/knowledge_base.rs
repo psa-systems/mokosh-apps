@@ -21,10 +21,10 @@ use dioxus::prelude::*;
 
 use crate::components::{
     kb_article_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonSize,
-    ButtonVariant, Card, ChevronRightIcon, CollapsibleRail, ConfirmDialog, DataTable, ErrorBanner, IconSize,
-    Modal, ModalSize, OverflowActions, PageHeader, PencilIcon, PlusIcon, RailSide, SearchInput,
-    Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
-    TableLoading, TableRow, TrashIcon,
+    ButtonVariant, Card, ChevronRightIcon, CollapsibleRail, ConfirmDialog, DataTable, ErrorBanner,
+    IconSize, Modal, ModalSize, OverflowActions, PageHeader, PencilIcon, PlusIcon, RailSide,
+    SearchInput, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
+    TableHeader, TableLoading, TableRow, TrashIcon,
 };
 use crate::modules::kb::{
     CreateKbArticleRequest, CreateKbCategoryRequest, KbArticle, KbArticleFeedback,

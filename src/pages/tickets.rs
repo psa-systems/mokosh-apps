@@ -6,10 +6,10 @@ use serde::Deserialize;
 
 use crate::components::{
     clear_selection, ticket_status_badge, use_bulk_selection, use_page_title, AlertType, Badge,
-    BadgeVariant, BulkActionsBar, BulkSelection, Button, ButtonVariant, Card, ClockIcon, DataTable, ErrorBanner,
-    IconSize, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectAllHeader,
-    SelectOption, SelectRowCell, SortDirection, Table, TableBody, TableCell, TableEmpty, TableHead,
-    TableHeader, TableLoading, TableRow, Textarea, UserCircleIcon,
+    BadgeVariant, BulkActionsBar, BulkSelection, Button, ButtonVariant, Card, ClockIcon, DataTable,
+    ErrorBanner, IconSize, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select,
+    SelectAllHeader, SelectOption, SelectRowCell, SortDirection, Table, TableBody, TableCell,
+    TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea, UserCircleIcon,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;

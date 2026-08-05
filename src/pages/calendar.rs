@@ -32,8 +32,9 @@ use dioxus::prelude::*;
 use crate::utils::datetime::{user_timezone, user_today};
 
 use crate::components::{
-    use_page_title, Button, ButtonVariant, Card, ChevronRightIcon, EmptyState, ErrorBanner, IconSize, Input,
-    Modal, ModalSize, PageHeader, PencilIcon, PlusIcon, Select, SelectOption, SwatchIcon, Textarea,
+    use_page_title, Button, ButtonVariant, Card, ChevronRightIcon, EmptyState, ErrorBanner,
+    IconSize, Input, Modal, ModalSize, PageHeader, PencilIcon, PlusIcon, Select, SelectOption,
+    SwatchIcon, Textarea,
 };
 use crate::modules::calendar::{
     AppointmentResponse, CreateAppointmentRequest, CreateSchedulingTemplateRequest,

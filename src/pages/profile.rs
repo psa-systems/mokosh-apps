@@ -26,8 +26,8 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{
-    use_page_title, Button, ButtonVariant, Card, ErrorBanner, Input, Modal, ModalSize, PageHeader, Select,
-    SelectOption,
+    use_page_title, Button, ButtonVariant, Card, ErrorBanner, Input, Modal, ModalSize, PageHeader,
+    Select, SelectOption,
 };
 use crate::utils::datetime::{format_user_datetime, preset_label, token_warnings, PRESET_FORMATS};
 use crate::utils::prefs;

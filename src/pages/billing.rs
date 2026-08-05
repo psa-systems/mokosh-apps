@@ -22,9 +22,9 @@ use std::str::FromStr;
 
 use crate::components::{
     invoice_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant,
-    Card, DataTable, ErrorBanner, IconSize, InformationIcon, Modal, ModalSize, PageHeader, PlusIcon, Select,
-    SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
-    TableRow,
+    Card, DataTable, ErrorBanner, IconSize, InformationIcon, Modal, ModalSize, PageHeader,
+    PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
+    TableHeader, TableLoading, TableRow,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;

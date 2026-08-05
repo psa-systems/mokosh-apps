@@ -4,9 +4,10 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, ErrorBanner, IconSize, Input,
-    Modal, OverflowActions, PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectOption,
-    StatCard, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, Textarea,
+    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, ErrorBanner,
+    IconSize, Input, Modal, OverflowActions, PageHeader, PencilIcon, PlusIcon, SearchInput, Select,
+    SelectOption, StatCard, Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+    Textarea,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;

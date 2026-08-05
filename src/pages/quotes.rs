@@ -24,9 +24,9 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, ErrorBanner, IconSize, Input,
-    Modal, ModalSize, PageHeader, PlusIcon, Select, SelectOption, Table, TableBody, TableCell,
-    TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea,
+    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, ErrorBanner,
+    IconSize, Input, Modal, ModalSize, PageHeader, PlusIcon, Select, SelectOption, Table,
+    TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea,
 };
 use crate::hooks::use_can_mutate;
 use crate::modules::quotes::{

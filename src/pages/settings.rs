@@ -32,9 +32,9 @@ use uuid::Uuid;
 
 use crate::components::{
     use_page_title, Badge, BadgeVariant, BreadcrumbItem, Breadcrumbs, Button, ButtonVariant, Card,
-    Checkbox, DataTable, ErrorBanner, IconSize, Input, PageHeader, PlusIcon, SearchInput, Select, SelectOption,
-    SettingFormModal, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
-    TableLoading, TableRow, ThemePicker,
+    Checkbox, DataTable, ErrorBanner, IconSize, Input, PageHeader, PlusIcon, SearchInput, Select,
+    SelectOption, SettingFormModal, Table, TableBody, TableCell, TableEmpty, TableHead,
+    TableHeader, TableLoading, TableRow, ThemePicker,
 };
 use crate::utils::money::format_money_str;
 use crate::utils::Paginated;

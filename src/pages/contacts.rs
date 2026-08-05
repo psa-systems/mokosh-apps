@@ -5,9 +5,10 @@ use serde::Deserialize;
 
 use crate::components::{
     asset_status_badge, contract_status_badge, invoice_status_badge, project_status_badge,
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, CollapsibleCard, DataTable, ErrorBanner,
-    IconSize, Modal, PageHeader, PlusIcon, SearchInput, Select, SelectOption, SortDirection, Table,
-    TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, CollapsibleCard, DataTable,
+    ErrorBanner, IconSize, Modal, PageHeader, PlusIcon, SearchInput, Select, SelectOption,
+    SortDirection, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
+    TableRow,
 };
 use crate::modules::contacts::Address;
 use crate::utils::money::format_money_str;

@@ -17,8 +17,8 @@ use uuid::Uuid;
 
 use crate::components::{
     contract_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card,
-    DataTable, ErrorBanner, IconSize, PageHeader, PlusIcon, Select, SelectOption, SettingFormModal, Table,
-    TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+    DataTable, ErrorBanner, IconSize, PageHeader, PlusIcon, Select, SelectOption, SettingFormModal,
+    Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::modules::contracts::{
     ContractHourBalanceResponse, ContractItemResponse, ContractResponse, CreateContractRequest,
