@@ -739,6 +739,7 @@ pub fn AssetListPage() -> Element {
                                 variant: ButtonVariant::Primary,
                                 // MAPPS-357: block the bulk PUT while the server is down.
                                 disabled: bulk_submitting() || !can_mutate,
+                                loading: bulk_submitting(),
                                 title: (!can_mutate).then(|| "Can't apply changes while the server is unreachable".to_string()),
                                 onclick: move |_| {
                                     // Validate that at least one field is being changed.
@@ -797,7 +798,7 @@ pub fn AssetListPage() -> Element {
                                         assets_resource.restart();
                                     });
                                 },
-                                if bulk_submitting() { "Saving…" } else { "Apply to selected" }
+                                "Apply to selected"
                             }
                         },
                         div { class: "space-y-4",
@@ -2376,9 +2377,10 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                             variant: ButtonVariant::Primary,
                             // MAPPS-357: block the save PUT while the server is down.
                             disabled: e_submitting() || !can_mutate,
+                            loading: e_submitting(),
                             title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
                             onclick: on_save,
-                            if e_submitting() { "Saving…" } else { "Save Changes" }
+                            "Save Changes"
                         }
                     },
                     div { class: "space-y-4",
@@ -2732,9 +2734,10 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                             variant: ButtonVariant::Primary,
                             // MAPPS-357: block the credential POST while the server is down.
                             disabled: nc_submitting() || !can_mutate,
+                            loading: nc_submitting(),
                             title: (!can_mutate).then(|| "Can't add a credential while the server is unreachable".to_string()),
                             onclick: on_add_cred,
-                            if nc_submitting() { "Saving…" } else { "Add Credential" }
+                            "Add Credential"
                         }
                     },
                     div { class: "space-y-4",
@@ -2951,9 +2954,10 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                             variant: ButtonVariant::Primary,
                             // MAPPS-357 parity: block the POST while the server is down.
                             disabled: nr_submitting() || !can_mutate,
+                            loading: nr_submitting(),
                             title: (!can_mutate).then(|| "Can't add a relationship while the server is unreachable".to_string()),
                             onclick: on_add_rel,
-                            if nr_submitting() { "Saving…" } else { "Add Relationship" }
+                            "Add Relationship"
                         }
                     },
                     div { class: "space-y-4",

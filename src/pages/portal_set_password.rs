@@ -185,7 +185,7 @@ pub fn PortalSetPasswordPage() -> Element {
                                     loading: saving(),
                                     r#type: "submit".to_string(),
                                     class: "w-full".to_string(),
-                                    if saving() { "Saving..." } else { "Set password" }
+                                    "Set password"
                                 }
                             }
                         }

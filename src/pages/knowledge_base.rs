@@ -1417,7 +1417,7 @@ fn VersionHistoryCard(
             }
             match &*snap {
                 None => rsx! {
-                    p { class: "px-3 py-3 text-xs text-subtle", "Loading..." }
+                    p { class: "px-3 py-3 text-xs text-subtle", "Loading…" }
                 },
                 Some(None) => rsx! {
                     p { class: "px-3 py-3 text-xs text-red-600 dark:text-red-300", "Could not load version history." }

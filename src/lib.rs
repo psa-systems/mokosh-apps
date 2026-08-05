@@ -40,7 +40,7 @@ pub fn AuthGuard() -> Element {
         // find we already have a session.
         return rsx! {
             div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
-                "Loading..."
+                "Loading…"
             }
         };
     }
@@ -52,7 +52,7 @@ pub fn AuthGuard() -> Element {
             nav.replace(Route::Login {});
             return rsx! {
                 div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
-                    "Redirecting to sign in..."
+                    "Redirecting to sign in…"
                 }
             };
         }
@@ -81,7 +81,7 @@ pub fn AuthGuard() -> Element {
         let _ = crate::modules::oidc::start_login(&cfg, return_to);
         return rsx! {
             div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
-                "Signing you in..."
+                "Signing you in…"
             }
         };
     }
@@ -125,7 +125,7 @@ pub fn AuthGuard() -> Element {
             nav.replace(Route::Onboarding {});
             return rsx! {
                 div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
-                    "Setting up your profile..."
+                    "Setting up your profile…"
                 }
             };
         }
@@ -174,7 +174,7 @@ pub fn PortalGuard() -> Element {
         nav.replace(Route::PortalLogin {});
         return rsx! {
             div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
-                "Redirecting to the portal sign-in..."
+                "Redirecting to the portal sign-in…"
             }
         };
     }
@@ -726,7 +726,7 @@ fn HubRedirect(target: String, label: &'static str) -> Element {
     });
     rsx! {
         div { class: "min-h-screen flex items-center justify-center p-8 text-sm text-muted",
-            "Redirecting to {label}..."
+            "Redirecting to {label}…"
         }
     }
 }
@@ -764,7 +764,7 @@ fn Login() -> Element {
     }
     rsx! {
         div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
-            "Signing you in..."
+            "Signing you in…"
         }
     }
 }

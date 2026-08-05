@@ -268,7 +268,7 @@ pub fn StandaloneLogin() -> Element {
                                 loading: saving(),
                                 r#type: "submit".to_string(),
                                 class: "w-full".to_string(),
-                                if saving() { "Signing in..." } else { "Sign in" }
+                                "Sign in"
                             }
                         }
                     }

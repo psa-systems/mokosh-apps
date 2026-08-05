@@ -510,8 +510,9 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
                         variant: ButtonVariant::Primary,
                         onclick: handle_save,
                         disabled: saving() || !can_mutate,
+                        loading: saving(),
                         title: (!can_mutate).then(|| "Can't save changes while the server is unreachable".to_string()),
-                        if saving() { "Saving..." } else { "Save changes" }
+                        "Save changes"
                     }
                 }
             }
