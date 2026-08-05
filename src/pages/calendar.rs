@@ -911,7 +911,7 @@ pub fn CalendarPage() -> Element {
                             }
                         }
                         if is_loading {
-                            div { class: "py-12 text-center text-sm text-muted", "Loading appointments..." }
+                            div { class: "py-12 text-center text-sm text-muted", "Loading appointments…" }
                         } else {
                             match view() {
                                 CalendarView::Month => rsx! {
@@ -2591,7 +2591,7 @@ pub fn DispatchBoardPage() -> Element {
                     }
                 }
                 if is_loading {
-                    div { class: "py-12 text-center text-sm text-muted", "Loading dispatch board..." }
+                    div { class: "py-12 text-center text-sm text-muted", "Loading dispatch board…" }
                 } else if let Some(d) = dispatch.as_ref() {
                     match view() {
                         CalendarView::Day => rsx! {
@@ -2988,7 +2988,7 @@ pub fn SchedulingTemplatesPage() -> Element {
 
         Card { padding: false,
             if is_loading {
-                div { class: "py-12 text-center text-sm text-muted", "Loading templates..." }
+                div { class: "py-12 text-center text-sm text-muted", "Loading templates…" }
             } else if templates.is_empty() {
                 div { class: "p-6",
                     EmptyState {

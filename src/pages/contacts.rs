@@ -1454,7 +1454,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     // is honest about the state.
     let header_title = match &*company_snapshot {
         Some(Some(c)) => c.name.clone(),
-        None => "Loading...".to_string(),
+        None => "Loading…".to_string(),
         Some(None) => "Company not found".to_string(),
     };
     use_page_title(&header_title);
@@ -4244,7 +4244,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
         Some(Some(c)) => format!("{} {}", c.first_name, c.last_name)
             .trim()
             .to_string(),
-        None => "Loading...".to_string(),
+        None => "Loading…".to_string(),
         Some(None) => "Contact not found".to_string(),
     };
     use_page_title(&header_title);

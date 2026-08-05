@@ -138,7 +138,7 @@ pub fn ApprovalsPage() -> Element {
         }
 
         if loading {
-            Card { p { class: "text-sm text-muted py-6 text-center", "Loading..." } }
+            Card { p { class: "text-sm text-muted py-6 text-center", "Loading…" } }
         } else if fetch_failed {
             Card {
                 p { class: "text-sm text-red-600 dark:text-red-300 py-6 text-center",

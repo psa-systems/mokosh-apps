@@ -147,7 +147,7 @@ fn AccountDeletedTerminal() -> Element {
                 p { class: "text-sm text-muted",
                     "Signing you out in "
                     span { class: "font-semibold text-content", "{secs}" }
-                    " seconds..."
+                    " seconds…"
                 }
                 button {
                     r#type: "button",

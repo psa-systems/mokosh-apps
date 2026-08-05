@@ -226,7 +226,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                     class: "absolute z-20 left-0 right-0 mt-1 max-h-72 overflow-y-auto rounded-md border border-line bg-raised shadow-lg",
                     match &*snap {
                         None => rsx! {
-                            div { class: "px-3 py-2 text-sm text-muted", "Searching..." }
+                            div { class: "px-3 py-2 text-sm text-muted", "Searching…" }
                         },
                         Some(None) => rsx! {
                             div { class: "px-3 py-2 text-sm text-red-600", "Could not load contacts." }

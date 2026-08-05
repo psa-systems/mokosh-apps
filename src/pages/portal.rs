@@ -453,7 +453,7 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
             h2 { class: "text-lg font-semibold text-content mb-4", "Conversation" }
 
             if loading {
-                p { class: "text-sm text-muted", "Loading comments..." }
+                p { class: "text-sm text-muted", "Loading comments…" }
             } else if fetch_failed {
                 p { class: "text-sm text-red-600 dark:text-red-300", "Could not load comments." }
             } else if rows.is_empty() {
@@ -530,9 +530,10 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
                         variant: ButtonVariant::Primary,
                         // MAPPS-357: also disabled while the server is unreachable.
                         disabled: *submitting.read() || !can_mutate,
+                        loading: *submitting.read(),
                         title: (!can_mutate).then(|| "Can't send a reply while the server is unreachable".to_string()),
                         onclick: handle_submit,
-                        if *submitting.read() { "Sending..." } else { "Send Reply" }
+                        "Send Reply"
                     }
                 }
             }
@@ -991,7 +992,7 @@ pub fn PortalQuoteListPage() -> Element {
                     }
                 }
             } else if loading {
-                Card { p { class: "text-sm text-subtle italic", "Loading quotes..." } }
+                Card { p { class: "text-sm text-subtle italic", "Loading quotes…" } }
             } else if rows.is_empty() {
                 Card {
                     p { class: "text-sm text-subtle italic",
@@ -1135,7 +1136,7 @@ pub fn PortalQuoteDetailPage(props: PortalQuoteDetailPageProps) -> Element {
                     }
                 }
             } else if loading {
-                Card { p { class: "text-sm text-subtle italic", "Loading quote..." } }
+                Card { p { class: "text-sm text-subtle italic", "Loading quote…" } }
             } else if let Some(q) = quote.clone() {
                 {
                     let st = q.status.clone();

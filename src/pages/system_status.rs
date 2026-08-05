@@ -198,7 +198,7 @@ pub fn SystemStatusPage() -> Element {
                 div { class: "flex items-center justify-between mb-3",
                     h3 { class: "text-base font-semibold text-content","API server" }
                     if loading {
-                        Badge { variant: BadgeVariant::Gray, "Checking..." }
+                        Badge { variant: BadgeVariant::Gray, "Checking…" }
                     } else if matches!(&snapshot, Some(r) if r.server.is_ok()) {
                         Badge { variant: BadgeVariant::Green, "Operational" }
                     } else {
@@ -207,7 +207,7 @@ pub fn SystemStatusPage() -> Element {
                 }
                 match snapshot.as_ref().map(|r| &r.server) {
                     None => rsx! {
-                        p { class: "text-sm text-muted", "Checking the API server..." }
+                        p { class: "text-sm text-muted", "Checking the API server…" }
                     },
                     Some(Ok(v)) => rsx! {
                         StatusRow { label: "Version".to_string(), value: v.version.clone() }
@@ -228,7 +228,7 @@ pub fn SystemStatusPage() -> Element {
                 div { class: "flex items-center justify-between mb-3",
                     h3 { class: "text-base font-semibold text-content","Dependencies" }
                     match snapshot.as_ref().map(|r| &r.readiness) {
-                        None => rsx! { Badge { variant: BadgeVariant::Gray, "Checking..." } },
+                        None => rsx! { Badge { variant: BadgeVariant::Gray, "Checking…" } },
                         Some(Ok(r)) if r.status == "ready" => rsx! { Badge { variant: BadgeVariant::Green, "Ready" } },
                         Some(Ok(_)) => rsx! { Badge { variant: BadgeVariant::Yellow, "Degraded" } },
                         Some(Err(_)) => rsx! { Badge { variant: BadgeVariant::Red, "Unknown" } },
@@ -236,7 +236,7 @@ pub fn SystemStatusPage() -> Element {
                 }
                 match snapshot.as_ref().map(|r| &r.readiness) {
                     None => rsx! {
-                        p { class: "text-sm text-muted", "Checking dependencies..." }
+                        p { class: "text-sm text-muted", "Checking dependencies…" }
                     },
                     Some(Ok(r)) => rsx! {
                         div { class: "flex items-center justify-between py-2 border-b border-line",

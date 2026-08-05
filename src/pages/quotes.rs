@@ -441,7 +441,7 @@ fn QuoteDetailBody(id: String) -> Element {
 
     rsx! {
         if loading {
-            Card { p { class: "text-sm text-subtle italic", "Loading quote..." } }
+            Card { p { class: "text-sm text-subtle italic", "Loading quote…" } }
         } else if let Some(q) = quote.clone() {
             {
                 let st = q.status.clone();

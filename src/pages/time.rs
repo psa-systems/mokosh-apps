@@ -2504,7 +2504,7 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
                 div {
                     h3 { class: "text-sm font-semibold text-content mb-2", "History" }
                     if entries_loading {
-                        p { class: "text-sm text-muted", "Loading history..." }
+                        p { class: "text-sm text-muted", "Loading history…" }
                     } else {
                         if entries_failed {
                             p { class: "text-sm text-red-600 dark:text-red-400",

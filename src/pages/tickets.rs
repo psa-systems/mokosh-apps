@@ -3181,7 +3181,7 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
                 }
             }
             if loading {
-                p { class: "text-sm text-subtle italic", "Loading approvals..." }
+                p { class: "text-sm text-subtle italic", "Loading approvals…" }
             } else if fetch_failed {
                 p { class: "text-sm text-red-600 dark:text-red-300", "Could not load approvals for this {props.entity_noun}." }
             } else if rows.is_empty() {

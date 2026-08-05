@@ -160,7 +160,7 @@ pub fn SavedDashboardViewPage(id: String) -> Element {
             None => rsx! {
                 PageHeader {
                     title: "Dashboard".to_string(),
-                    subtitle: "Loading...".to_string(),
+                    subtitle: "Loading…".to_string(),
                 }
             },
         }
