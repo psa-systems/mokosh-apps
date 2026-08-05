@@ -1321,31 +1321,31 @@ pub fn TimesheetsPage() -> Element {
                 table { class: "min-w-full divide-y divide-line",
                     thead { class: "bg-surface-2",
                         tr {
-                            th { class: "px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider",
+                            th { scope: "col", class: "px-6 py-3 text-left text-xs font-medium text-muted uppercase tracking-wider",
                                 "Work Item"
                             }
-                            th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
+                            th { scope: "col", class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
                                 "Mon"
                             }
-                            th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
+                            th { scope: "col", class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
                                 "Tue"
                             }
-                            th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
+                            th { scope: "col", class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
                                 "Wed"
                             }
-                            th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
+                            th { scope: "col", class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
                                 "Thu"
                             }
-                            th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
+                            th { scope: "col", class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
                                 "Fri"
                             }
-                            th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
+                            th { scope: "col", class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
                                 "Sat"
                             }
-                            th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
+                            th { scope: "col", class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
                                 "Sun"
                             }
-                            th { class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
+                            th { scope: "col", class: "px-4 py-3 text-center text-xs font-medium text-muted uppercase tracking-wider w-20",
                                 "Total"
                             }
                         }

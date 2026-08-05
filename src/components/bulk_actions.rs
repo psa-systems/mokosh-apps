@@ -112,6 +112,7 @@ pub fn SelectAllHeader(mut props: SelectAllHeaderProps) -> Element {
             .all(|id| props.selection.read().contains(id));
     rsx! {
         th {
+            scope: "col",
             class: "px-4 py-3 w-10",
             input {
                 r#type: "checkbox",

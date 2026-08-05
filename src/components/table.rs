@@ -146,6 +146,7 @@ pub fn TableHeader(props: TableHeaderProps) -> Element {
 
     rsx! {
         th {
+            scope: "col",
             class: "{class}",
             onclick: move |_| if props.sortable { props.onsort.call(()) },
             div { class: "flex items-center space-x-1",

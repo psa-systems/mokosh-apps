@@ -534,6 +534,19 @@ fn type_chip_class(appointment_type: &str) -> &'static str {
     }
 }
 
+/// MAPPS-409: human label for an appointment type, surfaced in each event
+/// block's `title` so the type is conveyed non-visually (fill color alone
+/// is not an accessible cue). Labels mirror `appointment_type_options`.
+fn appointment_type_label(appointment_type: &str) -> &'static str {
+    match appointment_type {
+        "ticket" => "Ticket",
+        "project" => "Project",
+        "meeting" => "Meeting",
+        "other" => "Other",
+        _ => "Appointment",
+    }
+}
+
 /// PMS-599: a Tailwind opacity fragment for appointments whose end time has
 /// already passed, so elapsed events read as muted across every view. Empty for
 /// current/future appointments. Paired with the blocks' existing `hover:opacity-*`
@@ -1101,13 +1114,14 @@ fn MonthDayCell(props: MonthDayCellProps) -> Element {
                             let chip = type_chip_class(&appt.appointment_type);
                             let past = past_class(appt);
                             let appt_clone = appt.clone();
+                            let type_label = appointment_type_label(&appt.appointment_type);
                             let label = format!("{} {}", time_label(appt.start_time), appt.title);
                             rsx! {
                                 button {
                                     key: "{appt.id}",
                                     r#type: "button",
                                     class: "w-full text-left text-xs truncate px-1 py-0.5 rounded {chip} {past} hover:opacity-80",
-                                    title: "{label}",
+                                    title: "{type_label} - {label}",
                                     onclick: move |e: MouseEvent| {
                                         e.stop_propagation();
                                         props.onpick.call(appt_clone.clone());
@@ -1279,6 +1293,7 @@ fn DayColumn(props: DayColumnProps) -> Element {
                             let color = type_color(&appt.appointment_type);
                             let past = past_class(appt);
                             let appt_clone = appt.clone();
+                            let type_label = appointment_type_label(&appt.appointment_type);
                             let label = appt.title.clone();
                             let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
                             rsx! {
@@ -1287,7 +1302,7 @@ fn DayColumn(props: DayColumnProps) -> Element {
                                     r#type: "button",
                                     class: "absolute rounded px-1 py-0.5 text-[10px] leading-tight text-white text-left overflow-hidden shadow-sm hover:opacity-90 {color} {past}",
                                     style: "top: {top_pct:.4}%; height: {height_pct:.4}%; left: {left_pct:.4}%; width: {width_pct:.4}%;",
-                                    title: "{time}: {label}",
+                                    title: "{type_label} - {time}: {label}",
                                     onclick: move |e: MouseEvent| {
                                         e.stop_propagation();
                                         props.onpick.call(appt_clone.clone());
@@ -1501,6 +1516,7 @@ fn DayGrid(props: DayGridProps) -> Element {
                                 let color = type_color(&appt.appointment_type);
                                 let past = past_class(appt);
                                 let appt_clone = appt.clone();
+                                let type_label = appointment_type_label(&appt.appointment_type);
                                 let label = appt.title.clone();
                                 let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
                                 let location = appt.location.clone().unwrap_or_default();
@@ -1510,7 +1526,7 @@ fn DayGrid(props: DayGridProps) -> Element {
                                         r#type: "button",
                                         class: "absolute rounded-md px-2 py-1 text-xs text-white text-left overflow-hidden shadow-sm hover:opacity-90 {color} {past}",
                                         style: "top: {top_pct:.4}%; height: {height_pct:.4}%; left: {left_pct:.4}%; width: {width_pct:.4}%;",
-                                        title: "{time}: {label}",
+                                        title: "{type_label} - {time}: {label}",
                                         onclick: move |e: MouseEvent| {
                                             e.stop_propagation();
                                             props.onpick.call(appt_clone.clone());
@@ -2853,6 +2869,7 @@ fn DispatchRow(props: DispatchRowProps) -> Element {
                         let color = type_color(&appt.appointment_type);
                         let past = past_class(appt);
                         let appt_clone = appt.clone();
+                        let type_label = appointment_type_label(&appt.appointment_type);
                         let label = appt.title.clone();
                         let time = format!("{} - {}", time_label(appt.start_time), time_label(appt.end_time));
                         rsx! {
@@ -2861,7 +2878,7 @@ fn DispatchRow(props: DispatchRowProps) -> Element {
                                 r#type: "button",
                                 class: "absolute top-1 bottom-1 rounded-md px-2 py-1 text-xs text-white shadow-sm overflow-hidden text-left hover:opacity-90 {color} {past}",
                                 style: "left: {left:.4}%; width: {width:.4}%;",
-                                title: "{time}: {label}",
+                                title: "{type_label} - {time}: {label}",
                                 onclick: move |_| props.onpick.call(appt_clone.clone()),
                                 "{label}"
                             }

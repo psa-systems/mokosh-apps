@@ -258,7 +258,7 @@ pub fn StandaloneLogin() -> Element {
                         }
 
                         if !error().is_empty() {
-                            p { class: "text-sm text-red-600 dark:text-red-400", "{error}" }
+                            p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
                         }
 
                         div { class: "pt-2",
