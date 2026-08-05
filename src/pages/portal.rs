@@ -292,6 +292,11 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
                         .created_at
                         .map(|d| d.format("Created %b %-d, %Y").to_string())
                         .unwrap_or_default();
+                    // MAPPS-409: machine-readable form for the `<time>` wrapper.
+                    let created_iso = ticket
+                        .created_at
+                        .map(|d| d.to_rfc3339())
+                        .unwrap_or_default();
                     let subject = if ticket.title.is_empty() {
                         header_title.clone()
                     } else {
@@ -308,7 +313,9 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
                                     div { class: "flex items-center mt-2 space-x-4",
                                         Badge { variant: BadgeVariant::Yellow, "{status_label}" }
                                         if !created.is_empty() {
-                                            span { class: "text-sm text-muted", "{created}" }
+                                            span { class: "text-sm text-muted",
+                                                time { datetime: "{created_iso}", "{created}" }
+                                            }
                                         }
                                     }
                                 }
@@ -470,6 +477,11 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
                                 .created_at
                                 .map(|d| d.format("%b %-d, %Y %H:%M UTC").to_string())
                                 .unwrap_or_default();
+                            // MAPPS-409: machine-readable form for the `<time>` wrapper.
+                            let when_iso = note
+                                .created_at
+                                .map(|d| d.to_rfc3339())
+                                .unwrap_or_default();
                             let (badge, label) = if is_customer {
                                 (BadgeVariant::Blue, "Customer")
                             } else {
@@ -483,7 +495,9 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
                                             Badge { variant: badge, "{label}" }
                                         }
                                         if !when.is_empty() {
-                                            span { class: "text-xs text-subtle", "{when}" }
+                                            span { class: "text-xs text-muted",
+                                                time { datetime: "{when_iso}", "{when}" }
+                                            }
                                         }
                                     }
                                     p { class: "text-sm text-content whitespace-pre-wrap",

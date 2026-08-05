@@ -917,6 +917,8 @@ pub fn TicketListPage() -> Element {
                                     priority: humanize_priority(&ticket.priority.name),
                                     assigned_to: ticket.assigned_to_name.unwrap_or_else(|| "Unassigned".to_string()),
                                     updated: relative_time(ticket.updated_at),
+                                    updated_iso: Some(ticket.updated_at.to_rfc3339()),
+                                    updated_title: Some(fmt_datetime(ticket.updated_at)),
                                     // MAPPS-290: hand the page-scoped
                                     // selection signal down so each
                                     // row's first cell renders a
@@ -993,6 +995,13 @@ struct TicketRowProps {
     priority: String,
     assigned_to: String,
     updated: String,
+    /// MAPPS-409: RFC3339 form of `updated_at` for the `<time datetime>`
+    /// wrapper, plus the absolute-time string for its hover title. `None`
+    /// on demo/fallback rows (no source instant to wrap; not fabricated).
+    #[props(default)]
+    updated_iso: Option<String>,
+    #[props(default)]
+    updated_title: Option<String>,
     /// MAPPS-290: optional bulk-selection signal. When `Some`, the row
     /// renders a `SelectRowCell` as its first cell wired to this signal;
     /// the demo rows pass `None` so the no-backend fallback table still
@@ -1015,6 +1024,11 @@ fn TicketRow(props: TicketRowProps) -> Element {
 
     let navigator = use_navigator();
     let id = props.id.clone();
+
+    // MAPPS-409: machine-readable "updated" timestamp. Present only on
+    // backend rows; demo rows fall back to bare relative text.
+    let updated_iso = props.updated_iso.clone();
+    let updated_title = props.updated_title.clone().unwrap_or_default();
 
     rsx! {
         TableRow {
@@ -1055,7 +1069,11 @@ fn TicketRow(props: TicketRowProps) -> Element {
                 }
             }
             TableCell { class: "text-muted",
-                "{props.updated}"
+                if let Some(iso) = updated_iso {
+                    time { datetime: "{iso}", title: "{updated_title}", "{props.updated}" }
+                } else {
+                    "{props.updated}"
+                }
             }
         }
     }
