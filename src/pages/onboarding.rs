@@ -21,7 +21,7 @@
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::components::{Button, ButtonVariant, Input};
+use crate::components::{AuthLayout, Button, ButtonVariant, Input};
 use crate::utils::{FormGuard, Rule};
 use crate::Route;
 
@@ -148,9 +148,7 @@ pub fn Onboarding() -> Element {
     };
 
     rsx! {
-        div { class: "min-h-screen bg-app flex items-center justify-center px-4",
-            div { class: "max-w-md w-full",
-                div { class: "bg-surface rounded-lg shadow-lg p-8",
+        AuthLayout {
                     div { class: "text-center mb-6",
                         h1 { class: "text-2xl font-semibold text-content",
                             "Welcome to Mokosh"
@@ -214,8 +212,6 @@ pub fn Onboarding() -> Element {
                     p { class: "mt-6 text-center text-xs text-muted",
                         "Other profile settings (timezone, preferences) can be edited later from Profile."
                     }
-                }
-            }
         }
     }
 }

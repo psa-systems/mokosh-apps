@@ -20,11 +20,11 @@ use chrono::{DateTime, Utc};
 use dioxus::prelude::*;
 
 use crate::components::{
-    kb_article_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card,
-    ChevronRightIcon, CollapsibleRail, ConfirmDialog, DataTable, IconSize, Modal, ModalSize,
-    OverflowActions, PageHeader, PencilIcon, PlusIcon, RailSide, SearchInput, Select, SelectOption,
-    Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
-    TrashIcon,
+    kb_article_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonSize,
+    ButtonVariant, Card, ChevronRightIcon, CollapsibleRail, ConfirmDialog, DataTable, IconSize,
+    Modal, ModalSize, OverflowActions, PageHeader, PencilIcon, PlusIcon, RailSide, SearchInput,
+    Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
+    TableLoading, TableRow, TrashIcon,
 };
 use crate::modules::kb::{
     CreateKbArticleRequest, CreateKbCategoryRequest, KbArticle, KbArticleFeedback,
@@ -1441,8 +1441,9 @@ fn VersionHistoryCard(
                                         li { key: "{key}", class: "px-3 py-2 text-xs",
                                             div { class: "flex items-center justify-between gap-2",
                                                 span { class: "font-medium text-content", "v{n}" }
-                                                button {
-                                                    class: "text-accent hover:opacity-90 disabled:opacity-50",
+                                                Button {
+                                                    variant: ButtonVariant::Link,
+                                                    size: ButtonSize::Small,
                                                     // MAPPS-357: block restore while the server is unreachable.
                                                     disabled: *restoring.read() == Some(n) || !can_mutate,
                                                     title: (!can_mutate).then(|| "Can't restore while the server is unreachable".to_string()),

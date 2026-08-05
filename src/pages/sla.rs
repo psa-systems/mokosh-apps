@@ -275,15 +275,13 @@ fn SlaPoliciesTab(tab: Signal<SlaTab>) -> Element {
                                         }
                                         TableCell {
                                             div { class: "flex space-x-3",
-                                                button {
-                                                    r#type: "button",
-                                                    class: "text-sm text-accent hover:opacity-90",
+                                                Button {
+                                                    variant: ButtonVariant::Link,
                                                     onclick: move |_| editing.set(Some(PolicyFormState::from_existing(&policy_for_edit))),
                                                     "Edit"
                                                 }
-                                                button {
-                                                    r#type: "button",
-                                                    class: "text-sm text-accent hover:opacity-90",
+                                                Button {
+                                                    variant: ButtonVariant::Link,
                                                     onclick: move |_| targets_for.set(Some((policy_id.clone(), policy_name.clone()))),
                                                     "Targets"
                                                 }
@@ -1049,9 +1047,8 @@ fn BusinessHoursTab(tab: Signal<SlaTab>) -> Element {
                                             }
                                         }
                                         TableCell {
-                                            button {
-                                                r#type: "button",
-                                                class: "text-sm text-accent hover:opacity-90",
+                                            Button {
+                                                variant: ButtonVariant::Link,
                                                 onclick: move |_| editing.set(Some(BusinessHoursFormState::from_existing(&bh_for_edit))),
                                                 "Edit"
                                             }
@@ -1421,9 +1418,8 @@ fn HolidayCalendarsTab(tab: Signal<SlaTab>) -> Element {
                                         }
                                         TableCell { class: "text-muted", "{count} dates" }
                                         TableCell {
-                                            button {
-                                                r#type: "button",
-                                                class: "text-sm text-accent hover:opacity-90",
+                                            Button {
+                                                variant: ButtonVariant::Link,
                                                 onclick: move |_| editing.set(Some(HolidayFormState::from_existing(&cal_for_edit))),
                                                 "Edit"
                                             }

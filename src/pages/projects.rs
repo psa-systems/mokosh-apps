@@ -6,7 +6,7 @@ use serde::Deserialize;
 use crate::components::{
     use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, IconSize, Input,
     Modal, OverflowActions, PageHeader, PencilIcon, PlusIcon, SearchInput, Select, SelectOption,
-    Table, TableBody, TableCell, TableHead, TableHeader, TableRow, Textarea,
+    StatCard, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, Textarea,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
@@ -542,23 +542,11 @@ pub fn ProjectListPage() -> Element {
         }
 
         // Stats
-        div { class: "grid grid-cols-1 gap-5 sm:grid-cols-4 mb-6",
-            Card { class: "text-center",
-                p { class: "text-sm text-muted", "Active Projects" }
-                p { class: "text-2xl font-bold text-content", "{active}" }
-            }
-            Card { class: "text-center",
-                p { class: "text-sm text-muted", "On Hold" }
-                p { class: "text-2xl font-bold text-yellow-600", "{on_hold}" }
-            }
-            Card { class: "text-center",
-                p { class: "text-sm text-muted", "Completed" }
-                p { class: "text-2xl font-bold text-green-600", "{completed}" }
-            }
-            Card { class: "text-center",
-                p { class: "text-sm text-muted", "Total Budget" }
-                p { class: "text-2xl font-bold text-accent", "{total_value_label}" }
-            }
+        div { class: "grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 mb-6",
+            StatCard { label: "Active Projects", value: "{active}" }
+            StatCard { label: "On Hold", value: "{on_hold}" }
+            StatCard { label: "Completed", value: "{completed}" }
+            StatCard { label: "Total Budget", value: "{total_value_label}" }
         }
 
         // MAPPS-388: de-boxed. Search + type controls sit directly on the
