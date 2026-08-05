@@ -15,7 +15,9 @@
 use dioxus::prelude::*;
 use serde::Deserialize;
 
-use crate::components::{Button, ButtonVariant, IconSize, Input, Modal, ModalSize, PlusIcon};
+use crate::components::{
+    Button, ButtonSize, ButtonVariant, IconSize, Input, Modal, ModalSize, PlusIcon,
+};
 use crate::utils::url::urlencoding_minimal;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -135,9 +137,9 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
                     div { class: "min-w-0",
                         p { class: "text-sm font-medium text-content truncate", "{name}" }
                     }
-                    button {
-                        r#type: "button",
-                        class: "text-xs text-accent hover:opacity-90 px-2 py-1",
+                    Button {
+                        variant: ButtonVariant::Link,
+                        size: ButtonSize::Small,
                         onclick: move |_| {
                             onclear.call(());
                             query.set(String::new());

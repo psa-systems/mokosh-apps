@@ -20,6 +20,7 @@
 use dioxus::prelude::*;
 use serde::Deserialize;
 
+use super::button::{Button, ButtonSize, ButtonVariant};
 use super::table::{Badge, BadgeVariant};
 use crate::Route;
 
@@ -123,10 +124,10 @@ pub fn ContextFilterBanner(props: ContextFilterBannerProps) -> Element {
                 "Showing only " strong { "{name}" } "'s {label}."
             }
             div { class: "flex-1" }
-            button {
-                r#type: "button",
-                class: "text-xs font-medium text-accent hover:opacity-90",
-                aria_label: "Clear company filter",
+            Button {
+                variant: ButtonVariant::Link,
+                size: ButtonSize::Small,
+                aria_label: Some("Clear company filter".to_string()),
                 onclick: move |_| {
                     nav.push(clear_route.clone());
                 },
