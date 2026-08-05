@@ -4,7 +4,8 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    use_page_title, BarChart, BarChartDatum, Card, ChartIcon, IconSize, PageHeader,
+    use_page_title, BarChart, BarChartDatum, Button, ButtonVariant, Card, ChartIcon, IconSize,
+    PageHeader, Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 };
 use crate::utils::money::format_money_str;
 use crate::Route;
@@ -409,13 +410,13 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
                         rsx! {
                             Card { title: "{view.breakdown_title}", class: "mt-6",
                                 BarChart { data: chart_data, one_decimal: false }
-                                div { class: "mt-4 overflow-x-auto",
-                                    table { class: "min-w-full divide-y divide-line",
-                                        tbody { class: "bg-surface divide-y divide-line",
+                                div { class: "mt-4",
+                                    Table {
+                                        TableBody {
                                             for (k , v) in view.breakdown.iter() {
-                                                tr {
-                                                    td { class: "px-6 py-3 text-sm text-content", "{k}" }
-                                                    td { class: "px-6 py-3 text-sm text-right font-medium", "{v}" }
+                                                TableRow {
+                                                    TableCell { "{k}" }
+                                                    TableCell { class: "text-right font-medium", "{v}" }
                                                 }
                                             }
                                         }
@@ -426,14 +427,12 @@ pub fn ReportDetailPage(props: ReportDetailPageProps) -> Element {
                     } else {
                         rsx! {
                             Card { title: "{view.breakdown_title}", class: "mt-6",
-                                div { class: "overflow-x-auto",
-                                    table { class: "min-w-full divide-y divide-line",
-                                        tbody { class: "bg-surface divide-y divide-line",
-                                            for (k , v) in view.breakdown.iter() {
-                                                tr {
-                                                    td { class: "px-6 py-3 text-sm text-content", "{k}" }
-                                                    td { class: "px-6 py-3 text-sm text-right font-medium", "{v}" }
-                                                }
+                                Table {
+                                    TableBody {
+                                        for (k , v) in view.breakdown.iter() {
+                                            TableRow {
+                                                TableCell { "{k}" }
+                                                TableCell { class: "text-right font-medium", "{v}" }
                                             }
                                         }
                                     }
@@ -833,14 +832,15 @@ fn CustomReportBuilder() -> Element {
                             }
                         }
 
-                        button {
-                            class: "w-full rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:opacity-90 disabled:opacity-50",
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            class: "w-full".to_string(),
+                            loading: running(),
                             disabled: !can_run,
-                            "aria-disabled": (!can_run).then_some("true"),
                             title: (measures().is_empty())
                                 .then(|| "Select at least one measure to run the report.".to_string()),
                             onclick: run,
-                            if running() { "Running…" } else { "Run report" }
+                            "Run report"
                         }
                         p { class: "text-xs text-subtle",
                             "Pick a source and at least one measure. Grouping is optional."
@@ -867,26 +867,22 @@ fn CustomReportBuilder() -> Element {
                                 let totals: Vec<(String, String)> =
                                     r.totals.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                                 rsx! {
-                                    div { class: "overflow-x-auto",
-                                        table { class: "min-w-full divide-y divide-line text-sm",
-                                            thead {
-                                                tr {
-                                                    for col in r.columns.iter() {
-                                                        th { class: "px-4 py-2 text-left font-medium text-muted",
-                                                            "{col}"
-                                                        }
-                                                    }
+                                    Table {
+                                        TableHead {
+                                            TableRow {
+                                                for col in r.columns.iter() {
+                                                    TableHeader { "{col}" }
                                                 }
                                             }
-                                            tbody { class: "divide-y divide-line",
-                                                for row in r.rows.iter() {
-                                                    tr {
-                                                        for cell in row.iter() {
-                                                            {
-                                                                let v = cell.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| "-".to_string());
-                                                                rsx! {
-                                                                    td { class: "px-4 py-2 text-content", "{v}" }
-                                                                }
+                                        }
+                                        TableBody {
+                                            for row in r.rows.iter() {
+                                                TableRow {
+                                                    for cell in row.iter() {
+                                                        {
+                                                            let v = cell.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| "-".to_string());
+                                                            rsx! {
+                                                                TableCell { "{v}" }
                                                             }
                                                         }
                                                     }

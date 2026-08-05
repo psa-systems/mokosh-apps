@@ -11,8 +11,9 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, Card, DataTable, PageHeader, Select, SelectOption, Table,
-    TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, PageHeader, Select,
+    SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
+    TableRow,
 };
 use crate::modules::audit::AuditLogEntry;
 use crate::utils::url::urlencoding_minimal;
@@ -635,9 +636,8 @@ fn AuditRow(props: AuditRowProps) -> Element {
             TableCell { class: "text-muted", "{ip}" }
             TableCell {
                 if has_detail {
-                    button {
-                        r#type: "button",
-                        class: "text-sm text-accent hover:opacity-90",
+                    Button {
+                        variant: ButtonVariant::Link,
                         onclick: move |_| {
                             let next = !*expanded.read();
                             expanded.set(next);

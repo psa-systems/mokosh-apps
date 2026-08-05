@@ -4,8 +4,8 @@ use dioxus::prelude::*;
 
 use crate::components::{
     invoice_status_badge, Badge, BadgeVariant, BookIcon, Button, ButtonVariant, Card, CurrencyIcon,
-    IconSize, PlusIcon, PortalLayout, SearchInput, Table, TableBody, TableCell, TableHead,
-    TableHeader, TableRow,
+    IconSize, PlusIcon, PortalLayout, SearchInput, Table, TableBody, TableCell, TableEmptyRow,
+    TableHead, TableHeader, TableRow,
 };
 use crate::Route;
 
@@ -720,27 +720,27 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                                 }
                             }
 
-                            table { class: "min-w-full text-sm mb-6",
-                                thead { class: "border-b border-line",
-                                    tr {
-                                        th { class: "text-left py-2 text-muted", "Description" }
-                                        th { class: "text-right py-2 text-muted", "Qty" }
-                                        th { class: "text-right py-2 text-muted", "Unit Price" }
-                                        th { class: "text-right py-2 text-muted", "Total" }
-                                    }
-                                }
-                                tbody {
-                                    if lines.is_empty() {
-                                        tr {
-                                            td { class: "py-3 text-muted", colspan: "4", "No line items." }
+                            div { class: "mb-6",
+                                Table {
+                                    TableHead {
+                                        TableRow {
+                                            TableHeader { "Description" }
+                                            TableHeader { class: "text-right", "Qty" }
+                                            TableHeader { class: "text-right", "Unit Price" }
+                                            TableHeader { class: "text-right", "Total" }
                                         }
-                                    } else {
-                                        for (idx, line) in lines.iter().enumerate() {
-                                            tr { key: "{idx}",
-                                                td { class: "py-3", "{line.description}" }
-                                                td { class: "py-3 text-right", "{line.quantity}" }
-                                                td { class: "py-3 text-right", {portal_money(&line.unit_price)} }
-                                                td { class: "py-3 text-right", {portal_money(&line.total)} }
+                                    }
+                                    TableBody {
+                                        if lines.is_empty() {
+                                            TableEmptyRow { columns: 4, class: "text-muted", "No line items." }
+                                        } else {
+                                            for (idx, line) in lines.iter().enumerate() {
+                                                TableRow { key: "{idx}",
+                                                    TableCell { "{line.description}" }
+                                                    TableCell { class: "text-right", "{line.quantity}" }
+                                                    TableCell { class: "text-right", {portal_money(&line.unit_price)} }
+                                                    TableCell { class: "text-right", {portal_money(&line.total)} }
+                                                }
                                             }
                                         }
                                     }

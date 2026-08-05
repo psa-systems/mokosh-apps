@@ -5,8 +5,8 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, Card, DataTable, PageHeader, Table, TableBody, TableCell,
-    TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+    use_page_title, Badge, BadgeVariant, DataTable, PageHeader, StatCard, Table, TableBody,
+    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 
 /// Subset of mokosh-server's `TenantResponse` we render in the admin
@@ -169,23 +169,11 @@ pub fn TenantManagementPage() -> Element {
         }
 
         // Stats
-        div { class: "grid grid-cols-1 gap-5 sm:grid-cols-4 mb-6",
-            Card { class: "text-center",
-                p { class: "text-sm text-muted","Total Tenants" }
-                p { class: "text-2xl font-bold text-content", "{total_tenants_label}" }
-            }
-            Card { class: "text-center",
-                p { class: "text-sm text-muted","Active" }
-                p { class: "text-2xl font-bold text-green-600", "{active_label}" }
-            }
-            Card { class: "text-center",
-                p { class: "text-sm text-muted","Trial" }
-                p { class: "text-2xl font-bold text-accent", "{trial_label}" }
-            }
-            Card { class: "text-center",
-                p { class: "text-sm text-muted","MRR" }
-                p { class: "text-2xl font-bold text-subtle", "-" }
-            }
+        div { class: "grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 mb-6",
+            StatCard { label: "Total Tenants", value: "{total_tenants_label}" }
+            StatCard { label: "Active", value: "{active_label}" }
+            StatCard { label: "Trial", value: "{trial_label}" }
+            StatCard { label: "MRR", value: "-" }
         }
 
         if source == TenantSource::Demo && !is_loading {

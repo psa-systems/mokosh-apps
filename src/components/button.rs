@@ -20,7 +20,7 @@ impl ButtonVariant {
             ButtonVariant::Secondary => "bg-surface-2 text-content border border-line",
             ButtonVariant::Danger => "bg-red-600 text-white hover:bg-red-700 focus:ring-red-500",
             ButtonVariant::Ghost => "bg-transparent text-content hover:bg-surface-2",
-            ButtonVariant::Link => "bg-transparent text-accent hover:underline",
+            ButtonVariant::Link => "bg-transparent text-accent hover:opacity-90",
         }
     }
 }

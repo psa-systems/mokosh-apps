@@ -1974,9 +1974,8 @@ fn CompanyContactsCard(
             title: "Contacts",
             count,
             actions: rsx! {
-                button {
-                    r#type: "button",
-                    class: "text-sm text-accent hover:opacity-90",
+                Button {
+                    variant: ButtonVariant::Link,
                     onclick: move |_| show_add.set(true),
                     "Add Contact"
                 }
@@ -2223,9 +2222,8 @@ fn CompanySitesCard(
             title: "Sites",
             count,
             actions: rsx! {
-                button {
-                    r#type: "button",
-                    class: "text-sm text-accent hover:opacity-90",
+                Button {
+                    variant: ButtonVariant::Link,
                     onclick: {
                         let company_id = company_id.clone();
                         move |_| {
@@ -2283,9 +2281,9 @@ fn CompanySitesCard(
                                         rsx! {
                                             TableRow { key: "{key}", class: "group",
                                                 TableCell {
-                                                    button {
-                                                        r#type: "button",
-                                                        class: "text-left font-medium text-accent hover:opacity-90",
+                                                    Button {
+                                                        variant: ButtonVariant::Link,
+                                                        class: "text-left".to_string(),
                                                         onclick: move |_| {
                                                             editing.set(Some(SiteFormState::from_existing(
                                                                 &company_id_for_edit,

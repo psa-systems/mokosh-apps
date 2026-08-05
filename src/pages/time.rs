@@ -5,9 +5,9 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, Checkbox, ChevronRightIcon,
-    DataTable, IconSize, Modal, PageHeader, PlusIcon, Select, SelectOption, Table, TableBody,
-    TableCell, TableEmptyRow, TableHead, TableHeader, TableRow,
+    use_page_title, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, Checkbox,
+    ChevronRightIcon, DataTable, IconSize, Modal, PageHeader, PlusIcon, Select, SelectOption,
+    StatCard, Table, TableBody, TableCell, TableEmptyRow, TableHead, TableHeader, TableRow,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
@@ -272,23 +272,11 @@ pub fn TimeEntryListPage() -> Element {
             },
         }
 
-        div { class: "grid grid-cols-1 gap-5 sm:grid-cols-4 mb-6",
-            Card { class: "text-center",
-                p { class: "text-sm text-muted", "Today" }
-                p { class: "text-2xl font-bold text-content", "{today_h}" }
-            }
-            Card { class: "text-center",
-                p { class: "text-sm text-muted", "This Week" }
-                p { class: "text-2xl font-bold text-content", "{week_h}" }
-            }
-            Card { class: "text-center",
-                p { class: "text-sm text-muted", "Billable" }
-                p { class: "text-2xl font-bold text-green-600", "{billable_h}" }
-            }
-            Card { class: "text-center",
-                p { class: "text-sm text-muted", "Non-Billable" }
-                p { class: "text-2xl font-bold text-muted", "{nonbillable_h}" }
-            }
+        div { class: "grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 mb-6",
+            StatCard { label: "Today", value: "{today_h}" }
+            StatCard { label: "This Week", value: "{week_h}" }
+            StatCard { label: "Billable", value: "{billable_h}" }
+            StatCard { label: "Non-Billable", value: "{nonbillable_h}" }
         }
 
         if load_failed {
@@ -1301,9 +1289,9 @@ pub fn TimesheetsPage() -> Element {
                     // shown when paged away from it), so a future/empty
                     // week is not a dead end.
                     if !is_current_week {
-                        button {
-                            r#type: "button",
-                            class: "text-xs font-medium text-accent hover:opacity-90",
+                        Button {
+                            variant: ButtonVariant::Link,
+                            size: ButtonSize::Small,
                             onclick: move |_| {
                                 action_msg.set(String::new());
                                 action_err.set(String::new());
@@ -2065,9 +2053,9 @@ pub fn TimesheetApprovalsPage() -> Element {
                         "{week_label}"
                     }
                     if !is_current_week {
-                        button {
-                            r#type: "button",
-                            class: "text-xs font-medium text-accent hover:opacity-90",
+                        Button {
+                            variant: ButtonVariant::Link,
+                            size: ButtonSize::Small,
                             onclick: move |_| {
                                 action_msg.set(String::new());
                                 action_err.set(String::new());
