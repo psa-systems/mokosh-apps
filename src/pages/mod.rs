@@ -34,6 +34,7 @@ pub mod profile;
 pub mod projects;
 pub mod quotes;
 pub mod reports;
+pub mod request_form;
 pub mod settings;
 pub mod sla;
 pub mod system_status;

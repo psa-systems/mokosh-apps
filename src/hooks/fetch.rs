@@ -898,6 +898,22 @@ pub mod api {
         handle_response(resp).await
     }
 
+    /// PMS-730: unauthed typed GET, for the public client request-form page.
+    /// [`get_authed_typed`] would attach whatever bearer happens to be in
+    /// memory, and the plain [`get`] collapses every failure to a `String`, so
+    /// the caller could not tell 410 (link already submitted) from 400
+    /// (expired or unknown). This keeps the typed error.
+    #[cfg(feature = "web")]
+    pub async fn get_typed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::get(&url)
+            .header("Content-Type", "application/json")
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
     /// MAPPS-396: unauthed typed POST for an endpoint that answers 204 with no
     /// body (`POST /portal/auth/setup-password`). [`post_typed`] would fail to
     /// decode the empty payload, so this variant only inspects the status and
