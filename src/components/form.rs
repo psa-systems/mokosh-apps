@@ -534,7 +534,7 @@ pub struct SearchInputProps {
 #[component]
 pub fn SearchInput(props: SearchInputProps) -> Element {
     let class = format!(
-        "block w-full pl-10 pr-3 py-2 border border-line rounded-md leading-5 bg-surface placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-accent focus:border-accent sm:text-sm {}",
+        "block w-full pl-10 pr-3 py-2 border border-line rounded-md leading-5 bg-surface placeholder-subtle focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent sm:text-sm {}",
         props.class
     );
 

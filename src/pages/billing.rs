@@ -3665,7 +3665,7 @@ fn GatewayFormModal(props: GatewayFormModalProps) -> Element {
                     div { class: "flex items-center gap-2",
                         label {
                             r#for: "gateway_api_key",
-                            class: "block text-sm font-medium text-gray-700 dark:text-gray-300",
+                            class: "block text-sm font-medium text-content",
                             "API key"
                         }
                         if configured {

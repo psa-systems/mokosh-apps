@@ -2206,12 +2206,12 @@ fn ContractHourBalanceCard(
             padding: false,
             actions: edit_action,
             if let Some((remaining, included)) = headline.as_ref() {
-                div { class: "px-4 py-4 border-b border-gray-200 dark:border-gray-700",
+                div { class: "px-4 py-4 border-b border-line",
                     p { class: "text-2xl font-semibold",
                         "{remaining}"
-                        span { class: "text-base font-normal text-gray-500", " of {included} hours remaining" }
+                        span { class: "text-base font-normal text-muted", " of {included} hours remaining" }
                     }
-                    p { class: "mt-1 text-sm text-gray-500", "Current period allotment" }
+                    p { class: "mt-1 text-sm text-muted", "Current period allotment" }
                 }
             }
             Table {

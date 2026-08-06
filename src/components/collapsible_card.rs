@@ -45,8 +45,7 @@ pub struct CollapsibleCardProps {
 pub fn CollapsibleCard(props: CollapsibleCardProps) -> Element {
     let mut open = use_signal(|| props.default_open);
 
-    let base_class =
-        "bg-white dark:bg-gray-800 rounded-lg shadow border border-gray-200 dark:border-gray-700";
+    let base_class = "bg-surface rounded-lg shadow border border-line";
     let class = format!("{} {}", base_class, props.class);
 
     // Match `Card`'s body padding for the with-header case so a full-bleed
@@ -75,7 +74,7 @@ pub fn CollapsibleCard(props: CollapsibleCardProps) -> Element {
     rsx! {
         div { class: "{class}",
             div {
-                class: "flex items-center justify-between px-6 pt-6 pb-4 border-b border-gray-200 dark:border-gray-700",
+                class: "flex items-center justify-between px-6 pt-6 pb-4 border-b border-line",
                 button {
                     r#type: "button",
                     class: "flex items-center gap-2 text-left",
@@ -86,14 +85,14 @@ pub fn CollapsibleCard(props: CollapsibleCardProps) -> Element {
                         open.set(next);
                     },
                     if open() {
-                        ChevronDownIcon { size: IconSize::Small, class: "text-gray-400".to_string() }
+                        ChevronDownIcon { size: IconSize::Small, class: "text-subtle".to_string() }
                     } else {
-                        ChevronRightIcon { size: IconSize::Small, class: "text-gray-400".to_string() }
+                        ChevronRightIcon { size: IconSize::Small, class: "text-subtle".to_string() }
                     }
-                    h3 { class: "text-lg font-medium text-gray-900 dark:text-white", "{props.title}" }
+                    h3 { class: "text-lg font-medium text-content", "{props.title}" }
                     if let Some(count) = props.count {
                         span {
-                            class: "ml-1 rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs font-medium text-gray-600 dark:text-gray-300",
+                            class: "ml-1 rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium text-muted",
                             "{count}"
                         }
                     }

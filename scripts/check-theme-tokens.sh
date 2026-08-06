@@ -18,8 +18,8 @@
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
-# dark: optional prefix; bg-white, or {bg,text,border,ring,divide}-gray-NNN.
-pattern='(dark:)?(bg-white\b|(bg|text|border|ring|divide)-gray-[0-9]{2,3})'
+# dark: optional prefix; bg-white, or {bg,text,border,ring,divide,placeholder}-gray-NNN.
+pattern='(dark:)?(bg-white\b|(bg|text|border|ring|divide|placeholder)-gray-[0-9]{2,3})'
 
 hits=$(grep -rnE "$pattern" src --include='*.rs' \
   | grep -vE 'src/modules/theme/|src/components/theme_picker\.rs' \

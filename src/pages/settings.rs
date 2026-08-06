@@ -911,14 +911,14 @@ fn ImportPanel(tenant_name: String) -> Element {
                 div { class: "space-y-1",
                     label {
                         r#for: "import_file",
-                        class: "block text-sm font-medium text-gray-700 dark:text-gray-300",
+                        class: "block text-sm font-medium text-content",
                         "Import file"
                     }
                     input {
                         id: "import_file",
                         r#type: "file",
                         accept: "application/json,.json",
-                        class: "block w-full text-sm text-gray-700 dark:text-gray-300 file:mr-3 file:rounded-md file:border-0 file:bg-gray-100 dark:file:bg-gray-700 file:px-3 file:py-1.5 file:text-sm file:font-medium",
+                        class: "block w-full text-sm text-content file:mr-3 file:rounded-md file:border-0 file:bg-surface-2 file:px-3 file:py-1.5 file:text-sm file:font-medium",
                         onchange: move |evt: FormEvent| {
                             error.set(String::new());
                             summary.set(None);
@@ -1508,7 +1508,7 @@ fn MaxHoursPerDayForm(initial: u32) -> Element {
                         value.set(e.value());
                     },
                 }
-                p { class: "text-sm text-gray-500 dark:text-gray-400",
+                p { class: "text-sm text-muted",
                     "A user's time entries for any one day cannot total more than this many hours. The log-time screen warns before submitting once a day's entries would exceed the cap."
                 }
                 div {

@@ -4102,7 +4102,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
                 // so only one company source is ever submitted.
                 div { class: "space-y-2",
                     div { class: "flex items-center justify-between",
-                        span { class: "block text-sm font-medium text-gray-700 dark:text-gray-300", "Company" }
+                        span { class: "block text-sm font-medium text-content", "Company" }
                         button {
                             r#type: "button",
                             class: "inline-flex items-center text-sm text-blue-600 hover:text-blue-500",
@@ -4130,7 +4130,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
                             value: freeform_company.read().clone(),
                             oninput: move |e: FormEvent| freeform_company.set(e.value()),
                         }
-                        p { class: "text-xs text-gray-500 dark:text-gray-400",
+                        p { class: "text-xs text-muted",
                             "Typed company name only. Not linked to a CRM company record."
                         }
                     } else {
