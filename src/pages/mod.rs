@@ -36,6 +36,7 @@ pub mod projects;
 pub mod quotes;
 pub mod reports;
 pub mod request_form;
+pub mod request_links;
 pub mod settings;
 pub mod sla;
 pub mod system_status;
