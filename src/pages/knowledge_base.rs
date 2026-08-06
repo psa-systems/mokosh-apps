@@ -27,9 +27,9 @@ use crate::components::{
     TableHeader, TableLoading, TableRow, TrashIcon,
 };
 use crate::modules::kb::{
-    CreateKbArticleRequest, CreateKbCategoryRequest, KbArticle, KbArticleFeedback,
-    KbArticleVersion, KbCategory, TopTicketDrivingArticle, UpdateKbArticleRequest,
-    UpdateKbCategoryRequest,
+    ArticleMeasuredDuration, CreateKbArticleRequest, CreateKbCategoryRequest, KbArticle,
+    KbArticleFeedback, KbArticleVersion, KbCategory, TopTicketDrivingArticle,
+    UpdateKbArticleRequest, UpdateKbCategoryRequest,
 };
 use crate::utils::url::urlencoding_minimal;
 use crate::utils::{FormGuard, Paginated, Rule};
@@ -1382,6 +1382,11 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                             }
                         }
                         CollapsibleRail { side: RailSide::Right, collapsed: right_collapsed, open_overlay,
+                            // PMS-732: what the tracked time says this
+                            // procedure actually takes. Sits above the version
+                            // history because it is the number the person
+                            // about to do the work came here for.
+                            MeasuredDurationCard { article_id: props.id.clone() }
                             VersionHistoryCard {
                                 article_id: props.id.clone(),
                                 versions_resource,
@@ -1394,6 +1399,79 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                     }
                 }
             },
+        }
+    }
+}
+
+/// PMS-732: the measured duration for the request types this article
+/// documents.
+///
+/// Reads `GET /kb/articles/{id}/measured-duration`, which aggregates the time
+/// tracked against tickets that came from a client request form. Ad-hoc
+/// tickets in the same category are excluded server-side, so this is a
+/// measurement of the REQUEST TYPE rather than of the category.
+///
+/// The server defaults to a trailing 90 day window (an estimate needs a
+/// sample, unlike the calendar-month accounting `/reports/request-types`
+/// does), and always states the period it covered, which is rendered here so
+/// the number is never ambiguous.
+#[component]
+fn MeasuredDurationCard(article_id: String) -> Element {
+    let measured = use_resource(move || {
+        let id = article_id.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _token = crate::hooks::fetch::api::current_access_token()?;
+            crate::hooks::fetch::api::get_authed_typed::<ArticleMeasuredDuration>(&format!(
+                "/kb/articles/{id}/measured-duration"
+            ))
+            .await
+            .ok()
+        }
+    });
+
+    let snap = measured.read_unchecked();
+
+    rsx! {
+        Card { title: "Measured duration",
+            match &*snap {
+                None => rsx! {
+                    p { class: "text-sm text-muted", "Loading..." }
+                },
+                // A failed fetch is not "no data": saying "no time measured
+                // yet" when the request simply failed would be a confident
+                // claim about something we did not manage to look at.
+                Some(None) => rsx! {
+                    p { class: "text-sm text-muted", "Could not load the measured duration." }
+                },
+                Some(Some(m)) => {
+                    match m.average_minutes {
+                        None => rsx! {
+                            p { class: "text-sm text-content", "No time measured yet." }
+                            p { class: "mt-1 text-xs text-subtle",
+                                "Once requests using this procedure have time tracked against them, the typical duration appears here."
+                            }
+                        },
+                        Some(avg) => {
+                            let sample = m.ticket_count.unwrap_or(0);
+                            let total = m.total_minutes.unwrap_or(0);
+                            let avg_label = crate::utils::duration::fmt_duration(avg.round() as i64);
+                            let total_label = crate::utils::duration::fmt_duration(total);
+                            let noun = if sample == 1 { "request" } else { "requests" };
+                            rsx! {
+                                p { class: "text-2xl font-semibold text-content", "{avg_label}" }
+                                p { class: "text-xs text-subtle", "typical, per request" }
+                                p { class: "mt-3 text-sm text-muted",
+                                    "{total_label} across {sample} {noun}"
+                                }
+                                p { class: "mt-1 text-xs text-subtle",
+                                    "Measured {m.from} to {m.to}"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
