@@ -969,6 +969,32 @@ pub mod api {
         handle_response(resp).await
     }
 
+    /// PMS-731: typed PATCH. The forms surface (and the rest of the server's
+    /// partial-update routes) is PATCH rather than PUT, and only the
+    /// `String`-error `patch_authed` existed, which loses the per-field 422
+    /// envelope the editor needs to report a bad field set.
+    #[cfg(feature = "web")]
+    pub async fn patch_authed_typed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let t = current_access_token().ok_or_else(|| ApiError::Status {
+            code: 401,
+            message: String::new(),
+            fields: Vec::new(),
+        })?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::patch(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
     #[cfg(feature = "web")]
     pub async fn delete_authed_typed(path: &str) -> Result<(), ApiError> {
         let t = current_access_token().ok_or_else(|| ApiError::Status {

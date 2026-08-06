@@ -632,6 +632,10 @@ pub enum Route {
     // every build since the server endpoints exist regardless of tenancy.
     #[route("/admin/audit")]
     AuditLog {},
+    // PMS-731: request-form builder. Admin config, so it lives with the
+    // other /admin/* surfaces and is role-gated the same way.
+    #[route("/admin/forms")]
+    FormsBuilder {},
     #[route("/admin/sla")]
     SlaManagement {},
     #[route("/admin/team")]
@@ -1274,6 +1278,11 @@ fn ButtonShowcase() -> Element {
 #[component]
 fn AuditLog() -> Element {
     rsx! { audit_log::AuditLogPage {} }
+}
+
+#[component]
+fn FormsBuilder() -> Element {
+    rsx! { forms::FormsBuilderPage {} }
 }
 
 #[component]

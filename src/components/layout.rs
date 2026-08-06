@@ -386,6 +386,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                         NavItem { to: Route::Team {}, icon: rsx!(UserGroupIcon {}), label: "Team", collapsed }
                     }
                     NavItem { to: Route::AuditLog {}, icon: rsx!(ClipboardDocumentListIcon {}), label: "Audit Log", collapsed }
+                    NavItem { to: Route::FormsBuilder {}, icon: rsx!(ClipboardDocumentListIcon {}), label: "Request Forms", collapsed }
                     NavItem { to: Route::SlaManagement {}, icon: rsx!(ShieldCheckIcon {}), label: "SLA Management", collapsed }
                     // MAPPS-169: single entry into the centralized Settings hub.
                     NavItem { to: Route::SettingsHome {}, icon: rsx!(CogIcon {}), label: "Settings", collapsed }
