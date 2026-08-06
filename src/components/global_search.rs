@@ -271,7 +271,7 @@ pub fn GlobalSearch() -> Element {
             // the backdrop (z-30) so it stays clickable while expanded.
             button {
                 r#type: "button",
-                class: "relative z-30 p-2 rounded-full text-gray-400 hover:text-white hover:bg-gray-700",
+                class: "relative z-30 p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2",
                 aria_label: "Search",
                 title: "Search",
                 aria_expanded: if expanded() { "true" } else { "false" },

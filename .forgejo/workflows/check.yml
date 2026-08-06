@@ -43,6 +43,11 @@ jobs:
       - name: Runner-label guard
         run: bash scripts/check-runner-labels.sh
 
+      # MAPPS-401: enforce the MAPPS-259 semantic tokens in CI. Without this
+      # step the guard only ran locally, and hardcoded grays drifted back in.
+      - name: Theme-token guard
+        run: bash scripts/check-theme-tokens.sh
+
       - name: Check formatting
         run: cargo fmt --all --check
 

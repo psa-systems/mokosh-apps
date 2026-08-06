@@ -1429,7 +1429,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 // MAPPS-245: explain why the Add Task control is
                                 // disabled so the state reads as intentional.
                                 if is_cancelled {
-                                    div { class: "mb-4 px-3 py-2 rounded-md text-sm bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300",
+                                    div { class: "mb-4 px-3 py-2 rounded-md text-sm bg-surface-2 text-muted",
                                         "This project is cancelled. Adding tasks is disabled."
                                     }
                                 }
