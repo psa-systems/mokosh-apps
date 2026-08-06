@@ -1293,11 +1293,11 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                 .unwrap_or(false)
         })
         .count();
-    let progress = if total_tasks > 0 {
-        (completed_tasks * 100 / total_tasks) as u32
-    } else {
-        0
-    };
+    // `checked_div` yields None on a zero divisor, which is the same "no
+    // tasks means no progress" answer the explicit guard gave.
+    let progress = (completed_tasks * 100)
+        .checked_div(total_tasks)
+        .unwrap_or(0) as u32;
 
     rsx! {
         crate::components::ConfirmDialog {
