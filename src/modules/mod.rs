@@ -6,6 +6,7 @@ pub mod billing;
 pub mod calendar;
 pub mod contacts;
 pub mod contracts;
+pub mod forms;
 pub mod kb;
 pub mod oidc;
 pub mod quotes;
