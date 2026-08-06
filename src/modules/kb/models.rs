@@ -164,3 +164,25 @@ pub struct TopTicketDrivingArticle {
     pub title: String,
     pub ticket_count: i64,
 }
+
+/// PMS-732: what the tracked time says a request documented by this article
+/// actually takes (`GET /kb/articles/{id}/measured-duration`).
+///
+/// Every measurement field is `Option` and they move together: an article no
+/// request type has tracked time against reports `null`, not zero. Zero
+/// minutes would be a measurement ("these take no time"), and rendering that
+/// as a confident estimate is worse than the hand-written guess this replaces,
+/// so the card treats null as "no data yet" and says so.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct ArticleMeasuredDuration {
+    /// Start of the window the figure covers. Always present, so the number
+    /// is never ambiguous about what it measured.
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub ticket_count: Option<i64>,
+    #[serde(default)]
+    pub total_minutes: Option<i64>,
+    #[serde(default)]
+    pub average_minutes: Option<f64>,
+}
