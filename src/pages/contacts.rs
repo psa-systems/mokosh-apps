@@ -1625,6 +1625,13 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                 company_id: company_id_str.clone(),
                                 invoices_resource,
                             }
+                            // PMS-730: request forms sent to this client,
+                            // and the control to send another. Self-fetching,
+                            // so it needs no resource threaded from here.
+                            crate::pages::request_links::CompanyRequestFormsCard {
+                                company_id: company_id_str.clone(),
+                                company_name: company.name.clone(),
+                            }
                             // Assets (MAPPS-195)
                             CompanyAssetsCard {
                                 company_id: company_id_str.clone(),

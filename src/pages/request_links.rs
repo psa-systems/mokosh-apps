@@ -1,0 +1,438 @@
+//! PMS-730: sending a client a request-form link, and seeing what became of
+//! the ones already sent.
+//!
+//! Lives on the company detail page, because the workflow is "I am looking at
+//! this client and I need something from them" rather than "I am looking at a
+//! form". mokosh-server issues the link and emails it
+//! (`src/modules/forms/request_links.rs`); this surface chooses the form and
+//! the recipient.
+//!
+//! In its own module rather than inside `contacts.rs`, which is already the
+//! largest page in the repo at ~4.8k lines. The card owns its own resource so
+//! placing it costs the detail page one line and it can refresh itself after
+//! a send.
+
+use chrono::Utc;
+use dioxus::prelude::*;
+use serde::Deserialize;
+use uuid::Uuid;
+
+use crate::components::{
+    Badge, BadgeVariant, Button, ButtonVariant, CollapsibleCard, ErrorBanner, Input, Select,
+    SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
+    TableRow,
+};
+use crate::modules::forms::{
+    FormDefinition, IssueRequestLinkRequest, RequestLink, RequestLinkStatus,
+};
+
+/// Contacts offered as recipients. A company's contact list is bounded, so a
+/// plain `Select` is right per docs/form-conventions.md; this deliberately does
+/// NOT reuse the detail page's contacts resource, which is capped at 5 rows for
+/// its preview card and would silently hide the rest from the picker.
+const CONTACT_PAGE_SIZE: usize = 200;
+
+#[derive(Clone, Debug, Deserialize)]
+struct PickerContact {
+    id: Uuid,
+    #[serde(default)]
+    first_name: String,
+    #[serde(default)]
+    last_name: String,
+    #[serde(default)]
+    email: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct PickerContacts {
+    #[serde(default)]
+    data: Vec<PickerContact>,
+}
+
+#[component]
+pub fn CompanyRequestFormsCard(company_id: String, company_name: String) -> Element {
+    let links_company_id = company_id.clone();
+    let mut links = use_resource(move || {
+        let id = links_company_id.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
+            let _token = crate::hooks::fetch::api::current_access_token()?;
+            crate::hooks::fetch::api::get_authed_typed::<Vec<RequestLink>>(&format!(
+                "/form-request-links?company_id={id}"
+            ))
+            .await
+            .ok()
+        }
+    });
+
+    let mut sending = use_signal(|| false);
+    let snap = links.read_unchecked();
+    let count = match &*snap {
+        Some(Some(rows)) => Some(rows.len() as u64),
+        _ => None,
+    };
+    let can_mutate = crate::hooks::use_can_mutate();
+    let now = Utc::now();
+
+    rsx! {
+        CollapsibleCard {
+            title: "Request forms",
+            count,
+            actions: rsx! {
+                Button {
+                    variant: ButtonVariant::Link,
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't send while the server is unreachable".to_string()),
+                    onclick: move |_| sending.set(true),
+                    "Send a form"
+                }
+            },
+            padding: false,
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Form" }
+                        TableHeader { "Sent to" }
+                        TableHeader { "Status" }
+                        TableHeader { "Expires" }
+                    }
+                }
+                match &*snap {
+                    None => rsx! { TableLoading { columns: 4, rows: 3 } },
+                    Some(None) => rsx! {
+                        TableEmpty { columns: 4, message: "Could not load request forms.".to_string() }
+                    },
+                    Some(Some(rows)) if rows.is_empty() => rsx! {
+                        TableEmpty {
+                            columns: 4,
+                            message: "No request forms sent to this client yet.".to_string(),
+                        }
+                    },
+                    Some(Some(rows)) => rsx! {
+                        TableBody {
+                            for link in rows.clone().into_iter() {
+                                {
+                                    let key = link.id.to_string();
+                                    let status = link.status(now);
+                                    let variant = match status {
+                                        RequestLinkStatus::Submitted => BadgeVariant::Green,
+                                        RequestLinkStatus::Awaiting => BadgeVariant::Blue,
+                                        RequestLinkStatus::Expired => BadgeVariant::Gray,
+                                    };
+                                    let expires = crate::utils::datetime::format_user_datetime(link.expires_at, None);
+                                    rsx! {
+                                        TableRow { key: "{key}",
+                                            TableCell { span { class: "font-medium text-content", "{link.form_name}" } }
+                                            TableCell { class: "text-muted", "{link.recipient_email}" }
+                                            TableCell {
+                                                Badge { variant, "{status.label()}" }
+                                            }
+                                            TableCell { class: "text-muted", "{expires}" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            }
+        }
+
+        if sending() {
+            SendRequestLinkModal {
+                company_id: company_id.clone(),
+                company_name: company_name.clone(),
+                onclose: move |_| sending.set(false),
+                onsent: move |_| {
+                    sending.set(false);
+                    links.restart();
+                },
+            }
+        }
+    }
+}
+
+#[component]
+fn SendRequestLinkModal(
+    company_id: String,
+    company_name: String,
+    onclose: EventHandler<()>,
+    onsent: EventHandler<()>,
+) -> Element {
+    let mut form_id = use_signal(String::new);
+    let mut contact_id = use_signal(String::new);
+    let mut email = use_signal(String::new);
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(String::new);
+    let mut form_error = use_signal(String::new);
+    let mut email_error = use_signal(String::new);
+
+    // Only forms a client could actually be sent: a retired definition refuses
+    // submissions server-side, so offering it would issue a link that dies on
+    // arrival.
+    let forms = use_resource(|| async {
+        let _token = crate::hooks::fetch::api::current_access_token()?;
+        crate::hooks::fetch::api::get_authed_typed::<Vec<FormDefinition>>("/forms?active_only=true")
+            .await
+            .ok()
+    });
+    let form_options: Vec<SelectOption> = match &*forms.read_unchecked() {
+        Some(Some(list)) => list
+            .iter()
+            .map(|f| SelectOption::new(f.id.to_string(), f.name.clone()))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let no_forms = matches!(&*forms.read_unchecked(), Some(Some(list)) if list.is_empty());
+
+    let contacts_company = company_id.clone();
+    let contacts = use_resource(move || {
+        let id = contacts_company.clone();
+        async move {
+            let _token = crate::hooks::fetch::api::current_access_token()?;
+            crate::hooks::fetch::api::get_authed_typed::<PickerContacts>(&format!(
+                "/contacts/companies/{id}/contacts?per_page={CONTACT_PAGE_SIZE}"
+            ))
+            .await
+            .ok()
+        }
+    });
+    let contact_rows: Vec<PickerContact> = match &*contacts.read_unchecked() {
+        Some(Some(page)) => page.data.clone(),
+        _ => Vec::new(),
+    };
+    // A contact with no email cannot receive the link, so it is not offered:
+    // choosing one would only produce a server 400 telling the agent to supply
+    // an address they already could have typed.
+    let contact_options: Vec<SelectOption> = contact_rows
+        .iter()
+        .filter(|c| c.email.as_deref().map(|e| !e.is_empty()).unwrap_or(false))
+        .map(|c| {
+            let name = format!("{} {}", c.first_name, c.last_name);
+            let name = name.trim().to_string();
+            let label = if name.is_empty() {
+                c.email.clone().unwrap_or_default()
+            } else {
+                format!("{name} ({})", c.email.clone().unwrap_or_default())
+            };
+            SelectOption::new(c.id.to_string(), label)
+        })
+        .collect();
+
+    let rows_for_pick = contact_rows.clone();
+    let company_uuid = Uuid::parse_str(&company_id).ok();
+
+    let handle_send = move |_| {
+        if saving() {
+            return;
+        }
+        form_error.set(String::new());
+        email_error.set(String::new());
+        error.set(String::new());
+        let mut failed = false;
+
+        let Some(company_uuid) = company_uuid else {
+            error.set("This company could not be identified. Reload the page.".to_string());
+            return;
+        };
+        let form_uuid = Uuid::parse_str(form_id.read().trim()).ok();
+        if form_uuid.is_none() {
+            form_error.set("Choose a form to send.".to_string());
+            failed = true;
+        }
+        let chosen_contact = Uuid::parse_str(contact_id.read().trim()).ok();
+        let typed_email = email.read().trim().to_string();
+        // The server needs one of the two. A contact carries its own address,
+        // so the email is only required when sending to someone who is not a
+        // contact yet.
+        if chosen_contact.is_none() && typed_email.is_empty() {
+            email_error.set("Choose a contact or enter an email address.".to_string());
+            failed = true;
+        }
+        if failed {
+            return;
+        }
+
+        saving.set(true);
+        let req = IssueRequestLinkRequest {
+            form_definition_id: form_uuid.expect("checked above"),
+            company_id: company_uuid,
+            contact_id: chosen_contact,
+            recipient_email: (!typed_email.is_empty()).then_some(typed_email),
+        };
+
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match crate::hooks::fetch::api::post_authed_typed::<RequestLink, _>(
+                    "/form-request-links",
+                    &req,
+                )
+                .await
+                {
+                    Ok(link) => {
+                        crate::hooks::push_toast(
+                            crate::components::AlertType::Success,
+                            format!("Request form sent to {}.", link.recipient_email),
+                        );
+                        onsent.call(());
+                    }
+                    Err(err) => {
+                        crate::hooks::push_api_error(&err);
+                        // The server routes a bad address to `recipient_email`;
+                        // anything else is a whole-request problem.
+                        match err.field_message("recipient_email") {
+                            Some(m) => email_error.set(m),
+                            None => error.set(err.user_message()),
+                        }
+                    }
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    let can_mutate = crate::hooks::use_can_mutate();
+    let footer = rsx! {
+        Button { variant: ButtonVariant::Secondary, onclick: move |_| onclose.call(()), "Cancel" }
+        Button {
+            variant: ButtonVariant::Primary,
+            loading: saving(),
+            disabled: !can_mutate || no_forms,
+            title: if no_forms {
+                Some("Define a request form first".to_string())
+            } else if !can_mutate {
+                Some("Can't send while the server is unreachable".to_string())
+            } else {
+                None
+            },
+            onclick: handle_send,
+            "Send link"
+        }
+    };
+
+    rsx! {
+        crate::components::Modal {
+            open: true,
+            title: format!("Send a request form to {company_name}"),
+            size: crate::components::ModalSize::Medium,
+            onclose: move |_| onclose.call(()),
+            footer,
+
+            div { class: "space-y-4",
+                if !error().is_empty() {
+                    ErrorBanner { "{error()}" }
+                }
+
+                if no_forms {
+                    ErrorBanner {
+                        "No active request forms exist yet. Define one under Request Forms first."
+                    }
+                }
+
+                Select {
+                    name: "form_definition_id",
+                    label: "Form",
+                    options: form_options,
+                    value: form_id(),
+                    placeholder: "Choose a form".to_string(),
+                    required: true,
+                    disabled: saving() || no_forms,
+                    error: form_error(),
+                    help: "The client is asked only for what this form defines.".to_string(),
+                    onchange: move |e: FormEvent| form_id.set(e.value()),
+                }
+
+                Select {
+                    name: "contact_id",
+                    label: "Contact",
+                    options: contact_options,
+                    value: contact_id(),
+                    placeholder: "Someone else".to_string(),
+                    disabled: saving(),
+                    help: "Only contacts with an email address are listed.".to_string(),
+                    onchange: move |e: FormEvent| {
+                        let v = e.value();
+                        // Filling the address from the chosen contact keeps the
+                        // agent's eye on where this is actually going, and
+                        // leaves it editable for a one-off override.
+                        if let Some(c) = rows_for_pick.iter().find(|c| c.id.to_string() == v) {
+                            email.set(c.email.clone().unwrap_or_default());
+                        } else if v.is_empty() {
+                            email.set(String::new());
+                        }
+                        email_error.set(String::new());
+                        contact_id.set(v);
+                    },
+                }
+
+                Input {
+                    name: "recipient_email",
+                    label: "Email address",
+                    r#type: "email".to_string(),
+                    value: email(),
+                    disabled: saving(),
+                    error: email_error(),
+                    help: "Where the link is sent. Overrides the contact's address if both are set.".to_string(),
+                    oninput: move |e: FormEvent| {
+                        email_error.set(String::new());
+                        email.set(e.value());
+                    },
+                }
+
+                p { class: "text-xs text-muted",
+                    "The link can be submitted once and expires in 7 days. Their answers arrive as a ticket for this client."
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    fn link(used: bool, expires_in: Duration) -> RequestLink {
+        RequestLink {
+            id: Uuid::nil(),
+            form_definition_id: Uuid::nil(),
+            form_name: "New starter".into(),
+            company_id: Uuid::nil(),
+            company_name: "Acme".into(),
+            contact_id: None,
+            recipient_email: "client@example.com".into(),
+            expires_at: Utc::now() + expires_in,
+            used_at: used.then(Utc::now),
+            submission_id: None,
+        }
+    }
+
+    #[test]
+    fn a_live_unused_link_is_awaiting() {
+        assert_eq!(
+            link(false, Duration::days(3)).status(Utc::now()),
+            RequestLinkStatus::Awaiting
+        );
+    }
+
+    #[test]
+    fn an_unused_past_expiry_link_is_expired() {
+        assert_eq!(
+            link(false, Duration::days(-1)).status(Utc::now()),
+            RequestLinkStatus::Expired
+        );
+    }
+
+    #[test]
+    fn submitted_wins_over_expired() {
+        // A link that was used and has since passed its expiry is still a
+        // request that came in. Reporting it as expired would read as though
+        // the client never replied.
+        assert_eq!(
+            link(true, Duration::days(-1)).status(Utc::now()),
+            RequestLinkStatus::Submitted
+        );
+    }
+}

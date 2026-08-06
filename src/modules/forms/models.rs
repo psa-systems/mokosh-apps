@@ -12,6 +12,7 @@
 // `Result`).
 #![allow(clippy::should_implement_trait)]
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -191,4 +192,77 @@ pub struct UpdateFormDefinitionRequest {
     pub rules: Vec<FormRule>,
     pub is_active: bool,
     pub fields: Vec<UpsertFormField>,
+}
+
+// ============================================================================
+// PMS-730: REQUEST LINKS
+// ============================================================================
+
+/// A link issued to a client, as the agent surface sees it.
+///
+/// Deliberately has no token field, and the server never sends one: the token
+/// is a credential for the recipient, and echoing it into an agent response
+/// would put it in logs and browser history. A link that needs resending is
+/// reissued, not recovered.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct RequestLink {
+    pub id: Uuid,
+    pub form_definition_id: Uuid,
+    #[serde(default)]
+    pub form_name: String,
+    pub company_id: Uuid,
+    #[serde(default)]
+    pub company_name: String,
+    #[serde(default)]
+    pub contact_id: Option<Uuid>,
+    #[serde(default)]
+    pub recipient_email: String,
+    pub expires_at: DateTime<Utc>,
+    #[serde(default)]
+    pub used_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub submission_id: Option<Uuid>,
+}
+
+impl RequestLink {
+    /// What has become of this link. Submitted wins over expired: a link that
+    /// was used and has since passed its expiry is still a request that came
+    /// in, and reporting it as expired would read as though the client never
+    /// replied.
+    pub fn status(&self, now: DateTime<Utc>) -> RequestLinkStatus {
+        if self.used_at.is_some() {
+            RequestLinkStatus::Submitted
+        } else if self.expires_at <= now {
+            RequestLinkStatus::Expired
+        } else {
+            RequestLinkStatus::Awaiting
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestLinkStatus {
+    Awaiting,
+    Submitted,
+    Expired,
+}
+
+impl RequestLinkStatus {
+    pub fn label(&self) -> &'static str {
+        match self {
+            RequestLinkStatus::Awaiting => "Awaiting reply",
+            RequestLinkStatus::Submitted => "Submitted",
+            RequestLinkStatus::Expired => "Expired",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct IssueRequestLinkRequest {
+    pub form_definition_id: Uuid,
+    pub company_id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contact_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recipient_email: Option<String>,
 }
