@@ -1701,7 +1701,7 @@ fn build_timesheet_history(
     }
     // Stable oldest-first sort; equal timestamps keep insertion order (a
     // entry's Logged before its Edited).
-    events.sort_by(|a, b| a.at.cmp(&b.at));
+    events.sort_by_key(|e| e.at);
     events
 }
 
