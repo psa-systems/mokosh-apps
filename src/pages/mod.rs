@@ -22,6 +22,7 @@ pub mod contracts;
 pub mod dashboard;
 pub mod dashboards;
 pub mod dashboards_view;
+pub mod forms;
 pub mod home;
 pub mod knowledge_base;
 pub mod login;
