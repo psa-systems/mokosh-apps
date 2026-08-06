@@ -270,6 +270,13 @@ pub enum Route {
     #[route("/invite/:token")]
     InviteAccept { token: String },
 
+    // PMS-730: the destination of the client request-form email
+    // mokosh-server sends when an agent issues a request link. Public by
+    // construction: the emailed single-use token in the path is the only
+    // credential the visitor has, and they are a client with no session.
+    #[route("/request-forms/:token")]
+    RequestForm { token: String },
+
     #[route("/signup")]
     Signup {},
 
@@ -1301,6 +1308,11 @@ fn PortalSetPassword() -> Element {
 }
 
 #[component]
+fn RequestForm(token: String) -> Element {
+    rsx! { request_form::RequestFormPage { token } }
+}
+
+#[component]
 fn PortalTicketList() -> Element {
     rsx! { portal::PortalTicketListPage {} }
 }
@@ -1365,6 +1377,12 @@ mod emailed_link_routes {
     const EMAILED_LINKS: &[(&str, &str)] = &[
         // src/modules/contacts/service.rs: portal-access grant setup link.
         ("contacts::send_setup_email", "/portal/set-password"),
+        // src/modules/forms/request_links.rs: client request-form link
+        // (PMS-730). The token is `{token_id}.{secret}`.
+        (
+            "forms::issue_request_link",
+            "/request-forms/2f1c2f1e-0000-4000-8000-00000000abcd.Zt4kQ1p9Zt4kQ1p9Zt4kQ1p9Zt4kQ1p9",
+        ),
         // src/modules/quotes/service.rs: client quote sign-off link.
         (
             "quotes::send_quote_ready",
