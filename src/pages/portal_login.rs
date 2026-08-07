@@ -35,15 +35,6 @@ struct PortalLoginBody {
     password: String,
 }
 
-/// PMS-729: response body for `GET /api/v1/portal/host`. The SPA fetches
-/// this on mount to decide whether to hide the slug input and to paint
-/// MSP-owned branding above the credential fields.
-#[derive(Deserialize, Clone, PartialEq)]
-struct PortalHostHint {
-    name: String,
-    logo_url: Option<String>,
-}
-
 /// The field of mokosh-server's `PortalLoginResponse` this page consumes.
 /// `expires_at` and `contact` are ignored: the token is memory-only and the
 /// portal pages read their own data from the API.
@@ -62,29 +53,21 @@ pub fn PortalLoginPage() -> Element {
     let mut password = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
-    // PMS-729: branding hint. `None` while the fetch is in flight or
-    // when the endpoint 404'd (i.e. this SPA is on a legacy host with no
-    // Host-derived tenant). `Some(_)` when the current host resolves to
-    // an active tenant - the slug input is hidden and the MSP name +
-    // logo paint above the credential fields.
-    let mut host_hint: Signal<Option<PortalHostHint>> = use_signal(|| None);
-
+    // PMS-729: kick the shared `/portal/host` branding fetch. The result
+    // lives in `PORTAL_HOST_HINT` so `PortalLayout` can paint the same
+    // MSP name + logo after login without re-fetching. Idempotent - the
+    // helper latches to a one-shot flag so both this page and the layout
+    // can call it during a session without duplicating the request.
     #[cfg(feature = "web")]
-    use_future(move || async move {
-        if !crate::hooks::fetch::api::on_portal_host() {
-            return;
-        }
-        use crate::hooks::fetch::api::ApiError;
-        match crate::hooks::fetch::api::get_typed::<PortalHostHint>("/portal/host").await {
-            Ok(hint) => host_hint.set(Some(hint)),
-            // 404 is the fail-closed shape for "not a portal host". Any
-            // other error (network, 5xx) also leaves the branding block
-            // unset so the page still renders the legacy layout.
-            Err(ApiError::Status { code: 404, .. }) => {}
-            Err(_) => {}
-        }
-    });
+    use_hook(crate::hooks::portal_branding::ensure_portal_branding_fetch);
 
+    // PMS-729: read the shared branding hint. The reactive read here
+    // triggers a re-render when the fetch flips it from `None` to
+    // `Some(_)`, so the slug input hides and the branding block appears
+    // without the page having to poll.
+    let hint_snapshot = crate::hooks::portal_branding::use_portal_host_hint();
+
+    let host_derived_for_submit = hint_snapshot.is_some();
     let mut handle_submit = move |_| {
         if saving() {
             return;
@@ -92,7 +75,7 @@ pub fn PortalLoginPage() -> Element {
         // PMS-729: when the SPA is on a portal host, the server resolves
         // the slug from Host; the user does not need to type one and the
         // slug field is hidden. On a legacy host the slug is required.
-        let host_derived = host_hint.read().is_some();
+        let host_derived = host_derived_for_submit;
         let slug = tenant.read().trim().to_string();
         let em = email.read().trim().to_string();
         let pw = password.read().clone();
@@ -158,11 +141,6 @@ pub fn PortalLoginPage() -> Element {
             saving.set(false);
         });
     };
-
-    // PMS-729: read the branding hint once for the render. `.read()` gives
-    // us a borrowed view; clone the Option so the reactive borrow drops
-    // before the rsx! macro body runs.
-    let hint_snapshot = host_hint.read().clone();
 
     rsx! {
         div { class: "min-h-screen bg-app flex items-center justify-center px-4",

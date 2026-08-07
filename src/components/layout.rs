@@ -1101,18 +1101,43 @@ pub struct PortalLayoutProps {
 
 #[component]
 pub fn PortalLayout(props: PortalLayoutProps) -> Element {
+    // PMS-729: nudge the shared branding fetch on mount so a customer who
+    // lands on `/portal/tickets` directly (bypassing the login page) still
+    // sees the MSP name / logo in the header. Idempotent; on a legacy host
+    // (`on_portal_host()` false) it is a no-op.
+    #[cfg(feature = "web")]
+    use_hook(crate::hooks::portal_branding::ensure_portal_branding_fetch);
+    let hint = crate::hooks::portal_branding::use_portal_host_hint();
+
     rsx! {
         div { class: "min-h-screen bg-app",
             // Portal header
             header { class: "bg-surface shadow",
                 div { class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
                     div { class: "flex items-center justify-between h-16",
-                        // Logo
+                        // PMS-729: MSP brand block. When the current host
+                        // resolves to an active tenant, show its logo (if
+                        // any) plus its display name; on a legacy host or
+                        // before the fetch completes, fall back to the
+                        // generic "Client Portal" wordmark.
                         Link {
                             to: Route::PortalHome {},
-                            class: "flex items-center",
-                            span { class: "text-xl font-bold text-accent",
-                                "Client Portal"
+                            class: "flex items-center gap-3",
+                            if let Some(h) = &hint {
+                                if let Some(url) = &h.logo_url {
+                                    img {
+                                        src: "{url}",
+                                        alt: "{h.name}",
+                                        class: "h-8 w-auto",
+                                    }
+                                }
+                                span { class: "text-xl font-bold text-accent",
+                                    "{h.name}"
+                                }
+                            } else {
+                                span { class: "text-xl font-bold text-accent",
+                                    "Client Portal"
+                                }
                             }
                         }
 
