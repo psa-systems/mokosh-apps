@@ -228,6 +228,27 @@ pub mod api {
         false
     }
 
+    /// PMS-729: the current browser-visible host (`window.location.host`,
+    /// including port). Attached as `X-Forwarded-Host` on every
+    /// portal-side fetch below so the mokosh-server host-to-tenant
+    /// extractor sees the real `{slug}.client.<apex>` value even when a
+    /// dev reverse proxy rewrites the `Host` header (Dioxus 0.7.7's
+    /// `[[web.proxy]]` reaches the backend as `Host: server:8080`, which
+    /// would otherwise defeat the extractor). In production, Traefik
+    /// resets `X-Forwarded-Host` from the browser's Host on every
+    /// forwarded request, so the header the SPA sets is either
+    /// overwritten by the reverse proxy (prod) or the sole source of the
+    /// original host (dev). Safe either way: the extractor fails closed
+    /// on any slug/tenant miss, so a spoofed value cannot escalate.
+    #[cfg(feature = "web")]
+    fn current_forwarded_host() -> Option<String> {
+        web_sys::window()?
+            .location()
+            .host()
+            .ok()
+            .filter(|s| !s.is_empty())
+    }
+
     // Single-threaded global access-token holder. WASM is strictly
     // single-threaded so a `RefCell` is safe; we don't need a mutex.
     // The token lives only in memory: it is wiped on logout and never
@@ -970,8 +991,11 @@ pub mod api {
         body: &B,
     ) -> Result<T, ApiError> {
         let url = format!("{}{}", api_base(), path);
-        let resp = Request::post(&url)
-            .header("Content-Type", "application/json")
+        let mut req = Request::post(&url).header("Content-Type", "application/json");
+        if let Some(host) = current_forwarded_host() {
+            req = req.header("X-Forwarded-Host", &host);
+        }
+        let resp = req
             .json(body)
             .map_err(|e| ApiError::Network(e.to_string()))?
             .send()
@@ -988,11 +1012,11 @@ pub mod api {
     #[cfg(feature = "web")]
     pub async fn get_typed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
         let url = format!("{}{}", api_base(), path);
-        let resp = Request::get(&url)
-            .header("Content-Type", "application/json")
-            .send()
-            .await
-            .map_err(network_err)?;
+        let mut req = Request::get(&url).header("Content-Type", "application/json");
+        if let Some(host) = current_forwarded_host() {
+            req = req.header("X-Forwarded-Host", &host);
+        }
+        let resp = req.send().await.map_err(network_err)?;
         handle_response(resp).await
     }
 
