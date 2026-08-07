@@ -119,6 +119,27 @@ pub mod api {
     #[cfg(feature = "web")]
     use serde::{de::DeserializeOwned, Serialize};
 
+    /// PMS-729: read the configured client-portal host suffix, checking
+    /// (in order) the container-emitted `window.__MOKOSH_CONFIG__.portal_host_suffix`
+    /// and, as a last-resort compile-time fallback, the
+    /// `MOKOSH_PORTAL_HOST_SUFFIX` env var baked in at build time. The
+    /// compile-time path lets a dev developer run
+    /// `MOKOSH_PORTAL_HOST_SUFFIX=.client.localhost dx serve` and hit
+    /// `http://acme.client.localhost:8080/portal/login` without also
+    /// having to author a `_mokosh_config.js` shim (dev has no
+    /// entrypoint to write one). Empty at every layer returns `None`.
+    #[cfg(feature = "web")]
+    fn portal_host_suffix() -> Option<String> {
+        if let Some(v) = crate::modules::runtime_config::get("portal_host_suffix") {
+            if !v.is_empty() {
+                return Some(v);
+            }
+        }
+        option_env!("MOKOSH_PORTAL_HOST_SUFFIX")
+            .map(str::to_string)
+            .filter(|s| !s.is_empty())
+    }
+
     /// Derive the Mokosh API base URL.
     ///
     /// Resolution order:
@@ -126,7 +147,7 @@ pub mod api {
     ///      container's entrypoint. Self-hosters on a custom hostname
     ///      override here without rebuilding the image.
     ///   2. PMS-729: portal-host derivation. When the current host ends
-    ///      with `window.__MOKOSH_CONFIG__.portal_host_suffix` (e.g.
+    ///      with the configured `portal_host_suffix` (e.g.
     ///      `.client.a8n.systems`), strip the suffix's leading label and
     ///      point at `api.msp.<tld>` where `<tld>` is the rest of the
     ///      suffix without its leading dot. Keeps the API host
@@ -149,18 +170,22 @@ pub mod api {
             if let Ok(host) = win.location().host() {
                 // PMS-729: portal-host case. `host` includes port on
                 // non-443 dev; strip it before the suffix match.
-                if let Some(suffix) = crate::modules::runtime_config::get("portal_host_suffix") {
-                    if !suffix.is_empty() {
-                        let host_no_port = host.split(':').next().unwrap_or(&host);
-                        let suffix_lower = suffix.to_ascii_lowercase();
-                        let host_lower = host_no_port.to_ascii_lowercase();
-                        if host_lower.ends_with(&suffix_lower) {
-                            // Strip the leading dot off the suffix to
-                            // get the apex, then aim at api.msp.<apex>.
-                            let apex = suffix_lower.trim_start_matches('.');
-                            if !apex.is_empty() {
-                                return format!("https://api.msp.{apex}/api/v1");
-                            }
+                if let Some(suffix) = portal_host_suffix() {
+                    let host_no_port = host.split(':').next().unwrap_or(&host);
+                    let suffix_lower = suffix.to_ascii_lowercase();
+                    let host_lower = host_no_port.to_ascii_lowercase();
+                    if host_lower.ends_with(&suffix_lower) {
+                        // Strip the leading dot off the suffix to get the
+                        // apex. For dev (`.client.localhost`) the apex is
+                        // just `localhost`; aim at same-origin `/api/v1`
+                        // so the Dioxus dev proxy reaches mokosh-server.
+                        // For staging / prod, prefer `api.msp.<apex>`.
+                        let apex = suffix_lower.trim_start_matches('.');
+                        if apex == "localhost" || apex.ends_with(".localhost") {
+                            return "/api/v1".to_string();
+                        }
+                        if !apex.is_empty() {
+                            return format!("https://api.msp.{apex}/api/v1");
                         }
                     }
                 }
@@ -183,12 +208,9 @@ pub mod api {
     /// under a plain `cargo check`.
     #[cfg(feature = "web")]
     pub fn on_portal_host() -> bool {
-        let Some(suffix) = crate::modules::runtime_config::get("portal_host_suffix") else {
+        let Some(suffix) = portal_host_suffix() else {
             return false;
         };
-        if suffix.is_empty() {
-            return false;
-        }
         let Some(win) = web_sys::window() else {
             return false;
         };
