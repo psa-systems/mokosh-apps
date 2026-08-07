@@ -125,10 +125,19 @@ pub mod api {
     ///   1. `window.__MOKOSH_CONFIG__.api_base` if set by the prod
     ///      container's entrypoint. Self-hosters on a custom hostname
     ///      override here without rebuilding the image.
-    ///   2. Host-prefix derivation for the canonical `msp.<tld>`
+    ///   2. PMS-729: portal-host derivation. When the current host ends
+    ///      with `window.__MOKOSH_CONFIG__.portal_host_suffix` (e.g.
+    ///      `.client.a8n.systems`), strip the suffix's leading label and
+    ///      point at `api.msp.<tld>` where `<tld>` is the rest of the
+    ///      suffix without its leading dot. Keeps the API host
+    ///      unchanged regardless of which client subdomain the SPA is
+    ///      served from, and stays shape-agnostic - swapping the
+    ///      `client` word (§13) is a config-only change with no Rust
+    ///      edit.
+    ///   3. Host-prefix derivation for the canonical `msp.<tld>`
     ///      deploys (e.g. `msp.a8n.systems` SPA → `api.msp.a8n.systems`
     ///      API).
-    ///   3. Same-origin `/api/v1` for dev (localhost, IP address, or
+    ///   4. Same-origin `/api/v1` for dev (localhost, IP address, or
     ///      any host that doesn't start with `msp.`) so the Dioxus dev
     ///      server can proxy to a local backend.
     #[cfg(feature = "web")]
@@ -138,12 +147,63 @@ pub mod api {
         }
         if let Some(win) = web_sys::window() {
             if let Ok(host) = win.location().host() {
+                // PMS-729: portal-host case. `host` includes port on
+                // non-443 dev; strip it before the suffix match.
+                if let Some(suffix) = crate::modules::runtime_config::get("portal_host_suffix") {
+                    if !suffix.is_empty() {
+                        let host_no_port = host.split(':').next().unwrap_or(&host);
+                        let suffix_lower = suffix.to_ascii_lowercase();
+                        let host_lower = host_no_port.to_ascii_lowercase();
+                        if host_lower.ends_with(&suffix_lower) {
+                            // Strip the leading dot off the suffix to
+                            // get the apex, then aim at api.msp.<apex>.
+                            let apex = suffix_lower.trim_start_matches('.');
+                            if !apex.is_empty() {
+                                return format!("https://api.msp.{apex}/api/v1");
+                            }
+                        }
+                    }
+                }
                 if let Some(rest) = host.strip_prefix("msp.") {
                     return format!("https://api.msp.{rest}/api/v1");
                 }
             }
         }
         "/api/v1".to_string()
+    }
+
+    /// PMS-729: `true` iff the SPA is currently served on a portal host
+    /// (i.e. the current `window.location.host` ends with the configured
+    /// `portal_host_suffix`). Used by the portal login page to decide
+    /// whether to hide the slug input and paint the MSP branding block.
+    ///
+    /// Kept in this module because it reads `runtime_config` + a
+    /// window location, both of which are `cfg(feature = "web")`. The
+    /// non-web stub returns `false` so downstream call sites compile
+    /// under a plain `cargo check`.
+    #[cfg(feature = "web")]
+    pub fn on_portal_host() -> bool {
+        let Some(suffix) = crate::modules::runtime_config::get("portal_host_suffix") else {
+            return false;
+        };
+        if suffix.is_empty() {
+            return false;
+        }
+        let Some(win) = web_sys::window() else {
+            return false;
+        };
+        let Ok(host) = win.location().host() else {
+            return false;
+        };
+        let host_no_port = host.split(':').next().unwrap_or(&host);
+        host_no_port
+            .to_ascii_lowercase()
+            .ends_with(&suffix.to_ascii_lowercase())
+    }
+
+    #[cfg(not(feature = "web"))]
+    pub fn on_portal_host() -> bool {
+        false
     }
 
     // Single-threaded global access-token holder. WASM is strictly

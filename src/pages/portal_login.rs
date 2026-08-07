@@ -20,11 +20,28 @@ use crate::Route;
 
 /// Request body for `POST /api/v1/portal/auth/login`, matching
 /// mokosh-server's `PortalLoginRequest`.
+///
+/// PMS-729: `tenant_slug` is now optional server-side. When the SPA is
+/// served on `{slug}.client.<apex>` the server resolves the slug from
+/// Host and this field can be omitted; when the SPA is served on a
+/// legacy host (`?tenant=` link) the field carries the slug the user
+/// typed. `#[serde(skip_serializing_if = "String::is_empty")]` keeps the
+/// wire small on the host-derived path.
 #[derive(Serialize)]
 struct PortalLoginBody {
+    #[serde(skip_serializing_if = "String::is_empty")]
     tenant_slug: String,
     email: String,
     password: String,
+}
+
+/// PMS-729: response body for `GET /api/v1/portal/host`. The SPA fetches
+/// this on mount to decide whether to hide the slug input and to paint
+/// MSP-owned branding above the credential fields.
+#[derive(Deserialize, Clone, PartialEq)]
+struct PortalHostHint {
+    name: String,
+    logo_url: Option<String>,
 }
 
 /// The field of mokosh-server's `PortalLoginResponse` this page consumes.
@@ -45,15 +62,45 @@ pub fn PortalLoginPage() -> Element {
     let mut password = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // PMS-729: branding hint. `None` while the fetch is in flight or
+    // when the endpoint 404'd (i.e. this SPA is on a legacy host with no
+    // Host-derived tenant). `Some(_)` when the current host resolves to
+    // an active tenant - the slug input is hidden and the MSP name +
+    // logo paint above the credential fields.
+    let mut host_hint: Signal<Option<PortalHostHint>> = use_signal(|| None);
+
+    #[cfg(feature = "web")]
+    use_future(move || async move {
+        if !crate::hooks::fetch::api::on_portal_host() {
+            return;
+        }
+        use crate::hooks::fetch::api::ApiError;
+        match crate::hooks::fetch::api::get_typed::<PortalHostHint>("/portal/host").await {
+            Ok(hint) => host_hint.set(Some(hint)),
+            // 404 is the fail-closed shape for "not a portal host". Any
+            // other error (network, 5xx) also leaves the branding block
+            // unset so the page still renders the legacy layout.
+            Err(ApiError::Status { code: 404, .. }) => {}
+            Err(_) => {}
+        }
+    });
 
     let mut handle_submit = move |_| {
         if saving() {
             return;
         }
+        // PMS-729: when the SPA is on a portal host, the server resolves
+        // the slug from Host; the user does not need to type one and the
+        // slug field is hidden. On a legacy host the slug is required.
+        let host_derived = host_hint.read().is_some();
         let slug = tenant.read().trim().to_string();
         let em = email.read().trim().to_string();
         let pw = password.read().clone();
-        if slug.is_empty() || em.is_empty() || pw.is_empty() {
+        if em.is_empty() || pw.is_empty() {
+            error.set("Enter your email and password.".to_string());
+            return;
+        }
+        if !host_derived && slug.is_empty() {
             error.set("Enter your account name, email, and password.".to_string());
             return;
         }
@@ -64,8 +111,16 @@ pub fn PortalLoginPage() -> Element {
             #[cfg(feature = "web")]
             {
                 use crate::hooks::fetch::api::ApiError;
+                // PMS-729: send the slug only when the SPA is on a
+                // legacy host (no host hint). On a portal host, leave
+                // it empty so `skip_serializing_if` drops the field
+                // entirely and the server derives from Host.
                 let body = PortalLoginBody {
-                    tenant_slug: slug.clone(),
+                    tenant_slug: if host_derived {
+                        String::new()
+                    } else {
+                        slug.clone()
+                    },
                     email: em.clone(),
                     password: pw.clone(),
                 };
@@ -104,12 +159,36 @@ pub fn PortalLoginPage() -> Element {
         });
     };
 
+    // PMS-729: read the branding hint once for the render. `.read()` gives
+    // us a borrowed view; clone the Option so the reactive borrow drops
+    // before the rsx! macro body runs.
+    let hint_snapshot = host_hint.read().clone();
+
     rsx! {
         div { class: "min-h-screen bg-app flex items-center justify-center px-4",
             div { class: "max-w-md w-full",
                 div { class: "bg-surface rounded-lg shadow-lg p-8",
                     div { class: "text-center mb-6",
-                        h1 { class: "text-2xl font-semibold text-content", "Sign in to the Client Portal" }
+                        // PMS-729: MSP branding block above the credential
+                        // fields. Rendered only when the /portal/host
+                        // endpoint returned an active tenant; on legacy
+                        // hosts, falls back to the generic title below.
+                        if let Some(hint) = &hint_snapshot {
+                            if let Some(url) = &hint.logo_url {
+                                img {
+                                    src: "{url}",
+                                    alt: "{hint.name}",
+                                    class: "h-14 w-auto mx-auto mb-3",
+                                }
+                            }
+                            h1 { class: "text-2xl font-semibold text-content",
+                                "Sign in to {hint.name}"
+                            }
+                        } else {
+                            h1 { class: "text-2xl font-semibold text-content",
+                                "Sign in to the Client Portal"
+                            }
+                        }
                         p { class: "mt-2 text-sm text-content",
                             "Use the email your account team set up for you."
                         }
@@ -122,17 +201,24 @@ pub fn PortalLoginPage() -> Element {
                             handle_submit(());
                         },
 
-                        Input {
-                            name: "tenant_slug",
-                            label: "Account name",
-                            r#type: "text".to_string(),
-                            value: tenant(),
-                            required: true,
-                            disabled: saving(),
-                            oninput: move |e: FormEvent| {
-                                error.set(String::new());
-                                tenant.set(e.value());
-                            },
+                        // PMS-729: the slug field only renders on legacy
+                        // hosts. On {slug}.client.<apex>, the server
+                        // resolves the tenant from Host and the input is
+                        // hidden (the branding block above already tells
+                        // the user which MSP they are signing in to).
+                        if hint_snapshot.is_none() {
+                            Input {
+                                name: "tenant_slug",
+                                label: "Account name",
+                                r#type: "text".to_string(),
+                                value: tenant(),
+                                required: true,
+                                disabled: saving(),
+                                oninput: move |e: FormEvent| {
+                                    error.set(String::new());
+                                    tenant.set(e.value());
+                                },
+                            }
                         }
 
                         Input {
