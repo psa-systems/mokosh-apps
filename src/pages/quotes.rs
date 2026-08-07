@@ -945,6 +945,11 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
     let navigator = use_navigator();
     let editing = props.quote_id.clone();
     let is_edit = editing.is_some();
+    // MAPPS-423: Cancel returns to what the user was editing, not to the list.
+    let cancel_route = match &editing {
+        Some(id) => Route::QuoteDetail { id: id.clone() },
+        None => Route::QuoteList {},
+    };
     let title = if is_edit { "Edit Quote" } else { "New Quote" };
     use_page_title(title);
 
@@ -1313,7 +1318,7 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
 
         div { class: "flex justify-end gap-2",
             Link {
-                to: Route::QuoteList {},
+                to: cancel_route.clone(),
                 Button { variant: ButtonVariant::Secondary, "Cancel" }
             }
             Button {

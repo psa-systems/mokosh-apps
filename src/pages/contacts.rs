@@ -793,6 +793,11 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         CompanyFormMode::Create => "Create Company",
         CompanyFormMode::Edit { .. } => "Save Changes",
     };
+    // MAPPS-423: Cancel returns to what the user was editing, not to the list.
+    let cancel_route = match &mode {
+        CompanyFormMode::Create => Route::CompanyList {},
+        CompanyFormMode::Edit { id } => Route::CompanyDetail { id: id.clone() },
+    };
 
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
@@ -1084,7 +1089,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
 
                 div { class: "flex justify-end space-x-3",
                     Link {
-                        to: Route::CompanyList {},
+                        to: cancel_route.clone(),
                         Button { variant: ButtonVariant::Secondary, "Cancel" }
                     }
                     Button {
@@ -3874,6 +3879,11 @@ fn ContactForm(props: ContactFormProps) -> Element {
         ContactFormMode::Create => "Create Contact",
         ContactFormMode::Edit { .. } => "Save Changes",
     };
+    // MAPPS-423: Cancel returns to what the user was editing, not to the list.
+    let cancel_route = match &mode {
+        ContactFormMode::Create => Route::ContactList {},
+        ContactFormMode::Edit { id } => Route::ContactDetail { id: id.clone() },
+    };
 
     let handle_submit = move |e: FormEvent| {
         e.prevent_default();
@@ -4167,7 +4177,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
 
                 div { class: "flex justify-end space-x-3",
                     Link {
-                        to: Route::ContactList {},
+                        to: cancel_route.clone(),
                         Button { variant: ButtonVariant::Secondary, "Cancel" }
                     }
                     Button {

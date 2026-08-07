@@ -704,6 +704,11 @@ fn ContractForm(props: ContractFormProps) -> Element {
     let initial = props.initial.clone();
     let mode = props.mode.clone();
     let is_edit = matches!(mode, ContractFormMode::Edit { .. });
+    // MAPPS-423: Cancel returns to what the user was editing, not to the list.
+    let cancel_route = match &mode {
+        ContractFormMode::Create => Route::ContractList {},
+        ContractFormMode::Edit { id } => Route::ContractDetail { id: id.clone() },
+    };
 
     let mut name = use_signal(|| initial.name.clone());
     let mut company_id = use_signal(|| initial.company_id.clone());
@@ -1367,7 +1372,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
 
                 div { class: "flex justify-end space-x-3",
                     Link {
-                        to: Route::ContractList {},
+                        to: cancel_route.clone(),
                         Button { variant: ButtonVariant::Secondary, "Cancel" }
                     }
                     Button {

@@ -4,6 +4,17 @@ Date: 2026-06-05
 Status: Proposed (awaiting review)
 Area: `src/pages/knowledge_base.rs`, `src/modules/kb/`, `Cargo.toml`
 
+> **Historical record.** Parts of the article-detail layout below were superseded
+> by #MAPPS-423, which found the resulting title row too busy. Where this document
+> puts the rating, Edit / Delete, "Open ticket about this article" and the density
+> toggle on the title row inside `OverflowActions`, the current screen puts those
+> four actions in an "Actions" card at the top of the right rail (with a header
+> `...` menu as the fallback for read mode and sub-`sm` widths), keeps only the
+> breadcrumb, title, status / visibility badges, `Updated` and the read-mode button
+> in the header, and moves the rating to a "Was this helpful?" row at the end of the
+> article body, rendered only when the tenant has two or more users. The nav tree
+> also hides categories that hold no articles anywhere in their subtree.
+
 ## Background
 
 The Knowledge Base client pages were wired to the API under PMS-79. They work, but the reading and authoring experience is rough:

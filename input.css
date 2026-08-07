@@ -192,6 +192,16 @@
     background: transparent;
   }
 
+  /* MAPPS-423: restore the pointer cursor on clickable controls. Tailwind
+     v4's preflight sets `button { cursor: default }`, so nothing in the app
+     looked clickable on hover. Disabled controls are excluded here and keep
+     `cursor-not-allowed` from the `disabled:` utilities on Button/IconButton. */
+  button:not(:disabled),
+  [role="button"]:not(:disabled),
+  summary {
+    cursor: pointer;
+  }
+
   /* Improve focus styles for accessibility */
   *:focus-visible {
     @apply outline-none ring-2 ring-accent ring-offset-2 ring-offset-app;

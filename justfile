@@ -47,7 +47,7 @@ pre-commit: css-build
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-web check-clippy check-fmt check-theme-tokens check-runner-labels
+check: check-web check-clippy check-fmt check-theme-tokens check-runner-labels check-cancel-routes
 
 # Check web/WASM compilation
 [group: 'check']
@@ -63,6 +63,11 @@ check-theme-tokens:
 [group: 'check']
 check-runner-labels:
     bash scripts/check-runner-labels.sh
+
+# MAPPS-423: keep shared create/edit forms cancelling to the record, and keep the pointer-cursor base rule in input.css
+[group: 'check']
+check-cancel-routes:
+    bash scripts/check-cancel-routes.sh
 
 # Run clippy lints
 [group: 'check']
