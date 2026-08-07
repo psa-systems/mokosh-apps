@@ -48,6 +48,12 @@ jobs:
       - name: Theme-token guard
         run: bash scripts/check-theme-tokens.sh
 
+      # MAPPS-423: pin Cancel destinations for shared create/edit forms and
+      # keep the base-layer pointer-cursor rule that compensates for Tailwind
+      # v4's `button { cursor: default }` preflight.
+      - name: Cancel-route and cursor guard
+        run: bash scripts/check-cancel-routes.sh
+
       - name: Check formatting
         run: cargo fmt --all --check
 

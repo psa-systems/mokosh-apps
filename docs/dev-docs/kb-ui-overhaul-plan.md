@@ -1,5 +1,10 @@
 # KB UI/UX Overhaul Implementation Plan
 
+> **Historical record.** The article-header layout this plan builds (rating, badges
+> and Edit inline on the title row behind `OverflowActions`) was superseded by
+> #MAPPS-423; see the note at the top of `kb-ui-overhaul-design.md` for the current
+> arrangement of the header, the right rail, the rating and the nav tree.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Rebuild the KB reading and authoring experience: rendered (sanitized) markdown directly on the page, a three-pane reading view with a collapsible category/article tree, a consolidated article header (breadcrumb, title, inline rating, badges, Edit, overflow dropdown), per-user density + read-mode + rail-collapse preferences, and an authoring form with live slug generation and Write/Preview tabs.

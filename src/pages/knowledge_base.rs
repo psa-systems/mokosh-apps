@@ -22,9 +22,9 @@ use dioxus::prelude::*;
 use crate::components::{
     kb_article_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonSize,
     ButtonVariant, Card, ChevronRightIcon, CollapsibleRail, ConfirmDialog, DataTable, ErrorBanner,
-    IconSize, Modal, ModalSize, OverflowActions, PageHeader, PencilIcon, PlusIcon, RailSide,
-    SearchInput, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
-    TableHeader, TableLoading, TableRow, TrashIcon,
+    IconSize, Modal, ModalSize, PageHeader, PencilIcon, PlusIcon, RailSide, SearchInput, Select,
+    SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
+    TableRow, TrashIcon,
 };
 use crate::modules::kb::{
     ArticleMeasuredDuration, CreateKbArticleRequest, CreateKbCategoryRequest, KbArticle,
@@ -219,6 +219,29 @@ fn build_kb_tree(
         .cloned()
         .collect();
     (roots, uncategorized)
+}
+
+/// MAPPS-423: drop nav-tree categories that hold no articles anywhere in
+/// their subtree. Computed bottom-up, so a parent that only holds non-empty
+/// descendants survives while a leaf with no articles disappears. Categories
+/// stay fully visible on the KB home grid, which is where create / edit /
+/// delete live, so nothing becomes unreachable.
+fn prune_empty_categories(nodes: &[TreeNode]) -> Vec<TreeNode> {
+    nodes
+        .iter()
+        .filter_map(|node| {
+            let children = prune_empty_categories(&node.children);
+            if node.articles.is_empty() && children.is_empty() {
+                None
+            } else {
+                Some(TreeNode {
+                    category: node.category.clone(),
+                    children,
+                    articles: node.articles.clone(),
+                })
+            }
+        })
+        .collect()
 }
 
 /// Title-case the server's lowercase visibility tag for display, and pick
@@ -1150,10 +1173,26 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     use_effect(move || crate::utils::prefs::set_bool("kb_left_rail", left_collapsed()));
     use_effect(move || crate::utils::prefs::set_bool("kb_right_rail", right_collapsed()));
 
+    // MAPPS-423: voting only means something once a second person can read the
+    // article, so gate it on the tenant user count. One lookup per article
+    // view, secondary to the article fetch: a failure leaves `total` unknown
+    // and simply hides the rating UI rather than rendering a broken control.
+    let user_count = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let token = crate::hooks::fetch::api::current_access_token()?;
+        crate::hooks::fetch::api::get_with_auth::<Paginated<serde_json::Value>>(
+            "/auth/users?page=1&per_page=1",
+            &token,
+        )
+        .await
+        .ok()
+        .map(|resp| resp.meta.total)
+    });
+    let show_rating = matches!(&*user_count.read_unchecked(), Some(Some(total)) if *total >= 2);
+
     // Shared rating counts + my_vote: declared unconditionally (rules-of-hooks),
     // seeded from the article payload first, then refined by GET /vote which
-    // also returns the caller's current vote. Both OverflowActions copies of
-    // RatingBar share the same two signals.
+    // also returns the caller's current vote.
     let mut rating = use_signal(|| (0i32, 0i32));
     let mut my_vote = use_signal(|| None::<String>);
     use_effect(move || {
@@ -1191,9 +1230,9 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     // nav + banner). A 4xx/404 while still reachable keeps the "Could not load
     // article" arm below. Categories + tree rail + versions are SECONDARY and
     // degrade to their own inline messages. Writes are blocked while down;
-    // `can_mutate` disables the delete / rating / restore controls.
+    // each control reads `can_mutate` itself (ArticleActions, RatingBar,
+    // VersionHistoryCard) to disable delete / rating / restore.
     let reachable = crate::hooks::use_server_reachable();
-    let can_mutate = crate::hooks::use_can_mutate();
     let article_fetch_failed = matches!(*article_snapshot, Some(None));
     if article_fetch_failed && !reachable {
         return rsx! {
@@ -1313,63 +1352,28 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                         div { class: "flex-1 min-w-0",
                             div { class: "flex items-center justify-between gap-2",
                                 KbBreadcrumb { path: path.clone(), title: article.title.clone() }
-                                ReadModeButton { left_collapsed, right_collapsed }
+                                // MAPPS-423: the actions themselves live in the
+                                // right rail; this overflow copy keeps them
+                                // reachable when that rail is gone (read mode,
+                                // or below the `sm` breakpoint).
+                                div { class: "flex items-center gap-1",
+                                    ArticleActionsMenu {
+                                        article_id: props.id.clone(),
+                                        article_title: article.title.clone(),
+                                        comfortable,
+                                        confirming_delete,
+                                        delete_error,
+                                        delete_busy,
+                                        right_collapsed,
+                                    }
+                                    ReadModeButton { left_collapsed, right_collapsed }
+                                }
                             }
                             div { class: "mt-2 flex items-center justify-between gap-3 flex-wrap",
                                 h1 { class: "text-2xl sm:text-3xl font-bold text-content truncate", "{article.title}" }
-                                OverflowActions {
-                                    RatingBar {
-                                        article_id: props.id.clone(),
-                                        counts: rating,
-                                        my_vote,
-                                    }
+                                div { class: "flex items-center gap-2",
                                     Badge { variant: status_variant, "{status_label}" }
                                     Badge { variant: vis_variant, "{vis_label}" }
-                                    // PMS-482: "Open ticket about this
-                                    // article". Navigates to the ticket-
-                                    // new form with the article id +
-                                    // title + URL on the query string;
-                                    // the form pre-fills its title /
-                                    // description and stamps
-                                    // `source_kb_article_id` on the
-                                    // create body. Plain `<a>` so the
-                                    // query string survives intact and
-                                    // the user can right-click to open
-                                    // in a new tab.
-                                    {
-                                        let qs = format!(
-                                            "from_kb_article={}&from_kb_title={}&from_kb_url={}",
-                                            props.id,
-                                            crate::utils::url::urlencoding_minimal(&article.title),
-                                            crate::utils::url::urlencoding_minimal(&format!("/kb/articles/{}", props.id)),
-                                        );
-                                        rsx! {
-                                            a {
-                                                href: "/tickets/new?{qs}",
-                                                class: "inline-flex items-center px-3 py-2 text-sm font-medium rounded-md border border-line hover:bg-surface-2 text-content",
-                                                "Open ticket about this article"
-                                            }
-                                        }
-                                    }
-                                    Link { to: Route::KBArticleEdit { id: props.id.clone() },
-                                        Button { variant: ButtonVariant::Secondary, "Edit" }
-                                    }
-                                    // MAPPS-309: delete affordance. Gated by
-                                    // `ConfirmDialog` rendered at the page
-                                    // root; success navigates back to the KB
-                                    // landing.
-                                    Button {
-                                        variant: ButtonVariant::Danger,
-                                        // MAPPS-357: block delete while the server is unreachable.
-                                        disabled: delete_busy() || !can_mutate,
-                                        title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
-                                        onclick: move |_| {
-                                            delete_error.set(String::new());
-                                            confirming_delete.set(true);
-                                        },
-                                        "Delete"
-                                    }
-                                    DensityToggle { comfortable }
                                 }
                             }
                             p { class: "mt-1 text-xs text-subtle", "Updated {updated}" }
@@ -1380,8 +1384,34 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                                 class: "mt-4 prose dark:prose-invert max-w-none {prose_density}",
                                 dangerous_inner_html: crate::utils::markdown::render_markdown(&content),
                             }
+                            // MAPPS-423: the reader forms the opinion at the end
+                            // of the article, so the vote asks for it there.
+                            // Absent entirely on a single-user tenant, where a
+                            // helpful score is just self-voting.
+                            if show_rating {
+                                div { class: "mt-8 pt-4 border-t border-line flex items-center gap-4 flex-wrap",
+                                    p { class: "text-sm font-medium text-content", "Was this helpful?" }
+                                    RatingBar {
+                                        article_id: props.id.clone(),
+                                        counts: rating,
+                                        my_vote,
+                                    }
+                                }
+                            }
                         }
                         CollapsibleRail { side: RailSide::Right, collapsed: right_collapsed, open_overlay,
+                            // MAPPS-423: one column of actions that act on this
+                            // article, above the read-only cards below.
+                            Card { title: "Actions",
+                                ArticleActions {
+                                    article_id: props.id.clone(),
+                                    article_title: article.title.clone(),
+                                    comfortable,
+                                    confirming_delete,
+                                    delete_error,
+                                    delete_busy,
+                                }
+                            }
                             // PMS-732: what the tracked time says this
                             // procedure actually takes. Sits above the version
                             // history because it is the number the person
@@ -1768,6 +1798,12 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     // typing a new title never clobbers an existing URL slug.
     let mut slug_touched = use_signal(|| is_edit);
     let submit_label = if is_edit { "Save Changes" } else { "Publish" };
+    // MAPPS-423: Cancel returns to what the user was editing. Not browser
+    // history: a deep link or a reload leaves no meaningful previous entry.
+    let cancel_route = match &mode {
+        ArticleFormMode::Edit { id } => Route::KBArticleDetail { id: id.clone() },
+        ArticleFormMode::Create => Route::KBHome {},
+    };
     // MAPPS-357: block create / update while the server is unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
 
@@ -1984,7 +2020,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
 
                 div { class: "flex justify-end space-x-3",
                     Link {
-                        to: Route::KBHome {},
+                        to: cancel_route.clone(),
                         Button { variant: ButtonVariant::Secondary, "Cancel" }
                     }
                     Button {
@@ -2329,6 +2365,9 @@ fn KbBreadcrumb(path: Vec<KbCategory>, title: String) -> Element {
 #[component]
 fn KbTreeNav(categories: Vec<KbCategory>, articles: Vec<KbArticle>, current_id: String) -> Element {
     let (roots, uncategorized) = build_kb_tree(&categories, &articles);
+    // MAPPS-423: the nav lists what you can navigate to. An empty category is
+    // an expanded, empty row; hide it here (the KB home grid still shows all).
+    let roots = prune_empty_categories(&roots);
     rsx! {
         nav { class: "text-sm space-y-1",
             for node in roots.iter() {
@@ -2391,8 +2430,114 @@ fn KbTreeArticle(article: KbArticle, current_id: String) -> Element {
 }
 
 // ============================================================================
-// Rating bar, density toggle, read-mode button
+// Article actions, rating bar, density toggle, read-mode button
 // ============================================================================
+
+/// MAPPS-423: the controls that act on the article, as one full-width column.
+/// Rendered in the right rail (inside an "Actions" card) and again inside the
+/// header overflow menu, so the same set is reachable when the rail is not.
+#[component]
+fn ArticleActions(
+    article_id: String,
+    article_title: String,
+    comfortable: Signal<bool>,
+    confirming_delete: Signal<bool>,
+    delete_error: Signal<String>,
+    delete_busy: Signal<bool>,
+) -> Element {
+    let mut confirming_delete = confirming_delete;
+    let mut delete_error = delete_error;
+    // MAPPS-357: block delete while the server is unreachable.
+    let can_mutate = crate::hooks::use_can_mutate();
+    // PMS-482: "Open ticket about this article" carries the article id + title
+    // + URL on the query string; the ticket-new form pre-fills its title /
+    // description and stamps `source_kb_article_id` on the create body. Plain
+    // `<a>` so the query string survives intact and the user can right-click
+    // to open it in a new tab.
+    let qs = format!(
+        "from_kb_article={}&from_kb_title={}&from_kb_url={}",
+        article_id,
+        urlencoding_minimal(&article_title),
+        urlencoding_minimal(&format!("/kb/articles/{article_id}")),
+    );
+    rsx! {
+        div { class: "flex flex-col gap-2",
+            Link { to: Route::KBArticleEdit { id: article_id.clone() }, class: "block",
+                Button { variant: ButtonVariant::Secondary, class: "w-full".to_string(), "Edit" }
+            }
+            // MAPPS-309: delete affordance. Gated by the `ConfirmDialog`
+            // rendered at the page root; success navigates back to the KB
+            // landing.
+            Button {
+                variant: ButtonVariant::Danger,
+                class: "w-full".to_string(),
+                disabled: delete_busy() || !can_mutate,
+                title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
+                onclick: move |_| {
+                    delete_error.set(String::new());
+                    confirming_delete.set(true);
+                },
+                "Delete"
+            }
+            a {
+                href: "/tickets/new?{qs}",
+                class: "w-full inline-flex items-center justify-center px-4 py-2 text-sm font-medium rounded-md border border-line hover:bg-surface-2 text-content",
+                "Open ticket about this article"
+            }
+            DensityToggle { comfortable, class: "w-full".to_string() }
+        }
+    }
+}
+
+/// MAPPS-423: header `...` menu exposing [`ArticleActions`] when the right
+/// rail that normally carries them is not on screen: always while the rail is
+/// collapsed (read mode), and below the `sm` breakpoint regardless.
+#[component]
+fn ArticleActionsMenu(
+    article_id: String,
+    article_title: String,
+    comfortable: Signal<bool>,
+    confirming_delete: Signal<bool>,
+    delete_error: Signal<String>,
+    delete_busy: Signal<bool>,
+    right_collapsed: Signal<bool>,
+) -> Element {
+    let mut open = use_signal(|| false);
+    // Hidden at >= sm only while the rail is showing the same actions.
+    let wrapper_class = if right_collapsed() {
+        "relative"
+    } else {
+        "relative sm:hidden"
+    };
+    rsx! {
+        div { class: "{wrapper_class}",
+            button {
+                class: "px-2 py-1 text-muted hover:text-content",
+                title: "More",
+                aria_label: "More actions",
+                aria_expanded: if open() { "true" } else { "false" },
+                onclick: move |_| open.toggle(),
+                "\u{22EF}"
+            }
+            if open() {
+                div {
+                    class: "fixed inset-0 z-40",
+                    onclick: move |_| open.set(false),
+                }
+                div { class: "absolute right-0 z-50 mt-1 w-56 rounded-md bg-raised shadow-lg ring-1 ring-black/5 p-2",
+                    ArticleActions {
+                        article_id,
+                        article_title,
+                        comfortable,
+                        confirming_delete,
+                        delete_error,
+                        delete_busy,
+                    }
+                }
+            }
+        }
+    }
+}
 
 #[component]
 fn RatingBar(
@@ -2493,11 +2638,11 @@ fn RatingBar(
 }
 
 #[component]
-fn DensityToggle(comfortable: Signal<bool>) -> Element {
+fn DensityToggle(comfortable: Signal<bool>, #[props(default)] class: String) -> Element {
     let mut comfortable = comfortable;
     rsx! {
         button {
-            class: "text-xs px-2 py-1 rounded border border-line text-content",
+            class: "text-xs px-2 py-1 rounded border border-line text-content {class}",
             title: "Toggle reading density",
             onclick: move |_| {
                 let next = !comfortable();
@@ -2614,6 +2759,46 @@ mod tests {
         assert_eq!(roots[0].children.len(), 1);
         assert_eq!(roots[0].children[0].articles[0].title, "Setup");
         assert!(uncat.is_empty());
+    }
+
+    #[test]
+    fn prunes_categories_with_no_articles_anywhere() {
+        // Empty root drops; root that only holds a non-empty child survives,
+        // and its own empty sibling child drops with it.
+        let empty = Uuid::new_v4();
+        let root = Uuid::new_v4();
+        let child = Uuid::new_v4();
+        let bare_child = Uuid::new_v4();
+        let cats = vec![
+            cat(empty, None, "Empty"),
+            cat(root, None, "Net"),
+            cat(child, Some(root), "VPN"),
+            cat(bare_child, Some(root), "Unused"),
+        ];
+        let arts = vec![art(Uuid::new_v4(), Some(child), "Setup")];
+        let (roots, _) = build_kb_tree(&cats, &arts);
+        assert_eq!(roots.len(), 2);
+        let pruned = prune_empty_categories(&roots);
+        let names: Vec<_> = pruned.iter().map(|n| n.category.name.as_str()).collect();
+        assert_eq!(names, vec!["Net"]);
+        let kids: Vec<_> = pruned[0]
+            .children
+            .iter()
+            .map(|n| n.category.name.as_str())
+            .collect();
+        assert_eq!(kids, vec!["VPN"]);
+    }
+
+    #[test]
+    fn category_holding_its_own_article_survives_pruning() {
+        let root = Uuid::new_v4();
+        let cats = vec![cat(root, None, "Net")];
+        let arts = vec![art(Uuid::new_v4(), Some(root), "Setup")];
+        let (roots, _) = build_kb_tree(&cats, &arts);
+        assert_eq!(prune_empty_categories(&roots).len(), 1);
+        // The same category with its last article removed disappears.
+        let (roots, _) = build_kb_tree(&cats, &[]);
+        assert!(prune_empty_categories(&roots).is_empty());
     }
 
     #[test]
