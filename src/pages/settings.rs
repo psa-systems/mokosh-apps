@@ -970,14 +970,41 @@ pub fn ImportExportSettingsPage() -> Element {
         return rsx! { AdminOnlyNotice { title: "Import & Export" } };
     }
 
-    // The import confirmation must equal the tenant's name (the backend compares
-    // `confirm` to `tenants.name`); use the active org name the user already
-    // sees in the org switcher.
-    let tenant_name = auth
+    // The import confirmation must equal the tenant's name, and the backend
+    // compares `confirm` to mokosh's `tenants.name`
+    // (`src/modules/data_transfer/mod.rs:332`).
+    //
+    // MAPPS-426: that is NOT the name in the org switcher. `active_org_name()`
+    // comes from the issuer's `/v1/auth/memberships` (bunyip's org record),
+    // and the two can differ, in which case this page instructed the user to
+    // type a phrase the server would always reject. Ask mokosh for its own
+    // name, and fall back to the switcher only when that read is unavailable
+    // (server down, or a build without the multi-tenant feature) so the page
+    // is never worse off than before.
+    let tenant_id = auth
         .read()
-        .active_org_name()
-        .map(str::to_string)
+        .user
+        .as_ref()
+        .map(|u| u.tenant_id.to_string())
         .unwrap_or_default();
+    let tenant = use_resource(move || {
+        let id = tenant_id.clone();
+        async move {
+            crate::hooks::fetch::api::get_authed::<TenantView>(&format!("/tenants/{id}"))
+                .await
+                .ok()
+        }
+    });
+    let fetched_name = match &*tenant.read_unchecked() {
+        Some(Some(t)) if !t.name.is_empty() => Some(t.name.clone()),
+        _ => None,
+    };
+    let tenant_name = fetched_name.unwrap_or_else(|| {
+        auth.read()
+            .active_org_name()
+            .map(str::to_string)
+            .unwrap_or_default()
+    });
 
     rsx! {
         PageHeader {
