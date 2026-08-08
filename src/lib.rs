@@ -609,6 +609,11 @@ pub enum Route {
     // MAPPS-364: admin-only tenant data import/export (server PMS-646).
     #[route("/settings/import-export")]
     SettingsImportExport {},
+    // MAPPS-426: admin-only rename of this tenant. The name is not an
+    // internal label - it goes out in the request-form email subject and the
+    // invitation email, and a fresh tenant is seeded "My workspace".
+    #[route("/settings/organization")]
+    SettingsOrganization {},
 
     // Mokosh-side profile. Edits the tenant-scoped fields on the
     // user row (name, title, phone, mobile, timezone). Cross-app
@@ -1221,6 +1226,11 @@ fn SettingsGateways() -> Element {
 #[component]
 fn SettingsImportExport() -> Element {
     rsx! { settings::ImportExportSettingsPage {} }
+}
+
+#[component]
+fn SettingsOrganization() -> Element {
+    rsx! { settings::OrganizationSettingsPage {} }
 }
 
 // MAPPS-172 ticket lookup editors.
