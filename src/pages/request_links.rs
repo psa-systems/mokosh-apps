@@ -11,6 +11,12 @@
 //! largest page in the repo at ~4.8k lines. The card owns its own resource so
 //! placing it costs the detail page one line and it can refresh itself after
 //! a send.
+//!
+//! MAPPS-424: the same send lives on the builder too, reached the other way
+//! round ("I have just defined this form, send it to someone"). That entry
+//! point picks the company first and then hands off to the modal below with
+//! the form already chosen, so both routes issue the link through one
+//! code path.
 
 use chrono::Utc;
 use dioxus::prelude::*;
@@ -153,14 +159,19 @@ pub fn CompanyRequestFormsCard(company_id: String, company_name: String) -> Elem
     }
 }
 
+/// MAPPS-424: the builder reaches this after choosing a company, with the
+/// definition already known, so `preselected_form_id` seeds the Form select.
+/// It stays editable: preselecting is a convenience, not a lock, and an agent
+/// who opened the wrong row should not have to start over.
 #[component]
-fn SendRequestLinkModal(
+pub(crate) fn SendRequestLinkModal(
     company_id: String,
     company_name: String,
+    #[props(default)] preselected_form_id: Option<String>,
     onclose: EventHandler<()>,
     onsent: EventHandler<()>,
 ) -> Element {
-    let mut form_id = use_signal(String::new);
+    let mut form_id = use_signal(|| preselected_form_id.clone().unwrap_or_default());
     let mut contact_id = use_signal(String::new);
     let mut email = use_signal(String::new);
     let mut saving = use_signal(|| false);
@@ -327,7 +338,13 @@ fn SendRequestLinkModal(
 
                 if no_forms {
                     ErrorBanner {
-                        "No active request forms exist yet. Define one under Request Forms first."
+                        "No active request forms exist yet. "
+                        Link {
+                            to: crate::Route::FormsBuilder {},
+                            class: "underline font-medium",
+                            "Define one under Request Forms"
+                        }
+                        " first."
                     }
                 }
 
@@ -383,6 +400,99 @@ fn SendRequestLinkModal(
 
                 p { class: "text-xs text-muted",
                     "The link can be submitted once and expires in 7 days. Their answers arrive as a ticket for this client."
+                }
+            }
+        }
+    }
+}
+
+/// MAPPS-424: sending started from the builder instead of from a company.
+///
+/// The builder knows the form but not the client, which is the mirror image of
+/// the company card, so this asks for the company and then hands off to
+/// [`SendRequestLinkModal`] with the form preselected. Two steps rather than
+/// one combined modal: a company is picked by search against every company in
+/// the tenant, while the contact list is a plain bounded `Select` that cannot
+/// even be populated until the company is known.
+#[component]
+pub fn SendFormToClientModal(
+    form_definition_id: String,
+    form_name: String,
+    onclose: EventHandler<()>,
+    onsent: EventHandler<()>,
+) -> Element {
+    let mut company_id = use_signal(String::new);
+    let mut company_name = use_signal(String::new);
+    let mut company_error = use_signal(String::new);
+    let mut chosen = use_signal(|| None::<(String, String)>);
+
+    // Company settled: the rest of the send is identical to the company-page
+    // route, so it runs through the same modal rather than a second copy of
+    // the contact picker and the issue call.
+    if let Some((id, name)) = chosen.read().clone() {
+        return rsx! {
+            SendRequestLinkModal {
+                company_id: id,
+                company_name: name,
+                preselected_form_id: Some(form_definition_id.clone()),
+                onclose: move |_| onclose.call(()),
+                onsent: move |_| onsent.call(()),
+            }
+        };
+    }
+
+    // `then_some` on the owned value: `then(|| company_id())` reads as a
+    // redundant closure to clippy, and its suggested `&company_id` does not
+    // compile because a `Signal` is not `FnOnce`.
+    let selected_company_id = {
+        let current = company_id();
+        (!current.is_empty()).then_some(current)
+    };
+
+    let footer = rsx! {
+        Button { variant: ButtonVariant::Secondary, onclick: move |_| onclose.call(()), "Cancel" }
+        Button {
+            variant: ButtonVariant::Primary,
+            onclick: move |_| {
+                let id = company_id.read().trim().to_string();
+                if id.is_empty() {
+                    company_error.set("Choose the client this form is going to.".to_string());
+                    return;
+                }
+                chosen.set(Some((id, company_name.read().clone())));
+            },
+            "Continue"
+        }
+    };
+
+    rsx! {
+        crate::components::Modal {
+            open: true,
+            title: format!("Send {form_name} to a client"),
+            size: crate::components::ModalSize::Small,
+            onclose: move |_| onclose.call(()),
+            footer,
+
+            div { class: "space-y-4",
+                crate::components::CompanyPicker {
+                    value: company_name(),
+                    selected_id: selected_company_id,
+                    label: "Client".to_string(),
+                    required: true,
+                    error: company_error(),
+                    onselect: move |(id, name): (String, String)| {
+                        company_error.set(String::new());
+                        company_id.set(id);
+                        company_name.set(name);
+                    },
+                    onclear: move |_| {
+                        company_id.set(String::new());
+                        company_name.set(String::new());
+                    },
+                }
+
+                p { class: "text-xs text-muted",
+                    "The link is emailed to someone at this client. You choose who, and see what has already been sent, on their company page."
                 }
             }
         }
