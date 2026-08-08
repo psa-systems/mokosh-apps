@@ -195,7 +195,10 @@ impl SettingsGroupKey {
             SettingsGroupKey::Billing => "Billing & SLA",
             SettingsGroupKey::Tickets => "Tickets",
             SettingsGroupKey::Integrations => "Integrations",
-            SettingsGroupKey::Data => "Data",
+            // MAPPS-426 widened this from "Data": it now also holds the
+            // tenant's own identity. The route (`/settings/group/data`) is
+            // unchanged, so existing deep links keep resolving.
+            SettingsGroupKey::Data => "Organization & Data",
         }
     }
 
@@ -211,7 +214,9 @@ impl SettingsGroupKey {
             }
             SettingsGroupKey::Tickets => "Statuses, priorities, types, queues, and categories.",
             SettingsGroupKey::Integrations => "RMM connections, device mappings, and alert rules.",
-            SettingsGroupKey::Data => "Export and import this tenant's data.",
+            SettingsGroupKey::Data => {
+                "Your organization's name, and exporting or importing this tenant's data."
+            }
         }
     }
 
@@ -442,6 +447,16 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         title: "Import & Export",
         description:
             "Download a snapshot of this tenant's data, or restore it from a previous export.",
+        group: SettingsGroupKey::Data,
+        advanced: false,
+    },
+    // MAPPS-426. Filed under the tenant-wide group rather than given a group
+    // of its own: a group card leading to a landing with one card is a click
+    // that buys nothing. Listed first there because it is the one clients see.
+    SettingsSurface {
+        route: Route::SettingsOrganization {},
+        title: "Organization",
+        description: "Your organization's name, as clients see it in email you send them.",
         group: SettingsGroupKey::Data,
         advanced: false,
     },
@@ -748,6 +763,189 @@ pub fn DataGroupPage() -> Element {
     }
 }
 
+/// The tenant as mokosh-server knows it. Only the fields this page reads;
+/// `#[serde(default)]` on the name so a response shape change cannot break
+/// decoding into a blank screen.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct TenantView {
+    #[serde(default)]
+    name: String,
+}
+
+/// `/settings/organization` (MAPPS-426). Admin-only rename of this tenant.
+///
+/// The name is customer-facing: it renders in the client request-form email
+/// subject and in invitation emails, and a fresh tenant is seeded
+/// "My workspace", so until someone changes it clients receive mail from
+/// "My workspace". Before this page the only way to change it was a raw
+/// `PUT /api/v1/tenants/{id}`.
+///
+/// Reads the name from mokosh-server rather than from `active_org_name()` in
+/// auth context. Those are two different values: the switcher name comes from
+/// the issuer's `/v1/auth/memberships` (bunyip's org), while the emails and
+/// the import confirmation use mokosh's own `tenants.name`. Editing the one
+/// the server actually sends is the point of the page.
+#[component]
+pub fn OrganizationSettingsPage() -> Element {
+    use_page_title("Organization");
+    // MAPPS-377: read auth before the admin gate so the hook set stays stable
+    // across renders.
+    let auth = crate::hooks::use_auth();
+    let tenant_id = auth
+        .read()
+        .user
+        .as_ref()
+        .map(|u| u.tenant_id.to_string())
+        .unwrap_or_default();
+
+    if !use_is_admin() {
+        return rsx! { AdminOnlyNotice { title: "Organization" } };
+    }
+
+    rsx! { OrganizationSettingsBody { tenant_id } }
+}
+
+#[component]
+fn OrganizationSettingsBody(tenant_id: String) -> Element {
+    let mut name = use_signal(String::new);
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(String::new);
+    let mut name_error = use_signal(String::new);
+    // Set once the fetched name has seeded the input, so a re-render (or a
+    // resource refresh after saving) cannot overwrite what is being typed.
+    let mut seeded = use_signal(|| false);
+
+    let fetch_id = tenant_id.clone();
+    let tenant = use_resource(move || {
+        let id = fetch_id.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
+            crate::hooks::fetch::api::get_authed::<TenantView>(&format!("/tenants/{id}"))
+                .await
+                .ok()
+        }
+    });
+
+    let snap = tenant.read_unchecked();
+    let is_loading = snap.is_none();
+    let fetch_failed = matches!(*snap, Some(None));
+    let current_name = match &*snap {
+        Some(Some(t)) => t.name.clone(),
+        _ => String::new(),
+    };
+    if !seeded() && !current_name.is_empty() {
+        name.set(current_name.clone());
+        seeded.set(true);
+    }
+
+    let reachable = crate::hooks::use_server_reachable();
+    let can_mutate = crate::hooks::use_can_mutate();
+    if fetch_failed && !reachable {
+        return rsx! {
+            crate::components::ContentUnavailable { title: "Organization".to_string() }
+        };
+    }
+
+    let save_id = tenant_id.clone();
+    let handle_save = move |_| {
+        if saving() {
+            return;
+        }
+        error.set(String::new());
+        name_error.set(String::new());
+
+        let trimmed = name.read().trim().to_string();
+        // The server enforces 1..=255; checking here keeps a blank submit from
+        // costing a round-trip, and a blank org name would be worse than a
+        // wrong one - the email subject would simply trail off.
+        if trimmed.is_empty() {
+            name_error.set("Enter the name clients should see.".to_string());
+            return;
+        }
+        if trimmed.chars().count() > 255 {
+            name_error.set("Use 255 characters or fewer.".to_string());
+            return;
+        }
+
+        saving.set(true);
+        let path = format!("/tenants/{save_id}");
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match crate::hooks::fetch::api::put_authed_typed::<TenantView, _>(
+                    &path,
+                    &serde_json::json!({ "name": trimmed }),
+                )
+                .await
+                {
+                    Ok(_) => {
+                        crate::hooks::push_toast(
+                            crate::components::AlertType::Success,
+                            "Organization name saved. New emails will use it.",
+                        );
+                    }
+                    Err(err) => {
+                        crate::hooks::push_api_error(&err);
+                        match err.field_message("name") {
+                            Some(m) => name_error.set(m),
+                            None => error.set(err.user_message()),
+                        }
+                    }
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        PageHeader {
+            title: "Organization",
+            subtitle: "The name clients see on email you send them",
+            breadcrumbs: rsx! {
+                SettingsBreadcrumb { current: Route::SettingsOrganization {} }
+            },
+        }
+
+        if fetch_failed {
+            LoadError { what: "your organization" }
+        }
+
+        Card {
+            div { class: "space-y-4 max-w-xl",
+                if !error().is_empty() {
+                    ErrorBanner { "{error()}" }
+                }
+
+                Input {
+                    name: "name",
+                    label: "Organization name",
+                    value: name(),
+                    required: true,
+                    disabled: is_loading || saving(),
+                    error: name_error(),
+                    help: "Used in email your clients receive: the subject of a request form you send them, and invitations to join. Not an internal label.".to_string(),
+                    oninput: move |e: FormEvent| {
+                        name_error.set(String::new());
+                        name.set(e.value());
+                    },
+                }
+
+                div { class: "flex justify-end",
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        loading: saving(),
+                        disabled: is_loading || !can_mutate,
+                        title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
+                        onclick: handle_save,
+                        "Save Changes"
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Per-table row-count summary returned by `POST /api/v1/data/import`
 /// (MAPPS-364). `imported` maps each restored table to the number of rows
 /// written; a `BTreeMap` so the summary renders in a stable, sorted order.
@@ -772,14 +970,41 @@ pub fn ImportExportSettingsPage() -> Element {
         return rsx! { AdminOnlyNotice { title: "Import & Export" } };
     }
 
-    // The import confirmation must equal the tenant's name (the backend compares
-    // `confirm` to `tenants.name`); use the active org name the user already
-    // sees in the org switcher.
-    let tenant_name = auth
+    // The import confirmation must equal the tenant's name, and the backend
+    // compares `confirm` to mokosh's `tenants.name`
+    // (`src/modules/data_transfer/mod.rs:332`).
+    //
+    // MAPPS-426: that is NOT the name in the org switcher. `active_org_name()`
+    // comes from the issuer's `/v1/auth/memberships` (bunyip's org record),
+    // and the two can differ, in which case this page instructed the user to
+    // type a phrase the server would always reject. Ask mokosh for its own
+    // name, and fall back to the switcher only when that read is unavailable
+    // (server down, or a build without the multi-tenant feature) so the page
+    // is never worse off than before.
+    let tenant_id = auth
         .read()
-        .active_org_name()
-        .map(str::to_string)
+        .user
+        .as_ref()
+        .map(|u| u.tenant_id.to_string())
         .unwrap_or_default();
+    let tenant = use_resource(move || {
+        let id = tenant_id.clone();
+        async move {
+            crate::hooks::fetch::api::get_authed::<TenantView>(&format!("/tenants/{id}"))
+                .await
+                .ok()
+        }
+    });
+    let fetched_name = match &*tenant.read_unchecked() {
+        Some(Some(t)) if !t.name.is_empty() => Some(t.name.clone()),
+        _ => None,
+    };
+    let tenant_name = fetched_name.unwrap_or_else(|| {
+        auth.read()
+            .active_org_name()
+            .map(str::to_string)
+            .unwrap_or_default()
+    });
 
     rsx! {
         PageHeader {
