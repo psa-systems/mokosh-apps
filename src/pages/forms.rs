@@ -50,6 +50,8 @@ pub fn FormsBuilderPage() -> Element {
     let mut editing = use_signal(|| None::<EditorState>);
     // MAPPS-424: (definition id, name) of the form being sent, if any.
     let mut sending = use_signal(|| None::<(String, String)>);
+    // PMS-744: the client's view of a saved definition, opened from its row.
+    let mut previewing = use_signal(|| None::<PublicForm>);
 
     let snap = forms.read_unchecked();
     let is_loading = snap.is_none();
@@ -126,6 +128,10 @@ pub fn FormsBuilderPage() -> Element {
                                 let sendable = is_sendable(&def);
                                 let send_id = def.id.to_string();
                                 let send_name = def.name.clone();
+                                // PMS-744: mapped once per row rather than in
+                                // the click handler, so the closure carries a
+                                // ready value instead of the whole definition.
+                                let for_preview = preview_from_definition(&def);
                                 rsx! {
                                     TableRow { key: "{key}",
                                         TableCell {
@@ -148,6 +154,20 @@ pub fn FormsBuilderPage() -> Element {
                                                 variant: ButtonVariant::Link,
                                                 onclick: move |_| editing.set(Some(EditorState::from_existing(&for_edit))),
                                                 "Edit"
+                                            }
+                                            // PMS-744: also offered on the row,
+                                            // not only inside the editor, so
+                                            // "what does this one look like?"
+                                            // does not require opening an edit
+                                            // form you did not intend to change.
+                                            // Shown for a retired form too:
+                                            // looking at one is harmless, and
+                                            // it is exactly what you want
+                                            // before bringing it back.
+                                            Button {
+                                                variant: ButtonVariant::Link,
+                                                onclick: move |_| previewing.set(Some(for_preview.clone())),
+                                                "Preview"
                                             }
                                             // MAPPS-424: the entry point into the
                                             // send flow from the side the user is
@@ -191,6 +211,16 @@ pub fn FormsBuilderPage() -> Element {
                 form_name: name,
                 onclose: move |_| { sending.set(None); },
                 onsent: move |_| { sending.set(None); },
+            }
+        }
+
+        if let Some(def) = previewing.read().clone() {
+            ClientPreviewModal {
+                def,
+                // Saved definition, so nothing here is a draft; the editor's
+                // preview says otherwise for its own unsaved state.
+                unsaved: false,
+                onclose: move |_| { previewing.set(None); },
             }
         }
     }
@@ -780,9 +810,75 @@ fn FormEditorModal(
         if previewing() {
             ClientPreviewModal {
                 def: preview_form(&name(), &description(), &fields.read(), &rules.read()),
+                unsaved: true,
                 onclose: move |_| previewing.set(false),
             }
         }
+    }
+}
+
+/// PMS-744: a SAVED definition as the client would receive it.
+///
+/// The sibling of [`preview_form`], for the list row, where there is no editor
+/// state to read. Both feed the same modal and the same client component, so
+/// the two entry points cannot disagree about what a client sees.
+///
+/// Fields are ordered by `sort_order` rather than trusted in arrival order:
+/// the client is served them sorted, so a preview that showed them otherwise
+/// would be wrong about the one thing the list column cannot tell you.
+///
+/// A rule this build cannot represent (`FormRule::Other`, authored by a newer
+/// server) is dropped. It cannot be rendered honestly, and the editor already
+/// refuses to save a definition carrying one.
+fn preview_from_definition(def: &FormDefinition) -> PublicForm {
+    let mut fields: Vec<&crate::modules::forms::FormField> = def.fields.iter().collect();
+    fields.sort_by_key(|f| f.sort_order);
+
+    PublicForm {
+        name: def.name.clone(),
+        description: def
+            .description
+            .clone()
+            .map(|d| d.trim().to_string())
+            .filter(|d| !d.is_empty()),
+        rules: def
+            .rules
+            .iter()
+            .filter_map(|r| match r {
+                FormRule::RequiredIf {
+                    field,
+                    when_field,
+                    equals,
+                } => Some(PublicRule::RequiredIf {
+                    field: field.clone(),
+                    when_field: when_field.clone(),
+                    equals: equals.clone(),
+                }),
+                FormRule::Other => None,
+            })
+            .collect(),
+        fields: fields
+            .into_iter()
+            .map(|f| PublicField {
+                name: f.name.clone(),
+                label: if f.label.trim().is_empty() {
+                    f.name.clone()
+                } else {
+                    f.label.clone()
+                },
+                help_text: f
+                    .help_text
+                    .clone()
+                    .map(|h| h.trim().to_string())
+                    .filter(|h| !h.is_empty()),
+                field_type: f.field_type.clone(),
+                is_required: f.is_required,
+                min_length: f.min_length,
+                max_length: f.max_length,
+                options: f.options.clone().filter(|o| !o.is_empty()),
+                date_not_in_past: f.date_not_in_past,
+            })
+            .collect(),
     }
 }
 
@@ -865,7 +961,7 @@ fn preview_form(
 /// page (the client sees one), and wiring it would need a token this form does
 /// not have.
 #[component]
-fn ClientPreviewModal(def: PublicForm, onclose: EventHandler<()>) -> Element {
+fn ClientPreviewModal(def: PublicForm, unsaved: bool, onclose: EventHandler<()>) -> Element {
     let answers = use_signal(std::collections::HashMap::<String, String>::new);
     let field_errors = use_signal(std::collections::HashMap::<String, String>::new);
     let empty = def.fields.is_empty();
@@ -882,12 +978,20 @@ fn ClientPreviewModal(def: PublicForm, onclose: EventHandler<()>) -> Element {
 
             if empty {
                 p { class: "text-sm text-muted",
-                    "Add a field with a reference name to see the client's form."
+                    if unsaved {
+                        "Add a field with a reference name to see the client's form."
+                    } else {
+                        "This form has no fields, so a client would be asked for nothing."
+                    }
                 }
             } else {
                 div { class: "space-y-3",
                     p { class: "text-xs text-muted",
-                        "Live preview of unsaved changes. Typing here is not sent anywhere."
+                        if unsaved {
+                            "Live preview of unsaved changes. Typing here is not sent anywhere."
+                        } else {
+                            "Preview of the saved form. Typing here is not sent anywhere."
+                        }
                     }
                     // The client's own page background, so spacing and contrast
                     // read the way they will on the real thing.
@@ -1166,6 +1270,69 @@ mod tests {
             row.parsed_options(),
             vec!["new", "reuse existing", "none"],
             "an empty entry from a trailing comma must not become an empty choice"
+        );
+    }
+
+    #[test]
+    fn a_saved_definition_previews_in_sort_order_without_unknown_rules() {
+        use crate::modules::forms::FormField;
+
+        let field = |name: &str, sort_order: i32| FormField {
+            id: uuid::Uuid::nil(),
+            name: name.into(),
+            label: String::new(),
+            help_text: None,
+            field_type: "text".into(),
+            is_required: false,
+            min_length: None,
+            max_length: None,
+            options: None,
+            date_not_in_past: false,
+            sort_order,
+        };
+        let def = FormDefinition {
+            id: uuid::Uuid::nil(),
+            name: "Starter".into(),
+            slug: "starter".into(),
+            description: Some("   ".into()),
+            kb_article_id: None,
+            kb_article_title: None,
+            rules: vec![
+                FormRule::Other,
+                FormRule::RequiredIf {
+                    field: "b".into(),
+                    when_field: "a".into(),
+                    equals: "yes".into(),
+                },
+            ],
+            is_active: true,
+            // Arrival order deliberately not sort order: the client is served
+            // them sorted, so the preview must sort too.
+            fields: vec![field("b", 2), field("a", 1)],
+        };
+
+        let preview = preview_from_definition(&def);
+
+        assert_eq!(
+            preview
+                .fields
+                .iter()
+                .map(|f| f.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        assert_eq!(
+            preview.fields[0].label, "a",
+            "an unlabelled field shows its reference name, as the client would see it"
+        );
+        assert_eq!(
+            preview.rules.len(),
+            1,
+            "a rule this build cannot render is dropped"
+        );
+        assert_eq!(
+            preview.description, None,
+            "a whitespace-only description would render as an empty line"
         );
     }
 
