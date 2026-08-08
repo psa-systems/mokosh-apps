@@ -45,6 +45,8 @@ pub fn FormsBuilderPage() -> Element {
     });
 
     let mut editing = use_signal(|| None::<EditorState>);
+    // MAPPS-424: (definition id, name) of the form being sent, if any.
+    let mut sending = use_signal(|| None::<(String, String)>);
 
     let snap = forms.read_unchecked();
     let is_loading = snap.is_none();
@@ -65,7 +67,10 @@ pub fn FormsBuilderPage() -> Element {
 
     rsx! {
         PageHeader { title: "Request Forms".to_string(),
-            subtitle: "Forms clients fill in to raise a request. Each one becomes a ticket carrying its knowledge base article.".to_string(),
+            // MAPPS-424: the subtitle says what a definition is FOR, because
+            // defining one is never the goal. Without it the page ends at Save
+            // with no sign that a form reaches a client from somewhere else.
+            subtitle: "Forms clients fill in to raise a request. Each one becomes a ticket carrying its knowledge base article. Define a form once here, then use Send to email a client a link to it.".to_string(),
         }
 
         div { class: "mb-4 flex justify-end",
@@ -115,6 +120,9 @@ pub fn FormsBuilderPage() -> Element {
                                 let article = def.kb_article_title.clone().unwrap_or_default();
                                 let field_count = def.fields.len();
                                 let active = def.is_active;
+                                let sendable = is_sendable(&def);
+                                let send_id = def.id.to_string();
+                                let send_name = def.name.clone();
                                 rsx! {
                                     TableRow { key: "{key}",
                                         TableCell {
@@ -138,6 +146,21 @@ pub fn FormsBuilderPage() -> Element {
                                                 onclick: move |_| editing.set(Some(EditorState::from_existing(&for_edit))),
                                                 "Edit"
                                             }
+                                            // MAPPS-424: the entry point into the
+                                            // send flow from the side the user is
+                                            // already on. Hidden, not disabled,
+                                            // for a retired form: the server
+                                            // refuses submissions on one, so the
+                                            // link would die on arrival.
+                                            if sendable {
+                                                Button {
+                                                    variant: ButtonVariant::Link,
+                                                    disabled: !can_mutate,
+                                                    title: (!can_mutate).then(|| "Can't send while the server is unreachable".to_string()),
+                                                    onclick: move |_| sending.set(Some((send_id.clone(), send_name.clone()))),
+                                                    "Send"
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -158,7 +181,26 @@ pub fn FormsBuilderPage() -> Element {
                 },
             }
         }
+
+        if let Some((id, name)) = sending.read().clone() {
+            crate::pages::request_links::SendFormToClientModal {
+                form_definition_id: id,
+                form_name: name,
+                onclose: move |_| { sending.set(None); },
+                onsent: move |_| { sending.set(None); },
+            }
+        }
     }
+}
+
+/// Whether a definition can be sent to a client right now.
+///
+/// MAPPS-424: retired definitions are excluded because mokosh-server refuses
+/// submissions against one, so issuing a link for it would hand the client a
+/// page that rejects them. Mirrors the `?active_only=true` filter the send
+/// modal already applies to its own form picker.
+fn is_sendable(def: &FormDefinition) -> bool {
+    def.is_active
 }
 
 // ============================================================================
@@ -523,9 +565,12 @@ fn FormEditorModal(
                 };
                 match result {
                     Ok(()) => {
+                        // MAPPS-424: naming the next step here, because saving
+                        // is the moment the user expects a link and does not
+                        // get one. The form is defined; nothing has been sent.
                         crate::hooks::push_toast(
                             crate::components::AlertType::Success,
-                            "Request form saved.",
+                            "Request form saved. Use Send on its row to email a client a link to it.",
                         );
                         onsaved.call(());
                     }
@@ -977,6 +1022,29 @@ mod tests {
             vec!["new", "reuse existing", "none"],
             "an empty entry from a trailing comma must not become an empty choice"
         );
+    }
+
+    #[test]
+    fn a_retired_definition_is_not_offered_for_sending() {
+        let def = FormDefinition {
+            id: uuid::Uuid::nil(),
+            name: "Old starter".into(),
+            slug: "old-starter".into(),
+            description: None,
+            kb_article_id: None,
+            kb_article_title: None,
+            rules: Vec::new(),
+            is_active: false,
+            fields: Vec::new(),
+        };
+        assert!(
+            !is_sendable(&def),
+            "the server refuses submissions on a retired form, so a link issued for one would die on arrival"
+        );
+        assert!(is_sendable(&FormDefinition {
+            is_active: true,
+            ..def
+        }));
     }
 
     #[test]
