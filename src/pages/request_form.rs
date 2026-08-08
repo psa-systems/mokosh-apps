@@ -32,22 +32,22 @@ use crate::components::{
 
 /// One field of the form, mirroring mokosh-server's `PublicFormField`.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
-struct PublicField {
-    name: String,
-    label: String,
+pub(crate) struct PublicField {
+    pub(crate) name: String,
+    pub(crate) label: String,
     #[serde(default)]
-    help_text: Option<String>,
-    field_type: String,
+    pub(crate) help_text: Option<String>,
+    pub(crate) field_type: String,
     #[serde(default)]
-    is_required: bool,
+    pub(crate) is_required: bool,
     #[serde(default)]
-    min_length: Option<i32>,
+    pub(crate) min_length: Option<i32>,
     #[serde(default)]
-    max_length: Option<i32>,
+    pub(crate) max_length: Option<i32>,
     #[serde(default)]
-    options: Option<Vec<String>>,
+    pub(crate) options: Option<Vec<String>>,
     #[serde(default)]
-    date_not_in_past: bool,
+    pub(crate) date_not_in_past: bool,
 }
 
 /// A cross-field rule, mirroring mokosh-server's `FormRule`. One kind exists
@@ -56,7 +56,7 @@ struct PublicField {
 /// server-side enforcement rather than failing to render the form.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum PublicRule {
+pub(crate) enum PublicRule {
     RequiredIf {
         field: String,
         when_field: String,
@@ -67,13 +67,13 @@ enum PublicRule {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
-struct PublicForm {
-    name: String,
+pub(crate) struct PublicForm {
+    pub(crate) name: String,
     #[serde(default)]
-    description: Option<String>,
+    pub(crate) description: Option<String>,
     #[serde(default)]
-    rules: Vec<PublicRule>,
-    fields: Vec<PublicField>,
+    pub(crate) rules: Vec<PublicRule>,
+    pub(crate) fields: Vec<PublicField>,
 }
 
 #[derive(Serialize)]
@@ -293,51 +293,86 @@ pub fn RequestFormPage(token: String) -> Element {
                                 }
                             },
                             Some(def) => rsx! {
-                                div { class: "mb-6",
-                                    h1 { class: "text-2xl font-semibold text-content", "{def.name}" }
-                                    if let Some(d) = def.description.clone() {
-                                        p { class: "mt-2 text-sm text-content", "{d}" }
-                                    }
-                                }
-
-                                if !form_error().is_empty() {
-                                    div {
-                                        class: "mb-4 rounded-md border border-danger px-3 py-2 text-sm text-danger",
-                                        role: "alert",
-                                        "{form_error()}"
-                                    }
-                                }
-
-                                form {
-                                    class: "space-y-4",
-                                    onsubmit: move |evt: Event<FormData>| {
-                                        evt.prevent_default();
-                                        handle_submit(());
-                                    },
-
-                                    for field in def.fields.clone() {
-                                        FieldInput {
-                                            key: "{field.name}",
-                                            field: field.clone(),
-                                            rules: def.rules.clone(),
-                                            answers,
-                                            field_errors,
-                                            disabled: submitting(),
-                                        }
-                                    }
-
-                                    Button {
-                                        variant: ButtonVariant::Primary,
-                                        r#type: "submit".to_string(),
-                                        disabled: submitting(),
-                                        class: "w-full".to_string(),
-                                        if submitting() { "Sending..." } else { "Send request" }
-                                    }
+                                RequestFormBody {
+                                    def: def.clone(),
+                                    answers,
+                                    field_errors,
+                                    form_error: form_error(),
+                                    disabled: submitting(),
+                                    submit_label: (if submitting() { "Sending..." } else { "Send request" }).to_string(),
+                                    onsubmit: move |_| handle_submit(()),
                                 }
                             },
                         },
                     }
                 }
+            }
+        }
+    }
+}
+
+/// The form exactly as the client sees it: title, description, the ordered
+/// fields, and the submit button.
+///
+/// PMS-744 pulled this out of the page so the builder's preview renders the
+/// SAME component the client gets. A preview assembled from a second copy of
+/// this markup would drift from the real page, and a preview that lies is
+/// worse than no preview: it invites the operator to sign off on a form they
+/// have not actually seen.
+///
+/// The caller owns `answers` and `field_errors`, so the preview is live: type
+/// into it and a `required_if` rule lights up the same way it will for the
+/// client.
+#[component]
+pub(crate) fn RequestFormBody(
+    def: PublicForm,
+    answers: Signal<HashMap<String, String>>,
+    field_errors: Signal<HashMap<String, String>>,
+    form_error: String,
+    disabled: bool,
+    submit_label: String,
+    onsubmit: EventHandler<()>,
+) -> Element {
+    rsx! {
+        div { class: "mb-6",
+            h1 { class: "text-2xl font-semibold text-content", "{def.name}" }
+            if let Some(d) = def.description.clone() {
+                p { class: "mt-2 text-sm text-content", "{d}" }
+            }
+        }
+
+        if !form_error.is_empty() {
+            div {
+                class: "mb-4 rounded-md border border-danger px-3 py-2 text-sm text-danger",
+                role: "alert",
+                "{form_error}"
+            }
+        }
+
+        form {
+            class: "space-y-4",
+            onsubmit: move |evt: Event<FormData>| {
+                evt.prevent_default();
+                onsubmit.call(());
+            },
+
+            for field in def.fields.clone() {
+                FieldInput {
+                    key: "{field.name}",
+                    field: field.clone(),
+                    rules: def.rules.clone(),
+                    answers,
+                    field_errors,
+                    disabled,
+                }
+            }
+
+            Button {
+                variant: ButtonVariant::Primary,
+                r#type: "submit".to_string(),
+                disabled,
+                class: "w-full".to_string(),
+                "{submit_label}"
             }
         }
     }
