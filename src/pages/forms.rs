@@ -24,6 +24,9 @@ use crate::modules::forms::{
     UpsertFormField,
 };
 use crate::modules::kb::KbArticle;
+// PMS-744: the preview renders through the client page's own component and
+// DTOs, so what an operator signs off on is what a client is served.
+use crate::pages::request_form::{PublicField, PublicForm, PublicRule, RequestFormBody};
 use crate::utils::Paginated;
 
 /// Articles offered in the procedure picker. Definitions are few and the
@@ -385,6 +388,8 @@ fn FormEditorModal(
     let mut error = use_signal(String::new);
     let mut name_error = use_signal(String::new);
     let mut slug_error = use_signal(String::new);
+    // PMS-744: preview of the client's view, built from the live editor state.
+    let mut previewing = use_signal(|| false);
 
     // Published articles for the procedure picker.
     let articles = use_resource(|| async {
@@ -590,6 +595,15 @@ fn FormEditorModal(
 
     let can_mutate = crate::hooks::use_can_mutate();
     let footer = rsx! {
+        // PMS-744: preview before committing. Sits with Cancel and Save
+        // because that is the moment the question arises ("is this what they
+        // will see?"), and it reads the CURRENT editor state, so it answers
+        // for unsaved edits too.
+        Button {
+            variant: ButtonVariant::Secondary,
+            onclick: move |_| previewing.set(true),
+            "Preview"
+        }
         Button { variant: ButtonVariant::Secondary, onclick: move |_| onclose.call(()), "Cancel" }
         Button {
             variant: ButtonVariant::Primary,
@@ -757,6 +771,137 @@ fn FormEditorModal(
                             field_names: field_names.clone(),
                             disabled: saving(),
                             rules,
+                        }
+                    }
+                }
+            }
+        }
+
+        if previewing() {
+            ClientPreviewModal {
+                def: preview_form(&name(), &description(), &fields.read(), &rules.read()),
+                onclose: move |_| previewing.set(false),
+            }
+        }
+    }
+}
+
+/// PMS-744: the editor state as the client would receive it.
+///
+/// Deliberately built from the SIGNALS, not from the saved definition, so the
+/// preview answers for what is on screen right now. That is the question being
+/// asked ("is this what they will see?"), and it is unanswerable today without
+/// issuing a real single-use link to a real client.
+///
+/// A row too incomplete to render (no reference name) is dropped rather than
+/// shown as a blank input: the server would reject the save anyway, and a
+/// preview should not invent a field the client will never get.
+fn preview_form(
+    name: &str,
+    description: &str,
+    fields: &[FieldRow],
+    rules: &[RuleRow],
+) -> PublicForm {
+    let name = name.trim();
+    let description = description.trim();
+    PublicForm {
+        // An unnamed draft still previews; the placeholder shows where the
+        // name will land rather than rendering an empty heading.
+        name: if name.is_empty() {
+            "Untitled form".to_string()
+        } else {
+            name.to_string()
+        },
+        description: (!description.is_empty()).then(|| description.to_string()),
+        rules: rules
+            .iter()
+            .filter(|r| {
+                !r.field.trim().is_empty()
+                    && !r.when_field.trim().is_empty()
+                    && !r.equals.trim().is_empty()
+            })
+            .map(|r| PublicRule::RequiredIf {
+                field: r.field.trim().to_string(),
+                when_field: r.when_field.trim().to_string(),
+                equals: r.equals.trim().to_string(),
+            })
+            .collect(),
+        fields: fields
+            .iter()
+            .filter(|f| !f.name.trim().is_empty())
+            .map(|f| PublicField {
+                name: f.name.trim().to_string(),
+                // The client reads the label; falling back to the reference
+                // name matches what an unlabelled field would look like.
+                label: if f.label.trim().is_empty() {
+                    f.name.trim().to_string()
+                } else {
+                    f.label.trim().to_string()
+                },
+                help_text: (!f.help_text.trim().is_empty()).then(|| f.help_text.trim().to_string()),
+                field_type: f.field_type.as_str().to_string(),
+                is_required: f.is_required,
+                min_length: None,
+                max_length: f.max_length.trim().parse::<i32>().ok(),
+                options: f
+                    .field_type
+                    .needs_options()
+                    .then(|| f.parsed_options())
+                    .filter(|o| !o.is_empty()),
+                date_not_in_past: f.date_not_in_past,
+            })
+            .collect(),
+    }
+}
+
+/// The client's view of the form, in a modal over the editor.
+///
+/// Renders through [`RequestFormBody`], the same component `/request-forms/:token`
+/// uses, on the same page background, so what is shown is what is sent. It is
+/// live rather than a picture: typing into it exercises the `required_if`
+/// rules exactly as a client would hit them.
+///
+/// The submit button is present but inert. Removing it would misrepresent the
+/// page (the client sees one), and wiring it would need a token this form does
+/// not have.
+#[component]
+fn ClientPreviewModal(def: PublicForm, onclose: EventHandler<()>) -> Element {
+    let answers = use_signal(std::collections::HashMap::<String, String>::new);
+    let field_errors = use_signal(std::collections::HashMap::<String, String>::new);
+    let empty = def.fields.is_empty();
+
+    rsx! {
+        crate::components::Modal {
+            open: true,
+            title: "Preview: what the client sees".to_string(),
+            size: crate::components::ModalSize::Large,
+            onclose: move |_| onclose.call(()),
+            footer: rsx! {
+                Button { variant: ButtonVariant::Secondary, onclick: move |_| onclose.call(()), "Close" }
+            },
+
+            if empty {
+                p { class: "text-sm text-muted",
+                    "Add a field with a reference name to see the client's form."
+                }
+            } else {
+                div { class: "space-y-3",
+                    p { class: "text-xs text-muted",
+                        "Live preview of unsaved changes. Typing here is not sent anywhere."
+                    }
+                    // The client's own page background, so spacing and contrast
+                    // read the way they will on the real thing.
+                    div { class: "bg-app rounded-lg p-6",
+                        div { class: "max-w-xl mx-auto bg-surface rounded-lg shadow-lg p-8",
+                            RequestFormBody {
+                                def: def.clone(),
+                                answers,
+                                field_errors,
+                                form_error: String::new(),
+                                disabled: true,
+                                submit_label: "Send request".to_string(),
+                                onsubmit: move |_| {},
+                            }
                         }
                     }
                 }
@@ -1022,6 +1167,83 @@ mod tests {
             vec!["new", "reuse existing", "none"],
             "an empty entry from a trailing comma must not become an empty choice"
         );
+    }
+
+    #[test]
+    fn the_preview_drops_rows_the_client_would_never_receive() {
+        // A half-typed field has no reference name, so the server would reject
+        // the save; showing it in the preview would promise the client a field
+        // that cannot exist. Same for a rule missing any of its three parts.
+        let fields = vec![
+            FieldRow {
+                name: "first_name".into(),
+                label: "First name".into(),
+                ..FieldRow::new()
+            },
+            FieldRow {
+                label: "Half typed".into(),
+                ..FieldRow::new()
+            },
+        ];
+        let rules = vec![RuleRow {
+            field: "first_name".into(),
+            when_field: "".into(),
+            equals: "yes".into(),
+        }];
+
+        let preview = preview_form("Starter", "", &fields, &rules);
+        assert_eq!(preview.fields.len(), 1);
+        assert_eq!(preview.fields[0].name, "first_name");
+        assert!(
+            preview.rules.is_empty(),
+            "an incomplete rule cannot fire, so previewing it would mislead"
+        );
+    }
+
+    #[test]
+    fn the_preview_falls_back_where_the_client_would_see_a_gap() {
+        let fields = vec![FieldRow {
+            name: "note".into(),
+            label: "   ".into(),
+            ..FieldRow::new()
+        }];
+        let preview = preview_form("  ", "  ", &fields, &[]);
+
+        assert_eq!(preview.name, "Untitled form");
+        assert_eq!(preview.description, None);
+        assert_eq!(
+            preview.fields[0].label, "note",
+            "an unlabelled field shows its reference name, which is what the client would get"
+        );
+    }
+
+    #[test]
+    fn only_a_choice_list_carries_options() {
+        let fields = vec![
+            FieldRow {
+                name: "kind".into(),
+                field_type: FieldType::Select,
+                options: "new, reuse".into(),
+                ..FieldRow::new()
+            },
+            FieldRow {
+                name: "detail".into(),
+                field_type: FieldType::Text,
+                // Left over from switching the type back to text; the client
+                // never sees these, so neither does the preview.
+                options: "stale, values".into(),
+                max_length: "120".into(),
+                ..FieldRow::new()
+            },
+        ];
+        let preview = preview_form("Kinds", "", &fields, &[]);
+
+        assert_eq!(
+            preview.fields[0].options.as_deref(),
+            Some(["new".to_string(), "reuse".to_string()].as_slice())
+        );
+        assert_eq!(preview.fields[1].options, None);
+        assert_eq!(preview.fields[1].max_length, Some(120));
     }
 
     #[test]
