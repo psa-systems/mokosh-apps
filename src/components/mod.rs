@@ -31,6 +31,7 @@ mod status_badge;
 mod suggest_input;
 mod table;
 mod theme_picker;
+mod update_available_banner;
 mod update_banner;
 
 pub use account_deleted_overlay::*;
@@ -62,4 +63,5 @@ pub use status_badge::*;
 pub use suggest_input::*;
 pub use table::*;
 pub use theme_picker::*;
+pub use update_available_banner::*;
 pub use update_banner::*;

@@ -63,6 +63,12 @@ compares against `CARGO_PKG_VERSION` (see below).
 - **Update banner** -
   [`src/components/update_banner.rs`](../src/components/update_banner.rs)
   (admins only) surfaces a prompt when an update is available.
+- **New-version banner** -
+  [`src/components/update_available_banner.rs`](../src/components/update_available_banner.rs)
+  (all users) surfaces a "reload this page" prompt when the loaded
+  bundle is older than the deployed one. It shows no version or hash;
+  it is listed here because it is the other user-visible consequence of
+  the build provenance.
 
 ## Update targets (staging vs production)
 
@@ -124,6 +130,14 @@ against the live `build_sha` field in `_mokosh_config.js` (served
 mismatch it reloads at the next safe boundary. The target here is again
 "whatever container is currently serving this origin" - inherently the
 environment the user is on.
+
+On that same mismatch it raises the app-wide
+[`src/components/update_available_banner.rs`](../src/components/update_available_banner.rs)
+banner (MAPPS-428), shown to every signed-in user regardless of role,
+with a "Reload page" button so the user does not have to wait for the
+automatic boundary. That is distinct from the admin update banner
+above: this one carries no version numbers or hashes and no operator
+instructions, and it is not dismissible.
 
 ## Staging vs production summary
 

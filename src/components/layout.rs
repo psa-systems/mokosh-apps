@@ -71,6 +71,9 @@ pub fn AppShell() -> Element {
 
     rsx! {
         div { class: "h-screen flex flex-col bg-app overflow-hidden",
+            // MAPPS-428: topmost row. Renders nothing until a new SPA build
+            // is detected, so the healthy path reserves no height.
+            super::UpdateAvailableBanner {}
             super::ServerStatusBanner {}
             super::UpdateBanner {}
             TopBar {

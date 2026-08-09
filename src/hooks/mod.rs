@@ -28,7 +28,9 @@ pub use auth::*;
 pub use edit_queue::{use_replay_pending_edits, PendingEdit};
 pub use fetch::*;
 pub use remote_data::{classify_remote, use_remote_resource, RemoteData};
-pub use server_status::{use_can_mutate, use_server_reachable, use_server_status_monitor};
+pub use server_status::{
+    use_can_mutate, use_server_reachable, use_server_status_monitor, use_update_pending,
+};
 pub use sidebar::*;
 pub use theme::use_apply_theme;
 pub use theme_sync::use_theme_sync;
