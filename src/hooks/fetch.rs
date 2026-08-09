@@ -134,7 +134,7 @@ pub mod api {
     #[cfg(feature = "web")]
     pub fn api_base() -> String {
         if let Some(injected) = crate::modules::runtime_config::get("api_base") {
-            return injected;
+            return normalize_api_base(&injected);
         }
         if let Some(win) = web_sys::window() {
             if let Ok(host) = win.location().host() {
@@ -144,6 +144,22 @@ pub mod api {
             }
         }
         "/api/v1".to_string()
+    }
+
+    /// PMS-751: strip trailing slashes from a configured API base.
+    ///
+    /// Every call site joins with `format!("{}{}", api_base(), path)` and every
+    /// path starts with `/`, so a base ending in one produces `/api/v1//tenants`.
+    /// Staging is configured exactly that way
+    /// (`window.__MOKOSH_CONFIG__.api_base = "https://api.msp.a8n.systems/api/v1/"`),
+    /// and it only goes unnoticed because something in front of the server
+    /// collapses the duplicate. That is a proxy behaviour to be grateful for,
+    /// not to rely on: the day it stops, every request in the app fails at once.
+    ///
+    /// Fixed here rather than at the 19 join sites, so a base configured with a
+    /// slash cannot reintroduce it through whichever one is added next.
+    pub fn normalize_api_base(base: &str) -> String {
+        base.trim_end_matches('/').to_string()
     }
 
     // Single-threaded global access-token holder. WASM is strictly
@@ -1034,6 +1050,8 @@ pub mod api {
 /// because the request helpers themselves need a browser to run.
 #[cfg(test)]
 mod tests {
+    use super::api::normalize_api_base;
+
     const FETCH_SRC: &str = include_str!("fetch.rs");
     const PORTAL_PAGE_SRC: &str = include_str!("../pages/portal.rs");
 
@@ -1163,5 +1181,26 @@ mod tests {
                  `_portal_authed` helpers"
             );
         }
+    }
+
+    /// PMS-751: staging is configured with a trailing slash, which every join
+    /// site turns into `/api/v1//tenants/...`. It survives only because
+    /// something in front of the server collapses the duplicate.
+    #[test]
+    fn a_configured_api_base_never_keeps_a_trailing_slash() {
+        assert_eq!(
+            normalize_api_base("https://api.msp.a8n.systems/api/v1/"),
+            "https://api.msp.a8n.systems/api/v1",
+            "this is the value staging actually serves"
+        );
+        assert_eq!(
+            normalize_api_base("https://api.msp.a8n.systems/api/v1"),
+            "https://api.msp.a8n.systems/api/v1",
+            "a correctly configured base is left alone"
+        );
+        assert_eq!(
+            normalize_api_base("https://api.example.test/api/v1///"),
+            "https://api.example.test/api/v1"
+        );
     }
 }
