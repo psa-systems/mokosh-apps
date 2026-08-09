@@ -718,6 +718,12 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
         }
         PageHeader {
             title: "{header_title}",
+            // PMS-746: a route back to the list, matching ContractDetailPage.
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs {
+                    items: crate::components::detail_breadcrumbs("Invoices", Route::InvoiceList {}, &header_title),
+                }
+            },
             actions: rsx! {
                 if editable {
                     Button {

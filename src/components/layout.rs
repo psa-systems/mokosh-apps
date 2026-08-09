@@ -1363,6 +1363,27 @@ pub struct BreadcrumbsProps {
     items: Vec<BreadcrumbItem>,
 }
 
+/// PMS-746: the `<List> > <record>` trail a detail page carries.
+///
+/// Every detail page builds the same two crumbs: the list it came from, then
+/// the record itself. The record is the page you are already on, so its crumb
+/// is inert (`route: None`) and renders as plain text rather than a link.
+///
+/// Kept as a plain function, not a component, so a page's trail can be
+/// asserted in a unit test without standing up a router.
+pub fn detail_breadcrumbs(list_label: &str, list_route: Route, title: &str) -> Vec<BreadcrumbItem> {
+    vec![
+        BreadcrumbItem {
+            label: list_label.to_string(),
+            route: Some(list_route),
+        },
+        BreadcrumbItem {
+            label: title.to_string(),
+            route: None,
+        },
+    ]
+}
+
 #[component]
 pub fn Breadcrumbs(props: BreadcrumbsProps) -> Element {
     rsx! {
@@ -1429,12 +1450,13 @@ pub fn EmptyState(props: EmptyStateProps) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use super::full_nav_visible;
+    use super::{detail_breadcrumbs, full_nav_visible};
     use crate::components::icons::{
         CLIPBOARD_DOCUMENT_LIST_PATH, CREDIT_CARD_PATH, CURRENCY_PATH, DOCUMENT_CHECK_PATH,
         DOCUMENT_PATH, SCALE_PATH, SHIELD_CHECK_PATH, TAG_PATH, USERS_PATH, USER_GROUP_PATH,
     };
     use crate::modules::theme::SectionColor;
+    use crate::Route;
 
     /// MAPPS-359 AC1: every sidebar row must render a distinct icon. Before
     /// this change six rows shared `DocumentIcon`, two shared `UsersIcon`,
@@ -1444,6 +1466,17 @@ mod tests {
     /// icon actually renders (the exported `*_PATH` consts, so the guard can
     /// never drift from the rendered glyph). If a reassignment is ever
     /// reverted to a shared icon, this fails.
+    /// PMS-746: the shared detail trail is `<List> > <record>`, the first crumb
+    /// navigates back to the list, and the record's own crumb is inert.
+    #[test]
+    fn detail_trail_leads_back_to_its_list() {
+        let crumbs = detail_breadcrumbs("Tickets", Route::TicketList {}, "TCK-1001");
+        let labels: Vec<&str> = crumbs.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["Tickets", "TCK-1001"]);
+        assert_eq!(crumbs[0].route, Some(Route::TicketList {}));
+        assert_eq!(crumbs[1].route, None);
+    }
+
     #[test]
     fn distinct_icons() {
         // (label, rendered icon path) for every row that sat in a family that

@@ -4309,6 +4309,15 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
         }
         PageHeader {
             title: "{header_title}",
+            // PMS-746: a route back to the list, matching CompanyDetailPage.
+            // The trail stays flat (`Contacts > <name>`) even though a contact
+            // also belongs to a company: a company-aware parent would have to
+            // depend on how the page was reached, which is a separate change.
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs {
+                    items: crate::components::detail_breadcrumbs("Contacts", Route::ContactList {}, &header_title),
+                }
+            },
             actions: rsx! {
                 Link {
                     to: Route::ContactEdit { id: edit_id },

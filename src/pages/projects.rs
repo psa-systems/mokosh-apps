@@ -1317,6 +1317,12 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         }
         PageHeader {
             title: "{header_title}",
+            // PMS-746: a route back to the list, matching ContractDetailPage.
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs {
+                    items: crate::components::detail_breadcrumbs("Projects", Route::ProjectList {}, &header_title),
+                }
+            },
             actions: rsx! {
               // MAPPS-267: collapse the Edit/Delete/Add cluster into a
               // `...` menu on narrow screens instead of letting four
