@@ -71,6 +71,16 @@ pub(crate) struct PublicForm {
     pub(crate) name: String,
     #[serde(default)]
     pub(crate) description: Option<String>,
+    /// PMS-748: the MSP asking. This page is reached from an email by someone
+    /// with no account here, so it carries its own attribution rather than
+    /// assuming the message that linked to it is still open. `#[serde(default)]`
+    /// so a build talking to a server that predates PMS-748 renders the form
+    /// unattributed instead of failing to render it.
+    #[serde(default)]
+    pub(crate) tenant_name: String,
+    /// PMS-748: how to reach that MSP, when the form carries it.
+    #[serde(default)]
+    pub(crate) contact_info: Option<String>,
     #[serde(default)]
     pub(crate) rules: Vec<PublicRule>,
     pub(crate) fields: Vec<PublicField>,
@@ -375,6 +385,24 @@ pub(crate) fn RequestFormBody(
                 "{submit_label}"
             }
         }
+
+        // PMS-748: who is asking. Someone typing a phone number into a page
+        // they reached from an email is entitled to see whose page it is
+        // before they send it, without going back to the message. Inside the
+        // body rather than around it, so the builder's preview shows the
+        // operator exactly what their client will read.
+        //
+        // The name is not optional; the contact line is. A server that
+        // predates PMS-748 sends no name, and an empty attribution is dropped
+        // rather than rendered as a stray rule above nothing.
+        if !def.tenant_name.trim().is_empty() {
+            div { class: "mt-8 border-t border-line pt-4 text-xs text-muted",
+                p { "This form was sent to you by {def.tenant_name}." }
+                if let Some(contact) = def.contact_info.clone().filter(|c| !c.trim().is_empty()) {
+                    p { class: "mt-1", "Questions before you answer? Contact {contact}." }
+                }
+            }
+        }
     }
 }
 
@@ -546,6 +574,8 @@ mod tests {
         PublicForm {
             name: "Departure".into(),
             description: None,
+            tenant_name: "Acme IT".into(),
+            contact_info: None,
             rules: vec![PublicRule::RequiredIf {
                 field: "forward_to".into(),
                 when_field: "mailbox_handling".into(),
