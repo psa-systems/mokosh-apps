@@ -379,6 +379,8 @@ fn warranty_refresh_status(s: &Option<String>) -> WarrantyRefreshStatus {
 /// Asset list page
 #[component]
 pub fn AssetListPage() -> Element {
+    // PMS-745: row-level navigation for the list below.
+    let navigator = use_navigator();
     let mut search = use_signal(String::new);
     // MAPPS-303: page-scoped bulk selection (built on MAPPS-290's
     // `use_bulk_selection`). Drives the per-row checkbox, the
@@ -664,9 +666,21 @@ pub fn AssetListPage() -> Element {
                                     .or_else(|| a.asset_tag.clone())
                                     .unwrap_or_else(|| "-".to_string());
                                 let aid = a.id.to_string();
+                                let row_id = aid.clone();
                                 rsx! {
                                     TableRow { key: "{aid}",
-                                        // MAPPS-303: per-row checkbox.
+                                        // PMS-745: the whole row navigates, matching
+                                        // ContractRow / TicketRow. `clickable` also
+                                        // restores the hover background and pointer
+                                        // cursor, which TableRow scopes to interactive
+                                        // rows (MAPPS-389).
+                                        clickable: true,
+                                        onclick: move |_| {
+                                            navigator.push(Route::AssetDetail { id: row_id.clone() });
+                                        },
+                                        // MAPPS-303: per-row checkbox. Its cell stops
+                                        // propagation, so selecting a row does not also
+                                        // open it.
                                         crate::components::SelectRowCell {
                                             selection,
                                             id: aid.clone(),
