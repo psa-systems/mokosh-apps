@@ -447,15 +447,23 @@ fn QuoteDetailBody(id: String) -> Element {
                 // server enforces, so a disabled button means "not in
                 // this state" rather than "this might 409".
                 let can_edit = status::allows_content_edit(&st) && can_mutate;
+                let header_title = q.quote_number.clone().unwrap_or_else(|| "Quote".to_string());
                 rsx! {
                     PageHeader {
-                        title: q.quote_number.clone().unwrap_or_else(|| "Quote".to_string()),
+                        title: header_title.clone(),
                         subtitle: q.title.clone(),
-                        actions: rsx! {
-                            Link {
-                                to: Route::QuoteList {},
-                                Button { variant: ButtonVariant::Secondary, "Back to Quotes" }
+                        // PMS-746: a route back to the list, matching
+                        // ContractDetailPage. This replaces the "Back to Quotes"
+                        // button that used to sit in the action cluster: the
+                        // crumb is the same destination in the place every other
+                        // detail page puts it, and the actions are left holding
+                        // only verbs that act on the quote.
+                        breadcrumbs: rsx! {
+                            crate::components::Breadcrumbs {
+                                items: crate::components::detail_breadcrumbs("Quotes", Route::QuoteList {}, &header_title),
                             }
+                        },
+                        actions: rsx! {
                             if can_edit {
                                 Link {
                                     to: Route::QuoteEdit { id: quote_id.clone() },
