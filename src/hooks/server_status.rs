@@ -44,6 +44,22 @@ pub fn use_server_reachable() -> bool {
     true
 }
 
+/// MAPPS-428: read the live "a newer SPA build has been deployed, this
+/// tab is stale" flag reactively. Same shape as [`use_server_reachable`]
+/// above: [`crate::components::UpdateAvailableBanner`] calls it and
+/// re-renders when [`crate::hooks::update_check::UPDATE_PENDING`] flips.
+#[cfg(feature = "web")]
+pub fn use_update_pending() -> bool {
+    *crate::hooks::update_check::UPDATE_PENDING.read()
+}
+
+/// Non-web stub: native / SSR builds run no update check, so there is
+/// never a stale bundle to report.
+#[cfg(not(feature = "web"))]
+pub fn use_update_pending() -> bool {
+    false
+}
+
 /// Whether the app may currently send a *mutating* request (create /
 /// update / delete). The inverse of "server down" (MAPPS-351): while
 /// mokosh-server is unreachable we disable Save/submit at the button so

@@ -89,6 +89,16 @@ pub(crate) fn note_account_deleted() {
 #[cfg(feature = "web")]
 pub(crate) fn note_response_status(status: u16) {
     set_server_reachable(!(500..600).contains(&status));
+    // MAPPS-428: a status that could mean "this tab is running a bundle
+    // older than the deployed one" also kicks an immediate `build_sha`
+    // check, so the app-wide update banner appears in the same
+    // interaction that produced the error rather than up to five minutes
+    // later. Debounced to one in-flight probe inside the callee. Hooked
+    // here, at the single point that already classifies every response,
+    // so no per-page code changes are needed.
+    if crate::hooks::update_check::is_version_skew_status(status) {
+        crate::hooks::update_check::note_possible_version_skew();
+    }
 }
 
 /// Classify a transport-level failure: the opaque browser fetch rejection
