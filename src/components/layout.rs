@@ -335,7 +335,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
             NavSection { title: "Service Desk", rail_collapsed: collapsed, color: SectionColor::Blue,
                 NavItem { to: Route::TicketList {}, icon: rsx!(TicketIcon {}), label: "Tickets", collapsed }
                 NavItem { to: Route::TimeEntryList {}, icon: rsx!(ClockIcon {}), label: "Time Entries", collapsed }
-                NavItem { to: Route::Timesheets {}, icon: rsx!(DocumentIcon {}), label: "Timesheets", collapsed }
+                NavItem { to: Route::Timesheets {}, icon: rsx!(TableCellsIcon {}), label: "Timesheets", collapsed }
                 if can_manage {
                     NavItem { to: Route::TimesheetApprovals {}, icon: rsx!(DocumentCheckIcon {}), label: "Timesheet Approvals", collapsed }
                 }
@@ -389,7 +389,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                         NavItem { to: Route::Team {}, icon: rsx!(UserGroupIcon {}), label: "Team", collapsed }
                     }
                     NavItem { to: Route::AuditLog {}, icon: rsx!(ClipboardDocumentListIcon {}), label: "Audit Log", collapsed }
-                    NavItem { to: Route::FormsBuilder {}, icon: rsx!(ClipboardDocumentListIcon {}), label: "Request Forms", collapsed }
+                    NavItem { to: Route::FormsBuilder {}, icon: rsx!(InboxArrowDownIcon {}), label: "Request Forms", collapsed }
                     NavItem { to: Route::SlaManagement {}, icon: rsx!(ShieldCheckIcon {}), label: "SLA Management", collapsed }
                     // MAPPS-169: single entry into the centralized Settings hub.
                     NavItem { to: Route::SettingsHome {}, icon: rsx!(CogIcon {}), label: "Settings", collapsed }
@@ -1454,10 +1454,6 @@ pub fn EmptyState(props: EmptyStateProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::{detail_breadcrumbs, full_nav_visible};
-    use crate::components::icons::{
-        CLIPBOARD_DOCUMENT_LIST_PATH, CREDIT_CARD_PATH, CURRENCY_PATH, DOCUMENT_CHECK_PATH,
-        DOCUMENT_PATH, SCALE_PATH, SHIELD_CHECK_PATH, TAG_PATH, USERS_PATH, USER_GROUP_PATH,
-    };
     use crate::modules::theme::SectionColor;
     use crate::Route;
 
@@ -1480,27 +1476,55 @@ mod tests {
         assert_eq!(crumbs[1].route, None);
     }
 
+    /// The sidebar source, scanned rather than mirrored. See
+    /// [`every_sidebar_row_has_its_own_icon`].
+    const LAYOUT_SRC: &str = include_str!("layout.rs");
+
+    /// MAPPS-359 AC1 / PMS-752: every sidebar row renders a distinct icon.
+    ///
+    /// This used to be a hand-written list of ten (label, path) pairs. It
+    /// passed while the sidebar shipped Audit Log and Request Forms on the same
+    /// clipboard glyph, because Request Forms was never added to the list: a
+    /// guard that only checks what someone remembered to enrol is a guard for
+    /// the rows that were never going to break.
+    ///
+    /// Scanning `SidebarContent`'s own source covers every row, including the
+    /// next one added, and needs no maintenance.
     #[test]
-    fn distinct_icons() {
-        // (label, rendered icon path) for every row that sat in a family that
-        // previously reused one glyph. All ten must be unique.
-        let rows = [
-            ("Timesheets", DOCUMENT_PATH),
-            ("Timesheet Approvals", DOCUMENT_CHECK_PATH),
-            ("Contracts", SCALE_PATH),
-            ("Rate Cards", TAG_PATH),
-            ("Audit Log", CLIPBOARD_DOCUMENT_LIST_PATH),
-            ("SLA Management", SHIELD_CHECK_PATH),
-            ("Contacts", USERS_PATH),
-            ("Team", USER_GROUP_PATH),
-            ("Invoices", CURRENCY_PATH),
-            ("Payments", CREDIT_CARD_PATH),
-        ];
-        for (i, (label_a, path_a)) in rows.iter().enumerate() {
-            for (label_b, path_b) in &rows[i + 1..] {
+    fn every_sidebar_row_has_its_own_icon() {
+        let mut rows: Vec<(String, String)> = Vec::new();
+        for line in LAYOUT_SRC.lines() {
+            let line = line.trim();
+            if !line.starts_with("NavItem {") {
+                continue;
+            }
+            let Some((icon, rest)) = line
+                .split_once("icon: rsx!(")
+                .and_then(|(_, r)| r.split_once(' '))
+            else {
+                panic!("a NavItem without an `icon: rsx!(...)`: {line}");
+            };
+            let label = rest
+                .split_once("label: \"")
+                .and_then(|(_, r)| r.split_once('"'))
+                .map(|(l, _)| l.to_string())
+                .unwrap_or_else(|| panic!("a NavItem without a string label: {line}"));
+            rows.push((icon.to_string(), label));
+        }
+
+        // If the parse ever stops matching (formatting change, multi-line
+        // NavItem), this fails loudly instead of passing on an empty set.
+        assert!(
+            rows.len() >= 15,
+            "only found {} sidebar rows; the scan is no longer matching the source",
+            rows.len()
+        );
+
+        for (i, (icon_a, label_a)) in rows.iter().enumerate() {
+            for (icon_b, label_b) in &rows[i + 1..] {
                 assert_ne!(
-                    path_a, path_b,
-                    "sidebar rows {label_a} and {label_b} render the same icon"
+                    icon_a, icon_b,
+                    "sidebar rows {label_a} and {label_b} both render {icon_a}"
                 );
             }
         }

@@ -537,6 +537,72 @@ pub fn ClipboardDocumentListIcon(
     }
 }
 
+/// Primary path of [`TableCellsIcon`]: a bordered grid. PMS-752: the Timesheets
+/// nav row, which shared `DocumentIcon` with Quotes. A timesheet IS a grid of
+/// days against hours, and a quote is genuinely a document, so the grid moved
+/// and the page stayed.
+pub const TABLE_CELLS_PATH: &str = "M4.5 5.25h15a.75.75 0 0 1 .75.75v12a.75.75 0 0 1-.75.75h-15a.75.75 0 0 1-.75-.75V6a.75.75 0 0 1 .75-.75Zm-.75 4.5h16.5m-16.5 4.5h16.5M10.5 5.25v13.5";
+
+/// Bordered grid. Used for the Timesheets nav item.
+#[component]
+pub fn TableCellsIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: TABLE_CELLS_PATH,
+            }
+        }
+    }
+}
+
+/// Primary path of [`InboxArrowDownIcon`]: an open tray with an arrow coming
+/// into it. PMS-752: the Request Forms nav row, which used to share the
+/// clipboard glyph with Audit Log. A request form is something you send out and
+/// get answers back from, so "arriving in a tray" reads closer than a clipboard
+/// and, more to the point, is not the icon the row above it uses.
+pub const INBOX_ARROW_DOWN_PATH: &str =
+    "M3.75 9.75v7.5A2.25 2.25 0 0 0 6 19.5h12a2.25 2.25 0 0 0 2.25-2.25v-7.5M12 3v10.5m0 0 3.75-3.75M12 13.5 8.25 9.75";
+
+/// Tray with an inbound arrow. Used for the Request Forms nav item.
+#[component]
+pub fn InboxArrowDownIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: INBOX_ARROW_DOWN_PATH,
+            }
+        }
+    }
+}
+
 /// Primary path of [`ShieldCheckIcon`] (Heroicons `shield-check`).
 pub const SHIELD_CHECK_PATH: &str = "M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z";
 

@@ -4,12 +4,27 @@
 //! synthetic name derived from the email local-part and leaves
 //! `profile_completed_at` NULL. The SPA's `AuthGuard` redirects every
 //! `profile_completed = false` user to this screen and gates all other
-//! authenticated routes behind it. Submitting first + last name calls
-//! `PUT /api/v1/auth/me`; the server side flips
-//! `profile_completed_at = COALESCE(profile_completed_at, NOW())` and
-//! `/api/v1/auth/me` starts reporting `profile_completed = true`. The
-//! SPA refreshes its in-memory `CurrentUser` from the PUT response so
-//! the gate stops firing on the same tick.
+//! authenticated routes behind it.
+//!
+//! PMS-752: this screen asks for the ORGANISATION name, not the user's
+//! name, and that is not a cosmetic swap.
+//!
+//! It used to collect first + last name and PUT them to `/auth/me`. PMS-512
+//! made bunyip the owner of those names and removed them from
+//! `UpdateUserRequest`, so the values were accepted by the browser and
+//! discarded by the server; worse, `profile_completed_at` moved to
+//! `upsert_user_from_oidc`, stamped only on a login whose claims carry both
+//! names. A user who reached this screen therefore could not leave it: the
+//! one thing it could submit was the one thing that no longer completed a
+//! profile. It only looked healthy because bunyip normally supplies names and
+//! the screen is normally skipped.
+//!
+//! What it collects now is a value mokosh does own and does need: the
+//! organisation name every client sees on request-form and invitation email,
+//! which otherwise stays "My workspace" until someone finds Settings. Saving
+//! calls `PUT /api/v1/tenants/current` (PMS-751), then
+//! `POST /api/v1/auth/me/complete-onboarding` to stamp the profile. Contact
+//! name and phone are MAPPS-429: they need somewhere to be written first.
 //!
 //! Why a dedicated page (not a modal on the dashboard): the gate must
 //! be impossible to bypass via direct URL or refresh, and the
@@ -25,24 +40,16 @@ use crate::components::{AuthLayout, Button, ButtonVariant, Input};
 use crate::utils::{FormGuard, Rule};
 use crate::Route;
 
-/// What `PUT /api/v1/auth/me` accepts. Only the two required fields are
-/// sent from the onboarding screen; the server's `update_user` handler
-/// flips `profile_completed_at` once it sees both as non-empty.
+/// What `PUT /api/v1/tenants/current` accepts from this screen.
 #[derive(Clone, Debug, Serialize)]
-struct OnboardingRequest {
-    first_name: Option<String>,
-    last_name: Option<String>,
+struct OrganizationRequest {
+    name: String,
 }
 
-/// What we read off the PUT response so we can update the in-memory
-/// `CurrentUser` without a second round-trip. Mirrors the relevant
-/// fields of mokosh-server's `UserResponse`.
+/// What we read off `POST /api/v1/auth/me/complete-onboarding` so the
+/// in-memory `CurrentUser` reflects the stamp without a second round-trip.
 #[derive(Clone, Debug, Deserialize)]
 struct OnboardingResponse {
-    #[serde(default)]
-    first_name: String,
-    #[serde(default)]
-    last_name: String,
     /// `true` once the server has stamped `profile_completed_at`.
     /// Default `true` for backward-compat with older server builds
     /// that omit the field.
@@ -55,15 +62,13 @@ pub fn Onboarding() -> Element {
     let mut auth = crate::hooks::use_auth();
     let nav = use_navigator();
 
-    let mut first_name = use_signal(String::new);
-    let mut last_name = use_signal(String::new);
+    let mut org_name = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
     // PMS-518: per-field inline error slots, fed by the FormGuard in
     // handle_submit. The form-level `error` banner is kept for the server
     // save failure, which has no single field to attach to.
-    let mut first_name_error = use_signal(String::new);
-    let mut last_name_error = use_signal(String::new);
+    let mut org_name_error = use_signal(String::new);
 
     // Defence in depth: if a user with `profile_completed = true`
     // hits /onboarding/profile directly (bookmark, refresh, manual
@@ -93,15 +98,12 @@ pub fn Onboarding() -> Element {
         if saving() {
             return;
         }
-        let first = first_name.read().trim().to_string();
-        let last = last_name.read().trim().to_string();
+        let name = org_name.read().trim().to_string();
 
-        // PMS-518: validate each required field through the shared FormGuard so
-        // both "you forgot to fill X" failures surface at once (each in its own
-        // inline slot) and the first invalid field is focused.
+        // PMS-518: validate through the shared FormGuard so the failure lands
+        // in the field's own slot and the field is focused.
         let mut guard = FormGuard::new();
-        first_name_error.set(guard.field("first_name", &first, "First name", &[Rule::Required]));
-        last_name_error.set(guard.field("last_name", &last, "Last name", &[Rule::Required]));
+        org_name_error.set(guard.field("org_name", &name, "Organization name", &[Rule::Required]));
         if guard.blocked() {
             return;
         }
@@ -111,24 +113,40 @@ pub fn Onboarding() -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                let body = OnboardingRequest {
-                    first_name: Some(first.clone()),
-                    last_name: Some(last.clone()),
-                };
-                match crate::hooks::fetch::api::put_authed_typed::<OnboardingResponse, _>(
-                    "/auth/me", &body,
+                // The organisation name first. If this fails, the profile is
+                // deliberately NOT stamped: completing onboarding without the
+                // one value it exists to collect would send the user on with a
+                // tenant still called "My workspace" and no prompt to fix it.
+                let body = OrganizationRequest { name: name.clone() };
+                let saved = crate::hooks::fetch::api::put_authed_typed::<serde_json::Value, _>(
+                    "/tenants/current",
+                    &body,
+                )
+                .await;
+                if let Err(e) = saved {
+                    match e.field_message("name") {
+                        Some(m) => org_name_error.set(m),
+                        None => error.set(format!("Could not save: {}", e.user_message())),
+                    }
+                    saving.set(false);
+                    return;
+                }
+
+                // Then the stamp. Separate call because the two are different
+                // records: one is the tenant, one is the user.
+                match crate::hooks::fetch::api::post_authed_typed::<OnboardingResponse, _>(
+                    "/auth/me/complete-onboarding",
+                    &serde_json::json!({}),
                 )
                 .await
                 {
                     Ok(resp) => {
-                        // Reflect the server's authoritative values back
-                        // into the in-memory CurrentUser so the gate's
-                        // next render sees `profile_completed = true`
-                        // and the redirect below lands cleanly.
+                        // Reflect the server's authoritative value back into
+                        // the in-memory CurrentUser so the gate's next render
+                        // sees `profile_completed = true` and the redirect
+                        // below lands cleanly.
                         let mut a = auth.write();
                         if let Some(u) = a.user.as_mut() {
-                            u.first_name = resp.first_name;
-                            u.last_name = resp.last_name;
                             u.profile_completed = resp.profile_completed;
                         }
                         drop(a);
@@ -141,7 +159,7 @@ pub fn Onboarding() -> Element {
             }
             #[cfg(not(feature = "web"))]
             {
-                let _ = (first, last);
+                let _ = name;
             }
             saving.set(false);
         });
@@ -154,7 +172,7 @@ pub fn Onboarding() -> Element {
                             "Welcome to Mokosh"
                         }
                         p { class: "mt-2 text-sm text-content",
-                            "Tell us your name so we know what to call you."
+                            "What should your clients see when you email them?"
                         }
                     }
 
@@ -166,30 +184,17 @@ pub fn Onboarding() -> Element {
                         },
 
                         Input {
-                            name: "first_name",
-                            label: "First name",
-                            value: first_name(),
+                            name: "org_name",
+                            label: "Organization name",
+                            value: org_name(),
                             required: true,
                             rules: vec![Rule::Required],
-                            error: first_name_error(),
+                            error: org_name_error(),
                             disabled: saving(),
+                            help: "Shown to your clients on the request forms you send and the email that carries them. Change it later under Settings, Organization.".to_string(),
                             oninput: move |e: FormEvent| {
-                                first_name_error.set(String::new());
-                                first_name.set(e.value());
-                            },
-                        }
-
-                        Input {
-                            name: "last_name",
-                            label: "Last name",
-                            value: last_name(),
-                            required: true,
-                            rules: vec![Rule::Required],
-                            error: last_name_error(),
-                            disabled: saving(),
-                            oninput: move |e: FormEvent| {
-                                last_name_error.set(String::new());
-                                last_name.set(e.value());
+                                org_name_error.set(String::new());
+                                org_name.set(e.value());
                             },
                         }
 
@@ -210,7 +215,7 @@ pub fn Onboarding() -> Element {
                     }
 
                     p { class: "mt-6 text-center text-xs text-muted",
-                        "Other profile settings (timezone, preferences) can be edited later from Profile."
+                        "Your name comes from the account you signed in with. Other settings (timezone, preferences) can be edited later from Profile."
                     }
         }
     }
