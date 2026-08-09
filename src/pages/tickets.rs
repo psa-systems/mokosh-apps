@@ -1999,6 +1999,12 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     rsx! {
         PageHeader {
             title: "{header_title}",
+            // PMS-746: a route back to the list, matching ContractDetailPage.
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs {
+                    items: crate::components::detail_breadcrumbs("Tickets", Route::TicketList {}, &header_title),
+                }
+            },
             actions: rsx! {
                 Button {
                     variant: ButtonVariant::Secondary,
