@@ -133,6 +133,10 @@ pub struct FormDefinition {
     pub slug: String,
     #[serde(default)]
     pub description: Option<String>,
+    /// PMS-748: how a client reaches the MSP about this request. Shown on the
+    /// client's form page and in the email that links to it.
+    #[serde(default)]
+    pub contact_info: Option<String>,
     #[serde(default)]
     pub kb_article_id: Option<Uuid>,
     #[serde(default)]
@@ -173,6 +177,8 @@ pub struct CreateFormDefinitionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub contact_info: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub kb_article_id: Option<Uuid>,
     pub rules: Vec<FormRule>,
     pub is_active: bool,
@@ -188,6 +194,9 @@ pub struct CreateFormDefinitionRequest {
 pub struct UpdateFormDefinitionRequest {
     pub name: String,
     pub description: Option<String>,
+    /// Serialised even when `None`, like `description`: the server treats an
+    /// explicit null as "clear this", which is how the editor empties it.
+    pub contact_info: Option<String>,
     pub kb_article_id: Option<Uuid>,
     pub rules: Vec<FormRule>,
     pub is_active: bool,

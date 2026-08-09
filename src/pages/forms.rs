@@ -64,6 +64,10 @@ pub fn FormsBuilderPage() -> Element {
 
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
+    // PMS-748: the client's page names the MSP, so the preview of it has to
+    // name the same MSP. The operator IS the tenant here, so it comes from the
+    // active org rather than from the token-scoped public endpoint.
+    let tenant_name = active_org_name();
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Request Forms".to_string() }
@@ -131,7 +135,7 @@ pub fn FormsBuilderPage() -> Element {
                                 // PMS-744: mapped once per row rather than in
                                 // the click handler, so the closure carries a
                                 // ready value instead of the whole definition.
-                                let for_preview = preview_from_definition(&def);
+                                let for_preview = preview_from_definition(&def, &tenant_name);
                                 rsx! {
                                     TableRow { key: "{key}",
                                         TableCell {
@@ -299,6 +303,8 @@ struct EditorState {
     name: String,
     slug: String,
     description: String,
+    /// PMS-748: how a client reaches the MSP about this request.
+    contact_info: String,
     kb_article_id: String,
     is_active: bool,
     fields: Vec<FieldRow>,
@@ -315,6 +321,7 @@ impl EditorState {
             name: String::new(),
             slug: String::new(),
             description: String::new(),
+            contact_info: String::new(),
             kb_article_id: String::new(),
             is_active: true,
             // A definition needs at least one field to be creatable, so the
@@ -353,6 +360,7 @@ impl EditorState {
             name: def.name.clone(),
             slug: def.slug.clone(),
             description: def.description.clone().unwrap_or_default(),
+            contact_info: def.contact_info.clone().unwrap_or_default(),
             kb_article_id: def.kb_article_id.map(|i| i.to_string()).unwrap_or_default(),
             is_active: def.is_active,
             fields: def
@@ -397,6 +405,19 @@ fn slugify(name: &str) -> String {
         out.pop();
     }
     out
+}
+
+/// PMS-748: the active org's display name, or an empty string before the
+/// membership list has loaded. An empty name suppresses the attribution block
+/// rather than previewing a form "sent to you by " nobody.
+fn active_org_name() -> String {
+    let auth = crate::hooks::use_auth();
+    let name = auth
+        .read()
+        .active_org_name()
+        .unwrap_or_default()
+        .to_string();
+    name
 }
 
 /// PMS-747: derive a field's reference name from its label, so "Phone number"
@@ -480,6 +501,7 @@ fn FormEditorModal(
     let mut slug = use_signal(|| state.slug.clone());
     let mut slug_touched = use_signal(|| is_edit);
     let mut description = use_signal(|| state.description.clone());
+    let mut contact_info = use_signal(|| state.contact_info.clone());
     let mut kb_article_id = use_signal(|| state.kb_article_id.clone());
     let mut is_active = use_signal(|| state.is_active);
     let mut fields = use_signal(|| state.fields.clone());
@@ -497,6 +519,9 @@ fn FormEditorModal(
     let mut problem_count = use_signal(|| 0usize);
     // PMS-744: preview of the client's view, built from the live editor state.
     let mut previewing = use_signal(|| false);
+    // PMS-748: see `FormsBuilderPage`; the preview must name the MSP the
+    // client's own page will name.
+    let tenant_name = active_org_name();
 
     // Published articles for the procedure picker.
     let articles = use_resource(|| async {
@@ -654,6 +679,7 @@ fn FormEditorModal(
         let name_v = name.read().trim().to_string();
         let slug_v = slug.read().trim().to_string();
         let desc_v = optional(&description.read());
+        let contact_v = optional(&contact_info.read());
         let active_v = *is_active.read();
         let id = save_id.clone();
 
@@ -666,6 +692,7 @@ fn FormEditorModal(
                             name: name_v,
                             slug: slug_v,
                             description: desc_v,
+                            contact_info: contact_v,
                             kb_article_id: article,
                             rules: upsert_rules,
                             is_active: active_v,
@@ -681,6 +708,7 @@ fn FormEditorModal(
                         let req = UpdateFormDefinitionRequest {
                             name: name_v,
                             description: desc_v,
+                            contact_info: contact_v,
                             kb_article_id: article,
                             rules: upsert_rules,
                             is_active: active_v,
@@ -833,6 +861,17 @@ fn FormEditorModal(
                         help: "Optional. Shown under the title on the client's form.".to_string(),
                         oninput: move |e: FormEvent| description.set(e.value()),
                     }
+                    Input {
+                        name: "contact_info",
+                        label: "Contact for questions",
+                        value: contact_info(),
+                        disabled: saving(),
+                        // PMS-748: optional because the MSP's NAME is shown to
+                        // the client either way. This is the channel, not the
+                        // attribution.
+                        help: "Optional. Shown to the client on the form and in the email that links to it, so they can ask before they answer. Free text, e.g. \"the service desk on 555-0100\".".to_string(),
+                        oninput: move |e: FormEvent| contact_info.set(e.value()),
+                    }
                     Select {
                         name: "kb_article_id",
                         label: "Procedure article",
@@ -934,7 +973,14 @@ fn FormEditorModal(
 
         if previewing() {
             ClientPreviewModal {
-                def: preview_form(&name(), &description(), &fields.read(), &rules.read()),
+                def: preview_form(
+                    &name(),
+                    &description(),
+                    &contact_info(),
+                    &tenant_name,
+                    &fields.read(),
+                    &rules.read(),
+                ),
                 unsaved: true,
                 onclose: move |_| previewing.set(false),
             }
@@ -955,7 +1001,7 @@ fn FormEditorModal(
 /// A rule this build cannot represent (`FormRule::Other`, authored by a newer
 /// server) is dropped. It cannot be rendered honestly, and the editor already
 /// refuses to save a definition carrying one.
-fn preview_from_definition(def: &FormDefinition) -> PublicForm {
+fn preview_from_definition(def: &FormDefinition, tenant_name: &str) -> PublicForm {
     let mut fields: Vec<&crate::modules::forms::FormField> = def.fields.iter().collect();
     fields.sort_by_key(|f| f.sort_order);
 
@@ -966,6 +1012,16 @@ fn preview_from_definition(def: &FormDefinition) -> PublicForm {
             .clone()
             .map(|d| d.trim().to_string())
             .filter(|d| !d.is_empty()),
+        // PMS-748: the attribution the client is served. The operator IS the
+        // tenant here, so it comes from the active org rather than from a
+        // fetch the client-facing page makes with a token this page has not
+        // got.
+        tenant_name: tenant_name.to_string(),
+        contact_info: def
+            .contact_info
+            .clone()
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty()),
         rules: def
             .rules
             .iter()
@@ -1017,9 +1073,12 @@ fn preview_from_definition(def: &FormDefinition) -> PublicForm {
 /// A row too incomplete to render (no reference name) is dropped rather than
 /// shown as a blank input: the server would reject the save anyway, and a
 /// preview should not invent a field the client will never get.
+#[allow(clippy::too_many_arguments)]
 fn preview_form(
     name: &str,
     description: &str,
+    contact_info: &str,
+    tenant_name: &str,
     fields: &[FieldRow],
     rules: &[RuleRow],
 ) -> PublicForm {
@@ -1034,6 +1093,13 @@ fn preview_form(
             name.to_string()
         },
         description: (!description.is_empty()).then(|| description.to_string()),
+        // PMS-748: previewed from the live editor state too, so an operator
+        // adding a contact line sees it land before saving.
+        tenant_name: tenant_name.to_string(),
+        contact_info: {
+            let c = contact_info.trim();
+            (!c.is_empty()).then(|| c.to_string())
+        },
         rules: rules
             .iter()
             .filter(|r| {
@@ -1450,6 +1516,39 @@ mod tests {
         assert!(field_name_problem("double__bar").is_some(), "doubled _");
     }
 
+    /// PMS-748: the client's page names the MSP and, optionally, how to reach
+    /// them. The preview is only worth having if it carries the same, so an
+    /// operator signing one off sees what their client will read.
+    #[test]
+    fn the_preview_carries_the_attribution_the_client_will_see() {
+        let fields = vec![FieldRow {
+            name: "first_name".into(),
+            label: "First name".into(),
+            ..FieldRow::new()
+        }];
+
+        let previewed = preview_form(
+            "Starter",
+            "",
+            "  the service desk on 555-0100  ",
+            "Acme IT",
+            &fields,
+            &[],
+        );
+        assert_eq!(previewed.tenant_name, "Acme IT");
+        assert_eq!(
+            previewed.contact_info.as_deref(),
+            Some("the service desk on 555-0100"),
+            "the client is served a trimmed value, so the preview must be too"
+        );
+
+        let blank = preview_form("Starter", "", "   ", "Acme IT", &fields, &[]);
+        assert_eq!(
+            blank.contact_info, None,
+            "a contact field holding only spaces must not preview as a contact line"
+        );
+    }
+
     #[test]
     fn options_are_split_and_trimmed_and_blanks_dropped() {
         let row = FieldRow {
@@ -1485,6 +1584,7 @@ mod tests {
             name: "Starter".into(),
             slug: "starter".into(),
             description: Some("   ".into()),
+            contact_info: None,
             kb_article_id: None,
             kb_article_title: None,
             rules: vec![
@@ -1501,7 +1601,7 @@ mod tests {
             fields: vec![field("b", 2), field("a", 1)],
         };
 
-        let preview = preview_from_definition(&def);
+        let preview = preview_from_definition(&def, "Acme IT");
 
         assert_eq!(
             preview
@@ -1548,7 +1648,7 @@ mod tests {
             equals: "yes".into(),
         }];
 
-        let preview = preview_form("Starter", "", &fields, &rules);
+        let preview = preview_form("Starter", "", "", "Acme IT", &fields, &rules);
         assert_eq!(preview.fields.len(), 1);
         assert_eq!(preview.fields[0].name, "first_name");
         assert!(
@@ -1564,7 +1664,7 @@ mod tests {
             label: "   ".into(),
             ..FieldRow::new()
         }];
-        let preview = preview_form("  ", "  ", &fields, &[]);
+        let preview = preview_form("  ", "  ", "  ", "Acme IT", &fields, &[]);
 
         assert_eq!(preview.name, "Untitled form");
         assert_eq!(preview.description, None);
@@ -1593,7 +1693,7 @@ mod tests {
                 ..FieldRow::new()
             },
         ];
-        let preview = preview_form("Kinds", "", &fields, &[]);
+        let preview = preview_form("Kinds", "", "", "Acme IT", &fields, &[]);
 
         assert_eq!(
             preview.fields[0].options.as_deref(),
@@ -1610,6 +1710,7 @@ mod tests {
             name: "Old starter".into(),
             slug: "old-starter".into(),
             description: None,
+            contact_info: None,
             kb_article_id: None,
             kb_article_title: None,
             rules: Vec::new(),
@@ -1633,6 +1734,7 @@ mod tests {
             name: "Departure".into(),
             slug: "departure".into(),
             description: None,
+            contact_info: None,
             kb_article_id: None,
             kb_article_title: None,
             rules: vec![FormRule::Other],
