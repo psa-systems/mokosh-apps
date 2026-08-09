@@ -764,7 +764,21 @@ fn FormEditorModal(
                             row,
                             total: fields.read().len(),
                             disabled: saving(),
+                            errors: field_errors.read().get(index).cloned().unwrap_or_default(),
                             fields,
+                        }
+                    }
+
+                    // PMS-747: the same control again, under the last row. The
+                    // header copy of it is inside the scrolling body, so from
+                    // the third field on the only way to add a fourth was to
+                    // scroll back up past everything just typed.
+                    div { class: "flex justify-center",
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            disabled: saving(),
+                            onclick: move |_| fields.write().push(FieldRow::new()),
+                            "Add field"
                         }
                     }
                 }
