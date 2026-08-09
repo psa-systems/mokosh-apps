@@ -28,6 +28,7 @@ use crate::modules::kb::KbArticle;
 // DTOs, so what an operator signs off on is what a client is served.
 use crate::pages::request_form::{PublicField, PublicForm, PublicRule, RequestFormBody};
 use crate::utils::Paginated;
+use crate::Route;
 
 /// Articles offered in the procedure picker. Definitions are few and the
 /// picker is a plain `Select` per docs/form-conventions.md (a tenant's
@@ -65,9 +66,9 @@ pub fn FormsBuilderPage() -> Element {
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
     // PMS-748: the client's page names the MSP, so the preview of it has to
-    // name the same MSP. The operator IS the tenant here, so it comes from the
-    // active org rather than from the token-scoped public endpoint.
-    let tenant_name = active_org_name();
+    // name the same MSP. PMS-752: and it has to be the same VALUE the email
+    // uses, which is mokosh's own `tenants.name`.
+    let tenant_name = use_org_name();
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Request Forms".to_string() }
@@ -80,6 +81,27 @@ pub fn FormsBuilderPage() -> Element {
             // defining one is never the goal. Without it the page ends at Save
             // with no sign that a form reaches a client from somewhere else.
             subtitle: "Forms clients fill in to raise a request. Each one becomes a ticket carrying its knowledge base article. Define a form once here, then use Send to email a client a link to it.".to_string(),
+        }
+
+        // PMS-752: the name a client reads on every form and email this page
+        // sends. It was reachable only from Settings, three levels into a hub
+        // nobody opens while building a form, so a tenant still called "My
+        // workspace" emailed clients under that name indefinitely.
+        //
+        // Read-only here, linking to the page that edits it. Two edit surfaces
+        // for one value is how they drift, and the settings page already does
+        // it properly.
+        if !tenant_name.is_empty() {
+            p { class: "-mt-3 mb-4 text-sm text-muted",
+                "Clients see these as coming from "
+                span { class: "font-medium text-content", "{tenant_name}" }
+                ". "
+                Link {
+                    to: Route::SettingsOrganization {},
+                    class: "underline text-accent hover:opacity-90",
+                    "Change"
+                }
+            }
         }
 
         div { class: "mb-4 flex justify-end",
@@ -407,17 +429,33 @@ fn slugify(name: &str) -> String {
     out
 }
 
-/// PMS-748: the active org's display name, or an empty string before the
-/// membership list has loaded. An empty name suppresses the attribution block
-/// rather than previewing a form "sent to you by " nobody.
-fn active_org_name() -> String {
-    let auth = crate::hooks::use_auth();
-    let name = auth
-        .read()
-        .active_org_name()
-        .unwrap_or_default()
-        .to_string();
-    name
+/// The organisation clients see on anything this page sends, or an empty string
+/// until it loads. Empty suppresses the attribution rather than previewing a
+/// form "sent to you by " nobody.
+///
+/// PMS-752: read from mokosh, NOT from `active_org_name()`. That one reads the
+/// org switcher, which reads bunyip's `/v1/auth/memberships`, which 401s and
+/// falls back to a synthetic membership whose name is the user's EMAIL ADDRESS
+/// (MAPPS-427). So the preview showed an operator "This form was sent to you by
+/// long@example.com" while the email said "Niceguy IT". `/tenants/current` is
+/// the column the email is actually composed from.
+fn use_org_name() -> String {
+    #[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+    struct TenantView {
+        #[serde(default)]
+        name: String,
+    }
+
+    let tenant = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<TenantView>("/tenants/current")
+            .await
+            .ok()
+    });
+    match &*tenant.read_unchecked() {
+        Some(Some(t)) => t.name.clone(),
+        _ => String::new(),
+    }
 }
 
 /// PMS-747: derive a field's reference name from its label, so "Phone number"
@@ -521,7 +559,7 @@ fn FormEditorModal(
     let mut previewing = use_signal(|| false);
     // PMS-748: see `FormsBuilderPage`; the preview must name the MSP the
     // client's own page will name.
-    let tenant_name = active_org_name();
+    let tenant_name = use_org_name();
 
     // Published articles for the procedure picker.
     let articles = use_resource(|| async {
