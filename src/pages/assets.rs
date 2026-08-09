@@ -379,6 +379,8 @@ fn warranty_refresh_status(s: &Option<String>) -> WarrantyRefreshStatus {
 /// Asset list page
 #[component]
 pub fn AssetListPage() -> Element {
+    // PMS-745: row-level navigation for the list below.
+    let navigator = use_navigator();
     let mut search = use_signal(String::new);
     // MAPPS-303: page-scoped bulk selection (built on MAPPS-290's
     // `use_bulk_selection`). Drives the per-row checkbox, the
@@ -664,9 +666,21 @@ pub fn AssetListPage() -> Element {
                                     .or_else(|| a.asset_tag.clone())
                                     .unwrap_or_else(|| "-".to_string());
                                 let aid = a.id.to_string();
+                                let row_id = aid.clone();
                                 rsx! {
                                     TableRow { key: "{aid}",
-                                        // MAPPS-303: per-row checkbox.
+                                        // PMS-745: the whole row navigates, matching
+                                        // ContractRow / TicketRow. `clickable` also
+                                        // restores the hover background and pointer
+                                        // cursor, which TableRow scopes to interactive
+                                        // rows (MAPPS-389).
+                                        clickable: true,
+                                        onclick: move |_| {
+                                            navigator.push(Route::AssetDetail { id: row_id.clone() });
+                                        },
+                                        // MAPPS-303: per-row checkbox. Its cell stops
+                                        // propagation, so selecting a row does not also
+                                        // open it.
                                         crate::components::SelectRowCell {
                                             selection,
                                             id: aid.clone(),
@@ -1259,6 +1273,21 @@ pub fn AssetNewPage() -> Element {
     }
 }
 
+/// PMS-745: the `Assets > <name>` trail for the detail page. Split out so the
+/// crumb labels and the parent route can be asserted without a router.
+fn asset_detail_crumbs(title: &str) -> Vec<crate::components::BreadcrumbItem> {
+    vec![
+        crate::components::BreadcrumbItem {
+            label: "Assets".to_string(),
+            route: Some(Route::AssetList {}),
+        },
+        crate::components::BreadcrumbItem {
+            label: title.to_string(),
+            route: None,
+        },
+    ]
+}
+
 /// Asset detail page
 #[derive(Props, Clone, PartialEq)]
 pub struct AssetDetailPageProps {
@@ -1606,6 +1635,12 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         PageHeader {
             title: "{header_title}",
             subtitle: "Configuration item",
+            // PMS-745: a route back to the list, matching ContractDetailPage.
+            // AssetNewPage already carried one (MAPPS-294); the detail page was
+            // missed in that pass.
+            breadcrumbs: rsx! {
+                crate::components::Breadcrumbs { items: asset_detail_crumbs(&header_title) }
+            },
             actions: rsx! {
                 Button {
                     variant: ButtonVariant::Danger,
@@ -3040,6 +3075,17 @@ mod validation_tests {
             validate_asset_optional("   ", "Serial number", ASSET_SERIAL_MAX).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn detail_crumbs_lead_back_to_the_list() {
+        // PMS-745: the trail is `Assets > <name>`; the first crumb navigates
+        // back to the list and the last (the current page) is inert.
+        let crumbs = super::asset_detail_crumbs("MacBook 15");
+        let labels: Vec<&str> = crumbs.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, vec!["Assets", "MacBook 15"]);
+        assert_eq!(crumbs[0].route, Some(crate::Route::AssetList {}));
+        assert_eq!(crumbs[1].route, None);
     }
 
     #[test]
