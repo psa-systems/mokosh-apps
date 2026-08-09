@@ -766,6 +766,16 @@ pub fn DataGroupPage() -> Element {
 /// The tenant as mokosh-server knows it. Only the fields this page reads;
 /// `#[serde(default)]` on the name so a response shape change cannot break
 /// decoding into a blank screen.
+/// PMS-751: the caller's own tenant, addressed without an id.
+///
+/// The pages here edit and confirm against the tenant the user is signed in to,
+/// and the SPA does not reliably know its id: it reads one from the
+/// `mokosh_tenant_id` id_token claim, which bunyip mints only for a client
+/// configured with `tenant_claim_name`, and falls back to the nil uuid. That is
+/// how `/settings/organization` came to request tenant 00000000-...-000000000000
+/// and fail to load. The server resolves the tenant from the session instead.
+const TENANT_PATH: &str = "/tenants/current";
+
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct TenantView {
     #[serde(default)]
@@ -788,25 +798,16 @@ struct TenantView {
 #[component]
 pub fn OrganizationSettingsPage() -> Element {
     use_page_title("Organization");
-    // MAPPS-377: read auth before the admin gate so the hook set stays stable
-    // across renders.
-    let auth = crate::hooks::use_auth();
-    let tenant_id = auth
-        .read()
-        .user
-        .as_ref()
-        .map(|u| u.tenant_id.to_string())
-        .unwrap_or_default();
 
     if !use_is_admin() {
         return rsx! { AdminOnlyNotice { title: "Organization" } };
     }
 
-    rsx! { OrganizationSettingsBody { tenant_id } }
+    rsx! { OrganizationSettingsBody {} }
 }
 
 #[component]
-fn OrganizationSettingsBody(tenant_id: String) -> Element {
+fn OrganizationSettingsBody() -> Element {
     let mut name = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -815,16 +816,12 @@ fn OrganizationSettingsBody(tenant_id: String) -> Element {
     // resource refresh after saving) cannot overwrite what is being typed.
     let mut seeded = use_signal(|| false);
 
-    let fetch_id = tenant_id.clone();
-    let tenant = use_resource(move || {
-        let id = fetch_id.clone();
-        async move {
-            let _gen = crate::hooks::fetch::active_tenant_generation();
-            let _reachable = crate::hooks::use_server_reachable();
-            crate::hooks::fetch::api::get_authed::<TenantView>(&format!("/tenants/{id}"))
-                .await
-                .ok()
-        }
+    let tenant = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _reachable = crate::hooks::use_server_reachable();
+        crate::hooks::fetch::api::get_authed::<TenantView>(TENANT_PATH)
+            .await
+            .ok()
     });
 
     let snap = tenant.read_unchecked();
@@ -847,7 +844,6 @@ fn OrganizationSettingsBody(tenant_id: String) -> Element {
         };
     }
 
-    let save_id = tenant_id.clone();
     let handle_save = move |_| {
         if saving() {
             return;
@@ -869,12 +865,11 @@ fn OrganizationSettingsBody(tenant_id: String) -> Element {
         }
 
         saving.set(true);
-        let path = format!("/tenants/{save_id}");
         spawn(async move {
             #[cfg(feature = "web")]
             {
                 match crate::hooks::fetch::api::put_authed_typed::<TenantView, _>(
-                    &path,
+                    TENANT_PATH,
                     &serde_json::json!({ "name": trimmed }),
                 )
                 .await
@@ -981,19 +976,15 @@ pub fn ImportExportSettingsPage() -> Element {
     // name, and fall back to the switcher only when that read is unavailable
     // (server down, or a build without the multi-tenant feature) so the page
     // is never worse off than before.
-    let tenant_id = auth
-        .read()
-        .user
-        .as_ref()
-        .map(|u| u.tenant_id.to_string())
-        .unwrap_or_default();
-    let tenant = use_resource(move || {
-        let id = tenant_id.clone();
-        async move {
-            crate::hooks::fetch::api::get_authed::<TenantView>(&format!("/tenants/{id}"))
-                .await
-                .ok()
-        }
+    // PMS-751: `current`, not `/tenants/{id}`. The id this used to interpolate
+    // comes from an id_token claim that is nil whenever bunyip's client is not
+    // configured to mint it, and the failure hid behind the switcher-name
+    // fallback below: the page then asked for a confirmation phrase the server
+    // would never accept.
+    let tenant = use_resource(move || async move {
+        crate::hooks::fetch::api::get_authed::<TenantView>(TENANT_PATH)
+            .await
+            .ok()
     });
     let fetched_name = match &*tenant.read_unchecked() {
         Some(Some(t)) if !t.name.is_empty() => Some(t.name.clone()),
