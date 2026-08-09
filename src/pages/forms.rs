@@ -894,15 +894,9 @@ fn FormEditorModal(
 
                 // --- fields ----------------------------------------------------
                 div {
-                    div { class: "flex items-center justify-between mb-2",
-                        h3 { class: "text-sm font-semibold text-content", "Fields" }
-                        Button {
-                            variant: ButtonVariant::Secondary,
-                            disabled: saving(),
-                            onclick: move |_| fields.write().push(FieldRow::new()),
-                            "Add field"
-                        }
-                    }
+                    // PMS-750: a plain heading, not a header row. The control
+                    // that adds a field lives under the last row; see below.
+                    h3 { class: "text-sm font-semibold text-content mb-2", "Fields" }
                     p { class: "text-xs text-muted mb-3",
                         "Order here is the order the client sees. The reference name is the key the answer is stored under, so changing it on a live form starts a new column of answers."
                     }
@@ -919,17 +913,27 @@ fn FormEditorModal(
                         }
                     }
 
-                    // PMS-747: the same control again, under the last row. The
-                    // header copy of it is inside the scrolling body, so from
-                    // the third field on the only way to add a fourth was to
-                    // scroll back up past everything just typed.
-                    div { class: "flex justify-center",
-                        Button {
-                            variant: ButtonVariant::Secondary,
-                            disabled: saving(),
-                            onclick: move |_| fields.write().push(FieldRow::new()),
-                            "Add field"
-                        }
+                    // PMS-747 put a control here because the section header is
+                    // inside the only region the modal scrolls, so from the
+                    // third field on the header copy was off-screen and adding
+                    // a fourth meant scrolling back up past everything just
+                    // typed. PMS-750: it is now the ONLY one. Two identical
+                    // buttons asked the operator to choose between the same
+                    // thing twice, and on a one-field form both were on screen
+                    // at once.
+                    //
+                    // This is also where it belongs on its own merits: the end
+                    // of the list is where the new row appears and where the
+                    // cursor already is. Full width so it reads as part of the
+                    // list, because the Conditional rules heading sits directly
+                    // below and a small centred button between two sections
+                    // could be read as belonging to either.
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        class: "w-full".to_string(),
+                        disabled: saving(),
+                        onclick: move |_| fields.write().push(FieldRow::new()),
+                        "+ Add field"
                     }
                 }
 
