@@ -255,6 +255,11 @@ struct FieldRow {
     /// then have to be stripped, and an option set is short by nature.
     options: String,
     date_not_in_past: bool,
+    /// PMS-747: whether the operator has taken the reference name over. Until
+    /// they do it follows the label, the way the form's link name follows the
+    /// form name. Set on an existing definition so a label typo fixed months
+    /// later cannot silently rekey a live field.
+    name_touched: bool,
 }
 
 impl FieldRow {
@@ -268,6 +273,7 @@ impl FieldRow {
             max_length: String::new(),
             options: String::new(),
             date_not_in_past: false,
+            name_touched: false,
         }
     }
 
@@ -361,6 +367,8 @@ impl EditorState {
                     max_length: f.max_length.map(|m| m.to_string()).unwrap_or_default(),
                     options: f.options.clone().unwrap_or_default().join(", "),
                     date_not_in_past: f.date_not_in_past,
+                    // The key answers are already stored under. Never derived.
+                    name_touched: true,
                 })
                 .collect(),
             rules,
@@ -391,6 +399,70 @@ fn slugify(name: &str) -> String {
     out
 }
 
+/// PMS-747: derive a field's reference name from its label, so "Phone number"
+/// gives `phone_number` and the operator never has to invent a payload key.
+///
+/// The form's own link name has followed the form name since PMS-731
+/// ([`slugify`]); fields were left typing theirs by hand. Same idea, different
+/// alphabet: a reference name is an identifier, so it separates with
+/// underscores rather than hyphens and must open with a letter.
+///
+/// A label starting with a digit ("2nd contact") is prefixed rather than
+/// trimmed. Dropping the digit would produce `nd_contact`, which no longer
+/// reads like the label it came from.
+fn field_name_from_label(label: &str) -> String {
+    let mut out = String::new();
+    let mut last_underscore = true; // suppresses a leading underscore
+    for ch in label.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            last_underscore = false;
+        } else if !last_underscore {
+            out.push('_');
+            last_underscore = true;
+        }
+    }
+    while out.ends_with('_') {
+        out.pop();
+    }
+    if out.starts_with(|c: char| c.is_ascii_digit()) {
+        out.insert_str(0, "f_");
+    }
+    out
+}
+
+/// PMS-747: why the server would reject this reference name, if it would.
+///
+/// Mirrors `validate_field_name` in mokosh-server (`src/modules/forms/models.rs`)
+/// rather than approximating it. Without this a hand-edited "Last Name" is only
+/// refused after a round trip, by a 400 that lands in the banner at the top of a
+/// modal the operator has scrolled past.
+fn field_name_problem(name: &str) -> Option<&'static str> {
+    if name.is_empty() {
+        return Some("A reference name is required.");
+    }
+    let shape_ok = name.starts_with(|c: char| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        && !name.ends_with('_')
+        && !name.contains("__");
+    (!shape_ok)
+        .then_some("Lowercase letters, digits and single underscores, starting with a letter.")
+}
+
+/// PMS-747: what is wrong with one field row, in the slots that can show it.
+///
+/// Row problems used to exist only as a sentence in the form-level banner,
+/// which sits at the top of the one region the modal scrolls. Carrying them
+/// per row lets the offending input be marked where the operator is looking.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct FieldRowErrors {
+    label: String,
+    name: String,
+    options: String,
+}
+
 // ============================================================================
 // EDITOR MODAL
 // ============================================================================
@@ -418,6 +490,11 @@ fn FormEditorModal(
     let mut error = use_signal(String::new);
     let mut name_error = use_signal(String::new);
     let mut slug_error = use_signal(String::new);
+    // PMS-747: per-row problems, indexed alongside `fields`, plus the count the
+    // pinned footer reports. The footer is the only place guaranteed to be on
+    // screen when Create is pressed.
+    let mut field_errors = use_signal(Vec::<FieldRowErrors>::new);
+    let mut problem_count = use_signal(|| 0usize);
     // PMS-744: preview of the client's view, built from the live editor state.
     let mut previewing = use_signal(|| false);
 
@@ -463,23 +540,33 @@ fn FormEditorModal(
 
         let rows = fields.read().clone();
         let mut row_problems: Vec<String> = Vec::new();
+        // PMS-747: every problem is written twice on purpose. Once into the row
+        // it belongs to, so the input is marked where the operator is working,
+        // and once into the banner, which is the only surface that can say
+        // anything about a row scrolled out of view.
+        let mut row_errors = vec![FieldRowErrors::default(); rows.len()];
         if rows.is_empty() {
             row_problems.push("A form needs at least one field.".to_string());
         }
         for (i, f) in rows.iter().enumerate() {
             let n = i + 1;
-            if f.name.trim().is_empty() {
-                row_problems.push(format!("Field {n} needs a reference name."));
+            if let Some(problem) = field_name_problem(f.name.trim()) {
+                row_errors[i].name = problem.to_string();
+                row_problems.push(format!("Field {n}: {problem}"));
             }
             if f.label.trim().is_empty() {
+                row_errors[i].label = "A label is required.".to_string();
                 row_problems.push(format!("Field {n} needs a label."));
             }
-            if rows
-                .iter()
-                .take(i)
-                .any(|prior| prior.name.trim() == f.name.trim())
-                && !f.name.trim().is_empty()
-            {
+            let duplicate_of = (!f.name.trim().is_empty())
+                .then(|| {
+                    rows.iter()
+                        .take(i)
+                        .position(|prior| prior.name.trim() == f.name.trim())
+                })
+                .flatten();
+            if let Some(prior) = duplicate_of {
+                row_errors[i].name = format!("Already used by field {}.", prior + 1);
                 row_problems.push(format!(
                     "Field {n} repeats the reference name `{}`.",
                     f.name.trim()
@@ -488,11 +575,13 @@ fn FormEditorModal(
             // The server rejects a select with no options at write time; catch
             // it here so the operator is not told about it after a round trip.
             if f.field_type.needs_options() && f.parsed_options().is_empty() {
+                row_errors[i].options = "At least one choice is required.".to_string();
                 row_problems.push(format!(
                     "Field {n} is a choice list and needs at least one option."
                 ));
             }
         }
+        field_errors.set(row_errors);
 
         // A rule pointing at a field that no longer exists can never fire, and
         // the server rejects it, so it is caught here for the same reason.
@@ -517,6 +606,13 @@ fn FormEditorModal(
             error.set(row_problems.join(" "));
             failed = true;
         }
+        // Counts the top-level slots too, so "1 problem" cannot mean an empty
+        // Name field the operator was never pointed at.
+        problem_count.set(
+            row_problems.len()
+                + usize::from(!name_error.read().is_empty())
+                + usize::from(!slug_error.read().is_empty()),
+        );
         if failed {
             return;
         }
@@ -625,6 +721,21 @@ fn FormEditorModal(
 
     let can_mutate = crate::hooks::use_can_mutate();
     let footer = rsx! {
+        // PMS-747: the footer is pinned while the body scrolls, so this is the
+        // only place a failed Create is certain to be seen. Without it, pressing
+        // Create at the bottom of a three-field form set an error banner several
+        // hundred pixels above the viewport and looked like a dead button.
+        if problem_count() > 0 {
+            span {
+                class: "mr-auto self-center text-sm text-danger",
+                role: "alert",
+                if problem_count() == 1 {
+                    "1 problem to fix above."
+                } else {
+                    "{problem_count()} problems to fix above."
+                }
+            }
+        }
         // PMS-744: preview before committing. Sits with Cancel and Save
         // because that is the moment the question arises ("is this what they
         // will see?"), and it reads the CURRENT editor state, so it answers
@@ -764,7 +875,21 @@ fn FormEditorModal(
                             row,
                             total: fields.read().len(),
                             disabled: saving(),
+                            errors: field_errors.read().get(index).cloned().unwrap_or_default(),
                             fields,
+                        }
+                    }
+
+                    // PMS-747: the same control again, under the last row. The
+                    // header copy of it is inside the scrolling body, so from
+                    // the third field on the only way to add a fourth was to
+                    // scroll back up past everything just typed.
+                    div { class: "flex justify-center",
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            disabled: saving(),
+                            onclick: move |_| fields.write().push(FieldRow::new()),
+                            "Add field"
                         }
                     }
                 }
@@ -1020,6 +1145,7 @@ fn FieldRowEditor(
     row: FieldRow,
     total: usize,
     disabled: bool,
+    errors: FieldRowErrors,
     fields: Signal<Vec<FieldRow>>,
 ) -> Element {
     let mut update = move |f: Box<dyn FnOnce(&mut FieldRow)>| {
@@ -1067,10 +1193,19 @@ fn FieldRowEditor(
                     value: row.label.clone(),
                     required: true,
                     disabled,
+                    error: errors.label.clone(),
                     help: "What the client reads next to the input.".to_string(),
                     oninput: move |e: FormEvent| {
                         let v = e.value();
-                        update(Box::new(move |r| r.label = v));
+                        update(Box::new(move |r| {
+                            // PMS-747: the reference name follows the label
+                            // until the operator takes it over, so nobody has
+                            // to invent a payload key to define a field.
+                            if !r.name_touched {
+                                r.name = field_name_from_label(&v);
+                            }
+                            r.label = v;
+                        }));
                     },
                 }
                 Input {
@@ -1079,10 +1214,14 @@ fn FieldRowEditor(
                     value: row.name.clone(),
                     required: true,
                     disabled,
-                    help: "Lowercase letters, numbers and underscores.".to_string(),
+                    error: errors.name.clone(),
+                    help: "Filled in from the label. Change it only if the answers have to arrive under a particular key.".to_string(),
                     oninput: move |e: FormEvent| {
                         let v = e.value();
-                        update(Box::new(move |r| r.name = v));
+                        update(Box::new(move |r| {
+                            r.name_touched = true;
+                            r.name = v;
+                        }));
                     },
                 }
                 Select {
@@ -1119,6 +1258,7 @@ fn FieldRowEditor(
                         value: row.options.clone(),
                         required: true,
                         disabled,
+                        error: errors.options.clone(),
                         help: "Comma separated. The client must pick one of these.".to_string(),
                         oninput: move |e: FormEvent| {
                             let v = e.value();
@@ -1258,6 +1398,56 @@ mod tests {
             "",
             "a name with nothing sluggable yields an empty slug the operator must fill in"
         );
+    }
+
+    /// PMS-747: the operator names the field; the payload key follows.
+    #[test]
+    fn a_reference_name_is_derived_from_the_label() {
+        assert_eq!(field_name_from_label("Phone number"), "phone_number");
+        assert_eq!(field_name_from_label("  Last name  "), "last_name");
+        assert_eq!(field_name_from_label("E-mail / work"), "e_mail_work");
+        assert_eq!(
+            field_name_from_label("2nd contact"),
+            "f_2nd_contact",
+            "a leading digit is prefixed, not dropped: `nd_contact` no longer reads like its label"
+        );
+        assert_eq!(
+            field_name_from_label("!!!"),
+            "",
+            "a label with nothing derivable leaves the operator to name it, and the row says so"
+        );
+    }
+
+    /// The point of deriving is that the result never has to be corrected, so
+    /// the derivation must satisfy the check the server applies.
+    #[test]
+    fn a_derived_reference_name_is_one_the_server_accepts() {
+        for label in [
+            "Phone number",
+            "2nd contact",
+            "E-mail / work",
+            "Serial #",
+            "Do you need a laptop?",
+        ] {
+            let derived = field_name_from_label(label);
+            assert_eq!(
+                field_name_problem(&derived),
+                None,
+                "`{label}` derived `{derived}`, which the server would reject"
+            );
+        }
+    }
+
+    /// PMS-747: a hand-edited name is checked here rather than by a 400 that
+    /// lands in a banner the operator has already scrolled past.
+    #[test]
+    fn a_hand_typed_reference_name_is_checked_before_the_request() {
+        assert_eq!(field_name_problem("phone_number"), None);
+        assert!(field_name_problem("").is_some(), "empty");
+        assert!(field_name_problem("Last Name").is_some(), "capitals, space");
+        assert!(field_name_problem("1st_line").is_some(), "leading digit");
+        assert!(field_name_problem("trailing_").is_some(), "trailing _");
+        assert!(field_name_problem("double__bar").is_some(), "doubled _");
     }
 
     #[test]

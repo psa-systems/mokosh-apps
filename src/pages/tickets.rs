@@ -3185,7 +3185,14 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
             } else if fetch_failed {
                 p { class: "text-sm text-red-600 dark:text-red-300", "Could not load approvals for this {props.entity_noun}." }
             } else if rows.is_empty() {
-                p { class: "text-sm text-subtle italic", "No approvals requested on this {props.entity_noun} yet." }
+                // PMS-747: "No approvals requested yet" read as an obligation
+                // not yet met, which is how a ticket raised from a client's own
+                // request form looked like it was being held for sign-off.
+                // Nothing gates a ticket on an approval; one exists only if
+                // somebody here asks for it.
+                p { class: "text-sm text-subtle italic",
+                    "No approvals on this {props.entity_noun}. Approval is optional: this {props.entity_noun} is not waiting on one unless you request it."
+                }
             } else {
                 ul { class: "space-y-3",
                     for row in rows.iter().cloned() {

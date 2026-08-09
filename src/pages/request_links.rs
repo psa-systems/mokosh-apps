@@ -159,6 +159,21 @@ pub fn CompanyRequestFormsCard(company_id: String, company_name: String) -> Elem
     }
 }
 
+/// PMS-747: where "Add one" goes when a client has no emailable contact.
+///
+/// `/contacts/new` reads its prefill from the query string rather than from a
+/// typed route param (`contacts.rs::read_company_prefill_from_url`), so the
+/// pair of keys below is the contract: the new contact lands on this client and
+/// its breadcrumb leads back to the company. A plain anchor, matching the other
+/// company-scoped links in this file.
+fn add_contact_href(company_id: &str, company_name: &str) -> String {
+    format!(
+        "/contacts/new?company_id={}&company_name={}",
+        company_id,
+        crate::utils::url::urlencoding_minimal(company_name)
+    )
+}
+
 /// MAPPS-424: the builder reaches this after choosing a company, with the
 /// definition already known, so `preselected_form_id` seeds the Form select.
 /// It stays editable: preselecting is a convenience, not a lock, and an agent
@@ -230,6 +245,16 @@ pub(crate) fn SendRequestLinkModal(
             SelectOption::new(c.id.to_string(), label)
         })
         .collect();
+
+    // PMS-747: a client with no emailable contact used to get a Select holding
+    // nothing but its placeholder, under help text that said only which
+    // contacts are listed. True, and useless: it never said there were none,
+    // and it read as "this needs a contact I have no way to create". The
+    // distinction only exists once the fetch has settled; mid-flight an empty
+    // list is just a list that has not arrived.
+    let contacts_loaded = matches!(&*contacts.read_unchecked(), Some(Some(_)));
+    let no_contacts = contacts_loaded && contact_options.is_empty();
+    let add_contact_href = add_contact_href(&company_id, &company_name);
 
     let rows_for_pick = contact_rows.clone();
     let company_uuid = Uuid::parse_str(&company_id).ok();
@@ -365,8 +390,12 @@ pub(crate) fn SendRequestLinkModal(
                     name: "contact_id",
                     label: "Contact",
                     options: contact_options,
+                    // PMS-747: the placeholder says what choosing it DOES. As
+                    // "Someone else" it was the only entry a client with no
+                    // contacts ever showed, and it explained nothing about the
+                    // address field below it.
+                    placeholder: "Someone else (type an address below)".to_string(),
                     value: contact_id(),
-                    placeholder: "Someone else".to_string(),
                     disabled: saving(),
                     help: "Only contacts with an email address are listed.".to_string(),
                     onchange: move |e: FormEvent| {
@@ -382,6 +411,21 @@ pub(crate) fn SendRequestLinkModal(
                         email_error.set(String::new());
                         contact_id.set(v);
                     },
+                }
+
+                // PMS-747: named as a fact about this client, with the route to
+                // fix it, rather than left as an empty dropdown to interpret.
+                // Not an error: the send works fine on a typed address alone.
+                if no_contacts {
+                    p { class: "-mt-2 text-xs text-muted",
+                        "{company_name} has no contact with an email address yet. "
+                        a {
+                            href: "{add_contact_href}",
+                            class: "underline text-accent hover:opacity-90",
+                            "Add one"
+                        }
+                        ", or type an address below."
+                    }
                 }
 
                 Input {
@@ -517,6 +561,19 @@ mod tests {
             used_at: used.then(Utc::now),
             submission_id: None,
         }
+    }
+
+    /// PMS-747: the prefill keys are what makes "Add one" land on THIS client
+    /// rather than on a blank contact form, so they are asserted rather than
+    /// left to drift against `contacts.rs`.
+    #[test]
+    fn add_contact_carries_the_client_it_was_offered_from() {
+        let href = add_contact_href("11111111-1111-1111-1111-111111111111", "Acme & Co");
+        assert_eq!(
+            href,
+            "/contacts/new?company_id=11111111-1111-1111-1111-111111111111&company_name=Acme%20%26%20Co",
+            "an unencoded `&` in the name would truncate the query and drop the prefill"
+        );
     }
 
     #[test]
