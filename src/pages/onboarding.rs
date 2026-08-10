@@ -44,6 +44,17 @@ use crate::Route;
 #[derive(Clone, Debug, Serialize)]
 struct OrganizationRequest {
     name: String,
+    branding: OnboardingBranding,
+}
+
+/// MAPPS-429: organisation metadata, distinct from the user's own identity.
+/// Contact name and phone are required here because a client who receives a
+/// request form should always have someone to ask; the logo is optional and
+/// uploads separately (it is a file, not a JSON field).
+#[derive(Clone, Debug, Serialize)]
+struct OnboardingBranding {
+    support_contact_name: String,
+    support_phone: String,
 }
 
 /// What we read off `POST /api/v1/auth/me/complete-onboarding` so the
@@ -63,12 +74,18 @@ pub fn Onboarding() -> Element {
     let nav = use_navigator();
 
     let mut org_name = use_signal(String::new);
+    let mut contact_name = use_signal(String::new);
+    let mut contact_phone = use_signal(String::new);
+    let mut logo: Signal<Option<(String, String, Vec<u8>)>> = use_signal(|| None);
+    let mut logo_error = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
     // PMS-518: per-field inline error slots, fed by the FormGuard in
     // handle_submit. The form-level `error` banner is kept for the server
     // save failure, which has no single field to attach to.
     let mut org_name_error = use_signal(String::new);
+    let mut contact_name_error = use_signal(String::new);
+    let mut contact_phone_error = use_signal(String::new);
 
     // Defence in depth: if a user with `profile_completed = true`
     // hits /onboarding/profile directly (bookmark, refresh, manual
@@ -99,11 +116,25 @@ pub fn Onboarding() -> Element {
             return;
         }
         let name = org_name.read().trim().to_string();
+        let contact = contact_name.read().trim().to_string();
+        let phone = contact_phone.read().trim().to_string();
 
-        // PMS-518: validate through the shared FormGuard so the failure lands
-        // in the field's own slot and the field is focused.
+        // PMS-518: validate through the shared FormGuard so every missing field
+        // surfaces at once, each in its own slot, and the first is focused.
         let mut guard = FormGuard::new();
         org_name_error.set(guard.field("org_name", &name, "Organization name", &[Rule::Required]));
+        contact_name_error.set(guard.field(
+            "contact_name",
+            &contact,
+            "Contact name",
+            &[Rule::Required],
+        ));
+        contact_phone_error.set(guard.field(
+            "contact_phone",
+            &phone,
+            "Contact phone",
+            &[Rule::Required],
+        ));
         if guard.blocked() {
             return;
         }
@@ -117,7 +148,13 @@ pub fn Onboarding() -> Element {
                 // deliberately NOT stamped: completing onboarding without the
                 // one value it exists to collect would send the user on with a
                 // tenant still called "My workspace" and no prompt to fix it.
-                let body = OrganizationRequest { name: name.clone() };
+                let body = OrganizationRequest {
+                    name: name.clone(),
+                    branding: OnboardingBranding {
+                        support_contact_name: contact.clone(),
+                        support_phone: phone.clone(),
+                    },
+                };
                 let saved = crate::hooks::fetch::api::put_authed_typed::<serde_json::Value, _>(
                     "/tenants/current",
                     &body,
@@ -130,6 +167,29 @@ pub fn Onboarding() -> Element {
                     }
                     saving.set(false);
                     return;
+                }
+
+                // MAPPS-429: the logo, if one was chosen. After the details and
+                // before the stamp, and a failure here does NOT block the rest:
+                // a logo is the one optional thing on this screen, and refusing
+                // to complete onboarding over it would trap the user.
+                if let Some((file_name, mime, bytes)) = logo.read().clone() {
+                    if let Err(e) = crate::hooks::fetch::api::put_file_authed::<serde_json::Value>(
+                        "/tenants/current/logo",
+                        &file_name,
+                        &mime,
+                        &bytes,
+                    )
+                    .await
+                    {
+                        crate::hooks::push_toast(
+                            crate::components::AlertType::Warning,
+                            format!(
+                                "Saved, but the logo could not be uploaded: {}",
+                                e.user_message()
+                            ),
+                        );
+                    }
                 }
 
                 // Then the stamp. Separate call because the two are different
@@ -159,7 +219,7 @@ pub fn Onboarding() -> Element {
             }
             #[cfg(not(feature = "web"))]
             {
-                let _ = name;
+                let _ = (name, contact, phone);
             }
             saving.set(false);
         });
@@ -172,7 +232,7 @@ pub fn Onboarding() -> Element {
                             "Welcome to Mokosh"
                         }
                         p { class: "mt-2 text-sm text-content",
-                            "What should your clients see when you email them?"
+                            "Set up what your clients see when you send them a request form."
                         }
                     }
 
@@ -196,6 +256,82 @@ pub fn Onboarding() -> Element {
                                 org_name_error.set(String::new());
                                 org_name.set(e.value());
                             },
+                        }
+
+                        Input {
+                            name: "contact_name",
+                            label: "Contact name",
+                            value: contact_name(),
+                            required: true,
+                            rules: vec![Rule::Required],
+                            error: contact_name_error(),
+                            disabled: saving(),
+                            help: "Who your clients should ask for. Shown on the forms you send them.".to_string(),
+                            oninput: move |e: FormEvent| {
+                                contact_name_error.set(String::new());
+                                contact_name.set(e.value());
+                            },
+                        }
+
+                        Input {
+                            name: "contact_phone",
+                            label: "Contact phone",
+                            value: contact_phone(),
+                            required: true,
+                            rules: vec![Rule::Required],
+                            error: contact_phone_error(),
+                            disabled: saving(),
+                            help: "So a client can ask before they answer.".to_string(),
+                            oninput: move |e: FormEvent| {
+                                contact_phone_error.set(String::new());
+                                contact_phone.set(e.value());
+                            },
+                        }
+
+                        // MAPPS-429: optional, and read into memory here rather
+                        // than uploaded on selection: nothing else on this
+                        // screen has been saved yet, and a logo attached to a
+                        // tenant whose details were never submitted is litter.
+                        div { class: "space-y-1",
+                            label {
+                                r#for: "org_logo",
+                                class: "block text-sm font-medium text-content",
+                                "Logo (optional)"
+                            }
+                            input {
+                                id: "org_logo",
+                                r#type: "file",
+                                accept: "image/png,image/jpeg,image/webp,image/gif",
+                                disabled: saving(),
+                                class: "block w-full text-sm text-content file:mr-3 file:rounded-md file:border-0 file:bg-surface-2 file:px-3 file:py-1.5 file:text-sm file:font-medium",
+                                onchange: move |evt: FormEvent| {
+                                    logo_error.set(String::new());
+                                    let Some(file) = evt.files().into_iter().next() else {
+                                        logo.set(None);
+                                        return;
+                                    };
+                                    spawn(async move {
+                                        let file_name = file.name();
+                                        let mime = file
+                                            .content_type()
+                                            .unwrap_or_else(|| "application/octet-stream".to_string());
+                                        match file.read_bytes().await {
+                                            Ok(bytes) => logo.set(Some((file_name, mime, bytes.to_vec()))),
+                                            Err(_) => {
+                                                logo.set(None);
+                                                logo_error.set("Could not read that file.".to_string());
+                                            }
+                                        }
+                                    });
+                                },
+                            }
+                            if !logo_error().is_empty() {
+                                p { class: "text-xs text-danger", "{logo_error}" }
+                            } else {
+                                p { class: "text-xs text-muted",
+                                    "PNG, JPEG, WebP or GIF, up to 1 MB. Shown to clients on the forms you send."
+                                }
+                            }
                         }
 
                         if !error().is_empty() {

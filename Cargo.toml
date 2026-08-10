@@ -137,6 +137,12 @@ features = [
     # (append_child / remove_child) so the download fires reliably across
     # browsers, not only where a detached-anchor click is honored.
     "Node",
+    # MAPPS-429: the tenant logo is PUT as multipart/form-data, which the
+    # browser assembles (and boundary-delimits) from a FormData carrying a Blob.
+    # Building that body by hand would mean generating a boundary and hoping it
+    # never appears in the image bytes.
+    "BlobPropertyBag",
+    "FormData",
 ]
 
 [dev-dependencies]

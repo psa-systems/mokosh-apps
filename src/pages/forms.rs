@@ -68,7 +68,7 @@ pub fn FormsBuilderPage() -> Element {
     // PMS-748: the client's page names the MSP, so the preview of it has to
     // name the same MSP. PMS-752: and it has to be the same VALUE the email
     // uses, which is mokosh's own `tenants.name`.
-    let tenant_name = use_org_name();
+    let (tenant_name, tenant_logo) = use_org_identity();
     if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Request Forms".to_string() }
@@ -157,7 +157,7 @@ pub fn FormsBuilderPage() -> Element {
                                 // PMS-744: mapped once per row rather than in
                                 // the click handler, so the closure carries a
                                 // ready value instead of the whole definition.
-                                let for_preview = preview_from_definition(&def, &tenant_name);
+                                let for_preview = preview_from_definition(&def, &tenant_name, tenant_logo.as_deref());
                                 rsx! {
                                     TableRow { key: "{key}",
                                         TableCell {
@@ -439,11 +439,21 @@ fn slugify(name: &str) -> String {
 /// (MAPPS-427). So the preview showed an operator "This form was sent to you by
 /// long@example.com" while the email said "Niceguy IT". `/tenants/current` is
 /// the column the email is actually composed from.
-fn use_org_name() -> String {
+fn use_org_identity() -> (String, Option<String>) {
     #[derive(Clone, Debug, PartialEq, serde::Deserialize)]
     struct TenantView {
         #[serde(default)]
         name: String,
+        #[serde(default)]
+        branding: BrandingView,
+    }
+
+    /// MAPPS-429: only the logo is read here; the rest of `TenantBranding` has
+    /// nothing to do with previewing a form.
+    #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+    struct BrandingView {
+        #[serde(default)]
+        logo_url: Option<String>,
     }
 
     let tenant = use_resource(|| async {
@@ -453,8 +463,8 @@ fn use_org_name() -> String {
             .ok()
     });
     match &*tenant.read_unchecked() {
-        Some(Some(t)) => t.name.clone(),
-        _ => String::new(),
+        Some(Some(t)) => (t.name.clone(), t.branding.logo_url.clone()),
+        _ => (String::new(), None),
     }
 }
 
@@ -559,7 +569,7 @@ fn FormEditorModal(
     let mut previewing = use_signal(|| false);
     // PMS-748: see `FormsBuilderPage`; the preview must name the MSP the
     // client's own page will name.
-    let tenant_name = use_org_name();
+    let (tenant_name, tenant_logo) = use_org_identity();
 
     // Published articles for the procedure picker.
     let articles = use_resource(|| async {
@@ -1020,6 +1030,7 @@ fn FormEditorModal(
                     &description(),
                     &contact_info(),
                     &tenant_name,
+                    tenant_logo.as_deref(),
                     &fields.read(),
                     &rules.read(),
                 ),
@@ -1043,7 +1054,11 @@ fn FormEditorModal(
 /// A rule this build cannot represent (`FormRule::Other`, authored by a newer
 /// server) is dropped. It cannot be rendered honestly, and the editor already
 /// refuses to save a definition carrying one.
-fn preview_from_definition(def: &FormDefinition, tenant_name: &str) -> PublicForm {
+fn preview_from_definition(
+    def: &FormDefinition,
+    tenant_name: &str,
+    logo_url: Option<&str>,
+) -> PublicForm {
     let mut fields: Vec<&crate::modules::forms::FormField> = def.fields.iter().collect();
     fields.sort_by_key(|f| f.sort_order);
 
@@ -1059,6 +1074,7 @@ fn preview_from_definition(def: &FormDefinition, tenant_name: &str) -> PublicFor
         // fetch the client-facing page makes with a token this page has not
         // got.
         tenant_name: tenant_name.to_string(),
+        logo_url: logo_url.map(str::to_string),
         contact_info: def
             .contact_info
             .clone()
@@ -1121,6 +1137,7 @@ fn preview_form(
     description: &str,
     contact_info: &str,
     tenant_name: &str,
+    logo_url: Option<&str>,
     fields: &[FieldRow],
     rules: &[RuleRow],
 ) -> PublicForm {
@@ -1138,6 +1155,7 @@ fn preview_form(
         // PMS-748: previewed from the live editor state too, so an operator
         // adding a contact line sees it land before saving.
         tenant_name: tenant_name.to_string(),
+        logo_url: logo_url.map(str::to_string),
         contact_info: {
             let c = contact_info.trim();
             (!c.is_empty()).then(|| c.to_string())
@@ -1574,17 +1592,23 @@ mod tests {
             "",
             "  the service desk on 555-0100  ",
             "Acme IT",
+            Some("/api/v1/public/tenants/1/logo"),
             &fields,
             &[],
         );
         assert_eq!(previewed.tenant_name, "Acme IT");
+        assert_eq!(
+            previewed.logo_url.as_deref(),
+            Some("/api/v1/public/tenants/1/logo"),
+            "MAPPS-429: the client sees the logo, so the preview has to as well"
+        );
         assert_eq!(
             previewed.contact_info.as_deref(),
             Some("the service desk on 555-0100"),
             "the client is served a trimmed value, so the preview must be too"
         );
 
-        let blank = preview_form("Starter", "", "   ", "Acme IT", &fields, &[]);
+        let blank = preview_form("Starter", "", "   ", "Acme IT", None, &fields, &[]);
         assert_eq!(
             blank.contact_info, None,
             "a contact field holding only spaces must not preview as a contact line"
@@ -1643,7 +1667,7 @@ mod tests {
             fields: vec![field("b", 2), field("a", 1)],
         };
 
-        let preview = preview_from_definition(&def, "Acme IT");
+        let preview = preview_from_definition(&def, "Acme IT", None);
 
         assert_eq!(
             preview
@@ -1690,7 +1714,7 @@ mod tests {
             equals: "yes".into(),
         }];
 
-        let preview = preview_form("Starter", "", "", "Acme IT", &fields, &rules);
+        let preview = preview_form("Starter", "", "", "Acme IT", None, &fields, &rules);
         assert_eq!(preview.fields.len(), 1);
         assert_eq!(preview.fields[0].name, "first_name");
         assert!(
@@ -1706,7 +1730,7 @@ mod tests {
             label: "   ".into(),
             ..FieldRow::new()
         }];
-        let preview = preview_form("  ", "  ", "  ", "Acme IT", &fields, &[]);
+        let preview = preview_form("  ", "  ", "  ", "Acme IT", None, &fields, &[]);
 
         assert_eq!(preview.name, "Untitled form");
         assert_eq!(preview.description, None);
@@ -1735,7 +1759,7 @@ mod tests {
                 ..FieldRow::new()
             },
         ];
-        let preview = preview_form("Kinds", "", "", "Acme IT", &fields, &[]);
+        let preview = preview_form("Kinds", "", "", "Acme IT", None, &fields, &[]);
 
         assert_eq!(
             preview.fields[0].options.as_deref(),

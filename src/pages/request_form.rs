@@ -78,9 +78,15 @@ pub(crate) struct PublicForm {
     /// unattributed instead of failing to render it.
     #[serde(default)]
     pub(crate) tenant_name: String,
-    /// PMS-748: how to reach that MSP, when the form carries it.
+    /// PMS-748: how to reach that MSP, when the form carries it. MAPPS-429:
+    /// falls back to the organisation's own contact, server-side.
     #[serde(default)]
     pub(crate) contact_info: Option<String>,
+    /// MAPPS-429: path to the MSP's logo, relative to the API base. Joined here
+    /// rather than server-side, because the server cannot know which origin
+    /// this page resolved the API to.
+    #[serde(default)]
+    pub(crate) logo_url: Option<String>,
     #[serde(default)]
     pub(crate) rules: Vec<PublicRule>,
     pub(crate) fields: Vec<PublicField>,
@@ -344,6 +350,19 @@ pub(crate) fn RequestFormBody(
     onsubmit: EventHandler<()>,
 ) -> Element {
     rsx! {
+        // MAPPS-429: the MSP's logo, above their name. A client opening a link
+        // from an email recognises a logo before they read anything, and this
+        // page asks them for personal details.
+        if let Some(logo) = def.logo_url.clone().filter(|l| !l.trim().is_empty()) {
+            div { class: "mb-4",
+                img {
+                    src: "{crate::hooks::fetch::api::api_base()}{logo}",
+                    alt: "{def.tenant_name}",
+                    class: "max-h-14 max-w-56",
+                }
+            }
+        }
+
         div { class: "mb-6",
             h1 { class: "text-2xl font-semibold text-content", "{def.name}" }
             if let Some(d) = def.description.clone() {
@@ -576,6 +595,7 @@ mod tests {
             description: None,
             tenant_name: "Acme IT".into(),
             contact_info: None,
+            logo_url: None,
             rules: vec![PublicRule::RequiredIf {
                 field: "forward_to".into(),
                 when_field: "mailbox_handling".into(),
