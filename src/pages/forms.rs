@@ -824,7 +824,10 @@ fn FormEditorModal(
         _ => Vec::new(),
     };
 
-    let handle_save = move |_| {
+    // PMS-756: a callback rather than a closure, because the close prompt
+    // needs to run the SAME save the footer button runs. Two copies of this
+    // logic is how the two paths would come to validate differently.
+    let handle_save = use_callback(move |_: ()| {
         if saving() {
             return;
         }
@@ -1033,7 +1036,7 @@ fn FormEditorModal(
             }
             saving.set(false);
         });
-    };
+    });
 
     // PMS-754: every way out of this modal lands here. `Modal` routes the X,
     // Esc and a backdrop click to one `onclose`, and the backdrop is the
@@ -1081,7 +1084,7 @@ fn FormEditorModal(
             loading: saving(),
             disabled: !can_mutate,
             title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
-            onclick: handle_save,
+            onclick: move |_| handle_save.call(()),
             if is_edit { "Save Changes" } else { "Create Form" }
         }
     };
@@ -1308,21 +1311,68 @@ fn FormEditorModal(
             }
         }
 
-        // PMS-754: the confirmation for a close that would throw work away.
-        crate::components::ConfirmDialog {
-            open: confirming_discard(),
-            title: "Discard this form?".to_string(),
-            message: "You have changes that have not been saved. Closing now leaves them here as a draft, and you can pick them up next time you open this form.".to_string(),
-            confirm_text: "Close without saving".to_string(),
-            cancel_text: "Keep editing".to_string(),
-            onconfirm: move |_| {
-                // The draft is deliberately KEPT: someone who closes and then
-                // realises they wanted the work back is the case a
-                // confirmation alone makes worse.
-                confirming_discard.set(false);
-                onclose.call(());
-            },
-            oncancel: move |_| confirming_discard.set(false),
+        // PMS-754: the prompt for a close that would throw work away.
+        //
+        // PMS-756: three actions, not two, so it is a plain `Modal` rather than
+        // the shared `ConfirmDialog`, which is confirm-or-cancel by
+        // construction. Written inline because this is the only three-way
+        // prompt in the product; widening the shared component for one caller
+        // would make every other confirm carry the concept.
+        if confirming_discard() {
+            crate::components::Modal {
+                open: true,
+                title: "Save before closing?".to_string(),
+                size: crate::components::ModalSize::Small,
+                onclose: move |_| confirming_discard.set(false),
+                footer: rsx! {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| confirming_discard.set(false),
+                        "Keep editing"
+                    }
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| {
+                            // The draft is deliberately KEPT: someone who
+                            // closes and then realises they wanted the work
+                            // back is the case a confirmation alone makes
+                            // worse.
+                            confirming_discard.set(false);
+                            onclose.call(());
+                        },
+                        "Close without saving"
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        loading: saving(),
+                        // Matching the footer button rather than offering an
+                        // action that cannot work: a Save here while the same
+                        // save is disabled below would fail silently or, worse,
+                        // look like it worked.
+                        disabled: !can_mutate,
+                        title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
+                        onclick: move |_| {
+                            // Dismiss FIRST. A save from here runs the same
+                            // validation as the footer button, and an abandoned
+                            // half-built form is exactly the shape that fails
+                            // it. Those errors land inline on the offending
+                            // rows and as a count in the pinned footer
+                            // (PMS-747), and this dialog is sitting on top of
+                            // all of it.
+                            confirming_discard.set(false);
+                            handle_save.call(());
+                        },
+                        "Save and close"
+                    }
+                },
+
+                p { class: "text-sm text-content",
+                    "You have changes that have not been saved."
+                }
+                p { class: "mt-2 text-sm text-muted",
+                    "Closing without saving keeps them here as a draft, so you can pick them up next time you open this form."
+                }
+            }
         }
 
         if previewing() {
@@ -1881,6 +1931,33 @@ mod tests {
     /// PMS-754: a draft round-trips through storage without changing what the
     /// operator typed, including the per-field state that is not part of the
     /// server payload.
+    /// This module's own source, minus the test module that names the strings
+    /// it asserts on.
+    fn production_src() -> &'static str {
+        const FORMS_SRC: &str = include_str!("forms.rs");
+        FORMS_SRC
+            .split_once("#[cfg(test)]")
+            .map(|(before, _)| before)
+            .expect("this file has a test module")
+    }
+
+    /// PMS-756 recurrence guard.
+    ///
+    /// The close prompt shipped with two ways out, neither of which saved, so
+    /// the operator had to cancel out of it and find the footer button. The
+    /// prompt fires at the moment someone has decided to leave; the most likely
+    /// version of that intent has to be on it.
+    #[test]
+    fn the_close_prompt_offers_all_three_ways_out() {
+        let src = production_src();
+        for action in ["Save and close", "Close without saving", "Keep editing"] {
+            assert!(
+                src.contains(action),
+                "the close prompt must offer `{action}`"
+            );
+        }
+    }
+
     #[test]
     fn a_draft_round_trips_through_its_stored_shape() {
         let state = EditorState {
