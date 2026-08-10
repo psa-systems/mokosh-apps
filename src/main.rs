@@ -3,8 +3,8 @@
 use dioxus::prelude::*;
 use mokosh_apps::components::use_page_title_provider;
 use mokosh_apps::hooks::{
-    use_apply_theme, use_auth_heartbeat, use_auth_provider, use_bfcache_invalidator,
-    use_current_user_loader, use_memberships_loader, use_server_status_monitor,
+    use_active_org_loader, use_apply_theme, use_auth_heartbeat, use_auth_provider,
+    use_bfcache_invalidator, use_current_user_loader, use_server_status_monitor,
     use_sidebar_collapsed_provider, use_sidebar_provider, use_sidebar_scroll_provider,
     use_standalone_token_refresh, use_theme_sync, use_token_refresh, use_update_check,
     use_version_cache_provider,
@@ -68,9 +68,10 @@ fn App() -> Element {
     // within one interval, even if the user is idle on a page that does
     // not otherwise poll.
     use_auth_heartbeat();
-    // Load /v1/auth/memberships after sign-in so AuthContext.memberships
-    // is populated for the tenant switcher.
-    use_memberships_loader();
+    // MAPPS-427: name the organisation from mokosh's own tenant row. This used
+    // to GET bunyip's /v1/auth/memberships, which 401s on every load and left
+    // the top bar displaying the user's email address as an org name.
+    use_active_org_loader();
     // Fetch the authoritative current user (role, name, avatar) from
     // mokosh-server /api/v1/auth/me on first authenticated mount, so the
     // displayed role reflects the server-side (PMS-172) translation rather
