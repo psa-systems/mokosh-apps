@@ -1124,110 +1124,271 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
     #[cfg(feature = "web")]
     crate::hooks::portal_theme::use_apply_portal_theme();
 
+    // PMS-729 phase 2 §6 slice 4: sidebar drawer open state. Same
+    // pattern as `AppShell`: a full-height mobile drawer that slides
+    // in from the left, a persistent rail on md:+ that shows the
+    // portal nav all the time. Every route change closes the drawer
+    // (the sidebar itself closes on link click via `onclose`).
+    let mut sidebar_open = use_signal(|| false);
+    // Dismiss the mobile drawer whenever the route changes so the
+    // customer does not have to close it manually after tapping a
+    // link. `use_reactive!` re-runs only when the route identity
+    // shifts, and `peek` reads the current open state without
+    // subscribing this effect back to itself.
+    let route: Route = use_route();
+    use_effect(use_reactive!(|route| {
+        let _ = &route;
+        if *sidebar_open.peek() {
+            sidebar_open.set(false);
+        }
+    }));
+
+    // Prefer the tenant name in the wordmark; fall back to the generic
+    // "Client Portal" copy when the branding hint has not landed yet
+    // (or the SPA is on a legacy host).
+    let brand_label = hint
+        .as_ref()
+        .map(|h| h.name.clone())
+        .unwrap_or_else(|| "Client Portal".to_string());
+    let hint_for_logo = hint.clone();
+    let hint_for_footer = hint.clone();
+
     rsx! {
-        div { class: "min-h-screen bg-app",
-            // Portal header
-            header { class: "bg-surface shadow",
-                div { class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
-                    div { class: "flex items-center justify-between h-16",
-                        // PMS-729: MSP brand block. When the current host
-                        // resolves to an active tenant, show its logo (if
-                        // any) plus its display name; on a legacy host or
-                        // before the fetch completes, fall back to the
-                        // generic "Client Portal" wordmark.
-                        Link {
-                            to: Route::PortalHome {},
-                            class: "flex items-center gap-3",
-                            if let Some(h) = &hint {
-                                // PMS-729 phase 2 §6 slice 2: dark-mode
-                                // logo variant when the tenant supplied
-                                // one; falls back to the light logo.
-                                // Slice 3: read the portal-scoped theme
-                                // (not the agent-side one) so the toggle
-                                // in this header changes the picked
-                                // logo variant on the same tick.
-                                {
-                                    let is_dark = crate::hooks::portal_theme::current_is_dark();
-                                    rsx! {
-                                        if let Some(url) = h.branding.logo_for(is_dark) {
-                                            img {
-                                                src: "{url}",
-                                                alt: "{h.name}",
-                                                class: "h-8 w-auto",
-                                            }
-                                        }
+        div { class: "h-screen flex flex-col bg-app overflow-hidden",
+            super::ServerStatusBanner {}
+
+            // Portal top bar. Hamburger (mobile only) opens the
+            // sidebar drawer. Brand block on the left; theme toggle +
+            // user menu on the right. Page title stays inline in the
+            // main region (via PortalPageHeader), not the top bar, so
+            // a customer's eye lands on the H1 next to the primary
+            // action rather than up in the chrome.
+            header { class: "h-16 flex items-center bg-surface-2 border-b border-line shrink-0 z-20",
+                div { class: "flex items-center h-full md:w-56 px-4 md:px-6",
+                    button {
+                        class: "md:hidden p-2 mr-2 rounded-md text-subtle hover:text-content hover:bg-surface",
+                        aria_label: "Open navigation",
+                        title: "Open navigation",
+                        onclick: move |_| sidebar_open.set(true),
+                        MenuIcon { size: IconSize::Large }
+                    }
+                    Link {
+                        to: Route::PortalHome {},
+                        class: "flex items-center gap-2 min-w-0",
+                        // Dark-aware logo, if the tenant supplied one.
+                        {
+                            let is_dark = crate::hooks::portal_theme::current_is_dark();
+                            let logo = hint_for_logo
+                                .as_ref()
+                                .and_then(|h| h.branding.logo_for(is_dark).map(str::to_string));
+                            let alt = brand_label.clone();
+                            rsx! {
+                                if let Some(url) = logo {
+                                    img {
+                                        src: "{url}",
+                                        alt: "{alt}",
+                                        class: "h-8 w-auto shrink-0",
                                     }
                                 }
-                                span { class: "text-xl font-bold text-accent",
-                                    "{h.name}"
+                            }
+                        }
+                        span { class: "text-lg font-bold text-accent truncate",
+                            "{brand_label}"
+                        }
+                    }
+                }
+                div { class: "flex-1" }
+                div { class: "flex items-center px-4 md:px-6 gap-2",
+                    PortalThemeToggle {}
+                    PortalUserMenu {}
+                }
+            }
+
+            div { class: "flex flex-1 overflow-hidden",
+                // Mobile overlay dims the page while the drawer is open.
+                if *sidebar_open.read() {
+                    div {
+                        class: "fixed inset-0 z-40 bg-gray-600/75 md:hidden", // theme-guard-allow: mobile nav overlay scrim
+                        onclick: move |_| sidebar_open.set(false),
+                    }
+                }
+                PortalSidebar {
+                    open: *sidebar_open.read(),
+                    onclose: move |_| sidebar_open.set(false),
+                }
+                // Main content region. `overflow-y-auto` scrolls
+                // independently of the sidebar (which never scrolls with
+                // only four items). Same max-w-7xl inner container the
+                // pre-slice-4 layout used so page bodies keep their
+                // spacing without every page having to re-set it.
+                main { class: "flex-1 overflow-y-auto overscroll-contain py-8",
+                    div { class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
+                        if !props.title.is_empty() {
+                            PortalPageHeader { title: props.title.clone() }
+                        }
+                        {props.children}
+
+                        // Portal footer sits INSIDE the scroll region
+                        // so it appears at the natural bottom of the
+                        // page content, not as a fixed strip that
+                        // shifts the layout. Mirrors the AppShell
+                        // pattern of chrome-inside-scroll.
+                        footer { class: "mt-12 border-t border-line pt-6",
+                            {
+                                let footer = hint_for_footer
+                                    .as_ref()
+                                    .and_then(|h| h.branding.footer_text.clone())
+                                    .unwrap_or_else(|| "Powered by Mokosh Platform".to_string());
+                                rsx! {
+                                    p { class: "text-sm text-muted text-center", "{footer}" }
                                 }
-                            } else {
-                                span { class: "text-xl font-bold text-accent",
-                                    "Client Portal"
-                                }
                             }
-                        }
-
-                        // Navigation
-                        nav { class: "hidden md:flex space-x-8",
-                            Link {
-                                to: Route::PortalTicketList {},
-                                class: "text-content hover:text-accent",
-                                "Tickets"
-                            }
-                            Link {
-                                to: Route::PortalInvoiceList {},
-                                class: "text-content hover:text-accent",
-                                "Invoices"
-                            }
-                            Link {
-                                to: Route::PortalKB {},
-                                class: "text-content hover:text-accent",
-                                "Knowledge Base"
-                            }
-                        }
-
-                        // User menu + PMS-729 phase 2 §6 slice 3 portal
-                        // theme toggle. The toggle sits to the LEFT of
-                        // the user menu so the two chrome affordances
-                        // read as one cluster on the right.
-                        div { class: "flex items-center gap-2",
-                            PortalThemeToggle {}
-                            PortalUserMenu {}
+                            VersionFooter {}
                         }
                     }
                 }
             }
+            crate::hooks::toast::ToastRoot {}
+        }
+    }
+}
 
-            // Main content
-            main { class: "py-10",
-                div { class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
-                    if !props.title.is_empty() {
-                        h1 { class: "text-2xl font-bold text-content mb-6",
-                            "{props.title}"
-                        }
-                    }
-                    {props.children}
+/// PMS-729 phase 2 §6 slice 4: portal page header primitive. Rendered
+/// automatically by [`PortalLayout`] when the `title` prop is set, and
+/// exported for pages that want to attach a description or primary
+/// action alongside the title.
+///
+/// The API deliberately mirrors the agent-side pattern of "H1 on the
+/// left, primary action on the right" so a portal page reads as one
+/// visual family with the agent shell (D8: parity with the agent SPA).
+#[derive(Props, Clone, PartialEq)]
+pub struct PortalPageHeaderProps {
+    title: String,
+    #[props(default)]
+    description: Option<String>,
+    #[props(default)]
+    action: Option<Element>,
+}
+
+#[component]
+pub fn PortalPageHeader(props: PortalPageHeaderProps) -> Element {
+    // Also write the title into the shared page-title signal (used by
+    // `document.title` in the top bar) so a portal page participates
+    // in the same title convention as the agent-side pages.
+    use_page_title(props.title.clone());
+
+    rsx! {
+        div { class: "mb-6 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between",
+            div { class: "min-w-0",
+                h1 { class: "text-2xl font-bold text-content truncate",
+                    "{props.title}"
+                }
+                if let Some(desc) = &props.description {
+                    p { class: "mt-1 text-sm text-muted", "{desc}" }
                 }
             }
+            if let Some(action) = props.action {
+                div { class: "shrink-0", {action} }
+            }
+        }
+    }
+}
 
-            // Portal footer
-            footer { class: "bg-surface border-t border-line",
-                div { class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6",
-                    // PMS-729 phase 2 §6 slice 2: tenant footer text
-                    // overrides the "Powered by Mokosh" default when set.
-                    {
-                        let footer = hint
-                            .as_ref()
-                            .and_then(|h| h.branding.footer_text.clone())
-                            .unwrap_or_else(|| "Powered by Mokosh Platform".to_string());
-                        rsx! {
-                            p { class: "text-sm text-muted text-center", "{footer}" }
-                        }
-                    }
-                    VersionFooter {}
+/// PMS-729 phase 2 §6 slice 4: portal sidebar. Same mobile-drawer /
+/// desktop-rail split as [`Sidebar`], but with the flat portal nav
+/// (Home, Tickets, Invoices, Knowledge Base) instead of the agent's
+/// grouped Service Desk / CRM / Contracts sections.
+///
+/// Two-mode layout: mobile drawer (fixed, slides in from left,
+/// `md:hidden`) and persistent desktop rail (`hidden md:flex`). Both
+/// render the same nav rows so a link's affordance is identical on
+/// either viewport. There is deliberately NO collapse toggle: four
+/// entries fit comfortably in a `w-56` rail on any laptop, and the
+/// added toggle chrome would double the primitives for a
+/// four-destination nav.
+#[derive(Props, Clone, PartialEq)]
+pub struct PortalSidebarProps {
+    open: bool,
+    onclose: EventHandler<()>,
+}
+
+#[component]
+pub fn PortalSidebar(props: PortalSidebarProps) -> Element {
+    let mobile_class = if props.open {
+        "translate-x-0"
+    } else {
+        "-translate-x-full"
+    };
+
+    rsx! {
+        // Mobile drawer: full-height, slides in from left, includes
+        // its own close button because it overlaps the top bar.
+        aside {
+            class: "fixed inset-y-0 left-0 z-50 w-64 bg-surface-2 border-r border-line transform transition-transform duration-300 ease-in-out flex flex-col md:hidden {mobile_class}",
+            aria_hidden: if props.open { "false" } else { "true" },
+            div { class: "flex items-center justify-end h-12 px-2",
+                button {
+                    class: "p-2 text-subtle hover:text-content",
+                    aria_label: "Close navigation",
+                    title: "Close navigation",
+                    onclick: move |_| props.onclose.call(()),
+                    XMarkIcon { size: IconSize::Large }
                 }
             }
+            PortalSidebarContent {}
+        }
+
+        // Desktop rail: sits below the top bar in the flex column.
+        // `md:w-56` matches the top bar's brand block so the visual L
+        // (brand + sidebar) is aligned.
+        aside {
+            class: "hidden md:flex md:w-56 shrink-0 flex-col bg-surface-2 border-r border-line",
+            PortalSidebarContent {}
+        }
+    }
+}
+
+#[component]
+fn PortalSidebarContent() -> Element {
+    rsx! {
+        nav { class: "flex-1 min-h-0 overflow-y-auto overscroll-contain px-2 pt-3 pb-4 space-y-1",
+            PortalNavItem { to: Route::PortalHome {}, icon: rsx!(HomeIcon {}), label: "Home" }
+            PortalNavItem { to: Route::PortalTicketList {}, icon: rsx!(TicketIcon {}), label: "Tickets" }
+            PortalNavItem { to: Route::PortalInvoiceList {}, icon: rsx!(CurrencyIcon {}), label: "Invoices" }
+            PortalNavItem { to: Route::PortalKB {}, icon: rsx!(BookIcon {}), label: "Knowledge Base" }
+        }
+    }
+}
+
+/// Portal nav row. Simpler than the agent-side [`NavItem`]: no
+/// per-section accent, no collapsed-rail branch, no detail-page
+/// parent mapping. Highlights when the current route matches exactly
+/// (the portal has no detail<->list nesting to keep highlighted).
+#[derive(Props, Clone, PartialEq)]
+struct PortalNavItemProps {
+    to: Route,
+    icon: Element,
+    label: String,
+}
+
+#[component]
+fn PortalNavItem(props: PortalNavItemProps) -> Element {
+    let current: Route = use_route();
+    let is_active = current == props.to;
+    let class = if is_active {
+        "group flex items-center px-3 py-2 text-sm font-medium rounded-md bg-surface text-content border-l-2 border-accent"
+    } else {
+        "group flex items-center px-3 py-2 text-sm font-medium rounded-md text-muted hover:bg-surface hover:text-content"
+    };
+
+    rsx! {
+        Link {
+            to: props.to,
+            class: "{class}",
+            span { class: "mr-3 text-subtle group-hover:text-content",
+                {props.icon}
+            }
+            "{props.label}"
         }
     }
 }
