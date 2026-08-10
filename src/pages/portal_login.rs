@@ -79,6 +79,13 @@ pub fn PortalLoginPage() -> Element {
     #[cfg(feature = "web")]
     use_hook(crate::hooks::portal_branding::ensure_portal_branding_fetch);
 
+    // PMS-729 phase 2 §6 slice 3: apply the portal-scoped theme on the
+    // pre-auth page too so a customer who set Dark from inside the
+    // portal sees the same base mode on their next return trip. Cheap
+    // and idempotent; the media-listener registration is latched.
+    #[cfg(feature = "web")]
+    crate::hooks::portal_theme::use_apply_portal_theme();
+
     // PMS-729: read the shared branding hint. The reactive read here
     // triggers a re-render when the fetch flips it from `None` to
     // `Some(_)`, so the slug input hides and the branding block appears
@@ -195,8 +202,12 @@ pub fn PortalLoginPage() -> Element {
                             // PMS-729 phase 2 §6 slice 2: pick the theme-
                             // appropriate logo. `logo_for` falls back to
                             // the light logo when only one is supplied.
+                            // Slice 3: read the portal-scoped theme so
+                            // the login page tracks the customer's
+                            // portal preference (independent of any
+                            // agent-side theme on the same machine).
                             {
-                                let is_dark = crate::hooks::theme::current_is_dark();
+                                let is_dark = crate::hooks::portal_theme::current_is_dark();
                                 rsx! {
                                     if let Some(url) = hint.branding.logo_for(is_dark) {
                                         img {

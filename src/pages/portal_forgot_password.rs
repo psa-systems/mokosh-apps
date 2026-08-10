@@ -40,6 +40,9 @@ pub fn PortalForgotPasswordPage() -> Element {
     // by name if the SPA is on a portal host (PMS-729 phase 2 §6). Idempotent.
     #[cfg(feature = "web")]
     use_hook(crate::hooks::portal_branding::ensure_portal_branding_fetch);
+    // PMS-729 phase 2 §6 slice 3: same portal theme on the reset flow.
+    #[cfg(feature = "web")]
+    crate::hooks::portal_theme::use_apply_portal_theme();
     let hint_snapshot = crate::hooks::portal_branding::use_portal_host_hint();
     let host_derived = hint_snapshot.is_some();
 
@@ -116,7 +119,7 @@ pub fn PortalForgotPasswordPage() -> Element {
                             // light logo when only one is supplied.
                             if let Some(hint) = &hint_snapshot {
                                 {
-                                    let is_dark = crate::hooks::theme::current_is_dark();
+                                    let is_dark = crate::hooks::portal_theme::current_is_dark();
                                     rsx! {
                                         if let Some(url) = hint.branding.logo_for(is_dark) {
                                             img {

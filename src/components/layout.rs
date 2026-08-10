@@ -1117,6 +1117,13 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
     // has_portal_session goes false).
     crate::hooks::portal_auth::use_portal_auto_refresh();
 
+    // PMS-729 phase 2 §6 slice 3: portal-scoped theme. Applies on boot
+    // and re-applies when the OS `prefers-color-scheme` flips for the
+    // `System` branch. Independent of the agent-side theme, keyed
+    // under `mokosh_portal_theme`.
+    #[cfg(feature = "web")]
+    crate::hooks::portal_theme::use_apply_portal_theme();
+
     rsx! {
         div { class: "min-h-screen bg-app",
             // Portal header
@@ -1135,8 +1142,12 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
                                 // PMS-729 phase 2 §6 slice 2: dark-mode
                                 // logo variant when the tenant supplied
                                 // one; falls back to the light logo.
+                                // Slice 3: read the portal-scoped theme
+                                // (not the agent-side one) so the toggle
+                                // in this header changes the picked
+                                // logo variant on the same tick.
                                 {
-                                    let is_dark = crate::hooks::theme::current_is_dark();
+                                    let is_dark = crate::hooks::portal_theme::current_is_dark();
                                     rsx! {
                                         if let Some(url) = h.branding.logo_for(is_dark) {
                                             img {
@@ -1176,8 +1187,12 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
                             }
                         }
 
-                        // User menu
-                        div { class: "flex items-center",
+                        // User menu + PMS-729 phase 2 §6 slice 3 portal
+                        // theme toggle. The toggle sits to the LEFT of
+                        // the user menu so the two chrome affordances
+                        // read as one cluster on the right.
+                        div { class: "flex items-center gap-2",
+                            PortalThemeToggle {}
                             PortalUserMenu {}
                         }
                     }
@@ -1213,6 +1228,54 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
                     VersionFooter {}
                 }
             }
+        }
+    }
+}
+
+/// PMS-729 phase 2 §6 slice 3: cycle Light -> Dark -> System with a
+/// single click. Sits in the portal header, next to the user menu.
+/// The icon shows the CURRENT state (sun for Light, moon for Dark,
+/// desktop for System) so a customer can see which mode they are in
+/// at a glance; the tooltip announces the transition the click will
+/// perform, matching the accepted pattern from the agent-side
+/// theme picker.
+#[component]
+fn PortalThemeToggle() -> Element {
+    // Local reactive mirror of the persisted preference so this
+    // component re-renders when the cycle button flips it. Reading
+    // the storage directly on every render would work but would not
+    // subscribe to updates, so a click would not repaint the icon
+    // without a route change.
+    let mut current = use_signal(crate::hooks::portal_theme::current);
+
+    let cur = *current.read();
+    let (label, tooltip): (Element, &'static str) = match cur {
+        crate::hooks::theme::Theme::Light => (
+            rsx! { SunIcon { size: IconSize::Medium } },
+            "Light theme. Click to switch to dark.",
+        ),
+        crate::hooks::theme::Theme::Dark => (
+            rsx! { MoonIcon { size: IconSize::Medium } },
+            "Dark theme. Click to follow system.",
+        ),
+        crate::hooks::theme::Theme::System => (
+            rsx! { ComputerDesktopIcon { size: IconSize::Medium } },
+            "Follow system theme. Click to switch to light.",
+        ),
+    };
+
+    rsx! {
+        button {
+            r#type: "button",
+            class: "p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2 focus:outline-none",
+            aria_label: "{tooltip}",
+            title: "{tooltip}",
+            onclick: move |_| {
+                let next = crate::hooks::portal_theme::next_in_cycle(*current.read());
+                crate::hooks::portal_theme::set(next);
+                current.set(next);
+            },
+            {label}
         }
     }
 }
