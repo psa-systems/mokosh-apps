@@ -27,7 +27,7 @@
 //! single create/edit modal driven by an `Option<FormState>` signal.
 
 use dioxus::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::components::{
@@ -776,10 +776,38 @@ pub fn DataGroupPage() -> Element {
 /// and fail to load. The server resolves the tenant from the session instead.
 const TENANT_PATH: &str = "/tenants/current";
 
+/// MAPPS-429: the tenant logo endpoint. Its own path because a file is PUT as
+/// multipart and lands immediately, rather than riding the JSON body above.
+const TENANT_LOGO_PATH: &str = "/tenants/current/logo";
+
+/// Trim, and treat blank as absent. A branding field saved as `""` would read
+/// back as "there is a contact, and it is empty".
+fn optional_text(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    (!t.is_empty()).then(|| t.to_string())
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct TenantView {
     #[serde(default)]
     name: String,
+    /// MAPPS-429: organisation metadata a client sees. Distinct from the user's
+    /// own name and phone, which bunyip owns.
+    #[serde(default)]
+    branding: BrandingView,
+}
+
+/// The subset of `TenantBranding` these pages read. Everything else it declares
+/// (colours, favicon, portal domain) is unread by any surface today, so it is
+/// deliberately not deserialised here and not shown.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+struct BrandingView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    support_contact_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    support_phone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    logo_url: Option<String>,
 }
 
 /// `/settings/organization` (MAPPS-426). Admin-only rename of this tenant.
@@ -809,6 +837,12 @@ pub fn OrganizationSettingsPage() -> Element {
 #[component]
 fn OrganizationSettingsBody() -> Element {
     let mut name = use_signal(String::new);
+    // MAPPS-429: the organisation's own contact, shown to clients on the forms
+    // and email this tenant sends.
+    let mut contact_name = use_signal(String::new);
+    let mut contact_phone = use_signal(String::new);
+    let mut logo_url = use_signal(|| None::<String>);
+    let mut logo_busy = use_signal(|| false);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
     let mut name_error = use_signal(String::new);
@@ -833,6 +867,11 @@ fn OrganizationSettingsBody() -> Element {
     };
     if !seeded() && !current_name.is_empty() {
         name.set(current_name.clone());
+        if let Some(Some(t)) = &*snap {
+            contact_name.set(t.branding.support_contact_name.clone().unwrap_or_default());
+            contact_phone.set(t.branding.support_phone.clone().unwrap_or_default());
+            logo_url.set(t.branding.logo_url.clone());
+        }
         seeded.set(true);
     }
 
@@ -868,9 +907,19 @@ fn OrganizationSettingsBody() -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
+                // The logo is not in this body: it is uploaded on its own,
+                // immediately, because a file input that only takes effect on a
+                // later Save is a file input people forget to save.
                 match crate::hooks::fetch::api::put_authed_typed::<TenantView, _>(
                     TENANT_PATH,
-                    &serde_json::json!({ "name": trimmed }),
+                    &serde_json::json!({
+                        "name": trimmed,
+                        "branding": BrandingView {
+                            support_contact_name: optional_text(&contact_name.read()),
+                            support_phone: optional_text(&contact_phone.read()),
+                            logo_url: logo_url.read().clone(),
+                        },
+                    }),
                 )
                 .await
                 {
@@ -924,6 +973,106 @@ fn OrganizationSettingsBody() -> Element {
                         name_error.set(String::new());
                         name.set(e.value());
                     },
+                }
+
+                Input {
+                    name: "contact_name",
+                    label: "Contact name",
+                    value: contact_name(),
+                    disabled: is_loading || saving(),
+                    help: "Optional. Who a client should ask for. Shown on the request forms you send and in the email that carries them, unless a form names its own contact.".to_string(),
+                    oninput: move |e: FormEvent| contact_name.set(e.value()),
+                }
+
+                Input {
+                    name: "contact_phone",
+                    label: "Contact phone",
+                    value: contact_phone(),
+                    disabled: is_loading || saving(),
+                    help: "Optional. Shown next to the contact name, so a client can ask before they answer.".to_string(),
+                    oninput: move |e: FormEvent| contact_phone.set(e.value()),
+                }
+
+                // MAPPS-429: the logo uploads on selection rather than on Save.
+                // It is a separate request either way (multipart, not JSON), and
+                // a file input whose effect waits for a Save button is one people
+                // forget to press.
+                div { class: "space-y-1",
+                    label {
+                        r#for: "org_logo",
+                        class: "block text-sm font-medium text-content",
+                        "Logo"
+                    }
+                    if let Some(src) = logo_url.read().clone() {
+                        div { class: "flex items-center gap-3",
+                            img {
+                                src: "{crate::hooks::fetch::api::api_base()}{src}",
+                                alt: "Current organization logo",
+                                class: "max-h-14 max-w-56 rounded border border-line bg-surface p-1",
+                            }
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                disabled: logo_busy() || !can_mutate,
+                                onclick: move |_| {
+                                    logo_busy.set(true);
+                                    spawn(async move {
+                                        #[cfg(feature = "web")]
+                                        {
+                                            match crate::hooks::fetch::api::delete_authed(TENANT_LOGO_PATH).await {
+                                                Ok(()) => logo_url.set(None),
+                                                Err(e) => error.set(format!("Could not remove the logo: {e}")),
+                                            }
+                                        }
+                                        logo_busy.set(false);
+                                    });
+                                },
+                                "Remove"
+                            }
+                        }
+                    }
+                    input {
+                        id: "org_logo",
+                        r#type: "file",
+                        accept: "image/png,image/jpeg,image/webp,image/gif",
+                        disabled: logo_busy() || !can_mutate,
+                        class: "block w-full text-sm text-content file:mr-3 file:rounded-md file:border-0 file:bg-surface-2 file:px-3 file:py-1.5 file:text-sm file:font-medium",
+                        onchange: move |evt: FormEvent| {
+                            error.set(String::new());
+                            let Some(file) = evt.files().into_iter().next() else {
+                                return;
+                            };
+                            logo_busy.set(true);
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    let file_name = file.name();
+                                    let mime = file
+                                        .content_type()
+                                        .unwrap_or_else(|| "application/octet-stream".to_string());
+                                    match file.read_bytes().await {
+                                        Ok(bytes) => {
+                                            match crate::hooks::fetch::api::put_file_authed::<TenantView>(
+                                                TENANT_LOGO_PATH,
+                                                &file_name,
+                                                &mime,
+                                                &bytes,
+                                            )
+                                            .await
+                                            {
+                                                Ok(t) => logo_url.set(t.branding.logo_url),
+                                                Err(e) => error.set(e.user_message()),
+                                            }
+                                        }
+                                        Err(_) => error.set("Could not read the selected file.".to_string()),
+                                    }
+                                }
+                                logo_busy.set(false);
+                            });
+                        },
+                    }
+                    p { class: "text-xs text-muted",
+                        "Optional. PNG, JPEG, WebP or GIF, up to 1 MB. Shown to clients at the top of the request forms you send and the email that carries them."
+                    }
                 }
 
                 div { class: "flex justify-end",

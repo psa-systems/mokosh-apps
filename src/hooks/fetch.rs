@@ -555,6 +555,54 @@ pub mod api {
         }
     }
 
+    /// MAPPS-429: PUT a single file as `multipart/form-data` under the part
+    /// name `file`, with the caller's bearer token.
+    ///
+    /// The body is assembled by the browser from a `FormData` carrying a
+    /// `Blob`, so the boundary is the browser's problem. Writing the multipart
+    /// envelope by hand would mean generating a boundary and hoping it never
+    /// occurs inside the image bytes.
+    ///
+    /// Deliberately not folded into the JSON helpers above: those set
+    /// `Content-Type: application/json`, and here the header must be left
+    /// ALONE. Setting it manually omits the boundary parameter, and the server
+    /// then rejects a body it cannot split.
+    #[cfg(feature = "web")]
+    pub async fn put_file_authed<T: DeserializeOwned>(
+        path: &str,
+        file_name: &str,
+        mime: &str,
+        bytes: &[u8],
+    ) -> Result<T, ApiError> {
+        use wasm_bindgen::JsCast;
+
+        let token = current_access_token()
+            .ok_or_else(|| ApiError::Network("not authenticated".to_string()))?;
+
+        let array = js_sys::Uint8Array::from(bytes);
+        let parts = js_sys::Array::new();
+        parts.push(&array.buffer());
+        let opts = web_sys::BlobPropertyBag::new();
+        opts.set_type(mime);
+        let js_err =
+            |what: &str| ApiError::Network(format!("could not prepare the upload ({what})"));
+        let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &opts)
+            .map_err(|_| js_err("blob"))?;
+        let form = web_sys::FormData::new().map_err(|_| js_err("form"))?;
+        form.append_with_blob_and_filename("file", &blob, file_name)
+            .map_err(|_| js_err("part"))?;
+
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::put(&url)
+            .header("Authorization", &format!("Bearer {token}"))
+            .body(form.unchecked_into::<wasm_bindgen::JsValue>())
+            .map_err(network_err)?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
     // --- Auto-authed wrappers --------------------------------------------
     //
     // These read the current access token from the thread-local holder so
