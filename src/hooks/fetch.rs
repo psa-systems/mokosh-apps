@@ -156,6 +156,29 @@ pub mod api {
         "/api/v1".to_string()
     }
 
+    /// PMS-758: the API's ORIGIN, without the `/api/v1` path.
+    ///
+    /// [`api_base`] is a base for API CALLS, so it carries the version prefix.
+    /// A few values the server hands back are already paths from the origin,
+    /// notably `branding.logo_url` (`/api/v1/public/tenants/{id}/logo`), which
+    /// has to be joinable by both this SPA and the email composer. Joining one
+    /// of those to `api_base()` produced `/api/v1/api/v1/...` and a broken
+    /// image on every surface that showed the logo.
+    ///
+    /// Empty in dev, where `api_base()` is the same-origin `/api/v1`: an
+    /// origin-relative path is already correct there.
+    #[cfg(feature = "web")]
+    pub fn api_origin() -> String {
+        strip_api_version(&api_base())
+    }
+
+    /// The pure half of [`api_origin`], so the rule is testable without a
+    /// browser. A base that does not end in the version prefix is left alone
+    /// rather than truncated on a guess.
+    pub fn strip_api_version(base: &str) -> String {
+        base.strip_suffix("/api/v1").unwrap_or(base).to_string()
+    }
+
     /// PMS-751: strip trailing slashes from a configured API base.
     ///
     /// Every call site joins with `format!("{}{}", api_base(), path)` and every
@@ -1108,7 +1131,7 @@ pub mod api {
 /// because the request helpers themselves need a browser to run.
 #[cfg(test)]
 mod tests {
-    use super::api::normalize_api_base;
+    use super::api::{normalize_api_base, strip_api_version};
 
     const FETCH_SRC: &str = include_str!("fetch.rs");
     const PORTAL_PAGE_SRC: &str = include_str!("../pages/portal.rs");
@@ -1239,6 +1262,27 @@ mod tests {
                  `_portal_authed` helpers"
             );
         }
+    }
+
+    /// PMS-758: `logo_url` arrives as a path from the ORIGIN, so joining it to
+    /// the versioned API base produced `/api/v1/api/v1/...` and a broken image
+    /// everywhere the logo appeared.
+    #[test]
+    fn the_api_origin_drops_the_version_prefix() {
+        assert_eq!(
+            strip_api_version("https://api.msp.a8n.systems/api/v1"),
+            "https://api.msp.a8n.systems"
+        );
+        assert_eq!(
+            strip_api_version("/api/v1"),
+            "",
+            "dev is same-origin, where an origin-relative path is already right"
+        );
+        assert_eq!(
+            strip_api_version("https://api.example.test/custom"),
+            "https://api.example.test/custom",
+            "a base that is not version-suffixed is left alone rather than truncated"
+        );
     }
 
     /// PMS-751: staging is configured with a trailing slash, which every join

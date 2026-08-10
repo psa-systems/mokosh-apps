@@ -356,7 +356,7 @@ pub(crate) fn RequestFormBody(
         if let Some(logo) = def.logo_url.clone().filter(|l| !l.trim().is_empty()) {
             div { class: "mb-4",
                 img {
-                    src: "{crate::hooks::fetch::api::api_base()}{logo}",
+                    src: "{crate::hooks::fetch::api::api_origin()}{logo}",
                     alt: "{def.tenant_name}",
                     class: "max-h-14 max-w-56",
                 }
