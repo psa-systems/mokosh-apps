@@ -802,14 +802,17 @@ struct TenantView {
 /// deliberately not deserialised here and not shown.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 struct BrandingView {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     support_contact_name: Option<String>,
     /// PMS-755: the channel most clients reach for first.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     support_email: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     support_phone: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Read to render the current logo. Never sent: the upload and the delete
+    /// own this key, and PMS-758 is what happens when one writer overwrites
+    /// another's half of the document.
+    #[serde(default, skip_serializing)]
     logo_url: Option<String>,
 }
 
@@ -847,6 +850,14 @@ fn OrganizationSettingsBody() -> Element {
     let mut contact_email = use_signal(String::new);
     let mut logo_url = use_signal(|| None::<String>);
     let mut logo_busy = use_signal(|| false);
+    // PMS-758: reported next to the file input rather than in the form banner
+    // at the top of the page, which is a long way from the control that caused
+    // it.
+    let mut logo_error = use_signal(String::new);
+    // A logo that cannot load has nothing useful to show, so it is hidden
+    // rather than left as the browser's broken-image box, which is how this
+    // page looked while the URL was wrong.
+    let mut logo_broken = use_signal(|| false);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
     let mut name_error = use_signal(String::new);
@@ -919,11 +930,15 @@ fn OrganizationSettingsBody() -> Element {
                     TENANT_PATH,
                     &serde_json::json!({
                         "name": trimmed,
+                        // PMS-758: the server MERGES this into the branding
+                        // document, so an emptied field has to be sent as an
+                        // explicit null to clear, and a key this page does not
+                        // own (the logo) is simply not sent.
                         "branding": BrandingView {
                             support_contact_name: optional_text(&contact_name.read()),
                             support_email: optional_text(&contact_email.read()),
                             support_phone: optional_text(&contact_phone.read()),
-                            logo_url: logo_url.read().clone(),
+                            logo_url: None,
                         },
                     }),
                 )
@@ -1024,22 +1039,33 @@ fn OrganizationSettingsBody() -> Element {
                     }
                     if let Some(src) = logo_url.read().clone() {
                         div { class: "flex items-center gap-3",
-                            img {
-                                src: "{crate::hooks::fetch::api::api_base()}{src}",
-                                alt: "Current organization logo",
-                                class: "max-h-14 max-w-56 rounded border border-line bg-surface p-1",
+                            if !logo_broken() {
+                                img {
+                                    src: "{crate::hooks::fetch::api::api_origin()}{src}",
+                                    alt: "Current organization logo",
+                                    class: "max-h-14 max-w-56 rounded border border-line bg-surface p-1",
+                                    onerror: move |_| logo_broken.set(true),
+                                }
+                            } else {
+                                span { class: "text-sm text-muted",
+                                    "A logo is set but could not be loaded."
+                                }
                             }
                             Button {
                                 variant: ButtonVariant::Secondary,
                                 disabled: logo_busy() || !can_mutate,
                                 onclick: move |_| {
                                     logo_busy.set(true);
+                                    logo_error.set(String::new());
                                     spawn(async move {
                                         #[cfg(feature = "web")]
                                         {
                                             match crate::hooks::fetch::api::delete_authed(TENANT_LOGO_PATH).await {
-                                                Ok(()) => logo_url.set(None),
-                                                Err(e) => error.set(format!("Could not remove the logo: {e}")),
+                                                Ok(()) => {
+                                                    logo_url.set(None);
+                                                    logo_broken.set(false);
+                                                }
+                                                Err(e) => logo_error.set(format!("Could not remove the logo: {e}")),
                                             }
                                         }
                                         logo_busy.set(false);
@@ -1056,7 +1082,7 @@ fn OrganizationSettingsBody() -> Element {
                         disabled: logo_busy() || !can_mutate,
                         class: "block w-full text-sm text-content file:mr-3 file:rounded-md file:border-0 file:bg-surface-2 file:px-3 file:py-1.5 file:text-sm file:font-medium",
                         onchange: move |evt: FormEvent| {
-                            error.set(String::new());
+                            logo_error.set(String::new());
                             let Some(file) = evt.files().into_iter().next() else {
                                 return;
                             };
@@ -1078,19 +1104,30 @@ fn OrganizationSettingsBody() -> Element {
                                             )
                                             .await
                                             {
-                                                Ok(t) => logo_url.set(t.branding.logo_url),
-                                                Err(e) => error.set(e.user_message()),
+                                                Ok(t) => {
+                                                    logo_broken.set(false);
+                                                    logo_url.set(t.branding.logo_url);
+                                                }
+                                                Err(e) => logo_error.set(e.user_message()),
                                             }
                                         }
-                                        Err(_) => error.set("Could not read the selected file.".to_string()),
+                                        Err(_) => logo_error.set("Could not read the selected file.".to_string()),
                                     }
                                 }
                                 logo_busy.set(false);
                             });
                         },
                     }
-                    p { class: "text-xs text-muted",
-                        "Optional. PNG, JPEG, WebP or GIF, up to 1 MB. Shown to clients at the top of the request forms you send and the email that carries them."
+                    // PMS-758: an upload starts on selection and takes as long as
+                    // it takes; without this the page said nothing at all.
+                    if logo_busy() {
+                        p { class: "text-xs text-muted", "Uploading..." }
+                    } else if !logo_error().is_empty() {
+                        p { class: "text-xs text-danger", role: "alert", "{logo_error}" }
+                    } else {
+                        p { class: "text-xs text-muted",
+                            "Optional. PNG, JPEG, WebP or GIF, up to 1 MB. Shown to clients at the top of the request forms you send and the email that carries them."
+                        }
                     }
                 }
 
