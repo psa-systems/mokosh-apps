@@ -55,6 +55,10 @@ struct OrganizationRequest {
 struct OnboardingBranding {
     support_contact_name: String,
     support_phone: String,
+    /// PMS-755: optional here, unlike the phone. Demanding two channels before
+    /// an MSP can finish setting up is a tax on the common case.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    support_email: String,
 }
 
 /// What we read off `POST /api/v1/auth/me/complete-onboarding` so the
@@ -76,6 +80,7 @@ pub fn Onboarding() -> Element {
     let mut org_name = use_signal(String::new);
     let mut contact_name = use_signal(String::new);
     let mut contact_phone = use_signal(String::new);
+    let mut contact_email = use_signal(String::new);
     let mut logo: Signal<Option<(String, String, Vec<u8>)>> = use_signal(|| None);
     let mut logo_error = use_signal(String::new);
     let mut saving = use_signal(|| false);
@@ -118,6 +123,7 @@ pub fn Onboarding() -> Element {
         let name = org_name.read().trim().to_string();
         let contact = contact_name.read().trim().to_string();
         let phone = contact_phone.read().trim().to_string();
+        let email = contact_email.read().trim().to_string();
 
         // PMS-518: validate through the shared FormGuard so every missing field
         // surfaces at once, each in its own slot, and the first is focused.
@@ -153,6 +159,7 @@ pub fn Onboarding() -> Element {
                     branding: OnboardingBranding {
                         support_contact_name: contact.clone(),
                         support_phone: phone.clone(),
+                        support_email: email.clone(),
                     },
                 };
                 let saved = crate::hooks::fetch::api::put_authed_typed::<serde_json::Value, _>(
@@ -219,7 +226,7 @@ pub fn Onboarding() -> Element {
             }
             #[cfg(not(feature = "web"))]
             {
-                let _ = (name, contact, phone);
+                let _ = (name, contact, phone, email);
             }
             saving.set(false);
         });
@@ -286,6 +293,16 @@ pub fn Onboarding() -> Element {
                                 contact_phone_error.set(String::new());
                                 contact_phone.set(e.value());
                             },
+                        }
+
+                        Input {
+                            name: "contact_email",
+                            label: "Contact email (optional)",
+                            r#type: "email".to_string(),
+                            value: contact_email(),
+                            disabled: saving(),
+                            help: "Offered to clients alongside the phone number.".to_string(),
+                            oninput: move |e: FormEvent| contact_email.set(e.value()),
                         }
 
                         // MAPPS-429: optional, and read into memory here rather
