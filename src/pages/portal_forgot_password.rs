@@ -110,6 +110,24 @@ pub fn PortalForgotPasswordPage() -> Element {
                         }
                     } else {
                         div { class: "text-center mb-6",
+                            // PMS-729 phase 2 §6 slice 2: pull the same
+                            // logo the login page picks so this page reads
+                            // as one flow. Dark-aware; falls back to the
+                            // light logo when only one is supplied.
+                            if let Some(hint) = &hint_snapshot {
+                                {
+                                    let is_dark = crate::hooks::theme::current_is_dark();
+                                    rsx! {
+                                        if let Some(url) = hint.branding.logo_for(is_dark) {
+                                            img {
+                                                src: "{url}",
+                                                alt: "{hint.name}",
+                                                class: "h-14 w-auto mx-auto mb-3",
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             // Match the login page's branding hint so a
                             // portal-host visitor sees the MSP name in the copy.
                             if let Some(hint) = &hint_snapshot {

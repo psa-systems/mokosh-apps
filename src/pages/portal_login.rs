@@ -192,11 +192,19 @@ pub fn PortalLoginPage() -> Element {
                         // endpoint returned an active tenant; on legacy
                         // hosts, falls back to the generic title below.
                         if let Some(hint) = &hint_snapshot {
-                            if let Some(url) = &hint.logo_url {
-                                img {
-                                    src: "{url}",
-                                    alt: "{hint.name}",
-                                    class: "h-14 w-auto mx-auto mb-3",
+                            // PMS-729 phase 2 §6 slice 2: pick the theme-
+                            // appropriate logo. `logo_for` falls back to
+                            // the light logo when only one is supplied.
+                            {
+                                let is_dark = crate::hooks::theme::current_is_dark();
+                                rsx! {
+                                    if let Some(url) = hint.branding.logo_for(is_dark) {
+                                        img {
+                                            src: "{url}",
+                                            alt: "{hint.name}",
+                                            class: "h-14 w-auto mx-auto mb-3",
+                                        }
+                                    }
                                 }
                             }
                             h1 { class: "text-2xl font-semibold text-content",
@@ -207,8 +215,17 @@ pub fn PortalLoginPage() -> Element {
                                 "Sign in to the Client Portal"
                             }
                         }
-                        p { class: "mt-2 text-sm text-content",
-                            "Use the email your account team set up for you."
+                        // Prefer the tenant's welcome copy when set;
+                        // otherwise fall back to the generic hint.
+                        if let Some(msg) = hint_snapshot
+                            .as_ref()
+                            .and_then(|h| h.branding.welcome_message.as_deref())
+                        {
+                            p { class: "mt-2 text-sm text-content", "{msg}" }
+                        } else {
+                            p { class: "mt-2 text-sm text-content",
+                                "Use the email your account team set up for you."
+                            }
                         }
                     }
 
@@ -311,6 +328,41 @@ pub fn PortalLoginPage() -> Element {
                                 to: Route::PortalForgotPassword {},
                                 class: "text-sm text-accent hover:opacity-80",
                                 "Forgot your password?"
+                            }
+                        }
+
+                        // PMS-729 phase 2 §6 slice 2: support contact
+                        // block. Only rendered when the tenant filled in
+                        // at least one of email / phone / hours.
+                        if let Some(hint) = &hint_snapshot {
+                            if hint.branding.support_email.is_some()
+                                || hint.branding.support_phone.is_some()
+                                || hint.branding.support_hours.is_some()
+                            {
+                                div { class: "mt-4 border-t border-line pt-3 text-center text-xs text-subtle space-y-0.5",
+                                    p { "Need help signing in?" }
+                                    if let Some(mail) = &hint.branding.support_email {
+                                        p {
+                                            a {
+                                                class: "text-accent hover:opacity-80",
+                                                href: "mailto:{mail}",
+                                                "{mail}"
+                                            }
+                                        }
+                                    }
+                                    if let Some(phone) = &hint.branding.support_phone {
+                                        p {
+                                            a {
+                                                class: "text-accent hover:opacity-80",
+                                                href: "tel:{phone}",
+                                                "{phone}"
+                                            }
+                                        }
+                                    }
+                                    if let Some(hours) = &hint.branding.support_hours {
+                                        p { "{hours}" }
+                                    }
+                                }
                             }
                         }
                     }

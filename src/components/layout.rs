@@ -1132,11 +1132,19 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
                             to: Route::PortalHome {},
                             class: "flex items-center gap-3",
                             if let Some(h) = &hint {
-                                if let Some(url) = &h.logo_url {
-                                    img {
-                                        src: "{url}",
-                                        alt: "{h.name}",
-                                        class: "h-8 w-auto",
+                                // PMS-729 phase 2 §6 slice 2: dark-mode
+                                // logo variant when the tenant supplied
+                                // one; falls back to the light logo.
+                                {
+                                    let is_dark = crate::hooks::theme::current_is_dark();
+                                    rsx! {
+                                        if let Some(url) = h.branding.logo_for(is_dark) {
+                                            img {
+                                                src: "{url}",
+                                                alt: "{h.name}",
+                                                class: "h-8 w-auto",
+                                            }
+                                        }
                                     }
                                 }
                                 span { class: "text-xl font-bold text-accent",
@@ -1191,8 +1199,16 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
             // Portal footer
             footer { class: "bg-surface border-t border-line",
                 div { class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6",
-                    p { class: "text-sm text-muted text-center",
-                        "Powered by Mokosh Platform"
+                    // PMS-729 phase 2 §6 slice 2: tenant footer text
+                    // overrides the "Powered by Mokosh" default when set.
+                    {
+                        let footer = hint
+                            .as_ref()
+                            .and_then(|h| h.branding.footer_text.clone())
+                            .unwrap_or_else(|| "Powered by Mokosh Platform".to_string());
+                        rsx! {
+                            p { class: "text-sm text-muted text-center", "{footer}" }
+                        }
                     }
                     VersionFooter {}
                 }
