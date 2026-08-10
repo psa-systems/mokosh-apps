@@ -15,6 +15,13 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      # `just dev` leaves this empty (dx serve in default debug mode).
+      # `just dev-release` sets it to `--release` so the container's CMD
+      # runs `dx serve --release --port 4301 --addr 0.0.0.0`. Needed on
+      # hosts where dx's debug-mode post-processing chokes on the giant
+      # unstripped WASM (`Failed to write executable`).
+      DX_SERVE_ARGS: ${DX_SERVE_ARGS:-}
     ports:
       # LAN-IP bind so other Docker containers on the host can reach the
       # dev server, plus a localhost bind so the browser can hit

@@ -35,4 +35,4 @@ RUN mkdir src \
 
 EXPOSE 4301
 
-CMD ["sh", "-c", "bun x @tailwindcss/cli --input input.css --output assets/styles.css && dx serve --port 4301 --addr 0.0.0.0"]
+CMD ["sh", "-c", "bun x @tailwindcss/cli --input input.css --output assets/styles.css && dx serve ${DX_SERVE_ARGS:-} --port 4301 --addr 0.0.0.0"]
