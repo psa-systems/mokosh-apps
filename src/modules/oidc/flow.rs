@@ -351,6 +351,13 @@ pub async fn refresh_tokens(
     })
 }
 
+/// MAPPS-427 WARNING: bunyip's `/v1/*` family is a Resource Server whose at+jwt
+/// verifier enforces `aud == OIDC_RS_AUDIENCE` (BUNYIP-252), and the access
+/// token this SPA holds is minted for MOKOSH's audience. Any call made through
+/// the two helpers below is therefore answered 401, by design, and cannot be
+/// fixed on bunyip's side without letting another RP's token through. They have
+/// no call sites today for that reason. Reaching for one means first arranging
+/// a token bunyip will accept.
 /// Issuer-authed GET. Hits `{issuer}{path}` with the in-memory access
 /// token in `Authorization: Bearer`. Used for self-service auth APIs
 /// that live on the issuer host (e.g. `/v1/auth/sessions`) and are
