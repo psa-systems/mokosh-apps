@@ -429,6 +429,180 @@ fn slugify(name: &str) -> String {
     out
 }
 
+// ============================================================================
+// PMS-754: DRAFTS
+// ============================================================================
+
+/// Where a half-built definition is kept between visits.
+///
+/// Keyed by definition id, with a distinct key for a new form, so editing two
+/// definitions cannot cross-contaminate. Per browser and per device, which is
+/// the right scope for "I was typing this a minute ago": `form_definitions`
+/// requires a name, a slug and at least one field, so a half-built definition
+/// is not a row the server would accept, and making it one would mean a
+/// nullable-everything draft state and a decision about whose drafts other
+/// operators can see. That is a feature; this is a data-loss fix.
+fn draft_key(id: Option<&str>) -> String {
+    match id {
+        Some(id) => format!("mokosh.form-draft.{id}"),
+        None => "mokosh.form-draft.new".to_string(),
+    }
+}
+
+/// The persisted shape of an in-progress definition.
+///
+/// Deliberately its own type rather than serde on [`EditorState`]. The stored
+/// JSON outlives the build that wrote it, so the editor's internals are free to
+/// change without a stale draft failing to parse; `field_type` is a string here
+/// for the same reason, and because [`FieldType`] carries no serde derives.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+struct DraftForm {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    slug: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    contact_info: String,
+    #[serde(default)]
+    kb_article_id: String,
+    #[serde(default)]
+    is_active: bool,
+    #[serde(default)]
+    fields: Vec<DraftField>,
+    #[serde(default)]
+    rules: Vec<DraftRule>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+struct DraftField {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    help_text: String,
+    #[serde(default)]
+    field_type: String,
+    #[serde(default)]
+    is_required: bool,
+    #[serde(default)]
+    max_length: String,
+    #[serde(default)]
+    options: String,
+    #[serde(default)]
+    date_not_in_past: bool,
+    #[serde(default)]
+    name_touched: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+struct DraftRule {
+    #[serde(default)]
+    field: String,
+    #[serde(default)]
+    when_field: String,
+    #[serde(default)]
+    equals: String,
+}
+
+impl DraftForm {
+    fn from_state(state: &EditorState) -> Self {
+        Self {
+            name: state.name.clone(),
+            slug: state.slug.clone(),
+            description: state.description.clone(),
+            contact_info: state.contact_info.clone(),
+            kb_article_id: state.kb_article_id.clone(),
+            is_active: state.is_active,
+            fields: state
+                .fields
+                .iter()
+                .map(|f| DraftField {
+                    name: f.name.clone(),
+                    label: f.label.clone(),
+                    help_text: f.help_text.clone(),
+                    field_type: f.field_type.as_str().to_string(),
+                    is_required: f.is_required,
+                    max_length: f.max_length.clone(),
+                    options: f.options.clone(),
+                    date_not_in_past: f.date_not_in_past,
+                    name_touched: f.name_touched,
+                })
+                .collect(),
+            rules: state
+                .rules
+                .iter()
+                .map(|r| DraftRule {
+                    field: r.field.clone(),
+                    when_field: r.when_field.clone(),
+                    equals: r.equals.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Rebuild an editor state, taking identity from `base`.
+    ///
+    /// `id` and `has_unknown_rule` come from the definition as the server sent
+    /// it, never from storage: a draft must not be able to retarget which
+    /// definition is being edited, nor to clear the flag that blocks saving a
+    /// rule this build cannot represent.
+    fn into_state(self, base: &EditorState) -> EditorState {
+        EditorState {
+            id: base.id.clone(),
+            name: self.name,
+            slug: self.slug,
+            description: self.description,
+            contact_info: self.contact_info,
+            kb_article_id: self.kb_article_id,
+            is_active: self.is_active,
+            fields: self
+                .fields
+                .into_iter()
+                .map(|f| FieldRow {
+                    name: f.name,
+                    label: f.label,
+                    help_text: f.help_text,
+                    field_type: FieldType::from_str(&f.field_type).unwrap_or(FieldType::Text),
+                    is_required: f.is_required,
+                    max_length: f.max_length,
+                    options: f.options,
+                    date_not_in_past: f.date_not_in_past,
+                    name_touched: f.name_touched,
+                })
+                .collect(),
+            rules: self
+                .rules
+                .into_iter()
+                .map(|r| RuleRow {
+                    field: r.field,
+                    when_field: r.when_field,
+                    equals: r.equals,
+                })
+                .collect(),
+            has_unknown_rule: base.has_unknown_rule,
+        }
+    }
+}
+
+/// Read the stored draft for this definition, if it is both present and
+/// different from what the server holds.
+///
+/// A draft equal to the saved definition is not worth announcing: it would
+/// restore nothing and only tell the operator their work was at risk when it
+/// was not.
+fn load_draft(base: &EditorState) -> Option<EditorState> {
+    let raw = crate::utils::prefs::get_str(&draft_key(base.id.as_deref()), "");
+    if raw.is_empty() {
+        return None;
+    }
+    let draft: DraftForm = serde_json::from_str(&raw).ok()?;
+    let restored = draft.into_state(base);
+    (restored != *base).then_some(restored)
+}
+
 /// The organisation clients see on anything this page sends, or an empty string
 /// until it loads. Empty suppresses the attribution rather than previewing a
 /// form "sent to you by " nobody.
@@ -544,6 +718,21 @@ fn FormEditorModal(
 ) -> Element {
     let is_edit = state.id.is_some();
     let save_id = state.id.clone();
+    let draft_key = draft_key(state.id.as_deref());
+
+    // PMS-754: a draft left by an earlier visit, if it differs from what the
+    // server holds. Read once on mount; `use_hook` rather than a signal because
+    // restoring is a decision made at open time, not a value that changes.
+    let saved = use_hook({
+        let state = state.clone();
+        move || state
+    });
+    let restored = use_hook({
+        let saved = saved.clone();
+        move || load_draft(&saved)
+    });
+    let mut draft_restored = use_signal(|| restored.is_some());
+    let state = restored.unwrap_or_else(|| saved.clone());
 
     let mut name = use_signal(|| state.name.clone());
     let mut slug = use_signal(|| state.slug.clone());
@@ -567,6 +756,52 @@ fn FormEditorModal(
     let mut problem_count = use_signal(|| 0usize);
     // PMS-744: preview of the client's view, built from the live editor state.
     let mut previewing = use_signal(|| false);
+    // PMS-754: asked before a close that would throw work away.
+    let mut confirming_discard = use_signal(|| false);
+
+    // The editor as it stands, rebuilt from the signals. One value to compare
+    // against the saved definition and one to persist, so "is this dirty" and
+    // "what would be restored" can never disagree.
+    let current = EditorState {
+        id: save_id.clone(),
+        name: name(),
+        slug: slug(),
+        description: description(),
+        contact_info: contact_info(),
+        kb_article_id: kb_article_id(),
+        is_active: is_active(),
+        fields: fields(),
+        rules: rules(),
+        has_unknown_rule,
+    };
+    let dirty = current != saved;
+
+    // PMS-754: autosave. Writing on every change rather than on an interval,
+    // because the failures this exists for (a closed tab, a route change, a
+    // crash) do not wait for a timer.
+    {
+        let key = draft_key.clone();
+        let snapshot = DraftForm::from_state(&current);
+        let baseline = DraftForm::from_state(&saved);
+        use_effect(move || {
+            if snapshot == baseline {
+                // Back to what the server holds: nothing to restore, and a
+                // stored copy would only produce a "restored" banner that
+                // changes nothing on the next open.
+                crate::utils::prefs::clear(&key);
+            } else if let Ok(json) = serde_json::to_string(&snapshot) {
+                crate::utils::prefs::set_str(&key, &json);
+            }
+        });
+    }
+
+    // MAPPS-292: the browser half. Covers closing the tab and reloading, which
+    // no in-app confirmation can reach. This page never opted in, which is why
+    // a half-built definition died silently on a tab close.
+    crate::hooks::use_unsaved_guard(use_memo(move || dirty).into());
+    let draft_key_for_close = draft_key.clone();
+    let draft_key_for_discard = draft_key.clone();
+    let saved_for_discard = saved.clone();
     // PMS-748: see `FormsBuilderPage`; the preview must name the MSP the
     // client's own page will name.
     let (tenant_name, tenant_logo) = use_org_identity();
@@ -723,6 +958,7 @@ fn FormEditorModal(
             })
             .collect();
 
+        let draft_key_for_save = draft_key.clone();
         let article = uuid::Uuid::parse_str(kb_article_id.read().trim()).ok();
         let name_v = name.read().trim().to_string();
         let slug_v = slug.read().trim().to_string();
@@ -772,6 +1008,10 @@ fn FormEditorModal(
                 };
                 match result {
                     Ok(()) => {
+                        // PMS-754: the work is on the server now, so the draft
+                        // has nothing left to protect and the next New Form
+                        // must start empty.
+                        crate::utils::prefs::clear(&draft_key_for_save);
                         // MAPPS-424: naming the next step here, because saving
                         // is the moment the user expects a link and does not
                         // get one. The form is defined; nothing has been sent.
@@ -794,6 +1034,20 @@ fn FormEditorModal(
             saving.set(false);
         });
     };
+
+    // PMS-754: every way out of this modal lands here. `Modal` routes the X,
+    // Esc and a backdrop click to one `onclose`, and the backdrop is the
+    // largest click target on the screen, so it is the one that gets hit by
+    // accident. An untouched form still closes immediately: a confirmation on
+    // work nobody did is how people learn to click through confirmations.
+    let request_close = use_callback(move |_: ()| {
+        if dirty {
+            confirming_discard.set(true);
+        } else {
+            crate::utils::prefs::clear(&draft_key_for_close);
+            onclose.call(());
+        }
+    });
 
     let can_mutate = crate::hooks::use_can_mutate();
     let footer = rsx! {
@@ -821,7 +1075,7 @@ fn FormEditorModal(
             onclick: move |_| previewing.set(true),
             "Preview"
         }
-        Button { variant: ButtonVariant::Secondary, onclick: move |_| onclose.call(()), "Cancel" }
+        Button { variant: ButtonVariant::Secondary, onclick: move |_| request_close.call(()), "Cancel" }
         Button {
             variant: ButtonVariant::Primary,
             loading: saving(),
@@ -852,10 +1106,41 @@ fn FormEditorModal(
             open: true,
             title: if is_edit { "Edit request form".to_string() } else { "New request form".to_string() },
             size: crate::components::ModalSize::Large,
-            onclose: move |_| onclose.call(()),
+            onclose: move |_| request_close.call(()),
             footer,
 
             div { class: "space-y-6",
+
+                // PMS-754: a restored draft says so. Silently repopulating a
+                // form is its own surprise, and on an existing definition the
+                // draft may be older than what the server now holds, so the
+                // operator is told and offered the saved version back.
+                if draft_restored() {
+                    div { class: "rounded-md border border-default bg-surface-2 px-3 py-2 text-sm text-content flex items-center justify-between gap-3",
+                        span {
+                            "Restored what you had unsaved. It has not been saved to the server."
+                        }
+                        Button {
+                            variant: ButtonVariant::Link,
+                            onclick: move |_| {
+                                let base = saved_for_discard.clone();
+                                name.set(base.name.clone());
+                                slug.set(base.slug.clone());
+                                description.set(base.description.clone());
+                                contact_info.set(base.contact_info.clone());
+                                kb_article_id.set(base.kb_article_id.clone());
+                                is_active.set(base.is_active);
+                                fields.set(base.fields.clone());
+                                rules.set(base.rules.clone());
+                                field_errors.set(Vec::new());
+                                problem_count.set(0);
+                                crate::utils::prefs::clear(&draft_key_for_discard);
+                                draft_restored.set(false);
+                            },
+                            "Discard draft"
+                        }
+                    }
+                }
 
                 if !error().is_empty() {
                     ErrorBanner { "{error()}" }
@@ -1021,6 +1306,23 @@ fn FormEditorModal(
                     }
                 }
             }
+        }
+
+        // PMS-754: the confirmation for a close that would throw work away.
+        crate::components::ConfirmDialog {
+            open: confirming_discard(),
+            title: "Discard this form?".to_string(),
+            message: "You have changes that have not been saved. Closing now leaves them here as a draft, and you can pick them up next time you open this form.".to_string(),
+            confirm_text: "Close without saving".to_string(),
+            cancel_text: "Keep editing".to_string(),
+            onconfirm: move |_| {
+                // The draft is deliberately KEPT: someone who closes and then
+                // realises they wanted the work back is the case a
+                // confirmation alone makes worse.
+                confirming_discard.set(false);
+                onclose.call(());
+            },
+            oncancel: move |_| confirming_discard.set(false),
         }
 
         if previewing() {
@@ -1574,6 +1876,73 @@ mod tests {
         assert!(field_name_problem("1st_line").is_some(), "leading digit");
         assert!(field_name_problem("trailing_").is_some(), "trailing _");
         assert!(field_name_problem("double__bar").is_some(), "doubled _");
+    }
+
+    /// PMS-754: a draft round-trips through storage without changing what the
+    /// operator typed, including the per-field state that is not part of the
+    /// server payload.
+    #[test]
+    fn a_draft_round_trips_through_its_stored_shape() {
+        let state = EditorState {
+            id: Some("11111111-1111-1111-1111-111111111111".into()),
+            name: "New starter".into(),
+            slug: "new-starter".into(),
+            description: "  ".into(),
+            contact_info: "the service desk".into(),
+            kb_article_id: "22222222-2222-2222-2222-222222222222".into(),
+            is_active: false,
+            fields: vec![FieldRow {
+                name: "kind".into(),
+                label: "Kind".into(),
+                field_type: FieldType::Select,
+                options: "new, reuse".into(),
+                is_required: true,
+                // Hand-edited, so the label must not silently rewrite it when
+                // the draft comes back.
+                name_touched: true,
+                ..FieldRow::new()
+            }],
+            rules: vec![RuleRow {
+                field: "kind".into(),
+                when_field: "kind".into(),
+                equals: "new".into(),
+            }],
+            has_unknown_rule: false,
+        };
+
+        let json = serde_json::to_string(&DraftForm::from_state(&state)).expect("serialise");
+        let back: DraftForm = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(back.into_state(&state), state);
+    }
+
+    /// Identity comes from the definition the server sent, never from storage:
+    /// a draft must not be able to retarget which definition is being edited,
+    /// nor clear the flag that blocks saving a rule this build cannot render.
+    #[test]
+    fn a_draft_cannot_retarget_the_definition_it_restores_into() {
+        let draft = DraftForm {
+            name: "Typed while offline".into(),
+            ..DraftForm::default()
+        };
+        let base = EditorState {
+            id: Some("33333333-3333-3333-3333-333333333333".into()),
+            has_unknown_rule: true,
+            ..EditorState::new()
+        };
+
+        let restored = draft.into_state(&base);
+        assert_eq!(restored.id, base.id);
+        assert!(restored.has_unknown_rule);
+        assert_eq!(restored.name, "Typed while offline");
+    }
+
+    /// PMS-754: two definitions edited in one browser must not share a draft,
+    /// and a new form needs a key of its own.
+    #[test]
+    fn each_definition_gets_its_own_draft_key() {
+        assert_ne!(draft_key(Some("a")), draft_key(Some("b")));
+        assert_ne!(draft_key(None), draft_key(Some("a")));
+        assert!(draft_key(None).ends_with(".new"));
     }
 
     /// PMS-748: the client's page names the MSP and, optionally, how to reach

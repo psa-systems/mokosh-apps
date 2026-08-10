@@ -86,3 +86,22 @@ pub fn set_str(key: &str, value: &str) {
         let _ = (key, value);
     }
 }
+
+/// PMS-754: drop a stored value. Used to clear an in-progress draft once it has
+/// been saved or deliberately discarded, so the next New Form starts empty.
+pub fn clear(key: &str) {
+    #[cfg(feature = "web")]
+    {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let Ok(Some(storage)) = window.local_storage() else {
+            return;
+        };
+        let _ = storage.remove_item(key);
+    }
+    #[cfg(not(feature = "web"))]
+    {
+        let _ = key;
+    }
+}
