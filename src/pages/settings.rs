@@ -804,6 +804,9 @@ struct TenantView {
 struct BrandingView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     support_contact_name: Option<String>,
+    /// PMS-755: the channel most clients reach for first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    support_email: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     support_phone: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -841,6 +844,7 @@ fn OrganizationSettingsBody() -> Element {
     // and email this tenant sends.
     let mut contact_name = use_signal(String::new);
     let mut contact_phone = use_signal(String::new);
+    let mut contact_email = use_signal(String::new);
     let mut logo_url = use_signal(|| None::<String>);
     let mut logo_busy = use_signal(|| false);
     let mut saving = use_signal(|| false);
@@ -870,6 +874,7 @@ fn OrganizationSettingsBody() -> Element {
         if let Some(Some(t)) = &*snap {
             contact_name.set(t.branding.support_contact_name.clone().unwrap_or_default());
             contact_phone.set(t.branding.support_phone.clone().unwrap_or_default());
+            contact_email.set(t.branding.support_email.clone().unwrap_or_default());
             logo_url.set(t.branding.logo_url.clone());
         }
         seeded.set(true);
@@ -916,6 +921,7 @@ fn OrganizationSettingsBody() -> Element {
                         "name": trimmed,
                         "branding": BrandingView {
                             support_contact_name: optional_text(&contact_name.read()),
+                            support_email: optional_text(&contact_email.read()),
                             support_phone: optional_text(&contact_phone.read()),
                             logo_url: logo_url.read().clone(),
                         },
@@ -945,7 +951,10 @@ fn OrganizationSettingsBody() -> Element {
     rsx! {
         PageHeader {
             title: "Organization",
-            subtitle: "The name clients see on email you send them",
+            // PMS-755: the page held one field when this said "the name". It now
+            // carries the contact and logo a client sees too, so it describes
+            // the set rather than its first member.
+            subtitle: "What clients see when you send them a request form: your name, who to ask, and your logo",
             breadcrumbs: rsx! {
                 SettingsBreadcrumb { current: Route::SettingsOrganization {} }
             },
@@ -991,6 +1000,16 @@ fn OrganizationSettingsBody() -> Element {
                     disabled: is_loading || saving(),
                     help: "Optional. Shown next to the contact name, so a client can ask before they answer.".to_string(),
                     oninput: move |e: FormEvent| contact_phone.set(e.value()),
+                }
+
+                Input {
+                    name: "contact_email",
+                    label: "Contact email",
+                    r#type: "email".to_string(),
+                    value: contact_email(),
+                    disabled: is_loading || saving(),
+                    help: "Optional. Offered alongside the phone number, and usually the one a client reaches for first.".to_string(),
+                    oninput: move |e: FormEvent| contact_email.set(e.value()),
                 }
 
                 // MAPPS-429: the logo uploads on selection rather than on Save.
