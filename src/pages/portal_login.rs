@@ -33,6 +33,11 @@ struct PortalLoginBody {
     tenant_slug: String,
     email: String,
     password: String,
+    /// PMS-729 phase 2 H4: TOTP code entered after the server returned
+    /// `mfa_required: true`. Dropped from the wire when empty so the
+    /// server sees a clean shape on the first-attempt (no-code) path.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    mfa_code: String,
 }
 
 /// The fields of mokosh-server's `PortalLoginResponse` this page consumes.
@@ -40,10 +45,14 @@ struct PortalLoginBody {
 /// tokens are memory-only and the portal pages read their own data from
 /// the API. `refresh_token` (PMS-729 phase 2 H2) is stashed alongside
 /// the access token so the auto-refresh hook can rotate before expiry.
+/// `mfa_required` (PMS-729 phase 2 H4) is `true` when the server needs a
+/// second-factor code; the page then shows the MFA input and re-POSTs.
 #[derive(Deserialize)]
 struct PortalLoginResp {
     access_token: String,
     refresh_token: String,
+    #[serde(default)]
+    mfa_required: bool,
 }
 
 #[component]
@@ -56,6 +65,12 @@ pub fn PortalLoginPage() -> Element {
     let mut password = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // PMS-729 phase 2 H4: MFA branch. `mfa_required` flips to true
+    // when the server said "need a second factor"; the UI then swaps
+    // the credentials block for a code input and re-POSTs with
+    // `mfa_code` populated.
+    let mut mfa_required = use_signal(|| false);
+    let mut mfa_code = use_signal(String::new);
     // PMS-729: kick the shared `/portal/host` branding fetch. The result
     // lives in `PORTAL_HOST_HINT` so `PortalLayout` can paint the same
     // MSP name + logo after login without re-fetching. Idempotent - the
@@ -82,12 +97,18 @@ pub fn PortalLoginPage() -> Element {
         let slug = tenant.read().trim().to_string();
         let em = email.read().trim().to_string();
         let pw = password.read().clone();
+        let code = mfa_code.read().trim().to_string();
+        let is_mfa_stage = mfa_required();
         if em.is_empty() || pw.is_empty() {
             error.set("Enter your email and password.".to_string());
             return;
         }
         if !host_derived && slug.is_empty() {
             error.set("Enter your account name, email, and password.".to_string());
+            return;
+        }
+        if is_mfa_stage && code.is_empty() {
+            error.set("Enter the 6-digit code from your authenticator app.".to_string());
             return;
         }
         saving.set(true);
@@ -109,6 +130,7 @@ pub fn PortalLoginPage() -> Element {
                     },
                     email: em.clone(),
                     password: pw.clone(),
+                    mfa_code: code.clone(),
                 };
                 match crate::hooks::fetch::api::post_typed::<PortalLoginResp, _>(
                     "/portal/auth/login",
@@ -116,6 +138,18 @@ pub fn PortalLoginPage() -> Element {
                 )
                 .await
                 {
+                    // PMS-729 phase 2 H4: MFA stage. Server needs a
+                    // second-factor code; swap the UI to the code
+                    // input and stop here. The SAME body (email +
+                    // password + slug) is re-POSTed on the next
+                    // submit; a token is only issued when both
+                    // factors verify.
+                    Ok(PortalLoginResp {
+                        mfa_required: true, ..
+                    }) => {
+                        mfa_required.set(true);
+                        mfa_code.set(String::new());
+                    }
                     Ok(resp) => {
                         crate::hooks::fetch::api::set_portal_access_token(Some(resp.access_token));
                         crate::hooks::fetch::api::set_portal_refresh_token(Some(
@@ -185,50 +219,75 @@ pub fn PortalLoginPage() -> Element {
                             handle_submit(());
                         },
 
-                        // PMS-729: the slug field only renders on legacy
-                        // hosts. On {slug}.client.<apex>, the server
-                        // resolves the tenant from Host and the input is
-                        // hidden (the branding block above already tells
-                        // the user which MSP they are signing in to).
-                        if hint_snapshot.is_none() {
+                        if mfa_required() {
+                            // PMS-729 phase 2 H4: MFA input stage. The
+                            // credentials are already verified server-
+                            // side (this is the second POST); the user
+                            // types the 6-digit code from their
+                            // authenticator app and re-submits.
+                            div {
+                                p { class: "text-sm text-content mb-2",
+                                    "Enter the 6-digit code from your authenticator app to finish signing in."
+                                }
+                                Input {
+                                    name: "mfa_code",
+                                    label: "Authenticator code",
+                                    r#type: "text".to_string(),
+                                    value: mfa_code(),
+                                    required: true,
+                                    disabled: saving(),
+                                    oninput: move |e: FormEvent| {
+                                        error.set(String::new());
+                                        mfa_code.set(e.value());
+                                    },
+                                }
+                            }
+                        } else {
+                            // PMS-729: the slug field only renders on legacy
+                            // hosts. On {slug}.client.<apex>, the server
+                            // resolves the tenant from Host and the input is
+                            // hidden (the branding block above already tells
+                            // the user which MSP they are signing in to).
+                            if hint_snapshot.is_none() {
+                                Input {
+                                    name: "tenant_slug",
+                                    label: "Account name",
+                                    r#type: "text".to_string(),
+                                    value: tenant(),
+                                    required: true,
+                                    disabled: saving(),
+                                    oninput: move |e: FormEvent| {
+                                        error.set(String::new());
+                                        tenant.set(e.value());
+                                    },
+                                }
+                            }
+
                             Input {
-                                name: "tenant_slug",
-                                label: "Account name",
-                                r#type: "text".to_string(),
-                                value: tenant(),
+                                name: "email",
+                                label: "Email",
+                                r#type: "email".to_string(),
+                                value: email(),
                                 required: true,
                                 disabled: saving(),
                                 oninput: move |e: FormEvent| {
                                     error.set(String::new());
-                                    tenant.set(e.value());
+                                    email.set(e.value());
                                 },
                             }
-                        }
 
-                        Input {
-                            name: "email",
-                            label: "Email",
-                            r#type: "email".to_string(),
-                            value: email(),
-                            required: true,
-                            disabled: saving(),
-                            oninput: move |e: FormEvent| {
-                                error.set(String::new());
-                                email.set(e.value());
-                            },
-                        }
-
-                        Input {
-                            name: "password",
-                            label: "Password",
-                            r#type: "password".to_string(),
-                            value: password(),
-                            required: true,
-                            disabled: saving(),
-                            oninput: move |e: FormEvent| {
-                                error.set(String::new());
-                                password.set(e.value());
-                            },
+                            Input {
+                                name: "password",
+                                label: "Password",
+                                r#type: "password".to_string(),
+                                value: password(),
+                                required: true,
+                                disabled: saving(),
+                                oninput: move |e: FormEvent| {
+                                    error.set(String::new());
+                                    password.set(e.value());
+                                },
+                            }
                         }
 
                         if !error().is_empty() {
@@ -242,7 +301,7 @@ pub fn PortalLoginPage() -> Element {
                                 loading: saving(),
                                 r#type: "submit".to_string(),
                                 class: "w-full".to_string(),
-                                "Sign in"
+                                if mfa_required() { "Verify code" } else { "Sign in" }
                             }
                         }
 
@@ -271,11 +330,27 @@ mod tests {
             tenant_slug: "acme".to_string(),
             email: "contact@example.com".to_string(),
             password: "pw".to_string(),
+            mfa_code: String::new(),
         })
         .expect("serializes");
         assert!(json.contains(r#""tenant_slug":"acme""#), "{json}");
         assert!(json.contains(r#""email":"contact@example.com""#), "{json}");
         assert!(json.contains(r#""password":"pw""#), "{json}");
+        // Empty mfa_code is dropped from the wire so the first-attempt
+        // POST looks identical to the pre-H4 shape.
+        assert!(!json.contains("mfa_code"), "empty mfa_code dropped: {json}");
+    }
+
+    #[test]
+    fn body_includes_mfa_code_when_supplied() {
+        let json = serde_json::to_string(&PortalLoginBody {
+            tenant_slug: String::new(),
+            email: "contact@example.com".to_string(),
+            password: "pw".to_string(),
+            mfa_code: "123456".to_string(),
+        })
+        .expect("serializes");
+        assert!(json.contains(r#""mfa_code":"123456""#), "{json}");
     }
 
     #[test]
