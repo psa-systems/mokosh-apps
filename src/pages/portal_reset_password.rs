@@ -1,15 +1,11 @@
-//! MAPPS-396: `/portal/set-password`, the page the portal setup email links to.
+//! PMS-729 phase 2 H3: `/portal/reset-password`, the destination of
+//! the forgot-password email.
 //!
-//! When an agent grants a contact portal access, mokosh-server mails
-//! `{app_url}/portal/set-password?token={token}`
-//! (`src/modules/contacts/service.rs`) and redeems the token at
-//! `POST /api/v1/portal/auth/setup-password` (`src/modules/portal/routes.rs`).
-//! The token itself is the credential, so the page sends no bearer.
-//!
-//! Server status contract (`PortalAuthService::setup_password`): 204 on
-//! success, 410 for an already-redeemed link, 400 for an expired or unknown
-//! one. Each maps to its own copy below so a customer can tell "you already
-//! did this" from "ask for a new link".
+//! Server status contract (`PortalAuthService::reset_password`): 204 on
+//! success, 410 for an already-redeemed link, 400 for an expired /
+//! unknown / weak-password one. The message text on 400 comes from the
+//! shared `utils::password_policy` module so the copy names the actual
+//! reason (length floor, blocklist, low strength).
 
 use dioxus::prelude::*;
 use serde::Serialize;
@@ -19,23 +15,23 @@ use crate::Route;
 
 /// Client-side floor, mirroring the server's shared
 /// `utils::password_policy` module (PMS-729 phase 2 H5). Server
-/// enforces this + zxcvbn strength + a common-password blocklist;
-/// this constant is a UX hint so the user does not learn about the
-/// length rule from a round-trip.
+/// enforces this + zxcvbn strength + a common-password blocklist; the
+/// hint here is only so the user does not learn the length rule from
+/// a round-trip.
 const MIN_PASSWORD_LEN: usize = 12;
 
-/// Request body for `POST /api/v1/portal/auth/setup-password`, matching
-/// mokosh-server's `PortalSetupPasswordRequest`.
+/// Request body for `POST /api/v1/portal/auth/reset-password`, matching
+/// mokosh-server's `PortalResetPasswordRequest`.
 #[derive(Serialize)]
-struct SetupPasswordBody {
+struct ResetPasswordBody {
     token: String,
     password: String,
 }
 
 #[component]
-pub fn PortalSetPasswordPage() -> Element {
-    // The emailed token is `{contact_id}.{64 alphanumerics}`, so the raw
-    // (undecoded) query value is already what the server expects.
+pub fn PortalResetPasswordPage() -> Element {
+    // Token comes in via `?token=` (same shape as the setup-password
+    // email); the raw undecoded value is what the server expects.
     let token = use_signal(|| crate::utils::url::current_query_param("token").unwrap_or_default());
 
     let mut password = use_signal(String::new);
@@ -51,7 +47,8 @@ pub fn PortalSetPasswordPage() -> Element {
         let tok = token.read().clone();
         if tok.is_empty() {
             error.set(
-                "This link is expired or invalid. Ask your account team for a new one.".to_string(),
+                "This link is expired or invalid. Request a new one from the sign-in page."
+                    .to_string(),
             );
             return;
         }
@@ -73,28 +70,28 @@ pub fn PortalSetPasswordPage() -> Element {
             #[cfg(feature = "web")]
             {
                 use crate::hooks::fetch::api::ApiError;
-                let body = SetupPasswordBody {
+                let body = ResetPasswordBody {
                     token: tok.clone(),
                     password: pw.clone(),
                 };
                 match crate::hooks::fetch::api::post_typed_no_content(
-                    "/portal/auth/setup-password",
+                    "/portal/auth/reset-password",
                     &body,
                 )
                 .await
                 {
                     Ok(()) => done.set(true),
-                    // Single-use token already redeemed. The password is set,
-                    // so point at signing in rather than at a new link.
+                    // Single-use token already redeemed. Send the user
+                    // to sign in with whatever password they set last.
                     Err(ApiError::Status { code: 410, .. }) => {
                         error.set(
-                            "This link was already used. Your password is set, so sign in to the Client Portal instead."
+                            "This link was already used. Try signing in, or request another reset link."
                                 .to_string(),
                         );
                     }
-                    // Expired, unknown, or a rejected password. The server
-                    // returns 400 for all three and its message names the
-                    // password rule, so prefer the server text when it has one.
+                    // 400 covers expired, unknown, AND weak-password
+                    // rejections. Prefer the server-supplied message so
+                    // the customer knows which one applies.
                     Err(ApiError::Status {
                         code: 400, message, ..
                     }) if !message.is_empty() => {
@@ -102,7 +99,7 @@ pub fn PortalSetPasswordPage() -> Element {
                     }
                     Err(ApiError::Status { code: 400, .. }) => {
                         error.set(
-                            "This link is expired or invalid. Ask your account team for a new one."
+                            "This link is expired or invalid. Request a new one from the sign-in page."
                                 .to_string(),
                         );
                     }
@@ -123,13 +120,10 @@ pub fn PortalSetPasswordPage() -> Element {
                 div { class: "bg-surface rounded-lg shadow-lg p-8",
                     if done() {
                         div { class: "text-center", role: "status", aria_live: "polite",
-                            h1 { class: "text-2xl font-semibold text-content", "Password set" }
+                            h1 { class: "text-2xl font-semibold text-content", "Password reset" }
                             p { class: "mt-2 text-sm text-content",
-                                "You can now sign in to the Client Portal with your email and this password."
+                                "Your password has been updated. Sign in with your email and the new password."
                             }
-                            // MAPPS-395: the portal sign-in page, which mints
-                            // the `typ: "portal_access"` token every portal
-                            // page needs.
                             Link {
                                 to: Route::PortalLogin {},
                                 class: "mt-6 inline-flex items-center justify-center rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:opacity-90",
@@ -138,9 +132,9 @@ pub fn PortalSetPasswordPage() -> Element {
                         }
                     } else {
                         div { class: "text-center mb-6",
-                            h1 { class: "text-2xl font-semibold text-content", "Set your portal password" }
+                            h1 { class: "text-2xl font-semibold text-content", "Set a new portal password" }
                             p { class: "mt-2 text-sm text-content",
-                                "Choose a password for the Client Portal. It must be at least {MIN_PASSWORD_LEN} characters."
+                                "Choose a password for the Client Portal. It must be at least {MIN_PASSWORD_LEN} characters and not a common leaked password."
                             }
                         }
 
@@ -188,7 +182,7 @@ pub fn PortalSetPasswordPage() -> Element {
                                     loading: saving(),
                                     r#type: "submit".to_string(),
                                     class: "w-full".to_string(),
-                                    "Set password"
+                                    "Set new password"
                                 }
                             }
                         }

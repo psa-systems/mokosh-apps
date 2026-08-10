@@ -245,6 +245,15 @@ pub fn PortalLoginPage() -> Element {
                                 "Sign in"
                             }
                         }
+
+                        // PMS-729 phase 2 H3: link to the forgot-password page.
+                        div { class: "text-center pt-2",
+                            Link {
+                                to: Route::PortalForgotPassword {},
+                                class: "text-sm text-accent hover:opacity-80",
+                                "Forgot your password?"
+                            }
+                        }
                     }
                 }
             }
@@ -271,11 +280,20 @@ mod tests {
 
     #[test]
     fn decodes_the_login_response() {
+        // PMS-729 phase 2 H2: response now carries refresh_token +
+        // refresh_expires_at alongside the access_token. `contact` +
+        // `expires_at` are still there but this page ignores them.
         let resp: PortalLoginResp = serde_json::from_str(
-            r#"{"access_token":"portal.jwt","expires_at":"2026-08-01T00:00:00Z",
-                "contact":{"id":"00000000-0000-0000-0000-000000000000"}}"#,
+            r#"{
+                "access_token":"portal.jwt",
+                "expires_at":"2026-08-01T00:00:00Z",
+                "refresh_token":"00000000-0000-0000-0000-000000000042.some-secret",
+                "refresh_expires_at":"2026-08-31T00:00:00Z",
+                "contact":{"id":"00000000-0000-0000-0000-000000000000"}
+            }"#,
         )
         .expect("portal login response decodes");
         assert_eq!(resp.access_token, "portal.jwt");
+        assert!(!resp.refresh_token.is_empty());
     }
 }

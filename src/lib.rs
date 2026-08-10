@@ -672,6 +672,19 @@ pub enum Route {
     #[route("/portal/set-password")]
     PortalSetPassword {},
 
+    // PMS-729 phase 2 H3: request a password reset by email. Public: the
+    // customer is signed out. The endpoint always returns 204 whether the
+    // email is known or not, so the SPA renders the same "check your
+    // inbox" message either way.
+    #[route("/portal/forgot-password")]
+    PortalForgotPassword {},
+
+    // PMS-729 phase 2 H3: destination of the reset email. Public by
+    // construction: the emailed single-use token in `?token=` is the
+    // only credential the visitor has. Same shape as PortalSetPassword.
+    #[route("/portal/reset-password")]
+    PortalResetPassword {},
+
     // MAPPS-395: everything below needs a portal session. Without the guard a
     // signed-out visitor (or an agent, whose bearer is the wrong token class)
     // renders the page and collects a 401 from every fetch.
@@ -1314,6 +1327,16 @@ fn PortalLogin() -> Element {
 #[component]
 fn PortalSetPassword() -> Element {
     rsx! { portal_set_password::PortalSetPasswordPage {} }
+}
+
+#[component]
+fn PortalForgotPassword() -> Element {
+    rsx! { portal_forgot_password::PortalForgotPasswordPage {} }
+}
+
+#[component]
+fn PortalResetPassword() -> Element {
+    rsx! { portal_reset_password::PortalResetPasswordPage {} }
 }
 
 #[component]
