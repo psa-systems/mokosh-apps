@@ -7,17 +7,18 @@ use crate::modules::auth::{CurrentUser, UserRole};
 use crate::modules::oidc::Tokens;
 use crate::Route;
 
-/// One row in [`AuthContext::memberships`]. Mirrors the shape of the
-/// server's `/v1/auth/memberships` response so the switcher UI can
-/// render directly off the cached vec.
+/// One organisation the signed-in user acts under.
+///
+/// MAPPS-427: this used to mirror bunyip's `/v1/auth/memberships` response
+/// field for field. It no longer comes from there, and of the six fields only
+/// these two were ever read: `tenant_id` to match the active org, `tenant_name`
+/// to display it. `tenant_kind`, `role`, `status` and `is_active` existed to
+/// mirror a payload nothing consumed, and keeping them now would mean inventing
+/// four values per row.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize)]
 pub struct MembershipView {
     pub tenant_id: String,
     pub tenant_name: String,
-    pub tenant_kind: String,
-    pub role: String,
-    pub status: String,
-    pub is_active: bool,
 }
 
 /// Authentication context for the application
@@ -32,10 +33,17 @@ pub struct AuthContext {
     /// Tenant the user is currently acting under. Seeded from the home
     /// tenant at sign-in and updated on switch. None before sign-in.
     pub active_tenant_id: Option<uuid::Uuid>,
-    /// Every membership the user has. Loaded from /v1/auth/memberships
-    /// after sign-in; powers the tenant switcher UI. Empty before
-    /// sign-in.
+    /// Every organisation the user acts under. One row today: mokosh is
+    /// single-tenant-per-user (PMS-447) and the switcher itself lives in
+    /// bunyip's hub. Empty before sign-in, and empty when the load failed.
     pub memberships: Vec<MembershipView>,
+    /// MAPPS-427: whether the org load has been attempted, successful or not.
+    ///
+    /// The effect used to re-fire on an empty list, which meant a failure had
+    /// to be papered over with a fabricated row or it would retry on every
+    /// render. This lets a failure stay a failure: no org name is shown, and
+    /// nothing invents one.
+    pub memberships_loaded: bool,
     /// MAPPS-317: false until `/api/v1/auth/me` has reconciled the
     /// optimistic rehydrate at least once. The AuthGuard's forced-
     /// onboarding redirect reads this so it never fires on the
@@ -137,6 +145,7 @@ fn initial_auth_context() -> AuthContext {
             tokens: None,
             active_tenant_id: None,
             memberships: Vec::new(),
+            memberships_loaded: false,
             // Dev-only ADMIN_EMAIL bypass; the AuthGuard's onboarding
             // gate trusts this synthesized user without a /me round-trip.
             server_loaded: true,
@@ -223,6 +232,7 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
         // re-fetches them once the SPA mounts. Avoids persisting the
         // membership list (it can drift independently of the token).
         memberships: Vec::new(),
+        memberships_loaded: false,
         // MAPPS-317: false until the post-rehydrate /me fetch lands.
         // AuthGuard's onboarding gate trusts this flag; see lib.rs.
         server_loaded: false,
@@ -248,97 +258,83 @@ fn rehydrate_standalone() -> Option<AuthContext> {
         tokens: None,
         active_tenant_id,
         memberships: Vec::new(),
+        memberships_loaded: false,
         // /me reconciles the authoritative user on the next tick.
         server_loaded: false,
     })
 }
 
-/// Load `/v1/auth/memberships` from bunyip into AuthContext after
-/// sign-in. Watches the auth signal and re-fetches whenever the user
-/// transitions from "no membership list" to "have a session" (login,
-/// or a page reload that rehydrates from sessionStorage). Cheap GET,
-/// runs at most a few times per session. Mount once at the app root.
+/// Load the organisation the user acts under, from mokosh, after sign-in.
 ///
-/// BUNYIP-55 extended bunyip's `AuthenticatedUser` extractor to route
-/// `typ == "at+jwt"` tokens to the OidcProvider verifier (it validates
-/// signature + `iss` + `exp` + `typ` with `validate_aud = false`), so
-/// the Mokosh-audience EdDSA at+jwt the SPA holds is now accepted at
-/// bunyip's own `/v1/*` endpoints. If the call fails (bunyip
-/// unreachable, token rejected) or returns no rows, fall back to a
-/// synthetic single membership so the switcher UI keeps working; the
-/// product is single-tenant-per-user (PMS-447), so that value is
-/// correct today.
-pub fn use_memberships_loader() {
+/// MAPPS-427: this used to GET bunyip's `/v1/auth/memberships`, and that call
+/// could never succeed. bunyip-api's `/v1/*` family is a Resource Server whose
+/// verifier enforces `aud == OIDC_RS_AUDIENCE` (BUNYIP-252), and the token this
+/// SPA holds is minted for mokosh's audience, so bunyip correctly answered 401
+/// on every page load. The failure path then seeded a synthetic membership
+/// whose name was the user's EMAIL ADDRESS, which is what the top bar and the
+/// board view have been displaying as an organisation name.
+///
+/// Even authorised it would not have helped: bunyip's handler is a stub that
+/// returns one hardcoded row whose `tenant_name` is also the user's email,
+/// pending its phase-04 multi-tenant work.
+///
+/// So the name now comes from mokosh's own `/tenants/current` (PMS-751), which
+/// is the exact column every client-facing email is composed from. One row,
+/// because mokosh is single-tenant-per-user (PMS-447) and the switcher itself
+/// lives in bunyip's hub; this list exists to name the current org, not to
+/// choose between orgs.
+///
+/// A failure leaves the list empty rather than inventing a row. Callers already
+/// handle "no org name" (`active_org_name()` returns `None`), and a missing
+/// name is a better answer than a wrong one.
+pub fn use_active_org_loader() {
     let mut auth = use_auth();
     use_effect(move || {
         let needs_load = {
             let a = auth.read();
-            a.is_authenticated() && a.memberships.is_empty()
+            a.is_authenticated() && !a.memberships_loaded
         };
         if !needs_load {
             return;
         }
         spawn(async move {
-            let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
             #[derive(serde::Deserialize)]
-            struct Body {
-                memberships: Vec<MembershipView>,
+            struct TenantView {
                 #[serde(default)]
-                active_tenant_id: Option<String>,
+                id: String,
+                #[serde(default)]
+                name: String,
             }
-            match crate::modules::oidc::issuer_get_authed::<Body>(&cfg, "/v1/auth/memberships")
-                .await
-            {
-                Ok(b) if !b.memberships.is_empty() => {
-                    let active = b
-                        .active_tenant_id
-                        .as_deref()
-                        .and_then(|s| s.parse::<uuid::Uuid>().ok());
-                    let mut a = auth.write();
-                    a.memberships = b.memberships;
-                    if active.is_some() {
-                        a.active_tenant_id = active;
+
+            let fetched =
+                crate::hooks::fetch::api::get_authed::<TenantView>("/tenants/current").await;
+
+            let mut a = auth.write();
+            // Set first and unconditionally: a failed load must not re-fire on
+            // every render, which is what forced the fabricated row before.
+            a.memberships_loaded = true;
+            match fetched {
+                Ok(t) if !t.name.trim().is_empty() => {
+                    // The authoritative id, replacing whatever the id_token
+                    // claim did or did not carry (PMS-751: it carries nothing
+                    // today, so this was the nil uuid).
+                    if let Ok(id) = t.id.parse::<uuid::Uuid>() {
+                        a.active_tenant_id = Some(id);
                     }
+                    a.memberships = vec![MembershipView {
+                        tenant_id: t.id,
+                        tenant_name: t.name,
+                    }];
                 }
-                // Authenticated but bunyip returned no rows. Seed the synthetic
-                // membership so the UI has a tenant to act under and the effect
-                // stops re-firing (a persistently empty list would re-trigger
-                // this load on every render).
-                Ok(_) => synthesize_single_membership(auth),
+                Ok(_) => {
+                    tracing::warn!("organisation load returned no name; leaving it unset");
+                }
                 Err(e) => {
-                    tracing::warn!("memberships load failed, using synthetic fallback: {e}");
-                    synthesize_single_membership(auth);
+                    tracing::warn!("organisation load failed, leaving it unset: {e}");
                 }
             }
         });
     });
-}
-
-/// Seed AuthContext with a synthetic single-tenant membership sourced
-/// from the signed-in user. Fallback for when bunyip's
-/// `/v1/auth/memberships` is unreachable or returns nothing; correct
-/// today because the product is single-tenant-per-user (PMS-447). Same
-/// default tenant id (`00000000-0000-0000-0000-000000000001`),
-/// `tenant_kind`, and `role` the bunyip stub returns server-side.
-fn synthesize_single_membership(mut auth: Signal<AuthContext>) {
-    let synthetic_tenant_id = "00000000-0000-0000-0000-000000000001".to_string();
-    let mut a = auth.write();
-    let tenant_name = a
-        .user
-        .as_ref()
-        .map(|u| u.email.clone())
-        .unwrap_or_else(|| "personal".to_string());
-    a.memberships = vec![MembershipView {
-        tenant_id: synthetic_tenant_id.clone(),
-        tenant_name,
-        tenant_kind: "personal".to_string(),
-        role: "owner".to_string(),
-        status: "active".to_string(),
-        is_active: true,
-    }];
-    if a.active_tenant_id.is_none() {
-        a.active_tenant_id = synthetic_tenant_id.parse::<uuid::Uuid>().ok();
-    }
 }
 
 /// Background token-refresh loop. Mount once near the root of the app
@@ -697,10 +693,12 @@ async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
     // mutate above so any AuthGuard re-render that observes
     // server_loaded=true also sees the reconciled profile flag.
     a.server_loaded = true;
-    // Force the memberships loader to re-fetch by clearing the cached
-    // list; the use_memberships_loader effect re-runs when
-    // `memberships.is_empty()` and the user is authenticated.
+    // MAPPS-427: force the org loader to run again now that /me has confirmed
+    // the session. Clearing the flag rather than the list, because the effect
+    // keys off the flag: an empty list is a legitimate outcome (the load
+    // failed), not a signal to retry on every render.
     a.memberships.clear();
+    a.memberships_loaded = false;
 }
 
 /// On first authenticated mount, fetch the authoritative user from
@@ -757,4 +755,55 @@ pub fn use_bfcache_invalidator() {
         // Listener must outlive its registration; SPA root, fires once.
         handler.forget();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    /// This module's own source, minus this test module: the assertions below
+    /// name the very strings they forbid, so scanning the whole file would make
+    /// them match themselves.
+    fn production_src() -> &'static str {
+        const AUTH_SRC: &str = include_str!("auth.rs");
+        AUTH_SRC
+            .split_once("#[cfg(test)]")
+            .map(|(before, _)| before)
+            .expect("this file has a test module")
+    }
+
+    /// MAPPS-427 recurrence guard.
+    ///
+    /// The org name must come from mokosh's own tenant row. It used to come
+    /// from bunyip's `/v1/auth/memberships`, which answers 401 for this SPA's
+    /// token by design (BUNYIP-252 enforces `aud == OIDC_RS_AUDIENCE`), and the
+    /// failure path then displayed the user's email address as an organisation
+    /// name. A source scan rather than a behavioural test because the loader is
+    /// an effect that needs a browser; what is being pinned is which endpoint it
+    /// reaches for, and that is visible in the source.
+    #[test]
+    fn the_org_name_is_read_from_mokosh_not_the_issuer() {
+        assert!(
+            production_src().contains("get_authed::<TenantView>(\"/tenants/current\")"),
+            "the org loader must read mokosh's own tenant row"
+        );
+        // The doc comments explain the history, so only a real CALL counts.
+        assert!(
+            !production_src().contains("issuer_get_authed"),
+            "an issuer-hosted call cannot succeed with a mokosh-audience token"
+        );
+    }
+
+    /// A failed load must leave the org unnamed rather than invent one. The
+    /// effect keys off `memberships_loaded`, so an empty list is a legitimate
+    /// end state and not a signal to retry on every render.
+    #[test]
+    fn a_failed_load_does_not_fabricate_an_organisation() {
+        assert!(
+            !production_src().contains("fn synthesize_single_membership"),
+            "the synthetic fallback is what put an email address in the top bar"
+        );
+        assert!(
+            production_src().contains("a.memberships_loaded = true;"),
+            "the loader must record the attempt, not the outcome"
+        );
+    }
 }
