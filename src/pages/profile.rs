@@ -10,7 +10,7 @@
 //!    Read-only here; editing requires the "Account Settings" link
 //!    that bounces over to bunyip-web's `/settings`.
 //!
-//! 2. **Personal info.** First / last name, title, phone, mobile,
+//! 2. **Personal info.** Title, mobile,
 //!    timezone. Lives on mokosh-server's `users` row, edited via
 //!    `GET` + `PUT /api/v1/auth/me`. mokosh-server's
 //!    `update_current_user` handler already strips role / status from
@@ -39,12 +39,6 @@ use crate::Route;
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 struct MeResponse {
     #[serde(default)]
-    first_name: String,
-    #[serde(default)]
-    last_name: String,
-    #[serde(default)]
-    phone: Option<String>,
-    #[serde(default)]
     mobile: Option<String>,
     #[serde(default)]
     title: Option<String>,
@@ -61,11 +55,14 @@ struct MeResponse {
 /// omitted so the server's existing validation rejects any attempt to
 /// change them. Empty optionals are sent as `None` (no-op on the
 /// server) rather than empty strings.
+///
+/// MAPPS-431: `first_name`, `last_name` and `phone` used to be here and were
+/// discarded on arrival. PMS-512 removed them from `UpdateUserRequest` because
+/// bunyip owns identity and mokosh keeps a read-only cache refreshed on every
+/// login, so the PUT succeeded, the keys reached no column, and the screen said
+/// "Saved". Nothing here may send a field the server does not accept.
 #[derive(Clone, Debug, Serialize)]
 struct UpdateMeRequest {
-    first_name: Option<String>,
-    last_name: Option<String>,
-    phone: Option<String>,
     mobile: Option<String>,
     title: Option<String>,
     timezone: Option<String>,
@@ -371,9 +368,6 @@ struct PersonalInfoFormProps {
 /// Bunyip's canonical name so the difference is visible at a glance.
 #[component]
 fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
-    let mut first_name = use_signal(|| props.initial.first_name.clone());
-    let mut last_name = use_signal(|| props.initial.last_name.clone());
-    let mut phone = use_signal(|| props.initial.phone.clone().unwrap_or_default());
     let mut mobile = use_signal(|| props.initial.mobile.clone().unwrap_or_default());
     let mut title = use_signal(|| props.initial.title.clone().unwrap_or_default());
     // Default the timezone signal to the saved value; when the saved
@@ -411,9 +405,6 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
         error.set(String::new());
         saved.set(false);
         let body = UpdateMeRequest {
-            first_name: optional_field(&first_name()),
-            last_name: optional_field(&last_name()),
-            phone: optional_field(&phone()),
             mobile: optional_field(&mobile()),
             title: optional_field(&title()),
             timezone: optional_field(&timezone()),
@@ -460,18 +451,6 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
 
                 div { class: "grid gap-4 sm:grid-cols-2",
                     Input {
-                        name: "first_name",
-                        label: "First name",
-                        value: first_name(),
-                        oninput: move |e: FormEvent| first_name.set(e.value()),
-                    }
-                    Input {
-                        name: "last_name",
-                        label: "Last name",
-                        value: last_name(),
-                        oninput: move |e: FormEvent| last_name.set(e.value()),
-                    }
-                    Input {
                         name: "title",
                         label: "Title",
                         placeholder: "e.g. Senior Technician",
@@ -488,17 +467,11 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
                     }
                     DateFormatField { value: date_format }
                     Input {
-                        name: "phone",
-                        label: "Work phone",
-                        r#type: "tel".to_string(),
-                        value: phone(),
-                        oninput: move |e: FormEvent| phone.set(e.value()),
-                    }
-                    Input {
                         name: "mobile",
                         label: "Mobile",
                         r#type: "tel".to_string(),
                         value: mobile(),
+                        help: "Your own number, stored here. Your name and work phone belong to your account; change those in Account Settings above.".to_string(),
                         oninput: move |e: FormEvent| mobile.set(e.value()),
                     }
                 }
@@ -926,5 +899,50 @@ fn PreferencesCard() -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// This module's own source, minus this test module: the assertion below
+    /// names the very strings it forbids.
+    fn production_src() -> &'static str {
+        const PROFILE_SRC: &str = include_str!("profile.rs");
+        PROFILE_SRC
+            .split_once("#[cfg(test)]")
+            .map(|(before, _)| before)
+            .expect("this file has a test module")
+    }
+
+    /// MAPPS-431 recurrence guard.
+    ///
+    /// The page used to send `first_name`, `last_name` and `phone` to
+    /// `PUT /auth/me`, which discards all three: PMS-512 removed them from
+    /// `UpdateUserRequest` because bunyip owns identity and mokosh keeps a
+    /// read-only cache. The PUT succeeded, the keys reached no column, and the
+    /// screen said "Saved".
+    ///
+    /// A source scan rather than a behavioural test, because what is being
+    /// pinned is which keys the body carries, and that is visible in the
+    /// source. Anything added back here has to exist in `UpdateUserRequest`
+    /// first.
+    #[test]
+    fn the_profile_never_sends_a_field_the_server_discards() {
+        let body_start = production_src()
+            .find("struct UpdateMeRequest")
+            .expect("the request body is defined here");
+        let body = &production_src()[body_start..];
+        let body = &body[..body.find('}').expect("struct ends")];
+
+        for ignored in ["first_name", "last_name", "phone:"] {
+            assert!(
+                !body.contains(ignored),
+                "`{ignored}` is absent from mokosh-server's UpdateUserRequest, so sending it \
+                 saves nothing and tells the user it did"
+            );
+        }
+        // `mobile` IS mokosh's own column, and the distinction is the whole
+        // point: it stays.
+        assert!(body.contains("mobile"));
     }
 }
