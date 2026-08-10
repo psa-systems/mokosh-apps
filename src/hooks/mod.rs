@@ -13,6 +13,7 @@ pub mod auth;
 // when merging from main.
 pub mod edit_queue;
 pub mod fetch;
+pub mod portal_auth;
 pub mod portal_branding;
 pub mod remote_data;
 pub mod server_status;

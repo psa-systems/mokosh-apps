@@ -35,12 +35,15 @@ struct PortalLoginBody {
     password: String,
 }
 
-/// The field of mokosh-server's `PortalLoginResponse` this page consumes.
-/// `expires_at` and `contact` are ignored: the token is memory-only and the
-/// portal pages read their own data from the API.
+/// The fields of mokosh-server's `PortalLoginResponse` this page consumes.
+/// `expires_at`, `refresh_expires_at`, and `contact` are ignored here:
+/// tokens are memory-only and the portal pages read their own data from
+/// the API. `refresh_token` (PMS-729 phase 2 H2) is stashed alongside
+/// the access token so the auto-refresh hook can rotate before expiry.
 #[derive(Deserialize)]
 struct PortalLoginResp {
     access_token: String,
+    refresh_token: String,
 }
 
 #[component]
@@ -115,6 +118,9 @@ pub fn PortalLoginPage() -> Element {
                 {
                     Ok(resp) => {
                         crate::hooks::fetch::api::set_portal_access_token(Some(resp.access_token));
+                        crate::hooks::fetch::api::set_portal_refresh_token(Some(
+                            resp.refresh_token,
+                        ));
                         nav.replace(Route::PortalHome {});
                     }
                     // The server answers 401 for a wrong password, an unknown

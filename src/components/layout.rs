@@ -1109,6 +1109,14 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
     use_hook(crate::hooks::portal_branding::ensure_portal_branding_fetch);
     let hint = crate::hooks::portal_branding::use_portal_host_hint();
 
+    // PMS-729 phase 2 H2: mount the auto-refresh background loop for
+    // every authenticated portal session. Rotates the access + refresh
+    // token pair every ~12 min so a 15-min access token never lapses
+    // while the customer is active. Unmounts on navigation to
+    // /portal/login (this component's parent guard bounces there when
+    // has_portal_session goes false).
+    crate::hooks::portal_auth::use_portal_auto_refresh();
+
     rsx! {
         div { class: "min-h-screen bg-app",
             // Portal header
@@ -1210,35 +1218,23 @@ fn PortalUserMenu() -> Element {
             open.set(false);
         }
     }));
-    let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
-    // Account Settings lives on the bunyip hub (cross-origin identity:
-    // email, password, MFA), so it is a top-level `<a>` rather than an
-    // in-SPA `Link`.
-    let hub_account_settings = cfg.hub_url("/settings");
-    // RP-initiated logout, identical to the app-side `UserMenu`: bunyip's
-    // `GET /v1/auth/logout?url=<absolute>` clears the shared cookies and
-    // 302s back to this SPA's origin root, signed out.
-    let issuer = cfg.issuer.trim_end_matches('/');
-    let post_logout_target = web_sys::window()
-        .and_then(|w| w.location().origin().ok())
-        .map(|origin| format!("{}/", origin.trim_end_matches('/')))
-        .unwrap_or_else(|| cfg.hub_url("/"));
-    let hub_logout = format!(
-        "{issuer}/v1/auth/logout?url={}",
-        js_sys::encode_uri_component(&post_logout_target)
-            .as_string()
-            .unwrap_or(post_logout_target)
-    );
+    let nav = use_navigator();
 
+    // PMS-729 phase 2 H1: portal accounts do NOT federate through bunyip
+    // (they authenticate via `POST /portal/auth/login` against a
+    // `contacts` row), so the agent-side hub-logout URL does not apply.
+    // Account Settings is a portal-owned page (to be added in phase 2
+    // §6); for now the menu just has the logout action.
     let logout = move |_| {
         open.set(false);
-        // Same ordering rule as `UserMenu::logout`: clear storage, then
-        // hard-navigate so the full reload resets in-memory auth state
-        // without a router re-render racing the redirect.
-        crate::modules::oidc::storage::clear_auth();
-        if let Some(win) = web_sys::window() {
-            let _ = win.location().replace(&hub_logout);
-        }
+        // Revoke the refresh token server-side + clear the in-memory
+        // holders, then navigate to the portal login page. Nothing to
+        // persist across the transition; the portal never wrote a token
+        // to localStorage.
+        spawn(async move {
+            crate::hooks::portal_auth::portal_logout().await;
+            nav.replace(Route::PortalLogin {});
+        });
     };
 
     rsx! {
@@ -1272,12 +1268,10 @@ fn PortalUserMenu() -> Element {
                 div {
                     class: "absolute right-0 mt-2 w-52 rounded-md shadow-lg bg-raised ring-1 ring-black/5 z-20 p-1",
                     role: "menu",
-                    a {
-                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
-                        href: "{hub_account_settings}",
-                        "Account Settings"
-                    }
-                    div { class: "border-t border-line my-1" }
+                    // PMS-729 phase 2 H1: portal-only Logout. Account
+                    // Settings will land as a portal-owned page in the
+                    // phase 2 §6 work; bunyip's `/settings` does not
+                    // apply to portal contacts.
                     button {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-surface-2",
                         onclick: logout,

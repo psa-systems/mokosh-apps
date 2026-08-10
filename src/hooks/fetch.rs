@@ -310,6 +310,9 @@ pub mod api {
     #[cfg(feature = "web")]
     thread_local! {
         static PORTAL_ACCESS_TOKEN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+        // PMS-729 phase 2 H2: refresh token holder. Memory-only, sibling of
+        // the access-token slot. Rotation replaces it; logout clears it.
+        static PORTAL_REFRESH_TOKEN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
     }
 
     /// Set the portal session token. Called from the portal login page on a
@@ -340,6 +343,22 @@ pub mod api {
     #[cfg(feature = "web")]
     pub fn has_portal_session() -> bool {
         PORTAL_ACCESS_TOKEN.with(|t| t.borrow().is_some())
+    }
+
+    /// PMS-729 phase 2 H2: set the portal refresh token. Called from the
+    /// login page on `POST /portal/auth/login` and from the auto-refresh
+    /// hook after `POST /portal/auth/refresh`. `None` clears it, matching
+    /// the access-token holder's shape.
+    #[cfg(feature = "web")]
+    pub fn set_portal_refresh_token(token: Option<String>) {
+        PORTAL_REFRESH_TOKEN.with(|t| *t.borrow_mut() = token);
+    }
+
+    /// PMS-729 phase 2 H2: read the portal refresh token. Only the
+    /// refresh flow and the logout flow call this.
+    #[cfg(feature = "web")]
+    pub fn current_portal_refresh_token() -> Option<String> {
+        PORTAL_REFRESH_TOKEN.with(|t| t.borrow().clone())
     }
 
     // The web-only API helpers below are grouped under this `api`
