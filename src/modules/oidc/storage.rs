@@ -2,7 +2,7 @@
 //! survive a full page reload.
 //!
 //! sessionStorage is cleared when the tab closes and is per-origin.
-//! Two distinct payloads:
+//! Distinct payloads:
 //!
 //!  * `STATE_KEY` (`PendingFlow`) - short-lived OIDC code-flow state
 //!    (verifier + state + nonce). Written by `start_login`, removed by
@@ -18,6 +18,9 @@
 //!    additional exposure compared to the alternative
 //!    (localStorage cross-tab leak, or background-refresh complexity
 //!    via `prompt=none`).
+//!  * `CALLBACK_RETRY_KEY` (a counter) - MAPPS-432: how many login restarts
+//!    `/auth/callback` has taken for a recoverable error, so the silent retry
+//!    is bounded. Cleared on a successful exchange.
 //!
 //! The full accepted-risk decision (mitigations, the httpOnly-cookie BFF option,
 //! and why the refresh token lives in the browser) is recorded in
@@ -93,6 +96,45 @@ pub fn clear_standalone() {
     if let Ok(storage) = session_storage() {
         let _ = storage.remove_item(STANDALONE_KEY);
     }
+}
+
+/// MAPPS-432: consecutive login restarts kicked off by a recoverable
+/// `/auth/callback` failure. Tab-scoped like the flow state itself, so the
+/// budget dies with the tab it was spent in.
+const CALLBACK_RETRY_KEY: &str = "mokosh_oidc_callback_retry_v1";
+
+/// MAPPS-432: restarts allowed before `/auth/callback` gives up and shows the
+/// underlying error. The 3rd consecutive recoverable failure renders instead of
+/// navigating, so a callback that keeps failing cannot loop the user forever.
+pub const MAX_CALLBACK_RETRIES: u32 = 2;
+
+/// Count this restart and return the number taken in this tab so far,
+/// including this one. `Err` when the counter cannot be read or written: the
+/// caller must not restart without a working guard, or the loop is unbounded.
+pub fn bump_callback_retry() -> Result<u32, String> {
+    let storage = session_storage()?;
+    let previous = storage
+        .get_item(CALLBACK_RETRY_KEY)
+        .map_err(|_| "sessionStorage read failed".to_string())?
+        .map(|raw| {
+            raw.parse::<u32>()
+                .map_err(|e| format!("corrupt callback retry counter {raw:?}: {e}"))
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let count = previous.saturating_add(1);
+    storage
+        .set_item(CALLBACK_RETRY_KEY, &count.to_string())
+        .map_err(|_| "sessionStorage write failed".to_string())?;
+    Ok(count)
+}
+
+/// Reset the restart budget. Called on a successful token exchange so a later
+/// legitimate reload starts with a full one.
+pub fn clear_callback_retry() -> Result<(), String> {
+    session_storage()?
+        .remove_item(CALLBACK_RETRY_KEY)
+        .map_err(|_| "sessionStorage delete failed".to_string())
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

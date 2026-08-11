@@ -20,6 +20,12 @@ pub enum FlowError {
     Network(String),
     #[error("token endpoint: {error} ({description})")]
     TokenEndpoint { error: String, description: String },
+    /// MAPPS-432: `code` or `state` absent from the callback URL. A variant of
+    /// its own (not a `TokenEndpoint { error: "invalid_request" }`) so
+    /// [`classify_flow_error`] can recognise "no live flow on this URL"
+    /// without matching `Display` prose.
+    #[error("missing callback parameter: {0}")]
+    MissingCallbackParam(&'static str),
     #[error("state mismatch (possible CSRF)")]
     StateMismatch,
     #[error("nonce mismatch (possible token replay)")]
@@ -183,6 +189,53 @@ pub fn classify_return_to(return_to: &str) -> ReturnTarget {
     }
 }
 
+/// MAPPS-432: what `/auth/callback` should do with a failed exchange.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallbackRecovery {
+    /// "There is no live authorization flow on this URL": restart the login
+    /// flow silently instead of showing the user a failure they cannot act on.
+    Restart,
+    /// A genuine protocol / security / configuration fault: render it.
+    Show,
+}
+
+/// OP `?error=` codes that mean "send the user back to the OP to
+/// re-authenticate" (OIDC Core 3.1.2.6). A restart does exactly that.
+const REAUTH_ERROR_CODES: [&str; 4] = [
+    "login_required",
+    "interaction_required",
+    "consent_required",
+    "account_selection_required",
+];
+
+/// Decide whether a callback failure is recoverable by restarting the login
+/// flow. Matches on the `FlowError` variant, never on its `Display` output, so
+/// rewording an `#[error(...)]` attribute cannot change auth behaviour; the
+/// match is exhaustive, so a new variant is a compile error rather than a
+/// silent [`CallbackRecovery::Show`].
+///
+/// Restart covers only "no live flow here": a missing / expired `PendingFlow`
+/// (`Storage`), a callback URL with no `code` or `state`
+/// (`MissingCallbackParam`), and the OP's re-authentication signals. Everything
+/// else shows, including `StateMismatch` / `NonceMismatch` (CSRF and replay
+/// indicators a silent retry would hide) and every other token-endpoint code
+/// (`invalid_grant`, `invalid_client`, `server_error`, …), which a retry would
+/// only loop on.
+pub fn classify_flow_error(e: &FlowError) -> CallbackRecovery {
+    match e {
+        FlowError::Storage(_) | FlowError::MissingCallbackParam(_) => CallbackRecovery::Restart,
+        FlowError::TokenEndpoint { error, .. } if REAUTH_ERROR_CODES.contains(&error.as_str()) => {
+            CallbackRecovery::Restart
+        }
+        FlowError::TokenEndpoint { .. }
+        | FlowError::Config(_)
+        | FlowError::Network(_)
+        | FlowError::StateMismatch
+        | FlowError::NonceMismatch
+        | FlowError::Redirect(_) => CallbackRecovery::Show,
+    }
+}
+
 /// Handle the callback URL. Reads `code` + `state` from the snapshot
 /// taken at startup (see [`snapshot_initial_search`]), verifies state
 /// against the pending flow, exchanges the code at the token endpoint,
@@ -202,16 +255,15 @@ pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowEr
         });
     }
 
-    let code = params.get("code").ok_or_else(|| FlowError::TokenEndpoint {
-        error: "invalid_request".into(),
-        description: "missing code".into(),
-    })?;
+    // MAPPS-432: a bare `/auth/callback` (reload, restored tab, bookmark) is
+    // the normal post-MAPPS-336 state, not a protocol fault. Typed so the
+    // callback page restarts the login flow instead of showing an error.
+    let code = params
+        .get("code")
+        .ok_or(FlowError::MissingCallbackParam("code"))?;
     let state = params
         .get("state")
-        .ok_or_else(|| FlowError::TokenEndpoint {
-            error: "invalid_request".into(),
-            description: "missing state".into(),
-        })?;
+        .ok_or(FlowError::MissingCallbackParam("state"))?;
 
     let pending = take_pending().map_err(FlowError::Storage)?;
     if pending.state != state {
@@ -487,7 +539,17 @@ fn urlencode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_return_to, sanitize_return_to, ReturnTarget};
+    use super::{
+        classify_flow_error, classify_return_to, sanitize_return_to, CallbackRecovery, FlowError,
+        ReturnTarget,
+    };
+
+    fn token_endpoint(error: &str) -> FlowError {
+        FlowError::TokenEndpoint {
+            error: error.to_string(),
+            description: String::new(),
+        }
+    }
 
     #[test]
     fn sanitize_keeps_concrete_paths_with_query() {
@@ -535,6 +597,62 @@ mod tests {
             "/auth/callback?code=x",  // would loop
         ] {
             assert_eq!(classify_return_to(p), ReturnTarget::Dashboard, "path {p:?}");
+        }
+    }
+
+    // MAPPS-432: one case per FlowError variant. The classifier's match is
+    // exhaustive, so a new variant breaks the build; these pin the mapping.
+    #[test]
+    fn classify_restarts_when_no_live_flow_exists() {
+        for e in [
+            FlowError::Storage("no pending OIDC flow".into()),
+            FlowError::Storage("pending OIDC flow expired (age 1 ms > 0 ms)".into()),
+            FlowError::MissingCallbackParam("code"),
+            FlowError::MissingCallbackParam("state"),
+        ] {
+            assert_eq!(classify_flow_error(&e), CallbackRecovery::Restart, "{e}");
+        }
+    }
+
+    #[test]
+    fn classify_restarts_on_op_reauth_signals() {
+        for code in [
+            "login_required",
+            "interaction_required",
+            "consent_required",
+            "account_selection_required",
+        ] {
+            let e = token_endpoint(code);
+            assert_eq!(classify_flow_error(&e), CallbackRecovery::Restart, "{code}");
+        }
+    }
+
+    #[test]
+    fn classify_shows_real_faults() {
+        for e in [
+            FlowError::StateMismatch,
+            FlowError::NonceMismatch,
+            FlowError::Config("no redirect_uri".into()),
+            FlowError::Network("failed to fetch".into()),
+            FlowError::Redirect("set_href failed".into()),
+        ] {
+            assert_eq!(classify_flow_error(&e), CallbackRecovery::Show, "{e}");
+        }
+    }
+
+    #[test]
+    fn classify_shows_non_recoverable_token_endpoint_codes() {
+        for code in [
+            "invalid_request",
+            "invalid_grant",
+            "invalid_client",
+            "invalid_response",
+            "server_error",
+            "access_denied",
+            "token_endpoint_failed",
+        ] {
+            let e = token_endpoint(code);
+            assert_eq!(classify_flow_error(&e), CallbackRecovery::Show, "{code}");
         }
     }
 }

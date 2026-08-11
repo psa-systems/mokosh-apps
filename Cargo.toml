@@ -143,6 +143,9 @@ features = [
     # never appears in the image bytes.
     "BlobPropertyBag",
     "FormData",
+    # MAPPS-432: /auth/callback logs one console.error line before it silently
+    # restarts the login flow, so the suppressed error leaves a record.
+    "console",
 ]
 
 [dev-dependencies]

@@ -54,6 +54,11 @@ jobs:
       - name: Cancel-route and cursor guard
         run: bash scripts/check-cancel-routes.sh
 
+      # MAPPS-432: /auth/callback classifies a failed exchange on the FlowError
+      # variant; a string match on the error message must not come back.
+      - name: Auth-error-prose guard
+        run: bash scripts/check-auth-error-prose.sh
+
       - name: Check formatting
         run: cargo fmt --all --check
 
