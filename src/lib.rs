@@ -747,6 +747,16 @@ pub enum Route {
     #[route("/portal/projects/:id")]
     PortalProjectDetail { id: String },
 
+    // PMS-729 phase 2 §7 slice D.
+    #[route("/portal/approvals")]
+    PortalApprovalList {},
+
+    #[route("/portal/company")]
+    PortalCompany {},
+
+    #[route("/portal/export")]
+    PortalExport {},
+
     // PMS-729 phase 2 §7 slice A / I14: portal-scoped grouped search.
     // Query param `q` is picked up by the page from the URL so a
     // customer can bookmark a search or share the link.
@@ -1469,6 +1479,21 @@ fn PortalProjectList() -> Element {
 #[component]
 fn PortalProjectDetail(id: String) -> Element {
     rsx! { portal::PortalProjectDetailPage { id } }
+}
+
+#[component]
+fn PortalApprovalList() -> Element {
+    rsx! { portal::PortalApprovalListPage {} }
+}
+
+#[component]
+fn PortalCompany() -> Element {
+    rsx! { portal::PortalCompanyPage {} }
+}
+
+#[component]
+fn PortalExport() -> Element {
+    rsx! { portal::PortalExportPage {} }
 }
 
 #[component]

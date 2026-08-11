@@ -3183,3 +3183,586 @@ pub fn PortalProjectDetailPage(props: PortalProjectDetailPageProps) -> Element {
         }
     }
 }
+
+// PMS-729 phase 2 §7 slice D: approvals, company view, data export, delegation.
+
+// ---- I7 approvals -------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalApprovalRow {
+    id: uuid::Uuid,
+    #[serde(default)]
+    target: String,
+    #[serde(default)]
+    entity_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    requested_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    decision_notes: Option<String>,
+    #[serde(default)]
+    decided_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[component]
+pub fn PortalApprovalListPage() -> Element {
+    let mut resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_portal_authed::<Vec<PortalApprovalRow>>("/portal/approvals")
+            .await
+            .ok()
+    });
+    let snap = resource.read_unchecked();
+    let rows: Vec<PortalApprovalRow> = match &*snap {
+        Some(Some(rs)) => rs.clone(),
+        _ => Vec::new(),
+    };
+    let loading = snap.is_none();
+
+    rsx! {
+        PortalLayout { title: "Approvals".to_string(),
+            if loading {
+                Card { p { class: "text-sm text-muted py-4 text-center", "Loading approvals..." } }
+            } else if rows.is_empty() {
+                Card {
+                    p { class: "text-sm text-muted py-4 text-center",
+                        "No approvals are waiting on you right now."
+                    }
+                }
+            } else {
+                div { class: "space-y-4",
+                    for row in rows.iter().cloned() {
+                        PortalApprovalCard {
+                            row,
+                            on_decided: move |_| resource.restart(),
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct PortalApprovalCardProps {
+    row: PortalApprovalRow,
+    on_decided: EventHandler<()>,
+}
+
+#[component]
+fn PortalApprovalCard(props: PortalApprovalCardProps) -> Element {
+    let row = props.row.clone();
+    let mut notes = use_signal(String::new);
+    let mut submitting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+    let is_pending = row.status == "pending";
+    let approval_id = row.id.to_string();
+
+    let (badge_variant, badge_label) = match row.status.as_str() {
+        "pending" => (BadgeVariant::Yellow, "Pending"),
+        "approved" => (BadgeVariant::Green, "Approved"),
+        "rejected" => (BadgeVariant::Red, "Rejected"),
+        _ => (BadgeVariant::Gray, "Cancelled"),
+    };
+
+    let submit_decision = move |decision: &'static str| {
+        let approval_id = approval_id.clone();
+        let notes_v = notes.read().trim().to_string();
+        let on_decided = props.on_decided;
+        move |_| {
+            if *submitting.read() {
+                return;
+            }
+            submitting.set(true);
+            error.set(String::new());
+            let approval_id = approval_id.clone();
+            let notes_v = notes_v.clone();
+            spawn(async move {
+                #[cfg(feature = "web")]
+                {
+                    let body = serde_json::json!({
+                        "decision": decision,
+                        "decision_notes": if notes_v.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(notes_v) }
+                    });
+                    match crate::hooks::fetch::api::post_portal_authed_typed::<serde_json::Value, _>(
+                        &format!("/portal/approvals/{approval_id}/decide"),
+                        &body,
+                    )
+                    .await
+                    {
+                        Ok(_) => on_decided.call(()),
+                        Err(e) => error.set(e.user_message()),
+                    }
+                }
+                submitting.set(false);
+            });
+        }
+    };
+
+    rsx! {
+        Card {
+            div { class: "flex items-start justify-between mb-3",
+                div {
+                    if let Some(label) = &row.label {
+                        h3 { class: "text-base font-semibold text-content", "{label}" }
+                    } else {
+                        h3 { class: "text-base font-semibold text-content",
+                            "{row.target} - {row.entity_id.map(|e| e.to_string()).unwrap_or_default()}"
+                        }
+                    }
+                    if let Some(notes) = &row.notes {
+                        p { class: "mt-1 text-sm text-muted whitespace-pre-wrap", "{notes}" }
+                    }
+                }
+                Badge { variant: badge_variant, "{badge_label}" }
+            }
+            if is_pending {
+                div { class: "mt-3 space-y-2",
+                    label { class: "block text-xs font-medium text-content", "Decision notes (optional)" }
+                    textarea {
+                        class: "w-full rounded-md border border-line bg-surface text-content p-2 text-sm",
+                        rows: 2,
+                        value: "{notes}",
+                        oninput: move |e: FormEvent| notes.set(e.value()),
+                    }
+                    if !error().is_empty() {
+                        p { class: "text-sm text-red-600 dark:text-red-300", "{error}" }
+                    }
+                    div { class: "flex justify-end gap-2",
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            disabled: *submitting.read(),
+                            onclick: submit_decision("reject"),
+                            "Reject"
+                        }
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            disabled: *submitting.read(),
+                            loading: *submitting.read(),
+                            onclick: submit_decision("approve"),
+                            "Approve"
+                        }
+                    }
+                }
+            } else {
+                dl { class: "grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-sm mt-2",
+                    if let Some(d) = row.decided_at {
+                        dt { class: "text-muted", "Decided" }
+                        dd { class: "text-content", {crate::utils::datetime::format_user_datetime(d, None)} }
+                    }
+                    if let Some(n) = row.decision_notes {
+                        dt { class: "text-muted", "Notes" }
+                        dd { class: "text-content whitespace-pre-wrap", "{n}" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---- I13 + I18 company view + delegations -------------------------------
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalCompanyContactRow {
+    id: uuid::Uuid,
+    #[serde(default)]
+    first_name: String,
+    #[serde(default)]
+    last_name: String,
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
+    is_you: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalDelegationRow {
+    id: uuid::Uuid,
+    #[serde(default)]
+    delegatee_contact_id: uuid::Uuid,
+    #[serde(default)]
+    delegatee_name: String,
+    #[serde(default)]
+    delegatee_email: String,
+    #[serde(default)]
+    scope: serde_json::Value,
+    #[serde(default)]
+    granted_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[component]
+pub fn PortalCompanyPage() -> Element {
+    let contacts_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_portal_authed::<Vec<PortalCompanyContactRow>>(
+            "/portal/company/contacts",
+        )
+        .await
+        .ok()
+    });
+    let mut delegations_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_portal_authed::<Vec<PortalDelegationRow>>(
+            "/portal/company/delegations",
+        )
+        .await
+        .ok()
+    });
+    let contacts_snap = contacts_resource.read_unchecked();
+    let contacts: Vec<PortalCompanyContactRow> = match &*contacts_snap {
+        Some(Some(rs)) => rs.clone(),
+        _ => Vec::new(),
+    };
+    let delegations_snap = delegations_resource.read_unchecked();
+    let delegations: Vec<PortalDelegationRow> = match &*delegations_snap {
+        Some(Some(rs)) => rs.clone(),
+        _ => Vec::new(),
+    };
+
+    let mut selected_delegatee = use_signal(String::new);
+    let mut grant_tickets = use_signal(|| true);
+    let mut grant_invoices = use_signal(|| false);
+    let mut grant_error = use_signal(String::new);
+    let mut granting = use_signal(|| false);
+
+    // Anyone but the caller is a candidate for delegation.
+    let candidate_contacts: Vec<PortalCompanyContactRow> =
+        contacts.iter().filter(|c| !c.is_you).cloned().collect();
+
+    rsx! {
+        PortalLayout { title: "Company".to_string(),
+            div { class: "space-y-6",
+                Card {
+                    h2 { class: "text-lg font-semibold text-content mb-3", "Colleagues with portal access" }
+                    if contacts.is_empty() {
+                        p { class: "text-sm text-muted", "No portal contacts on file yet." }
+                    } else {
+                        Table {
+                            TableHead { TableRow {
+                                TableHeader { "Name" }
+                                TableHeader { "Email" }
+                            } }
+                            TableBody {
+                                for c in contacts.iter().cloned() {
+                                    TableRow { key: "{c.id}",
+                                        TableCell {
+                                            if c.is_you {
+                                                span { class: "font-medium text-content", "{c.first_name} {c.last_name}" }
+                                                Badge { variant: BadgeVariant::Blue, class: "ml-2".to_string(), "You" }
+                                            } else {
+                                                span { class: "text-content", "{c.first_name} {c.last_name}" }
+                                            }
+                                        }
+                                        TableCell { "{c.email}" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Card {
+                    h2 { class: "text-lg font-semibold text-content mb-3", "Delegations you have granted" }
+                    if delegations.is_empty() {
+                        p { class: "text-sm text-muted mb-4", "You have not delegated access to anyone yet." }
+                    } else {
+                        Table {
+                            TableHead { TableRow {
+                                TableHeader { "Colleague" }
+                                TableHeader { "Scope" }
+                                TableHeader { "Granted" }
+                                TableHeader { class: "text-right", "Revoke" }
+                            } }
+                            TableBody {
+                                for d in delegations.iter().cloned() {
+                                    TableRow { key: "{d.id}",
+                                        TableCell {
+                                            div {
+                                                span { class: "font-medium text-content", "{d.delegatee_name}" }
+                                                p { class: "text-xs text-muted", "{d.delegatee_email}" }
+                                            }
+                                        }
+                                        TableCell {
+                                            span { class: "text-xs text-muted",
+                                                "{format_delegation_scope(&d.scope)}"
+                                            }
+                                        }
+                                        TableCell {
+                                            if let Some(t) = d.granted_at { {crate::utils::datetime::format_user_datetime(t, None)} } else { "-" }
+                                        }
+                                        TableCell { class: "text-right",
+                                            {
+                                                let delegation_id = d.id.to_string();
+                                                let mut delegations_resource_local = delegations_resource;
+                                                rsx! {
+                                                    Button {
+                                                        variant: ButtonVariant::Secondary,
+                                                        onclick: move |_| {
+                                                            let id = delegation_id.clone();
+                                                            spawn(async move {
+                                                                #[cfg(feature = "web")]
+                                                                {
+                                                                    let _ = crate::hooks::fetch::api::delete_portal_authed_no_content(&format!("/portal/company/delegations/{id}")).await;
+                                                                    delegations_resource_local.restart();
+                                                                }
+                                                            });
+                                                        },
+                                                        "Revoke"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    div { class: "mt-4 border-t border-line pt-4",
+                        h3 { class: "text-sm font-semibold text-content mb-2", "Grant a new delegation" }
+                        if candidate_contacts.is_empty() {
+                            p { class: "text-sm text-muted", "Invite a colleague first before granting access." }
+                        } else {
+                            div { class: "space-y-2",
+                                label { class: "block text-xs font-medium text-content", "Colleague" }
+                                select {
+                                    class: "block w-full rounded-md border border-line bg-surface px-3 py-2 text-content",
+                                    value: "{selected_delegatee}",
+                                    onchange: move |e: FormEvent| selected_delegatee.set(e.value()),
+                                    option { value: "", "Choose a colleague" }
+                                    for c in candidate_contacts.iter().cloned() {
+                                        option { value: "{c.id}", "{c.first_name} {c.last_name} ({c.email})" }
+                                    }
+                                }
+                                div { class: "flex flex-wrap gap-4 text-sm",
+                                    label { class: "flex items-center gap-2",
+                                        input {
+                                            r#type: "checkbox",
+                                            checked: grant_tickets(),
+                                            onchange: move |e: FormEvent| grant_tickets.set(e.value() == "true"),
+                                        }
+                                        "See my tickets"
+                                    }
+                                    label { class: "flex items-center gap-2",
+                                        input {
+                                            r#type: "checkbox",
+                                            checked: grant_invoices(),
+                                            onchange: move |e: FormEvent| grant_invoices.set(e.value() == "true"),
+                                        }
+                                        "See my invoices"
+                                    }
+                                }
+                                if !grant_error().is_empty() {
+                                    p { class: "text-sm text-red-600 dark:text-red-300", "{grant_error}" }
+                                }
+                                div { class: "flex justify-end",
+                                    Button {
+                                        variant: ButtonVariant::Primary,
+                                        disabled: *granting.read(),
+                                        loading: *granting.read(),
+                                        onclick: move |_| {
+                                            let delegatee = selected_delegatee.read().clone();
+                                            if delegatee.is_empty() {
+                                                grant_error.set("Choose a colleague first.".to_string());
+                                                return;
+                                            }
+                                            granting.set(true);
+                                            grant_error.set(String::new());
+                                            let scope = serde_json::json!({
+                                                "tickets": grant_tickets(),
+                                                "invoices": grant_invoices(),
+                                            });
+                                            let body = serde_json::json!({
+                                                "delegatee_contact_id": delegatee,
+                                                "scope": scope,
+                                            });
+                                            spawn(async move {
+                                                #[cfg(feature = "web")]
+                                                {
+                                                    match crate::hooks::fetch::api::post_portal_authed_typed::<serde_json::Value, _>(
+                                                        "/portal/company/delegations",
+                                                        &body,
+                                                    ).await {
+                                                        Ok(_) => {
+                                                            selected_delegatee.set(String::new());
+                                                            delegations_resource.restart();
+                                                        }
+                                                        Err(e) => grant_error.set(e.user_message()),
+                                                    }
+                                                }
+                                                granting.set(false);
+                                            });
+                                        },
+                                        "Grant access"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn format_delegation_scope(scope: &serde_json::Value) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if scope
+        .get("tickets")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        parts.push("tickets");
+    }
+    if scope
+        .get("invoices")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        parts.push("invoices");
+    }
+    if parts.is_empty() {
+        "nothing yet".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
+// ---- I15 data export ----------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalExportRow {
+    id: uuid::Uuid,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    requested_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    ready_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    signed_url: Option<String>,
+    #[serde(default)]
+    error_message: Option<String>,
+}
+
+#[component]
+pub fn PortalExportPage() -> Element {
+    let mut submitting = use_signal(|| false);
+    let mut current_job_id = use_signal(String::new);
+    let mut error = use_signal(String::new);
+
+    let job_id_for_fetch = current_job_id.read().clone();
+    let poll = use_resource(move || {
+        let id = job_id_for_fetch.clone();
+        async move {
+            if id.is_empty() {
+                return None;
+            }
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_portal_authed::<PortalExportRow>(&format!(
+                "/portal/export/{id}"
+            ))
+            .await
+            .ok()
+        }
+    });
+    let job: Option<PortalExportRow> = match &*poll.read_unchecked() {
+        Some(Some(j)) => Some(j.clone()),
+        _ => None,
+    };
+
+    let request_export = move |_| {
+        if *submitting.read() {
+            return;
+        }
+        submitting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let body = serde_json::json!({});
+                match crate::hooks::fetch::api::post_portal_authed_typed::<PortalExportRow, _>(
+                    "/portal/export",
+                    &body,
+                )
+                .await
+                {
+                    Ok(job) => current_job_id.set(job.id.to_string()),
+                    Err(e) => error.set(e.user_message()),
+                }
+            }
+            submitting.set(false);
+        });
+    };
+
+    rsx! {
+        PortalLayout { title: "Data export".to_string(),
+            div { class: "space-y-6",
+                Card {
+                    h2 { class: "text-lg font-semibold text-content mb-2", "Export your data" }
+                    p { class: "text-sm text-muted mb-4",
+                        "We can generate a JSON bundle containing your contact profile, tickets, notes, invoices, and quotes. Your download link will remain available for 7 days."
+                    }
+                    if !error().is_empty() {
+                        p { class: "text-sm text-red-600 dark:text-red-300 mb-2", "{error}" }
+                    }
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        disabled: *submitting.read(),
+                        loading: *submitting.read(),
+                        onclick: request_export,
+                        "Request an export"
+                    }
+                }
+                if let Some(job) = job {
+                    Card {
+                        h3 { class: "text-base font-semibold text-content mb-2", "Latest job" }
+                        dl { class: "grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-sm",
+                            dt { class: "text-muted", "Status" }
+                            dd { class: "text-content", "{job.status}" }
+                            if let Some(t) = job.requested_at {
+                                dt { class: "text-muted", "Requested" }
+                                dd { class: "text-content", {crate::utils::datetime::format_user_datetime(t, None)} }
+                            }
+                            if let Some(t) = job.ready_at {
+                                dt { class: "text-muted", "Ready" }
+                                dd { class: "text-content", {crate::utils::datetime::format_user_datetime(t, None)} }
+                            }
+                            if let Some(t) = job.expires_at {
+                                dt { class: "text-muted", "Expires" }
+                                dd { class: "text-content", {crate::utils::datetime::format_user_datetime(t, None)} }
+                            }
+                        }
+                        if let Some(url) = &job.signed_url {
+                            a {
+                                class: "mt-3 inline-block text-sm text-accent hover:opacity-80",
+                                href: "{url}",
+                                target: "_blank",
+                                "Download your bundle"
+                            }
+                        } else if job.status == "queued" || job.status == "running" {
+                            p { class: "mt-3 text-sm text-muted",
+                                "We are preparing your bundle. Refresh this page in a minute or two."
+                            }
+                        } else if job.status == "expired" {
+                            p { class: "mt-3 text-sm text-muted",
+                                "This bundle expired. Request another export to get a new download link."
+                            }
+                        }
+                        if let Some(err) = &job.error_message {
+                            p { class: "mt-3 text-sm text-red-600 dark:text-red-300",
+                                "Job error: {err}"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
