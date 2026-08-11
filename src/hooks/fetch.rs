@@ -794,6 +794,31 @@ pub mod api {
         handle_response(resp).await
     }
 
+    /// PMS-729 phase 2 §7 slice B / I12: portal-authed empty-body PUT.
+    /// Used by the inbox mark-read call (`PUT
+    /// /portal/notifications/{id}/read` responds 204 with no payload).
+    /// Only checks the status; a 4xx surfaces through the standard
+    /// `status_error` string.
+    #[cfg(feature = "web")]
+    pub async fn put_portal_authed_no_content(path: &str) -> Result<(), String> {
+        let t = current_portal_access_token().ok_or_else(portal_not_signed_in)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::put(&url)
+            .header("Authorization", &format!("Bearer {t}"))
+            .send()
+            .await
+            .map_err(|e| {
+                super::note_transport_error();
+                e.to_string()
+            })?;
+        super::note_response_status(resp.status());
+        if resp.ok() {
+            Ok(())
+        } else {
+            Err(status_error(resp).await)
+        }
+    }
+
     /// PMS-729 phase 2 §7 slice B / I2: portal-authed download of a raw
     /// response body plus the server's `Content-Disposition` filename. The
     /// SPA holds the portal bearer in WASM memory so an attachment cannot
@@ -1229,6 +1254,7 @@ mod tests {
         "post_portal_authed_typed",
         "post_portal_authed_multipart",
         "get_portal_authed_bytes",
+        "put_portal_authed_no_content",
     ];
 
     /// Agent-token helpers. None of them may appear in the portal page: a

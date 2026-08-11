@@ -1199,6 +1199,8 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
                 }
                 div { class: "flex-1" }
                 div { class: "flex items-center px-4 md:px-6 gap-2",
+                    // PMS-729 phase 2 §7 slice B / I12: inbox bell.
+                    PortalInboxBell {}
                     PortalThemeToggle {}
                     PortalUserMenu {}
                 }
@@ -1391,6 +1393,137 @@ fn PortalNavItem(props: PortalNavItemProps) -> Element {
                 {props.icon}
             }
             "{props.label}"
+        }
+    }
+}
+
+// PMS-729 phase 2 §7 slice B / I12: portal inbox surfaces ------------------
+
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+struct PortalInboxPayload {
+    #[serde(default)]
+    notifications: Vec<PortalInboxRow>,
+    #[serde(default)]
+    unread_count: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalInboxRow {
+    id: uuid::Uuid,
+    #[serde(default)]
+    subject: Option<String>,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    read_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    created_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Portal-scoped inbox bell. Fetches `/portal/notifications` on mount
+/// and after every mark-read; renders a red dot when the server-side
+/// unread_count > 0.
+#[component]
+fn PortalInboxBell() -> Element {
+    let mut open = use_signal(|| false);
+    let mut inbox = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_portal_authed::<PortalInboxPayload>("/portal/notifications")
+            .await
+            .ok()
+            .unwrap_or_default()
+    });
+    let payload = inbox.read_unchecked().clone().unwrap_or_default();
+
+    rsx! {
+        div { class: "relative",
+            button {
+                r#type: "button",
+                aria_label: "Notifications",
+                title: "Notifications",
+                class: "p-2 rounded-full text-subtle hover:text-content hover:bg-surface relative",
+                onclick: move |_| {
+                    let next = !*open.read();
+                    open.set(next);
+                },
+                BellIcon {}
+                if payload.unread_count > 0 {
+                    span { class: "absolute top-1 right-1 block h-2 w-2 rounded-full bg-red-400",
+                        span { class: "sr-only", "{payload.unread_count} unread notifications" }
+                    }
+                }
+            }
+            if *open.read() {
+                div {
+                    class: "fixed inset-0 z-10",
+                    onclick: move |_| open.set(false),
+                }
+                div {
+                    class: "absolute right-0 mt-2 w-80 max-h-96 overflow-y-auto rounded-md shadow-lg bg-raised ring-1 ring-black/5 z-20",
+                    role: "menu",
+                    div { class: "px-4 py-2 border-b border-line text-sm font-semibold text-content",
+                        "Notifications"
+                    }
+                    if payload.notifications.is_empty() {
+                        div { class: "px-4 py-6 text-sm text-muted text-center",
+                            "No notifications yet"
+                        }
+                    } else {
+                        for row in payload.notifications.iter().cloned() {
+                            PortalInboxRowView {
+                                row,
+                                on_read: move |_| inbox.restart(),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct PortalInboxRowViewProps {
+    row: PortalInboxRow,
+    on_read: EventHandler<()>,
+}
+
+#[component]
+fn PortalInboxRowView(props: PortalInboxRowViewProps) -> Element {
+    let is_unread = props.row.read_at.is_none();
+    let id = props.row.id;
+    let subject = props.row.subject.clone().unwrap_or_default();
+    let body = props.row.body.clone();
+    let when = props
+        .row
+        .created_at
+        .map(|d| crate::utils::datetime::format_user_datetime(d, None))
+        .unwrap_or_default();
+    let unread_bg = if is_unread {
+        "bg-accent-50 dark:bg-accent-900/40"
+    } else {
+        ""
+    };
+    rsx! {
+        button {
+            r#type: "button",
+            class: "block w-full text-left px-4 py-3 border-b border-line hover:bg-surface {unread_bg}",
+            onclick: move |_| {
+                if is_unread {
+                    spawn(async move {
+                        let path = format!("/portal/notifications/{id}/read");
+                        let _ = crate::hooks::fetch::api::put_portal_authed_no_content(&path).await;
+                        props.on_read.call(());
+                    });
+                }
+            },
+            if !subject.is_empty() {
+                div { class: "text-sm font-medium text-content", "{subject}" }
+            }
+            div { class: "text-sm text-muted whitespace-pre-wrap", "{body}" }
+            if !when.is_empty() {
+                div { class: "mt-1 text-xs text-subtle", "{when}" }
+            }
         }
     }
 }
