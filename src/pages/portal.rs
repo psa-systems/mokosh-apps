@@ -729,6 +729,22 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
     // swapping the whole page to ContentUnavailable).
     let can_mutate = crate::hooks::use_can_mutate();
 
+    // PMS-729 phase 2 §7 slice B / I2: files selected for the next
+    // reply. Cleared on successful submit. Storing the whole `FileList`
+    // as a `Signal<Option<web_sys::FileList>>` costs one Rc clone but
+    // keeps the file handles alive across the async submit closure.
+    #[cfg(feature = "web")]
+    let mut selected_files: Signal<Option<web_sys::FileList>> = use_signal(|| None);
+    #[cfg(feature = "web")]
+    let selected_file_count = selected_files
+        .read()
+        .as_ref()
+        .map(|f| f.length())
+        .unwrap_or(0);
+    #[cfg(not(feature = "web"))]
+    let selected_file_count: u32 = 0;
+
+    let id_for_submit = id_for_post.clone();
     let handle_submit = move |_| {
         if *submitting.read() {
             return;
@@ -740,7 +756,9 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
         }
         submitting.set(true);
         error.set(String::new());
-        let id = id_for_post.clone();
+        let id = id_for_submit.clone();
+        #[cfg(feature = "web")]
+        let files_snapshot = selected_files.read().clone();
         spawn(async move {
             #[cfg(feature = "web")]
             {
@@ -751,10 +769,59 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
                 )
                 .await
                 {
-                    Ok(_) => {
+                    Ok(note) => {
+                        // PMS-729 phase 2 §7 slice B / I2: upload each
+                        // selected file to the freshly created note.
+                        // A partial failure (one file 400s but the
+                        // others succeed) surfaces to the customer so
+                        // they know to retry; the note itself stays
+                        // posted so the conversation is never lost.
+                        let mut upload_errors: Vec<String> = Vec::new();
+                        if let Some(files) = &files_snapshot {
+                            for i in 0..files.length() {
+                                let Some(file) = files.item(i) else {
+                                    continue;
+                                };
+                                let form = match web_sys::FormData::new() {
+                                    Ok(f) => f,
+                                    Err(_) => {
+                                        upload_errors.push(
+                                            "browser refused to build the upload form".to_string(),
+                                        );
+                                        continue;
+                                    }
+                                };
+                                let name = file.name();
+                                if form
+                                    .append_with_blob_and_filename("file", &file, &name)
+                                    .is_err()
+                                {
+                                    upload_errors
+                                        .push(format!("could not attach {name} to the upload"));
+                                    continue;
+                                }
+                                let path =
+                                    format!("/portal/tickets/{id}/notes/{}/attachments", note.id);
+                                if let Err(err) =
+                                    crate::hooks::fetch::api::post_portal_authed_multipart::<
+                                        serde_json::Value,
+                                    >(&path, &form)
+                                    .await
+                                {
+                                    upload_errors.push(format!("{name}: {}", err.user_message()));
+                                }
+                            }
+                        }
                         draft.set(String::new());
+                        selected_files.set(None);
                         version += 1;
                         notes_resource.restart();
+                        if !upload_errors.is_empty() {
+                            error.set(format!(
+                                "Reply sent, but some attachments failed: {}",
+                                upload_errors.join("; ")
+                            ));
+                        }
                     }
                     Err(e) => error.set(format!("Could not send reply: {e}")),
                 }
@@ -818,6 +885,15 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
                                     p { class: "text-sm text-content whitespace-pre-wrap",
                                         "{note.content}"
                                     }
+                                    // PMS-729 phase 2 §7 slice B / I2:
+                                    // per-note attachment list. Fetches
+                                    // its own resource so a slow list
+                                    // does not block the conversation
+                                    // rendering.
+                                    PortalNoteAttachments {
+                                        ticket_id: id_for_post.clone(),
+                                        note_id: note.id.to_string(),
+                                    }
                                 }
                             }
                         }
@@ -839,6 +915,48 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
                     placeholder: "Type your message…",
                     value: "{draft}",
                     oninput: move |e: FormEvent| draft.set(e.value()),
+                }
+
+                // PMS-729 phase 2 §7 slice B / I2: file attachments
+                // for the next reply. `multiple` lets the customer
+                // upload every relevant screenshot in one go; the
+                // browser natively renders the "N files selected"
+                // affordance so the SPA only needs to add a hint
+                // underneath.
+                div { class: "mt-3",
+                    label {
+                        class: "block text-xs font-medium text-content mb-1",
+                        r#for: "portal-attachment-input",
+                        "Attach files (optional)"
+                    }
+                    input {
+                        id: "portal-attachment-input",
+                        r#type: "file",
+                        multiple: true,
+                        class: "block w-full text-xs text-content file:mr-3 file:rounded file:border-0 file:bg-accent file:px-3 file:py-1.5 file:text-on-accent hover:file:opacity-90",
+                        disabled: *submitting.read() || !can_mutate,
+                        onchange: move |_e: FormEvent| {
+                            #[cfg(feature = "web")]
+                            {
+                                use wasm_bindgen::JsCast;
+                                // The onchange event payload from Dioxus does not
+                                // surface `HTMLInputElement.files` directly, so
+                                // reach through `web_sys` on the actual DOM node.
+                                if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                                    if let Some(el) = doc.get_element_by_id("portal-attachment-input") {
+                                        if let Ok(input) = el.dyn_into::<web_sys::HtmlInputElement>() {
+                                            selected_files.set(input.files());
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                    }
+                    if selected_file_count > 0 {
+                        p { class: "mt-1 text-xs text-muted",
+                            "{selected_file_count} file(s) will be attached to your reply."
+                        }
+                    }
                 }
                 div { class: "mt-3 flex justify-end",
                     Button {
@@ -1713,6 +1831,141 @@ pub fn PortalQuoteDetailPage(props: PortalQuoteDetailPageProps) -> Element {
                     }
                 }
             }
+        }
+    }
+}
+
+// PMS-729 phase 2 §7 slice B / I2: portal ticket-note attachments -----------
+
+/// One attachment as `GET /portal/tickets/{tid}/notes/{nid}/attachments`
+/// returns it. Mirrors the server `AttachmentResponse`; permissive so a
+/// thinner payload still decodes.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalAttachment {
+    id: uuid::Uuid,
+    #[serde(default)]
+    file_name: String,
+    #[serde(default)]
+    file_size: i64,
+    #[serde(default)]
+    created_by_contact_id: Option<uuid::Uuid>,
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct PortalNoteAttachmentsProps {
+    ticket_id: String,
+    note_id: String,
+}
+
+#[component]
+fn PortalNoteAttachments(props: PortalNoteAttachmentsProps) -> Element {
+    let ticket_id = props.ticket_id.clone();
+    let note_id = props.note_id.clone();
+    let fetch_ticket = ticket_id.clone();
+    let fetch_note = note_id.clone();
+    let list = use_resource(move || {
+        let ticket = fetch_ticket.clone();
+        let note = fetch_note.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_portal_authed::<Vec<PortalAttachment>>(&format!(
+                "/portal/tickets/{ticket}/notes/{note}/attachments"
+            ))
+            .await
+            .ok()
+        }
+    });
+    let snap = list.read_unchecked();
+    let Some(Some(rows)) = &*snap else {
+        // Loading or the endpoint refused: no chrome, no placeholder.
+        return rsx! { {} };
+    };
+    if rows.is_empty() {
+        return rsx! { {} };
+    }
+    rsx! {
+        div { class: "mt-3 border-t border-line pt-2",
+            p { class: "text-xs font-medium text-muted mb-1", "Attachments" }
+            ul { class: "space-y-1",
+                for att in rows.iter().cloned() {
+                    li { class: "text-xs",
+                        PortalAttachmentLink {
+                            ticket_id: ticket_id.clone(),
+                            note_id: note_id.clone(),
+                            attachment: att,
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct PortalAttachmentLinkProps {
+    ticket_id: String,
+    note_id: String,
+    attachment: PortalAttachment,
+}
+
+/// Download button that pulls the file with the portal bearer and
+/// synthesises a browser download. The endpoint sits behind
+/// `RequirePortalAuth`, so a plain `<a href>` is a guaranteed 401
+/// (the bearer only lives in WASM memory).
+#[component]
+fn PortalAttachmentLink(props: PortalAttachmentLinkProps) -> Element {
+    let mut downloading = use_signal(|| false);
+    let mut err = use_signal(String::new);
+    let att = props.attachment.clone();
+    let ticket_id = props.ticket_id.clone();
+    let note_id = props.note_id.clone();
+    let size_kb = ((att.file_size as f64) / 1024.0).max(1.0).ceil() as i64;
+    let file_name = att.file_name.clone();
+    let att_id = att.id.to_string();
+    let click_ticket = ticket_id.clone();
+    let click_note = note_id.clone();
+    let click_att_id = att_id.clone();
+    let click_name = file_name.clone();
+    rsx! {
+        button {
+            r#type: "button",
+            class: "text-accent hover:opacity-80 disabled:opacity-60",
+            disabled: *downloading.read(),
+            onclick: move |_| {
+                if *downloading.peek() {
+                    return;
+                }
+                downloading.set(true);
+                err.set(String::new());
+                let ticket = click_ticket.clone();
+                let note = click_note.clone();
+                let aid = click_att_id.clone();
+                let name = click_name.clone();
+                spawn(async move {
+                    #[cfg(feature = "web")]
+                    {
+                        let path = format!(
+                            "/portal/tickets/{ticket}/notes/{note}/attachments/{aid}"
+                        );
+                        match crate::hooks::fetch::api::get_portal_authed_bytes(&path).await {
+                            Ok((bytes, filename)) => {
+                                let fname = filename.unwrap_or_else(|| name.clone());
+                                if let Err(e) =
+                                    crate::utils::download::save_bytes_as_file(&bytes, &fname)
+                                {
+                                    err.set(e);
+                                }
+                            }
+                            Err(e) => err.set(e),
+                        }
+                    }
+                    downloading.set(false);
+                });
+            },
+            if *downloading.read() { "Downloading…" } else { "{file_name} ({size_kb} KB)" }
+        }
+        if !err().is_empty() {
+            span { class: "ml-2 text-red-600 dark:text-red-300", "{err}" }
         }
     }
 }

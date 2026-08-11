@@ -767,6 +767,63 @@ pub mod api {
         handle_response(resp).await
     }
 
+    /// PMS-729 phase 2 §7 slice B / I2: portal-authed multipart POST for
+    /// attaching a file to one of the customer's own ticket notes. The
+    /// browser sets the `Content-Type: multipart/form-data; boundary=...`
+    /// header itself from the `FormData` body, so this helper deliberately
+    /// omits it - overriding it here would strip the boundary and the
+    /// server would 400.
+    #[cfg(feature = "web")]
+    pub async fn post_portal_authed_multipart<T: DeserializeOwned>(
+        path: &str,
+        form: &web_sys::FormData,
+    ) -> Result<T, ApiError> {
+        let t = current_portal_access_token().ok_or_else(|| ApiError::Status {
+            code: 401,
+            message: String::new(),
+            fields: Vec::new(),
+        })?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::post(&url)
+            .header("Authorization", &format!("Bearer {t}"))
+            .body(form)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    /// PMS-729 phase 2 §7 slice B / I2: portal-authed download of a raw
+    /// response body plus the server's `Content-Disposition` filename. The
+    /// SPA holds the portal bearer in WASM memory so an attachment cannot
+    /// be reached via a plain `<a href>`; this helper is what the
+    /// `PortalAttachmentLink` handler pipes into a Blob URL.
+    #[cfg(feature = "web")]
+    pub async fn get_portal_authed_bytes(path: &str) -> Result<(Vec<u8>, Option<String>), String> {
+        let t = current_portal_access_token().ok_or_else(portal_not_signed_in)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::get(&url)
+            .header("Authorization", &format!("Bearer {t}"))
+            .send()
+            .await
+            .map_err(|e| {
+                super::note_transport_error();
+                e.to_string()
+            })?;
+        super::note_response_status(resp.status());
+        if !resp.ok() {
+            return Err(status_error(resp).await);
+        }
+        let filename = resp
+            .headers()
+            .get("content-disposition")
+            .as_deref()
+            .and_then(content_disposition_filename);
+        let bytes = resp.binary().await.map_err(|e| e.to_string())?;
+        Ok((bytes, filename))
+    }
+
     // --- Typed error layer ----------------------------------------------
     //
     // The string-returning helpers above are kept so existing callers
@@ -1170,6 +1227,8 @@ mod tests {
         "get_portal_authed",
         "post_portal_authed",
         "post_portal_authed_typed",
+        "post_portal_authed_multipart",
+        "get_portal_authed_bytes",
     ];
 
     /// Agent-token helpers. None of them may appear in the portal page: a
