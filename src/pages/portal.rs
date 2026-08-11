@@ -2202,3 +2202,332 @@ fn PortalSearchHitRow(props: PortalSearchHitRowProps) -> Element {
         }
     }
 }
+
+// PMS-729 phase 2 §7 slice B / I8: authenticated portal forms ---------------
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalFormListItem {
+    id: uuid::Uuid,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+/// `GET /portal/forms` list page. Empty state renders honestly when
+/// the MSP has published no portal-visible form.
+#[component]
+pub fn PortalFormListPage() -> Element {
+    let list = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_portal_authed::<Vec<PortalFormListItem>>("/portal/forms")
+            .await
+            .ok()
+    });
+    let snap = list.read_unchecked();
+    let rows: Vec<PortalFormListItem> = match &*snap {
+        Some(Some(rows)) => rows.clone(),
+        _ => Vec::new(),
+    };
+    let loading = snap.is_none();
+
+    rsx! {
+        PortalLayout { title: "Forms".to_string(),
+            if loading {
+                Card {
+                    p { class: "text-sm text-muted py-4 text-center", "Loading forms..." }
+                }
+            } else if rows.is_empty() {
+                Card {
+                    p { class: "text-sm text-muted py-4 text-center",
+                        "No forms have been published to the portal yet."
+                    }
+                }
+            } else {
+                div { class: "grid grid-cols-1 md:grid-cols-2 gap-4",
+                    for form in rows.iter().cloned() {
+                        Link {
+                            key: "{form.id}",
+                            to: Route::PortalFormDetail { id: form.id.to_string() },
+                            class: "block rounded-lg border border-line bg-surface p-4 hover:border-accent transition-colors",
+                            h3 { class: "text-base font-semibold text-content mb-1",
+                                "{form.name}"
+                            }
+                            if let Some(desc) = &form.description {
+                                p { class: "text-sm text-muted", "{desc}" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Client-facing view of a single form as `GET /portal/forms/{id}`
+/// returns it. Field types are stringly-serialised so the SPA renders
+/// them without pulling in the whole agent-side FieldType enum.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalFormDetail {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    fields: Vec<PortalFormField>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalFormField {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    help_text: Option<String>,
+    #[serde(default)]
+    field_type: String,
+    #[serde(default)]
+    is_required: bool,
+    #[serde(default)]
+    min_length: Option<i32>,
+    #[serde(default)]
+    max_length: Option<i32>,
+    #[serde(default)]
+    options: Option<Vec<String>>,
+}
+
+#[derive(Props, Clone, PartialEq)]
+pub struct PortalFormDetailPageProps {
+    pub id: String,
+}
+
+#[component]
+pub fn PortalFormDetailPage(props: PortalFormDetailPageProps) -> Element {
+    let id_for_fetch = props.id.clone();
+    let form_resource = use_resource(move || {
+        let id = id_for_fetch.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_portal_authed::<PortalFormDetail>(&format!(
+                "/portal/forms/{id}"
+            ))
+            .await
+            .ok()
+        }
+    });
+    let snap = form_resource.read_unchecked();
+    let form: Option<PortalFormDetail> = match &*snap {
+        Some(Some(f)) => Some(f.clone()),
+        _ => None,
+    };
+
+    let mut answers = use_signal(std::collections::HashMap::<String, String>::new);
+    let mut submitting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+    let mut receipt = use_signal(String::new);
+    let form_id = props.id.clone();
+
+    rsx! {
+        PortalLayout { title: form.as_ref().map(|f| f.name.clone()).unwrap_or_else(|| "Form".to_string()),
+            div { class: "mb-6",
+                Link {
+                    to: Route::PortalFormList {},
+                    class: "text-sm text-accent hover:opacity-90",
+                    "Back to forms"
+                }
+            }
+            match form {
+                None => rsx! {
+                    Card {
+                        p { class: "text-sm text-muted py-4 text-center",
+                            "Loading form..."
+                        }
+                    }
+                },
+                Some(f) if !receipt().is_empty() => {
+                    let ticket = receipt();
+                    rsx! {
+                        Card {
+                            div { class: "text-center py-6",
+                                h2 { class: "text-lg font-semibold text-content", "Thanks - we got it." }
+                                p { class: "mt-2 text-sm text-muted",
+                                    "Your submission opened ticket "
+                                    span { class: "font-medium text-content", "#{ticket}." }
+                                }
+                                Link {
+                                    to: Route::PortalTicketList {},
+                                    class: "mt-4 inline-block text-sm text-accent hover:opacity-90",
+                                    "View your tickets"
+                                }
+                            }
+                        }
+                        // Prevent an accidental re-submit by hiding the
+                        // form after the receipt is shown.
+                        {
+                            let _ = f;
+                            rsx! { {} }
+                        }
+                    }
+                }
+                Some(f) => rsx! {
+                    Card {
+                        h2 { class: "text-xl font-bold text-content mb-2", "{f.name}" }
+                        if let Some(desc) = &f.description {
+                            p { class: "text-sm text-muted mb-4", "{desc}" }
+                        }
+                        div { class: "space-y-4",
+                            for field in f.fields.iter().cloned() {
+                                PortalFormFieldRow {
+                                    field: field.clone(),
+                                    value: answers.read().get(&field.name).cloned().unwrap_or_default(),
+                                    onchange: {
+                                        let name = field.name.clone();
+                                        move |v: String| {
+                                            let mut map = answers.read().clone();
+                                            map.insert(name.clone(), v);
+                                            answers.set(map);
+                                        }
+                                    },
+                                }
+                            }
+                        }
+                        if !error().is_empty() {
+                            p { class: "mt-4 text-sm text-red-600 dark:text-red-300", "{error}" }
+                        }
+                        div { class: "mt-6 flex justify-end",
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                disabled: *submitting.read(),
+                                loading: *submitting.read(),
+                                onclick: {
+                                    let form_id = form_id.clone();
+                                    move |_| {
+                                        if *submitting.read() {
+                                            return;
+                                        }
+                                        submitting.set(true);
+                                        error.set(String::new());
+                                        let payload: serde_json::Value = serde_json::Value::Object(
+                                            answers.read().iter()
+                                                .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                                                .collect()
+                                        );
+                                        let body = serde_json::json!({ "payload": payload });
+                                        let form_id = form_id.clone();
+                                        spawn(async move {
+                                            #[cfg(feature = "web")]
+                                            {
+                                                match crate::hooks::fetch::api::post_portal_authed_typed::<serde_json::Value, _>(
+                                                    &format!("/portal/forms/{form_id}/submit"),
+                                                    &body,
+                                                ).await {
+                                                    Ok(resp) => {
+                                                        let num = resp.get("ticket_number")
+                                                            .and_then(|v| v.as_str())
+                                                            .unwrap_or("")
+                                                            .to_string();
+                                                        receipt.set(num);
+                                                    }
+                                                    Err(e) => error.set(e.user_message()),
+                                                }
+                                            }
+                                            submitting.set(false);
+                                        });
+                                    }
+                                },
+                                "Submit"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct PortalFormFieldRowProps {
+    field: PortalFormField,
+    value: String,
+    onchange: EventHandler<String>,
+}
+
+#[component]
+fn PortalFormFieldRow(props: PortalFormFieldRowProps) -> Element {
+    let f = &props.field;
+    let field_type = f.field_type.as_str();
+    let value = props.value.clone();
+    let field_name = f.name.clone();
+    let onchange = props.onchange;
+    let label_class = "block text-sm font-medium text-content mb-1";
+    let input_class = "block w-full rounded-md border border-line bg-surface px-3 py-2 text-content focus:outline-none focus:ring-2 focus:ring-accent";
+    rsx! {
+        div {
+            label { class: "{label_class}", r#for: "{field_name}",
+                "{f.label}"
+                if f.is_required {
+                    span { class: "text-red-600 dark:text-red-300 ml-1", "*" }
+                }
+            }
+            if let Some(help) = &f.help_text {
+                p { class: "text-xs text-muted mb-1", "{help}" }
+            }
+            match field_type {
+                "textarea" => rsx! {
+                    textarea {
+                        id: "{field_name}",
+                        class: "{input_class}",
+                        rows: 4,
+                        value: "{value}",
+                        oninput: move |e: FormEvent| onchange.call(e.value()),
+                    }
+                },
+                "select" => {
+                    let options = f.options.clone().unwrap_or_default();
+                    rsx! {
+                        select {
+                            id: "{field_name}",
+                            class: "{input_class}",
+                            value: "{value}",
+                            onchange: move |e: FormEvent| onchange.call(e.value()),
+                            option { value: "", disabled: true, selected: value.is_empty(), "Choose..." }
+                            for opt in options {
+                                option { value: "{opt}", "{opt}" }
+                            }
+                        }
+                    }
+                },
+                "checkbox" => rsx! {
+                    input {
+                        id: "{field_name}",
+                        r#type: "checkbox",
+                        class: "h-4 w-4 rounded border-line text-accent focus:ring-accent",
+                        checked: value == "true",
+                        onchange: move |e: FormEvent| {
+                            onchange.call(if e.value() == "true" { "true".to_string() } else { "false".to_string() })
+                        },
+                    }
+                },
+                "date" => rsx! {
+                    input {
+                        id: "{field_name}",
+                        r#type: "date",
+                        class: "{input_class}",
+                        value: "{value}",
+                        oninput: move |e: FormEvent| onchange.call(e.value()),
+                    }
+                },
+                _ => rsx! {
+                    input {
+                        id: "{field_name}",
+                        r#type: "text",
+                        class: "{input_class}",
+                        value: "{value}",
+                        oninput: move |e: FormEvent| onchange.call(e.value()),
+                    }
+                },
+            }
+        }
+    }
+}

@@ -716,6 +716,15 @@ pub enum Route {
     #[route("/portal/kb")]
     PortalKB {},
 
+    // PMS-729 phase 2 §7 slice B / I8: authenticated portal forms.
+    // List of MSP-published request forms + a detail page that renders
+    // the field set as a submit form.
+    #[route("/portal/forms")]
+    PortalFormList {},
+
+    #[route("/portal/forms/:id")]
+    PortalFormDetail { id: String },
+
     // PMS-729 phase 2 §7 slice A / I14: portal-scoped grouped search.
     // Query param `q` is picked up by the page from the URL so a
     // customer can bookmark a search or share the link.
@@ -1393,6 +1402,16 @@ fn PortalKB() -> Element {
 #[component]
 fn PortalSearch() -> Element {
     rsx! { portal::PortalSearchPage {} }
+}
+
+#[component]
+fn PortalFormList() -> Element {
+    rsx! { portal::PortalFormListPage {} }
+}
+
+#[component]
+fn PortalFormDetail(id: String) -> Element {
+    rsx! { portal::PortalFormDetailPage { id } }
 }
 
 #[component]
