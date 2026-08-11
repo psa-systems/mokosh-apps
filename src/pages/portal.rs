@@ -42,68 +42,253 @@ fn PortalUnavailable(title: String) -> Element {
     }
 }
 
-/// Portal home page
+/// PMS-729 phase 2 §7 slice A / I17: server DTO for the four home cards.
+///
+/// Mirrors mokosh-server `PortalDashboardResponse`. Every field is decoded
+/// so a future card can render without a wire-shape change. The SPA never
+/// pretends to know a metric that is not present: an absent
+/// `next_invoice_due` renders the "nothing outstanding" state, not a
+/// zero-dollar placeholder.
+#[derive(Clone, Default, PartialEq, serde::Deserialize)]
+struct DashboardPayload {
+    #[serde(default)]
+    tickets_by_priority: Vec<PriorityBucket>,
+    #[serde(default)]
+    next_invoice_due: Option<NextInvoiceDue>,
+    #[serde(default)]
+    open_quotes_awaiting_decision: i64,
+    #[serde(default)]
+    recent_activity: Vec<ActivityRow>,
+}
+
+#[derive(Clone, PartialEq, serde::Deserialize)]
+struct PriorityBucket {
+    name: String,
+    color: String,
+    count: i64,
+}
+
+#[derive(Clone, PartialEq, serde::Deserialize)]
+struct NextInvoiceDue {
+    id: String,
+    invoice_number: String,
+    total: String,
+    balance_due: String,
+    due_date: chrono::NaiveDate,
+    currency: String,
+}
+
+#[derive(Clone, PartialEq, serde::Deserialize)]
+struct ActivityRow {
+    kind: String,
+    entity_id: String,
+    label: String,
+    summary: String,
+    at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Portal home page. PMS-729 phase 2 §7 slice A / I17: renders the four
+/// dashboard cards D17 pins for phase 2.
 #[component]
 pub fn PortalHomePage() -> Element {
-    // MAPPS-403: the fabricated "Welcome back, Bob" name, the demo stat cards
-    // (Open Tickets / Pending Invoices / Outstanding Balance), and the demo
-    // ticket / invoice lists were removed so no invented counts or fake
-    // TKT-/INV- rows reach a real client. Wiring these blocks to the portal
-    // API is backend-dependent and deferred (per the MAPPS-403 decision);
-    // until then the page shows only honest, non-fabricated content.
-    //
-    // MAPPS-357: N/A because this page still fetches nothing. With only a
-    // static greeting, a neutral placeholder, and navigation Links below,
-    // there is no primary resource that could fail during an outage and no
-    // mutating control to disable.
+    use crate::hooks::classify_remote;
+
+    crate::components::use_page_title("Home");
+    let server_reachable = crate::hooks::use_server_reachable();
+    let dashboard = use_resource(move || async move {
+        // Subscribe to the tenant-generation signal so a tenant switch (or
+        // an auth flip) re-fetches without any per-page glue.
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_portal_authed::<DashboardPayload>("/portal/dashboard").await
+    });
+    let outcome: Option<Result<DashboardPayload, String>> = dashboard.read_unchecked().clone();
+    let state = classify_remote(outcome, server_reachable);
+
     rsx! {
-        PortalLayout {
-            // Welcome section. The portal identity is a `contacts` row behind
-            // the portal session token, not the agent `use_auth` CurrentUser,
-            // so no signed-in display name is available client-side here; the
-            // greeting stays generic rather than inventing one.
-            div { class: "mb-8",
-                h1 { class: "text-2xl font-bold text-content",
-                    "Welcome back"
-                }
-                p { class: "text-muted mt-1",
-                    "Here's what's happening with your account."
-                }
+        PortalLayout { title: "Home".to_string(),
+            match state {
+                crate::hooks::RemoteData::Loading => rsx! {
+                    Card {
+                        p { class: "text-sm text-muted py-4 text-center", "Loading your dashboard..." }
+                    }
+                },
+                crate::hooks::RemoteData::Unavailable => rsx! {
+                    Card {
+                        p { class: "text-sm text-muted py-4 text-center",
+                            "The server is unreachable. Your dashboard will appear once the connection is back."
+                        }
+                    }
+                },
+                crate::hooks::RemoteData::Ready(payload) => rsx! {
+                    DashboardCards { payload: payload.clone() }
+                },
             }
 
-            // Neutral placeholder in place of the removed demo stats and
-            // lists: no fabricated numbers or rows until the portal API lands.
-            Card {
-                p { class: "text-sm text-muted",
-                    "Your tickets and invoices will appear here."
-                }
-            }
-
-            // Quick actions
+            // Quick actions stay under the cards regardless of whether the
+            // fetch succeeded; they are pure navigation Links, not data.
             div { class: "mt-8",
                 h2 { class: "text-lg font-medium text-content mb-4",
-                    "Quick Actions"
+                    "Quick actions"
                 }
                 div { class: "grid grid-cols-1 md:grid-cols-3 gap-4",
                     Link {
                         to: Route::PortalTicketNew {},
                         class: "flex items-center p-4 bg-accent-50 dark:bg-accent-900/20 rounded-lg hover:bg-accent-100 dark:hover:bg-accent-900/40 transition-colors",
                         PlusIcon { class: "h-6 w-6 text-accent mr-3".to_string() }
-                        span { class: "font-medium text-accent-900 dark:text-accent-100", "Submit New Ticket" }
+                        span { class: "font-medium text-accent-900 dark:text-accent-100", "Submit new ticket" }
                     }
                     Link {
                         to: Route::PortalKB {},
                         class: "flex items-center p-4 bg-accent-50 dark:bg-accent-900/20 rounded-lg hover:bg-accent-100 dark:hover:bg-accent-900/40 transition-colors",
                         BookIcon { class: "h-6 w-6 text-accent mr-3".to_string() }
-                        span { class: "font-medium text-accent-900 dark:text-accent-100", "Browse Knowledge Base" }
+                        span { class: "font-medium text-accent-900 dark:text-accent-100", "Browse knowledge base" }
                     }
                     Link {
                         to: Route::PortalInvoiceList {},
                         class: "flex items-center p-4 bg-accent-50 dark:bg-accent-900/20 rounded-lg hover:bg-accent-100 dark:hover:bg-accent-900/40 transition-colors",
                         CurrencyIcon { class: "h-6 w-6 text-accent mr-3".to_string() }
-                        span { class: "font-medium text-accent-900 dark:text-accent-100", "Pay Invoice" }
+                        span { class: "font-medium text-accent-900 dark:text-accent-100", "Pay an invoice" }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Painted grid of the four dashboard cards. Kept as a separate
+/// component so the parent stays a thin state machine and the card
+/// layout can be tuned without diffing the whole page.
+#[derive(Props, Clone, PartialEq)]
+struct DashboardCardsProps {
+    payload: DashboardPayload,
+}
+
+#[component]
+fn DashboardCards(props: DashboardCardsProps) -> Element {
+    let p = &props.payload;
+    let total_open_tickets: i64 = p.tickets_by_priority.iter().map(|b| b.count).sum();
+    rsx! {
+        div { class: "grid grid-cols-1 md:grid-cols-2 gap-6 mb-8",
+            // Card 1: open tickets by priority.
+            Card {
+                div { class: "flex items-center justify-between mb-3",
+                    h2 { class: "text-lg font-medium text-content", "Open tickets" }
+                    span { class: "text-2xl font-bold text-accent", "{total_open_tickets}" }
+                }
+                if p.tickets_by_priority.is_empty() {
+                    p { class: "text-sm text-muted", "No priorities configured yet." }
+                } else {
+                    ul { class: "space-y-1",
+                        for bucket in p.tickets_by_priority.iter().cloned() {
+                            li { class: "flex items-center justify-between text-sm",
+                                span { class: "flex items-center gap-2 text-content",
+                                    // A colored dot from the priority's own hex.
+                                    // Inline style is the only place branding /
+                                    // priority hex leaks in, matching the agent
+                                    // side's `PriorityBadge` convention.
+                                    span {
+                                        class: "inline-block h-2.5 w-2.5 rounded-full",
+                                        style: "background-color: {bucket.color};",
+                                    }
+                                    "{bucket.name}"
+                                }
+                                span { class: "font-medium text-content", "{bucket.count}" }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Card 2: next invoice due.
+            Card {
+                h2 { class: "text-lg font-medium text-content mb-3", "Next invoice due" }
+                if let Some(inv) = p.next_invoice_due.as_ref() {
+                    div { class: "space-y-2 text-sm text-content",
+                        div { class: "flex items-center justify-between",
+                            Link {
+                                to: Route::PortalInvoiceDetail { id: inv.id.clone() },
+                                class: "text-accent hover:opacity-80 font-medium",
+                                "#{inv.invoice_number}"
+                            }
+                            span { class: "font-medium",
+                                "{inv.balance_due} {inv.currency}"
+                            }
+                        }
+                        p { class: "text-xs text-muted",
+                            "Due {inv.due_date} (total {inv.total} {inv.currency})"
+                        }
+                    }
+                } else {
+                    p { class: "text-sm text-muted", "Nothing outstanding right now." }
+                }
+            }
+
+            // Card 3: open quotes.
+            Card {
+                div { class: "flex items-center justify-between mb-3",
+                    h2 { class: "text-lg font-medium text-content", "Quotes awaiting decision" }
+                    span { class: "text-2xl font-bold text-accent",
+                        "{p.open_quotes_awaiting_decision}"
+                    }
+                }
+                if p.open_quotes_awaiting_decision == 0 {
+                    p { class: "text-sm text-muted",
+                        "No quotes waiting on you."
+                    }
+                } else {
+                    // Quote list lives at a different route in the agent
+                    // shell today; portal quote list is a phase 2 §7 follow
+                    // up (D8). For now the card gets a subtle affordance so
+                    // the customer knows there is something to look at
+                    // without a broken link.
+                    p { class: "text-sm text-muted",
+                        "Check the notifications inbox once quote review lands in the portal."
+                    }
+                }
+            }
+
+            // Card 4: recent activity.
+            Card {
+                h2 { class: "text-lg font-medium text-content mb-3", "Recent activity" }
+                if p.recent_activity.is_empty() {
+                    p { class: "text-sm text-muted", "Nothing new yet." }
+                } else {
+                    ul { class: "space-y-2",
+                        for row in p.recent_activity.iter().cloned() {
+                            ActivityRowView { row }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct ActivityRowViewProps {
+    row: ActivityRow,
+}
+
+#[component]
+fn ActivityRowView(props: ActivityRowViewProps) -> Element {
+    let row = &props.row;
+    let target: Route = match row.kind.as_str() {
+        "ticket" => Route::PortalTicketDetail {
+            id: row.entity_id.clone(),
+        },
+        _ => Route::PortalHome {},
+    };
+    let when = crate::utils::datetime::format_user_datetime(row.at, None);
+    rsx! {
+        li { class: "border-l-2 border-accent pl-3",
+            Link {
+                to: target,
+                class: "block text-sm font-medium text-content hover:text-accent truncate",
+                "{row.label}"
+            }
+            div { class: "text-xs text-muted",
+                span { "{row.summary}" }
+                span { class: "ml-1", " - {when}" }
             }
         }
     }
