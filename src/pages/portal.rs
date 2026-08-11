@@ -515,6 +515,16 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
                             }
                         }
 
+                        // PMS-729 phase 2 §7 slice A / I10: SLA card.
+                        // Fetches its own resource so a broken SLA
+                        // fetch does not block the ticket body or the
+                        // comments thread. Hidden entirely when the
+                        // server reports `not_applicable` and no due
+                        // dates - a portal customer on a plan that
+                        // does not carry SLA policies does not need
+                        // a "not applicable" placeholder card.
+                        PortalTicketSlaCard { ticket_id: props.id.clone() }
+
                         // PMS-480: comments thread + reply form. The
                         // server filters internal / resolution /
                         // time_entry notes server-side (only `public`
@@ -522,6 +532,126 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
                         // does not have to filter again.
                         PortalTicketComments { ticket_id: props.id.clone() }
                     }
+                }
+            }
+        }
+    }
+}
+
+// PMS-729 phase 2 §7 slice A / I10: SLA visibility on portal ticket ---------
+
+/// Wire shape for `GET /portal/tickets/{id}/sla`. Every datetime field
+/// is `Option<_>` so a ticket with no SLA policy at all decodes cleanly
+/// (server sends every column back regardless).
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+struct PortalSlaPayload {
+    #[serde(default)]
+    sla_due_date: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    first_response_due: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    first_response_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    resolution_due: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    resolved_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    closed_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default = "default_sla_status")]
+    status: String,
+    #[serde(default)]
+    status_name: String,
+}
+
+fn default_sla_status() -> String {
+    "not_applicable".to_string()
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct PortalTicketSlaCardProps {
+    ticket_id: String,
+}
+
+#[component]
+fn PortalTicketSlaCard(props: PortalTicketSlaCardProps) -> Element {
+    let id_for_fetch = props.ticket_id.clone();
+    let sla = use_resource(move || {
+        let id = id_for_fetch.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_portal_authed::<PortalSlaPayload>(&format!(
+                "/portal/tickets/{id}/sla"
+            ))
+            .await
+            .ok()
+        }
+    });
+
+    let snap = sla.read_unchecked();
+    let Some(Some(payload)) = &*snap else {
+        // Loading or fetch failed: no card at all, mirroring the
+        // "hide when there is nothing to say" posture the plan doc
+        // asks for.
+        return rsx! { {} };
+    };
+
+    // Nothing to render when both legs are absent AND the ticket is
+    // not applicable. The customer's MSP has not attached an SLA
+    // policy to the ticket; a "not applicable" chip alone reads as
+    // noise here.
+    let has_any_target = payload.first_response_due.is_some()
+        || payload.resolution_due.is_some()
+        || payload.sla_due_date.is_some();
+    if !has_any_target {
+        return rsx! { {} };
+    }
+
+    let (badge_variant, badge_label) = match payload.status.as_str() {
+        "on_track" => (BadgeVariant::Green, "On track"),
+        "warning" => (BadgeVariant::Yellow, "At risk"),
+        "breached" => (BadgeVariant::Red, "Breached"),
+        _ => (BadgeVariant::Gray, "Not applicable"),
+    };
+
+    let fmt = |t: Option<chrono::DateTime<chrono::Utc>>| -> String {
+        t.map(|d| crate::utils::datetime::format_user_datetime(d, None))
+            .unwrap_or_else(|| "Not set".to_string())
+    };
+
+    rsx! {
+        Card {
+            div { class: "flex items-center justify-between mb-3",
+                h3 { class: "text-lg font-medium text-content", "Service level" }
+                Badge { variant: badge_variant, "{badge_label}" }
+            }
+            dl { class: "grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-sm",
+                if payload.first_response_due.is_some() || payload.first_response_at.is_some() {
+                    dt { class: "text-muted", "First response target" }
+                    dd { class: "text-content", "{fmt(payload.first_response_due)}" }
+                    dt { class: "text-muted", "First response actual" }
+                    dd { class: "text-content",
+                        if payload.first_response_at.is_some() {
+                            "{fmt(payload.first_response_at)}"
+                        } else {
+                            "Not responded yet"
+                        }
+                    }
+                }
+                if payload.resolution_due.is_some() || payload.resolved_at.is_some() {
+                    dt { class: "text-muted", "Resolution target" }
+                    dd { class: "text-content", "{fmt(payload.resolution_due)}" }
+                    dt { class: "text-muted", "Resolved" }
+                    dd { class: "text-content",
+                        if payload.resolved_at.is_some() {
+                            "{fmt(payload.resolved_at)}"
+                        } else {
+                            "Not resolved yet"
+                        }
+                    }
+                }
+                if !payload.status_name.is_empty() {
+                    dt { class: "text-muted", "Current status" }
+                    dd { class: "text-content", "{payload.status_name}" }
                 }
             }
         }
