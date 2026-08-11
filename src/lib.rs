@@ -78,7 +78,11 @@ pub fn AuthGuard() -> Element {
         // component passes its own `/dashboard` default; this guard is the
         // path that fires for protected deep links.
         let return_to = crate::modules::oidc::current_return_to();
-        let _ = crate::modules::oidc::start_login(&cfg, return_to);
+        // MAPPS-432: a kickoff that fails leaves the user on the placeholder
+        // below with no other trace, so log the cause rather than dropping it.
+        if let Err(e) = crate::modules::oidc::start_login(&cfg, return_to) {
+            crate::modules::oidc::log_auth_error(&format!("auth guard: login kickoff failed: {e}"));
+        }
         return rsx! {
             div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
                 "Signing you in…"
@@ -772,7 +776,12 @@ fn Login() -> Element {
     use_effect(move || {
         if !standalone {
             let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
-            let _ = crate::modules::oidc::start_login(&cfg, "/dashboard");
+            // MAPPS-432: this is where a recoverable callback error restarts to,
+            // so a swallowed failure here would strand the user on the
+            // placeholder below with nothing in the console to explain it.
+            if let Err(e) = crate::modules::oidc::start_login(&cfg, "/dashboard") {
+                crate::modules::oidc::log_auth_error(&format!("login page: kickoff failed: {e}"));
+            }
         }
     });
     if standalone {

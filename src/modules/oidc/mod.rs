@@ -13,7 +13,12 @@
 //!  3. The `/auth/callback` route page calls [`complete_login`], which
 //!     verifies `state`, POSTs the code + verifier to `/oauth2/token`,
 //!     and returns parsed [`Tokens`].
-//!  4. Tokens live in memory (in [`AuthContext`]) and are also persisted
+//!  4. A failed exchange is classified by [`classify_flow_error`]: the cases
+//!     that only mean "no live authorization flow on this URL" (a bare
+//!     `/auth/callback`, a missing or expired `PendingFlow`, an OP
+//!     re-authentication signal) restart the login flow silently under a retry
+//!     cap; CSRF / replay / config / network faults render an error screen.
+//!  5. Tokens live in memory (in [`AuthContext`]) and are also persisted
 //!     to `sessionStorage` via [`storage`] so a page reload rehydrates the
 //!     session rather than redirecting to authorize again. They are NEVER
 //!     written to `localStorage`: `sessionStorage` is tab-scoped and
@@ -36,9 +41,16 @@ pub fn is_standalone() -> bool {
     !OidcConfig::for_current_origin().has_issuer()
 }
 
+/// MAPPS-432: one console line for an auth-flow failure the user is not shown.
+/// The WASM build wires no `tracing` subscriber, so the browser console is the
+/// only place an operator can read it.
+pub fn log_auth_error(msg: &str) {
+    web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(msg));
+}
+
 pub use flow::{
-    classify_return_to, complete_login, current_return_to, issuer_get_authed, issuer_post_authed,
-    refresh_tokens, revoke_refresh_token, snapshot_initial_search, start_login, FlowError,
-    ReturnTarget,
+    classify_flow_error, classify_return_to, complete_login, current_return_to, issuer_get_authed,
+    issuer_post_authed, refresh_tokens, revoke_refresh_token, snapshot_initial_search, start_login,
+    CallbackRecovery, FlowError, ReturnTarget,
 };
 pub use tokens::{IdTokenClaims, Tokens};

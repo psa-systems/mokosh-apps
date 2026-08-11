@@ -47,7 +47,7 @@ pre-commit: css-build
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-web check-clippy check-fmt check-theme-tokens check-runner-labels check-cancel-routes
+check: check-web check-clippy check-fmt check-theme-tokens check-runner-labels check-cancel-routes check-auth-error-prose
 
 # Check web/WASM compilation
 [group: 'check']
@@ -68,6 +68,11 @@ check-runner-labels:
 [group: 'check']
 check-cancel-routes:
     bash scripts/check-cancel-routes.sh
+
+# MAPPS-432: keep /auth/callback classifying on the FlowError variant, not on error prose
+[group: 'check']
+check-auth-error-prose:
+    bash scripts/check-auth-error-prose.sh
 
 # Run clippy lints
 [group: 'check']
