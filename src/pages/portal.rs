@@ -1082,6 +1082,127 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                                 p { class: "text-2xl font-bold text-content", "Total {total}" }
                             }
                         }
+
+                        // PMS-729 phase 2 §7 slice A / I11: payment
+                        // history card. Fetches its own resource so a
+                        // broken payment fetch does not block the
+                        // rest of the invoice detail; hidden entirely
+                        // on an empty ledger so the layout stays
+                        // clean for a brand-new invoice.
+                        PortalInvoicePaymentsCard { invoice_id: props.id.clone() }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// PMS-729 phase 2 §7 slice A / I11: payment history on invoice detail -------
+
+/// One payment row as `GET /portal/invoices/{id}/payments` returns it.
+/// `amount` arrives as the same decimal string the invoice detail uses,
+/// so `portal_money` renders it identically.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalPaymentRow {
+    id: uuid::Uuid,
+    #[serde(default)]
+    payment_date: Option<chrono::NaiveDate>,
+    #[serde(default)]
+    amount: String,
+    #[serde(default)]
+    payment_method: String,
+    #[serde(default)]
+    reference_number: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+struct PortalPaymentsPayload {
+    #[serde(default)]
+    payments: Vec<PortalPaymentRow>,
+    #[serde(default)]
+    total: i64,
+}
+
+/// Human label for the payment_method enum values the server sends.
+/// Matches the seed's `payments.payment_method` CHECK constraint values.
+fn payment_method_label(raw: &str) -> &'static str {
+    match raw {
+        "check" => "Check",
+        "credit_card" => "Credit card",
+        "ach" => "ACH",
+        "wire" => "Wire transfer",
+        "cash" => "Cash",
+        _ => "Other",
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct PortalInvoicePaymentsCardProps {
+    invoice_id: String,
+}
+
+#[component]
+fn PortalInvoicePaymentsCard(props: PortalInvoicePaymentsCardProps) -> Element {
+    let id_for_fetch = props.invoice_id.clone();
+    let payments = use_resource(move || {
+        let id = id_for_fetch.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_portal_authed::<PortalPaymentsPayload>(&format!(
+                "/portal/invoices/{id}/payments"
+            ))
+            .await
+            .ok()
+        }
+    });
+
+    let snap = payments.read_unchecked();
+    let Some(Some(payload)) = &*snap else {
+        // Loading or fetch failed: no card at all. The invoice body
+        // above already carries the balance due, which is the primary
+        // signal.
+        return rsx! { {} };
+    };
+    if payload.total == 0 {
+        // Empty ledger renders nothing. A first-time invoice does not
+        // need a placeholder card.
+        return rsx! { {} };
+    }
+
+    rsx! {
+        Card {
+            div { class: "mt-6",
+                h3 { class: "text-lg font-medium text-content mb-3", "Payment history" }
+                Table {
+                    TableHead {
+                        TableRow {
+                            TableHeader { "Date" }
+                            TableHeader { "Method" }
+                            TableHeader { "Reference" }
+                            TableHeader { class: "text-right", "Amount" }
+                        }
+                    }
+                    TableBody {
+                        for row in payload.payments.iter().cloned() {
+                            TableRow { key: "{row.id}",
+                                TableCell {
+                                    if let Some(date) = row.payment_date {
+                                        "{date}"
+                                    } else {
+                                        "-"
+                                    }
+                                }
+                                TableCell { "{payment_method_label(&row.payment_method)}" }
+                                TableCell {
+                                    if let Some(reference) = &row.reference_number {
+                                        "{reference}"
+                                    } else {
+                                        "-"
+                                    }
+                                }
+                                TableCell { class: "text-right", {portal_money(&row.amount)} }
+                            }
+                        }
                     }
                 }
             }
