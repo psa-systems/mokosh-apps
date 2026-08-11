@@ -48,6 +48,18 @@ pub fn FormsBuilderPage() -> Element {
             .ok()
     });
 
+    // PMS-759: the caller's own drafts, so a half-built form is findable
+    // rather than only ever stumbled on by reopening the right row. Loaded
+    // here rather than inside the editor because both surfaces need it and the
+    // restore decision has to be made once, at open time.
+    let mut drafts = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _token = crate::hooks::fetch::api::current_access_token()?;
+        crate::hooks::fetch::api::get_authed_typed::<Vec<ServerDraft>>("/forms/drafts")
+            .await
+            .ok()
+    });
+
     let mut editing = use_signal(|| None::<EditorState>);
     // MAPPS-424: (definition id, name) of the form being sent, if any.
     let mut sending = use_signal(|| None::<(String, String)>);
@@ -62,6 +74,11 @@ pub fn FormsBuilderPage() -> Element {
         _ => Vec::new(),
     };
     let total = rows.len();
+
+    let draft_rows: Vec<ServerDraft> = match &*drafts.read_unchecked() {
+        Some(Some(list)) => list.clone(),
+        _ => Vec::new(),
+    };
 
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
@@ -116,6 +133,92 @@ pub fn FormsBuilderPage() -> Element {
 
         if fetch_failed {
             ErrorBanner { class: "mb-3", "Could not load request forms. Refresh the page to retry." }
+        }
+
+        // PMS-759: unfinished work, above the saved forms rather than beside
+        // them. A draft is not a form: it cannot be sent, it is visible only to
+        // the person who wrote it, and it is here to be finished or thrown
+        // away. Hidden entirely when there are none, because an empty
+        // "Drafts (0)" panel is a permanent reminder of nothing.
+        if !draft_rows.is_empty() {
+            div { class: "mb-4 rounded-md border border-default bg-surface-2 p-3",
+                p { class: "mb-2 text-sm font-medium text-content",
+                    "Unfinished drafts"
+                }
+                p { class: "mb-3 text-xs text-muted",
+                    "Only you can see these. They cannot be sent to a client until you save them as a form."
+                }
+                ul { class: "space-y-2",
+                    for draft in draft_rows.iter().cloned() {
+                        {
+                            let key = draft.id.clone();
+                            let label = draft.label();
+                            let for_resume = draft.clone();
+                            let existing = draft
+                                .form_definition_id
+                                .as_ref()
+                                .and_then(|id| rows.iter().find(|f| f.id.to_string() == *id).cloned());
+                            let delete_id = draft.id.clone();
+                            rsx! {
+                                li { key: "{key}",
+                                    class: "flex items-center justify-between gap-3 rounded border border-default bg-surface px-3 py-2",
+                                    div { class: "min-w-0",
+                                        span { class: "text-sm font-medium text-content", "{label}" }
+                                        // Which form it belongs to, when it
+                                        // belongs to one. Without this a draft
+                                        // named the same as its form reads as a
+                                        // duplicate of it.
+                                        if let Some(def) = existing.as_ref() {
+                                            span { class: "ml-2 text-xs text-muted", "edit of {def.name}" }
+                                        } else {
+                                            span { class: "ml-2 text-xs text-muted", "never saved" }
+                                        }
+                                    }
+                                    div { class: "flex items-center gap-2 shrink-0",
+                                        Button {
+                                            variant: ButtonVariant::Secondary,
+                                            disabled: !can_mutate,
+                                            onclick: move |_| {
+                                                // Resume opens the editor on
+                                                // the form the draft belongs
+                                                // to, or on an empty one when
+                                                // it never became a form. The
+                                                // modal picks the newer of this
+                                                // draft and any local copy, the
+                                                // same as opening the row would.
+                                                let base = match existing.as_ref() {
+                                                    Some(def) => EditorState::from_existing(def),
+                                                    None => EditorState::new(),
+                                                };
+                                                editing.set(Some(for_resume.payload.clone().into_state(&base)));
+                                            },
+                                            "Resume"
+                                        }
+                                        Button {
+                                            variant: ButtonVariant::Link,
+                                            disabled: !can_mutate,
+                                            onclick: move |_| {
+                                                let id = delete_id.clone();
+                                                spawn(async move {
+                                                    if crate::hooks::fetch::api::delete_authed(
+                                                        &format!("/forms/drafts/{id}"),
+                                                    )
+                                                    .await
+                                                    .is_ok()
+                                                    {
+                                                        drafts.restart();
+                                                    }
+                                                });
+                                            },
+                                            "Discard"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         DataTable {
@@ -221,13 +324,28 @@ pub fn FormsBuilderPage() -> Element {
         }
 
         if let Some(state) = editing.read().clone() {
-            FormEditorModal {
-                state,
-                onclose: move |_| { editing.set(None); },
-                onsaved: move |_| {
-                    editing.set(None);
-                    forms.restart();
-                },
+            {
+                // The draft keyed to whatever is being edited: the one with a
+                // matching definition id, or the new-form one. `None` when the
+                // list has not loaded, which means the editor falls back to the
+                // local copy alone rather than waiting on the network to show
+                // someone their own typing.
+                let mine = draft_rows
+                    .iter()
+                    .find(|d| d.form_definition_id == state.id)
+                    .cloned();
+                rsx! {
+                    FormEditorModal {
+                        state,
+                        server_draft: mine,
+                        onclose: move |_| { editing.set(None); drafts.restart(); },
+                        onsaved: move |_| {
+                            editing.set(None);
+                            forms.restart();
+                            drafts.restart();
+                        },
+                    }
+                }
             }
         }
 
@@ -442,6 +560,12 @@ fn slugify(name: &str) -> String {
 /// is not a row the server would accept, and making it one would mean a
 /// nullable-everything draft state and a decision about whose drafts other
 /// operators can see. That is a feature; this is a data-loss fix.
+/// PMS-759: how long typing has to stop before the draft is pushed to the
+/// server. Short enough that a tab closed mid-thought loses at most half a
+/// second of work on top of what the instant local write already holds, long
+/// enough that a sentence typed at speed is one request rather than forty.
+const DRAFT_DEBOUNCE_MS: u32 = 500;
+
 fn draft_key(id: Option<&str>) -> String {
     match id {
         Some(id) => format!("mokosh.form-draft.{id}"),
@@ -587,20 +711,128 @@ impl DraftForm {
     }
 }
 
-/// Read the stored draft for this definition, if it is both present and
-/// different from what the server holds.
+/// PMS-759: the local draft plus when it was written, or `None`.
 ///
-/// A draft equal to the saved definition is not worth announcing: it would
-/// restore nothing and only tell the operator their work was at risk when it
-/// was not.
-fn load_draft(base: &EditorState) -> Option<EditorState> {
-    let raw = crate::utils::prefs::get_str(&draft_key(base.id.as_deref()), "");
+/// The timestamp is what makes "the newer copy wins" decidable when the server
+/// also holds a draft for this form. A draft written by a build before this one
+/// is a bare [`DraftForm`] with no envelope; it parses, and reads as
+/// arbitrarily old, so the server copy wins. That is the right way round: a
+/// legacy local draft is by definition from before server drafts existed.
+fn load_local_draft(id: Option<&str>) -> Option<(DraftForm, f64)> {
+    let raw = crate::utils::prefs::get_str(&draft_key(id), "");
     if raw.is_empty() {
         return None;
     }
-    let draft: DraftForm = serde_json::from_str(&raw).ok()?;
-    let restored = draft.into_state(base);
-    (restored != *base).then_some(restored)
+    if let Ok(stored) = serde_json::from_str::<StoredDraft>(&raw) {
+        return Some((stored.form, stored.saved_at));
+    }
+    serde_json::from_str::<DraftForm>(&raw)
+        .ok()
+        .map(|d| (d, 0.0))
+}
+
+/// Write the local draft, stamped. The instant tier: a closed tab, a route
+/// change and a crash do not wait for the 500 ms the server write is debounced
+/// by, and a network write cannot be made synchronous on unload (`sendBeacon`
+/// cannot carry the bearer token this SPA authenticates with).
+fn store_local_draft(id: Option<&str>, form: &DraftForm) {
+    let stored = StoredDraft {
+        saved_at: now_ms(),
+        form: form.clone(),
+    };
+    if let Ok(json) = serde_json::to_string(&stored) {
+        crate::utils::prefs::set_str(&draft_key(id), &json);
+    }
+}
+
+/// Milliseconds since the epoch, for stamping a local draft. Only ever
+/// compared against another stamp from the same clock or against a server
+/// timestamp, so clock skew shifts which copy wins by the size of the skew and
+/// nothing worse.
+fn now_ms() -> f64 {
+    #[cfg(feature = "web")]
+    {
+        js_sys::Date::now()
+    }
+    #[cfg(not(feature = "web"))]
+    {
+        0.0
+    }
+}
+
+/// A draft the server holds, as `GET /forms/drafts` returns it.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct ServerDraft {
+    id: String,
+    #[serde(default)]
+    form_definition_id: Option<String>,
+    /// `payload -> name`, lifted out by the server so the drafts list has a
+    /// label without parsing the snapshot.
+    #[serde(default)]
+    name: Option<String>,
+    payload: DraftForm,
+    /// RFC 3339, as Postgres wrote it.
+    updated_at: String,
+}
+
+impl ServerDraft {
+    /// The same milliseconds-since-epoch scale as [`now_ms`], so the two tiers
+    /// are comparable. An unparseable timestamp reads as arbitrarily old,
+    /// which resolves to "keep what is in this browser" rather than silently
+    /// replacing local work with a copy of unknown age.
+    fn saved_at(&self) -> f64 {
+        chrono::DateTime::parse_from_rfc3339(&self.updated_at)
+            .map(|t| t.timestamp_millis() as f64)
+            .unwrap_or(0.0)
+    }
+
+    /// What to show in the drafts list. A draft is normally started before it
+    /// is named, so the untitled case is the common one rather than an edge.
+    fn label(&self) -> String {
+        match self
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+        {
+            Some(n) => n.to_string(),
+            None => "Untitled form".to_string(),
+        }
+    }
+}
+
+/// PMS-759: the local envelope. The bare [`DraftForm`] is still what is stored
+/// inside it, so the shape that outlives a build is unchanged and only gains a
+/// timestamp around it.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct StoredDraft {
+    #[serde(default)]
+    saved_at: f64,
+    form: DraftForm,
+}
+
+/// Pick the copy to restore, given what this browser holds and what the server
+/// holds.
+///
+/// Newest wins. Neither tier is authoritative: the local one is written
+/// instantly and so is usually ahead on the machine that typed it, and the
+/// server one is the only thing that exists on any other machine.
+fn newest_draft(
+    local: Option<(DraftForm, f64)>,
+    server: Option<&ServerDraft>,
+) -> Option<DraftForm> {
+    match (local, server) {
+        (Some((form, at)), Some(remote)) => {
+            if remote.saved_at() > at {
+                Some(remote.payload.clone())
+            } else {
+                Some(form)
+            }
+        }
+        (Some((form, _)), None) => Some(form),
+        (None, Some(remote)) => Some(remote.payload.clone()),
+        (None, None) => None,
+    }
 }
 
 /// The organisation clients see on anything this page sends, or an empty string
@@ -713,6 +945,11 @@ struct FieldRowErrors {
 #[component]
 fn FormEditorModal(
     state: EditorState,
+    /// PMS-759: the server's draft for this form, if it holds one. Passed in
+    /// rather than fetched here: the page has already loaded the list for its
+    /// own Drafts section, and a second request would race the restore
+    /// decision, which has to be made once, at open time.
+    server_draft: Option<ServerDraft>,
     onclose: EventHandler<()>,
     onsaved: EventHandler<()>,
 ) -> Element {
@@ -729,7 +966,20 @@ fn FormEditorModal(
     });
     let restored = use_hook({
         let saved = saved.clone();
-        move || load_draft(&saved)
+        let server_draft = server_draft.clone();
+        move || {
+            // PMS-759: whichever tier is newer. On a second machine only the
+            // server has anything; on the machine that typed it, the local
+            // copy is usually ahead because it is written on every change
+            // rather than on a debounce.
+            let picked =
+                newest_draft(load_local_draft(saved.id.as_deref()), server_draft.as_ref())?;
+            let restored = picked.into_state(&saved);
+            // A draft equal to the saved definition is not worth announcing:
+            // it would restore nothing and only tell the operator their work
+            // was at risk when it was not.
+            (restored != saved).then_some(restored)
+        }
     });
     let mut draft_restored = use_signal(|| restored.is_some());
     let state = restored.unwrap_or_else(|| saved.clone());
@@ -779,19 +1029,71 @@ fn FormEditorModal(
     // PMS-754: autosave. Writing on every change rather than on an interval,
     // because the failures this exists for (a closed tab, a route change, a
     // crash) do not wait for a timer.
+    // PMS-759: and the server half, debounced, so the draft survives this
+    // machine as well as this tab. `server_draft_id` is what the discard path
+    // deletes; it starts as whatever the page found and is replaced by each
+    // successful write, because the first write on a new form is what creates
+    // the row.
+    let mut server_draft_id = use_signal(|| server_draft.as_ref().map(|d| d.id.clone()));
+    // The most recent snapshot, so a debounced write that wakes up superseded
+    // can tell. Reading the editor signals directly from the task would work
+    // too and would mean rebuilding the whole `EditorState` inside it.
+    let mut latest_snapshot = use_signal(DraftForm::default);
     {
         let key = draft_key.clone();
         let snapshot = DraftForm::from_state(&current);
         let baseline = DraftForm::from_state(&saved);
+        let definition_id = save_id.clone();
         use_effect(move || {
             if snapshot == baseline {
                 // Back to what the server holds: nothing to restore, and a
                 // stored copy would only produce a "restored" banner that
-                // changes nothing on the next open.
+                // changes nothing on the next open. The server row is left
+                // alone rather than deleted, because a delete on every
+                // keystroke that happens to match the saved state would race
+                // the writes around it; saving the form is what retires it.
                 crate::utils::prefs::clear(&key);
-            } else if let Ok(json) = serde_json::to_string(&snapshot) {
-                crate::utils::prefs::set_str(&key, &json);
+                return;
             }
+            store_local_draft(definition_id.as_deref(), &snapshot);
+            latest_snapshot.set(snapshot.clone());
+
+            let snapshot = snapshot.clone();
+            let definition_id = definition_id.clone();
+            spawn(async move {
+                #[cfg(feature = "web")]
+                {
+                    // The debounce. Every change spawns one of these; the ones
+                    // whose snapshot has been superseded by the time they wake
+                    // up drop out, so a burst of typing costs one request.
+                    gloo_timers::future::TimeoutFuture::new(DRAFT_DEBOUNCE_MS).await;
+                    if latest_snapshot() != snapshot {
+                        return;
+                    }
+                    let body = serde_json::json!({
+                        "form_definition_id": definition_id,
+                        "payload": snapshot,
+                    });
+                    match crate::hooks::fetch::api::put_authed_typed::<ServerDraft, _>(
+                        "/forms/drafts",
+                        &body,
+                    )
+                    .await
+                    {
+                        Ok(saved) => server_draft_id.set(Some(saved.id)),
+                        // Deliberately silent. The local copy has already been
+                        // written, so a failed autosave costs the cross-device
+                        // half and nothing the operator can act on; a toast on
+                        // every keystroke of an offline session would be worse
+                        // than the thing it reports.
+                        Err(e) => tracing::debug!("form draft autosave failed: {e:?}"),
+                    }
+                }
+                #[cfg(not(feature = "web"))]
+                {
+                    let _ = (&snapshot, &definition_id);
+                }
+            });
         });
     }
 
@@ -1013,7 +1315,11 @@ fn FormEditorModal(
                     Ok(()) => {
                         // PMS-754: the work is on the server now, so the draft
                         // has nothing left to protect and the next New Form
-                        // must start empty.
+                        // must start empty. PMS-759: only the LOCAL copy is
+                        // dropped here. The server retires its own on create
+                        // and update, because a draft exists to survive the
+                        // browser going away and so cannot depend on the
+                        // browser to tidy up.
                         crate::utils::prefs::clear(&draft_key_for_save);
                         // MAPPS-424: naming the next step here, because saving
                         // is the moment the user expects a link and does not
@@ -1139,6 +1445,18 @@ fn FormEditorModal(
                                 problem_count.set(0);
                                 crate::utils::prefs::clear(&draft_key_for_discard);
                                 draft_restored.set(false);
+                                // PMS-759: and the server's copy, or the next
+                                // open on any machine restores exactly what was
+                                // just discarded.
+                                if let Some(id) = server_draft_id() {
+                                    server_draft_id.set(None);
+                                    spawn(async move {
+                                        let _ = crate::hooks::fetch::api::delete_authed(
+                                            &format!("/forms/drafts/{id}"),
+                                        )
+                                        .await;
+                                    });
+                                }
                             },
                             "Discard draft"
                         }
@@ -1990,6 +2308,104 @@ mod tests {
         let json = serde_json::to_string(&DraftForm::from_state(&state)).expect("serialise");
         let back: DraftForm = serde_json::from_str(&json).expect("deserialise");
         assert_eq!(back.into_state(&state), state);
+    }
+
+    fn draft_named(name: &str) -> DraftForm {
+        DraftForm {
+            name: name.to_string(),
+            ..DraftForm::default()
+        }
+    }
+
+    fn server_draft(name: &str, updated_at: &str) -> ServerDraft {
+        ServerDraft {
+            id: "33333333-3333-3333-3333-333333333333".into(),
+            form_definition_id: None,
+            name: Some(name.to_string()),
+            payload: draft_named(name),
+            updated_at: updated_at.to_string(),
+        }
+    }
+
+    /// PMS-759: the restore decision, which is the one place this feature can
+    /// silently lose work. Neither tier is authoritative: the local copy is
+    /// written on every change and so is usually ahead on the machine that
+    /// typed it, and the server copy is the only thing that exists anywhere
+    /// else.
+    #[test]
+    fn the_newer_draft_wins_whichever_tier_it_is_in() {
+        // 2026-08-11T00:00:00Z, and one hour later.
+        let earlier = "2026-08-11T00:00:00Z";
+        let later_ms = 1_786_500_000_000.0;
+
+        // Local typed after the server's copy: keep what is in this browser.
+        let picked = newest_draft(
+            Some((draft_named("local"), later_ms)),
+            Some(&server_draft("remote", earlier)),
+        );
+        assert_eq!(picked.expect("a draft").name, "local");
+
+        // The other machine typed last: take theirs.
+        let picked = newest_draft(
+            Some((draft_named("local"), 0.0)),
+            Some(&server_draft("remote", earlier)),
+        );
+        assert_eq!(picked.expect("a draft").name, "remote");
+    }
+
+    /// The cross-device case: a browser that has never seen this form restores
+    /// the server's copy. Without this the feature is exactly the localStorage
+    /// one it was asked to replace.
+    #[test]
+    fn a_browser_with_no_local_draft_restores_the_servers() {
+        let picked = newest_draft(None, Some(&server_draft("remote", "2026-08-11T00:00:00Z")));
+        assert_eq!(picked.expect("a draft").name, "remote");
+        assert!(newest_draft(None, None).is_none());
+    }
+
+    /// A timestamp that will not parse must not be treated as "now": that
+    /// would replace local work with a copy of unknown age. It reads as
+    /// arbitrarily old instead, so the browser keeps what it has.
+    #[test]
+    fn an_unreadable_server_timestamp_does_not_beat_local_work() {
+        let picked = newest_draft(
+            Some((draft_named("local"), 1.0)),
+            Some(&server_draft("remote", "not a timestamp")),
+        );
+        assert_eq!(picked.expect("a draft").name, "local");
+    }
+
+    /// PMS-759 kept the stored shape and wrapped it, so a draft written by an
+    /// earlier build still parses. It reads as arbitrarily old, which is the
+    /// right way round: a bare draft predates server drafts entirely.
+    #[test]
+    fn a_legacy_local_draft_still_parses_and_yields_to_the_server() {
+        let legacy = serde_json::to_string(&draft_named("legacy")).expect("serialise");
+        let parsed: DraftForm =
+            serde_json::from_str(&legacy).expect("a bare draft is still readable");
+        assert_eq!(parsed.name, "legacy");
+
+        let stored = StoredDraft {
+            saved_at: 42.0,
+            form: draft_named("stamped"),
+        };
+        let json = serde_json::to_string(&stored).expect("serialise");
+        let back: StoredDraft = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(back.saved_at, 42.0);
+        assert_eq!(back.form.name, "stamped");
+    }
+
+    /// A draft is normally started before it is named, so the list needs a
+    /// label for the untitled case rather than rendering an empty row.
+    #[test]
+    fn an_unnamed_draft_still_has_something_to_show_in_the_list() {
+        let mut d = server_draft("", "2026-08-11T00:00:00Z");
+        d.name = None;
+        assert_eq!(d.label(), "Untitled form");
+        d.name = Some("   ".into());
+        assert_eq!(d.label(), "Untitled form");
+        d.name = Some("Leaver".into());
+        assert_eq!(d.label(), "Leaver");
     }
 
     /// Identity comes from the definition the server sent, never from storage:
