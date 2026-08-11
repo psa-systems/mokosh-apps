@@ -925,6 +925,33 @@ pub fn MoonIcon(#[props(default)] size: IconSize, #[props(default)] class: Strin
     }
 }
 
+/// PMS-729 phase 2 §7 slice A / I14: portal search glass icon. Same
+/// path the top-bar `GlobalSearch` renders inline, exposed as a
+/// reusable component so the portal sidebar can reference it.
+#[component]
+pub fn MagnifyingGlassIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "2",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z",
+            }
+        }
+    }
+}
+
 /// PMS-729 phase 2 §6 slice 3: system-follow indicator for the portal
 /// theme toggle. Heroicons `computer-desktop` outline.
 #[component]

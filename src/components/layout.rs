@@ -1356,6 +1356,7 @@ fn PortalSidebarContent() -> Element {
             PortalNavItem { to: Route::PortalTicketList {}, icon: rsx!(TicketIcon {}), label: "Tickets" }
             PortalNavItem { to: Route::PortalInvoiceList {}, icon: rsx!(CurrencyIcon {}), label: "Invoices" }
             PortalNavItem { to: Route::PortalKB {}, icon: rsx!(BookIcon {}), label: "Knowledge Base" }
+            PortalNavItem { to: Route::PortalSearch {}, icon: rsx!(MagnifyingGlassIcon {}), label: "Search" }
         }
     }
 }

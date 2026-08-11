@@ -1716,3 +1716,236 @@ pub fn PortalQuoteDetailPage(props: PortalQuoteDetailPageProps) -> Element {
         }
     }
 }
+
+// PMS-729 phase 2 §7 slice A / I14: portal search page --------------------
+
+/// Response body of `GET /portal/search`. Every field defaults so a
+/// partial payload still decodes.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+struct PortalSearchPayload {
+    #[serde(default)]
+    tickets: Vec<PortalSearchHit>,
+    #[serde(default)]
+    invoices: Vec<PortalSearchHit>,
+    #[serde(default)]
+    quotes: Vec<PortalSearchHit>,
+    #[serde(default)]
+    kb_articles: Vec<PortalSearchHit>,
+    #[serde(default)]
+    counts: PortalSearchCounts,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+struct PortalSearchCounts {
+    #[serde(default)]
+    tickets: i64,
+    #[serde(default)]
+    invoices: i64,
+    #[serde(default)]
+    quotes: i64,
+    #[serde(default)]
+    kb_articles: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalSearchHit {
+    id: uuid::Uuid,
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    secondary: Option<String>,
+}
+
+/// Portal search page. Query lives in the URL as `?q=...` so a
+/// customer can bookmark or share a search. Fires on every keystroke
+/// (server trims + returns empty for a blank query, so an empty box
+/// safely results in an empty page rather than a 400).
+#[component]
+pub fn PortalSearchPage() -> Element {
+    let initial_q = crate::utils::url::current_query_param("q").unwrap_or_default();
+    let mut query = use_signal(|| initial_q.clone());
+
+    // Read the current input for the fetch closure. Storing in a
+    // `Memo` so a keystroke re-runs the resource without re-rendering
+    // every other subtree.
+    let q_signal = query;
+    let results = use_resource(move || {
+        let q = q_signal.read().clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            if q.trim().is_empty() {
+                return Ok(PortalSearchPayload::default());
+            }
+            let encoded = js_sys::encode_uri_component(&q)
+                .as_string()
+                .unwrap_or_default();
+            crate::hooks::fetch::api::get_portal_authed::<PortalSearchPayload>(&format!(
+                "/portal/search?q={encoded}"
+            ))
+            .await
+        }
+    });
+
+    let snap = results.read_unchecked();
+    let payload = match &*snap {
+        None => None,
+        Some(Ok(payload)) => Some(payload.clone()),
+        Some(Err(_)) => Some(PortalSearchPayload::default()),
+    };
+    let is_loading = snap.is_none();
+
+    rsx! {
+        PortalLayout { title: "Search".to_string(),
+            div { class: "mb-6 max-w-xl",
+                label {
+                    class: "block text-sm font-medium text-content mb-1",
+                    r#for: "portal-search-input",
+                    "Find a ticket, invoice, quote, or article"
+                }
+                input {
+                    id: "portal-search-input",
+                    r#type: "search",
+                    class: "block w-full rounded-md border border-line bg-surface px-3 py-2 text-content focus:outline-none focus:ring-2 focus:ring-accent",
+                    value: "{query.read()}",
+                    placeholder: "Search across your account",
+                    oninput: move |e: FormEvent| query.set(e.value()),
+                }
+            }
+
+            if is_loading {
+                Card {
+                    p { class: "text-sm text-muted py-3 text-center", "Searching..." }
+                }
+            } else if let Some(payload) = payload {
+                if query.read().trim().is_empty() {
+                    Card {
+                        p { class: "text-sm text-muted py-3 text-center",
+                            "Type a query above to search your tickets, invoices, quotes, and knowledge-base articles."
+                        }
+                    }
+                } else if payload.counts.tickets == 0
+                    && payload.counts.invoices == 0
+                    && payload.counts.quotes == 0
+                    && payload.counts.kb_articles == 0
+                {
+                    Card {
+                        p { class: "text-sm text-muted py-3 text-center",
+                            "No matches. Try a different word or check your spelling."
+                        }
+                    }
+                } else {
+                    PortalSearchSections { payload }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct PortalSearchSectionsProps {
+    payload: PortalSearchPayload,
+}
+
+#[component]
+fn PortalSearchSections(props: PortalSearchSectionsProps) -> Element {
+    let p = &props.payload;
+    rsx! {
+        div { class: "space-y-6",
+            if !p.tickets.is_empty() {
+                PortalSearchSection {
+                    title: "Tickets".to_string(),
+                    hits: p.tickets.clone(),
+                    total: p.counts.tickets,
+                    kind: "ticket".to_string(),
+                }
+            }
+            if !p.invoices.is_empty() {
+                PortalSearchSection {
+                    title: "Invoices".to_string(),
+                    hits: p.invoices.clone(),
+                    total: p.counts.invoices,
+                    kind: "invoice".to_string(),
+                }
+            }
+            if !p.quotes.is_empty() {
+                PortalSearchSection {
+                    title: "Quotes".to_string(),
+                    hits: p.quotes.clone(),
+                    total: p.counts.quotes,
+                    kind: "quote".to_string(),
+                }
+            }
+            if !p.kb_articles.is_empty() {
+                PortalSearchSection {
+                    title: "Knowledge base".to_string(),
+                    hits: p.kb_articles.clone(),
+                    total: p.counts.kb_articles,
+                    kind: "kb".to_string(),
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct PortalSearchSectionProps {
+    title: String,
+    hits: Vec<PortalSearchHit>,
+    total: i64,
+    kind: String,
+}
+
+#[component]
+fn PortalSearchSection(props: PortalSearchSectionProps) -> Element {
+    let showing = props.hits.len() as i64;
+    let more = props.total.saturating_sub(showing);
+    rsx! {
+        Card {
+            div { class: "flex items-center justify-between mb-3",
+                h2 { class: "text-lg font-medium text-content", "{props.title}" }
+                span { class: "text-sm text-muted",
+                    if more > 0 { "{showing} of {props.total}" } else { "{props.total}" }
+                }
+            }
+            ul { class: "space-y-2",
+                for hit in props.hits.iter().cloned() {
+                    PortalSearchHitRow { hit, kind: props.kind.clone() }
+                }
+            }
+            if more > 0 {
+                p { class: "mt-3 text-xs text-muted",
+                    "{more} more result(s) not shown. Narrow the search to see them."
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct PortalSearchHitRowProps {
+    hit: PortalSearchHit,
+    kind: String,
+}
+
+#[component]
+fn PortalSearchHitRow(props: PortalSearchHitRowProps) -> Element {
+    let id = props.hit.id.to_string();
+    let target = match props.kind.as_str() {
+        "ticket" => Route::PortalTicketDetail { id: id.clone() },
+        "invoice" => Route::PortalInvoiceDetail { id: id.clone() },
+        "quote" => Route::PortalQuoteDetail { id: id.clone() },
+        _ => Route::PortalKB {},
+    };
+    rsx! {
+        li { class: "border-l-2 border-accent pl-3",
+            Link {
+                to: target,
+                class: "block text-sm font-medium text-content hover:text-accent",
+                "{props.hit.label}"
+            }
+            if let Some(sub) = &props.hit.secondary {
+                p { class: "text-xs text-muted", "{sub}" }
+            }
+        }
+    }
+}
