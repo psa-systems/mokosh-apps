@@ -725,6 +725,28 @@ pub enum Route {
     #[route("/portal/forms/:id")]
     PortalFormDetail { id: String },
 
+    // PMS-729 phase 2 §7 slice C: read-only company-scoped views.
+    #[route("/portal/assets")]
+    PortalAssetList {},
+
+    #[route("/portal/assets/:id")]
+    PortalAssetDetail { id: String },
+
+    #[route("/portal/contracts")]
+    PortalContractList {},
+
+    #[route("/portal/contracts/:id")]
+    PortalContractDetail { id: String },
+
+    #[route("/portal/time-entries")]
+    PortalTimeEntryList {},
+
+    #[route("/portal/projects")]
+    PortalProjectList {},
+
+    #[route("/portal/projects/:id")]
+    PortalProjectDetail { id: String },
+
     // PMS-729 phase 2 §7 slice A / I14: portal-scoped grouped search.
     // Query param `q` is picked up by the page from the URL so a
     // customer can bookmark a search or share the link.
@@ -1412,6 +1434,41 @@ fn PortalFormList() -> Element {
 #[component]
 fn PortalFormDetail(id: String) -> Element {
     rsx! { portal::PortalFormDetailPage { id } }
+}
+
+#[component]
+fn PortalAssetList() -> Element {
+    rsx! { portal::PortalAssetListPage {} }
+}
+
+#[component]
+fn PortalAssetDetail(id: String) -> Element {
+    rsx! { portal::PortalAssetDetailPage { id } }
+}
+
+#[component]
+fn PortalContractList() -> Element {
+    rsx! { portal::PortalContractListPage {} }
+}
+
+#[component]
+fn PortalContractDetail(id: String) -> Element {
+    rsx! { portal::PortalContractDetailPage { id } }
+}
+
+#[component]
+fn PortalTimeEntryList() -> Element {
+    rsx! { portal::PortalTimeEntryListPage {} }
+}
+
+#[component]
+fn PortalProjectList() -> Element {
+    rsx! { portal::PortalProjectListPage {} }
+}
+
+#[component]
+fn PortalProjectDetail(id: String) -> Element {
+    rsx! { portal::PortalProjectDetailPage { id } }
 }
 
 #[component]

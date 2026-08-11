@@ -1359,6 +1359,11 @@ fn PortalSidebarContent() -> Element {
             PortalNavItem { to: Route::PortalInvoiceList {}, icon: rsx!(CurrencyIcon {}), label: "Invoices" }
             PortalNavItem { to: Route::PortalKB {}, icon: rsx!(BookIcon {}), label: "Knowledge Base" }
             PortalNavItem { to: Route::PortalFormList {}, icon: rsx!(ClipboardDocumentListIcon {}), label: "Forms" }
+            // PMS-729 phase 2 §7 slice C.
+            PortalNavItem { to: Route::PortalAssetList {}, icon: rsx!(ServerIcon {}), label: "Assets" }
+            PortalNavItem { to: Route::PortalContractList {}, icon: rsx!(ScaleIcon {}), label: "Contracts" }
+            PortalNavItem { to: Route::PortalTimeEntryList {}, icon: rsx!(ClockIcon {}), label: "Time entries" }
+            PortalNavItem { to: Route::PortalProjectList {}, icon: rsx!(FolderIcon {}), label: "Projects" }
             PortalNavItem { to: Route::PortalSearch {}, icon: rsx!(MagnifyingGlassIcon {}), label: "Search" }
         }
     }

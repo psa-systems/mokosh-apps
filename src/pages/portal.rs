@@ -2531,3 +2531,655 @@ fn PortalFormFieldRow(props: PortalFormFieldRowProps) -> Element {
         }
     }
 }
+
+// PMS-729 phase 2 §7 slice C: read-only company-scoped views ---------------
+
+// ---- assets --------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalAssetRow {
+    id: uuid::Uuid,
+    #[serde(default)]
+    asset_tag: Option<String>,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    asset_type: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    manufacturer: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    serial_number: Option<String>,
+    #[serde(default)]
+    warranty_expiry: Option<chrono::NaiveDate>,
+    #[serde(default)]
+    end_of_life: Option<chrono::NaiveDate>,
+}
+
+#[component]
+pub fn PortalAssetListPage() -> Element {
+    let list = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_portal_authed::<Vec<PortalAssetRow>>("/portal/assets")
+            .await
+            .ok()
+    });
+    let snap = list.read_unchecked();
+    let rows: Vec<PortalAssetRow> = match &*snap {
+        Some(Some(rows)) => rows.clone(),
+        _ => Vec::new(),
+    };
+    let loading = snap.is_none();
+
+    rsx! {
+        PortalLayout { title: "Assets".to_string(),
+            if loading {
+                Card { p { class: "text-sm text-muted py-4 text-center", "Loading assets..." } }
+            } else if rows.is_empty() {
+                Card {
+                    p { class: "text-sm text-muted py-4 text-center",
+                        "No assets are on file for your company yet."
+                    }
+                }
+            } else {
+                Card {
+                    Table {
+                        TableHead {
+                            TableRow {
+                                TableHeader { "Name" }
+                                TableHeader { "Type" }
+                                TableHeader { "Status" }
+                                TableHeader { "Serial" }
+                            }
+                        }
+                        TableBody {
+                            for row in rows.iter().cloned() {
+                                TableRow { key: "{row.id}",
+                                    TableCell {
+                                        Link {
+                                            to: Route::PortalAssetDetail { id: row.id.to_string() },
+                                            class: "text-accent hover:opacity-80 font-medium",
+                                            "{row.name}"
+                                        }
+                                    }
+                                    TableCell { "{row.asset_type}" }
+                                    TableCell { "{row.status}" }
+                                    TableCell {
+                                        if let Some(sn) = row.serial_number { "{sn}" } else { "-" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+pub struct PortalAssetDetailPageProps {
+    pub id: String,
+}
+
+#[component]
+pub fn PortalAssetDetailPage(props: PortalAssetDetailPageProps) -> Element {
+    let id_for_fetch = props.id.clone();
+    let resource = use_resource(move || {
+        let id = id_for_fetch.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_portal_authed::<PortalAssetRow>(&format!(
+                "/portal/assets/{id}"
+            ))
+            .await
+            .ok()
+        }
+    });
+    let snap = resource.read_unchecked();
+    rsx! {
+        PortalLayout { title: "Asset".to_string(),
+            div { class: "mb-4",
+                Link { to: Route::PortalAssetList {}, class: "text-sm text-accent hover:opacity-90", "Back to assets" }
+            }
+            match &*snap {
+                None => rsx! { Card { p { class: "text-sm text-muted py-4 text-center", "Loading..." } } },
+                Some(None) => rsx! {
+                    Card {
+                        p { class: "text-sm text-red-600 dark:text-red-300 py-4 text-center",
+                            "Could not load asset."
+                        }
+                    }
+                },
+                Some(Some(a)) => rsx! {
+                    Card {
+                        h2 { class: "text-xl font-bold text-content mb-4", "{a.name}" }
+                        dl { class: "grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-sm",
+                            dt { class: "text-muted", "Type" }
+                            dd { class: "text-content", "{a.asset_type}" }
+                            dt { class: "text-muted", "Status" }
+                            dd { class: "text-content", "{a.status}" }
+                            if let Some(tag) = &a.asset_tag {
+                                dt { class: "text-muted", "Asset tag" }
+                                dd { class: "text-content", "{tag}" }
+                            }
+                            if let Some(m) = &a.manufacturer {
+                                dt { class: "text-muted", "Manufacturer" }
+                                dd { class: "text-content", "{m}" }
+                            }
+                            if let Some(m) = &a.model {
+                                dt { class: "text-muted", "Model" }
+                                dd { class: "text-content", "{m}" }
+                            }
+                            if let Some(sn) = &a.serial_number {
+                                dt { class: "text-muted", "Serial" }
+                                dd { class: "text-content", "{sn}" }
+                            }
+                            if let Some(w) = a.warranty_expiry {
+                                dt { class: "text-muted", "Warranty" }
+                                dd { class: "text-content", "{w}" }
+                            }
+                            if let Some(eol) = a.end_of_life {
+                                dt { class: "text-muted", "End of life" }
+                                dd { class: "text-content", "{eol}" }
+                            }
+                        }
+                    }
+                },
+            }
+        }
+    }
+}
+
+// ---- contracts -----------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalContractRow {
+    id: uuid::Uuid,
+    #[serde(default)]
+    contract_number: Option<String>,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    contract_type: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    start_date: Option<chrono::NaiveDate>,
+    #[serde(default)]
+    end_date: Option<chrono::NaiveDate>,
+    #[serde(default)]
+    billing_cycle: Option<String>,
+    #[serde(default)]
+    billing_amount: Option<String>,
+}
+
+#[component]
+pub fn PortalContractListPage() -> Element {
+    let list = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_portal_authed::<Vec<PortalContractRow>>("/portal/contracts")
+            .await
+            .ok()
+    });
+    let snap = list.read_unchecked();
+    let rows: Vec<PortalContractRow> = match &*snap {
+        Some(Some(rows)) => rows.clone(),
+        _ => Vec::new(),
+    };
+    let loading = snap.is_none();
+
+    rsx! {
+        PortalLayout { title: "Contracts".to_string(),
+            if loading {
+                Card { p { class: "text-sm text-muted py-4 text-center", "Loading contracts..." } }
+            } else if rows.is_empty() {
+                Card {
+                    p { class: "text-sm text-muted py-4 text-center",
+                        "No contracts are on file for your company yet."
+                    }
+                }
+            } else {
+                Card {
+                    Table {
+                        TableHead {
+                            TableRow {
+                                TableHeader { "Name" }
+                                TableHeader { "Type" }
+                                TableHeader { "Status" }
+                                TableHeader { "Start" }
+                                TableHeader { "End" }
+                            }
+                        }
+                        TableBody {
+                            for row in rows.iter().cloned() {
+                                TableRow { key: "{row.id}",
+                                    TableCell {
+                                        Link {
+                                            to: Route::PortalContractDetail { id: row.id.to_string() },
+                                            class: "text-accent hover:opacity-80 font-medium",
+                                            "{row.name}"
+                                        }
+                                    }
+                                    TableCell { "{row.contract_type}" }
+                                    TableCell { "{row.status}" }
+                                    TableCell {
+                                        if let Some(d) = row.start_date { "{d}" } else { "-" }
+                                    }
+                                    TableCell {
+                                        if let Some(d) = row.end_date { "{d}" } else { "-" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+pub struct PortalContractDetailPageProps {
+    pub id: String,
+}
+
+#[component]
+pub fn PortalContractDetailPage(props: PortalContractDetailPageProps) -> Element {
+    let id_for_fetch = props.id.clone();
+    let resource = use_resource(move || {
+        let id = id_for_fetch.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_portal_authed::<PortalContractRow>(&format!(
+                "/portal/contracts/{id}"
+            ))
+            .await
+            .ok()
+        }
+    });
+    let snap = resource.read_unchecked();
+    rsx! {
+        PortalLayout { title: "Contract".to_string(),
+            div { class: "mb-4",
+                Link { to: Route::PortalContractList {}, class: "text-sm text-accent hover:opacity-90", "Back to contracts" }
+            }
+            match &*snap {
+                None => rsx! { Card { p { class: "text-sm text-muted py-4 text-center", "Loading..." } } },
+                Some(None) => rsx! { Card { p { class: "text-sm text-red-600 dark:text-red-300 py-4 text-center", "Could not load contract." } } },
+                Some(Some(c)) => rsx! {
+                    Card {
+                        h2 { class: "text-xl font-bold text-content mb-4", "{c.name}" }
+                        dl { class: "grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-sm",
+                            dt { class: "text-muted", "Type" }
+                            dd { class: "text-content", "{c.contract_type}" }
+                            dt { class: "text-muted", "Status" }
+                            dd { class: "text-content", "{c.status}" }
+                            if let Some(cn) = &c.contract_number {
+                                dt { class: "text-muted", "Contract number" }
+                                dd { class: "text-content", "{cn}" }
+                            }
+                            if let Some(d) = c.start_date {
+                                dt { class: "text-muted", "Start" }
+                                dd { class: "text-content", "{d}" }
+                            }
+                            if let Some(d) = c.end_date {
+                                dt { class: "text-muted", "End" }
+                                dd { class: "text-content", "{d}" }
+                            }
+                            if let Some(cy) = &c.billing_cycle {
+                                dt { class: "text-muted", "Billing cycle" }
+                                dd { class: "text-content", "{cy}" }
+                            }
+                            if let Some(a) = &c.billing_amount {
+                                dt { class: "text-muted", "Billing amount" }
+                                dd { class: "text-content", {portal_money(a)} }
+                            }
+                        }
+                    }
+                },
+            }
+        }
+    }
+}
+
+// ---- time entries --------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalTimeEntryRow {
+    id: uuid::Uuid,
+    #[serde(default)]
+    date: Option<chrono::NaiveDate>,
+    #[serde(default)]
+    duration_minutes: i32,
+    #[serde(default)]
+    work_type: String,
+    #[serde(default)]
+    ticket_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    ticket_number: Option<String>,
+    #[serde(default)]
+    project_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    project_name: Option<String>,
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(default)]
+    billing_status: String,
+    #[serde(default)]
+    approval_status: String,
+}
+
+fn format_minutes(minutes: i32) -> String {
+    let hours = minutes / 60;
+    let remainder = minutes % 60;
+    if hours > 0 && remainder > 0 {
+        format!("{hours}h {remainder}m")
+    } else if hours > 0 {
+        format!("{hours}h")
+    } else {
+        format!("{remainder}m")
+    }
+}
+
+#[component]
+pub fn PortalTimeEntryListPage() -> Element {
+    let list = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_portal_authed::<Vec<PortalTimeEntryRow>>(
+            "/portal/time-entries",
+        )
+        .await
+        .ok()
+    });
+    let snap = list.read_unchecked();
+    let rows: Vec<PortalTimeEntryRow> = match &*snap {
+        Some(Some(rows)) => rows.clone(),
+        _ => Vec::new(),
+    };
+    let loading = snap.is_none();
+    let total: i32 = rows.iter().map(|r| r.duration_minutes).sum();
+
+    rsx! {
+        PortalLayout { title: "Time entries".to_string(),
+            if loading {
+                Card { p { class: "text-sm text-muted py-4 text-center", "Loading time entries..." } }
+            } else if rows.is_empty() {
+                Card {
+                    p { class: "text-sm text-muted py-4 text-center",
+                        "No time has been logged against your company yet."
+                    }
+                }
+            } else {
+                Card {
+                    div { class: "mb-3 flex items-center justify-between",
+                        p { class: "text-sm text-muted",
+                            "Showing the {rows.len()} newest entries; total {format_minutes(total)}."
+                        }
+                    }
+                    Table {
+                        TableHead {
+                            TableRow {
+                                TableHeader { "Date" }
+                                TableHeader { "Work" }
+                                TableHeader { "Duration" }
+                                TableHeader { "Ticket" }
+                                TableHeader { "Project" }
+                                TableHeader { "Billing" }
+                            }
+                        }
+                        TableBody {
+                            for row in rows.iter().cloned() {
+                                TableRow { key: "{row.id}",
+                                    TableCell {
+                                        if let Some(d) = row.date { "{d}" } else { "-" }
+                                    }
+                                    TableCell { "{row.work_type}" }
+                                    TableCell { "{format_minutes(row.duration_minutes)}" }
+                                    TableCell {
+                                        if let Some(number) = row.ticket_number.clone() {
+                                            if let Some(id) = row.ticket_id {
+                                                Link {
+                                                    to: Route::PortalTicketDetail { id: id.to_string() },
+                                                    class: "text-accent hover:opacity-80",
+                                                    "#{number}"
+                                                }
+                                            } else {
+                                                "#{number}"
+                                            }
+                                        } else {
+                                            "-"
+                                        }
+                                    }
+                                    TableCell {
+                                        if let Some(n) = row.project_name { "{n}" } else { "-" }
+                                    }
+                                    TableCell { "{row.billing_status}" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---- projects ------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalProjectRow {
+    id: uuid::Uuid,
+    #[serde(default)]
+    project_number: Option<String>,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    start_date: Option<chrono::NaiveDate>,
+    #[serde(default)]
+    target_end_date: Option<chrono::NaiveDate>,
+    #[serde(default)]
+    actual_end_date: Option<chrono::NaiveDate>,
+    #[serde(default)]
+    budget_hours: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalProjectPhaseRow {
+    id: uuid::Uuid,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    start_date: Option<chrono::NaiveDate>,
+    #[serde(default)]
+    end_date: Option<chrono::NaiveDate>,
+}
+
+/// Detail response merges project fields with a phase list; `#[serde(flatten)]`
+/// on the server means the fields sit alongside `phases` at the top level.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalProjectDetailPayload {
+    #[serde(flatten)]
+    project: PortalProjectRow,
+    #[serde(default)]
+    phases: Vec<PortalProjectPhaseRow>,
+}
+
+#[component]
+pub fn PortalProjectListPage() -> Element {
+    let list = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_portal_authed::<Vec<PortalProjectRow>>("/portal/projects")
+            .await
+            .ok()
+    });
+    let snap = list.read_unchecked();
+    let rows: Vec<PortalProjectRow> = match &*snap {
+        Some(Some(rows)) => rows.clone(),
+        _ => Vec::new(),
+    };
+    let loading = snap.is_none();
+
+    rsx! {
+        PortalLayout { title: "Projects".to_string(),
+            if loading {
+                Card { p { class: "text-sm text-muted py-4 text-center", "Loading projects..." } }
+            } else if rows.is_empty() {
+                Card {
+                    p { class: "text-sm text-muted py-4 text-center",
+                        "No projects are on file for your company yet."
+                    }
+                }
+            } else {
+                Card {
+                    Table {
+                        TableHead {
+                            TableRow {
+                                TableHeader { "Name" }
+                                TableHeader { "Status" }
+                                TableHeader { "Start" }
+                                TableHeader { "Target end" }
+                            }
+                        }
+                        TableBody {
+                            for row in rows.iter().cloned() {
+                                TableRow { key: "{row.id}",
+                                    TableCell {
+                                        Link {
+                                            to: Route::PortalProjectDetail { id: row.id.to_string() },
+                                            class: "text-accent hover:opacity-80 font-medium",
+                                            "{row.name}"
+                                        }
+                                    }
+                                    TableCell { "{row.status}" }
+                                    TableCell {
+                                        if let Some(d) = row.start_date { "{d}" } else { "-" }
+                                    }
+                                    TableCell {
+                                        if let Some(d) = row.target_end_date { "{d}" } else { "-" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+pub struct PortalProjectDetailPageProps {
+    pub id: String,
+}
+
+#[component]
+pub fn PortalProjectDetailPage(props: PortalProjectDetailPageProps) -> Element {
+    let id_for_fetch = props.id.clone();
+    let resource = use_resource(move || {
+        let id = id_for_fetch.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_portal_authed::<PortalProjectDetailPayload>(&format!(
+                "/portal/projects/{id}"
+            ))
+            .await
+            .ok()
+        }
+    });
+    let snap = resource.read_unchecked();
+    rsx! {
+        PortalLayout { title: "Project".to_string(),
+            div { class: "mb-4",
+                Link { to: Route::PortalProjectList {}, class: "text-sm text-accent hover:opacity-90", "Back to projects" }
+            }
+            match &*snap {
+                None => rsx! { Card { p { class: "text-sm text-muted py-4 text-center", "Loading..." } } },
+                Some(None) => rsx! { Card { p { class: "text-sm text-red-600 dark:text-red-300 py-4 text-center", "Could not load project." } } },
+                Some(Some(payload)) => {
+                    let p = payload.project.clone();
+                    let phases = payload.phases.clone();
+                    rsx! {
+                        Card {
+                            h2 { class: "text-xl font-bold text-content mb-2", "{p.name}" }
+                            if let Some(desc) = &p.description {
+                                p { class: "text-sm text-muted mb-4", "{desc}" }
+                            }
+                            dl { class: "grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-sm",
+                                dt { class: "text-muted", "Status" }
+                                dd { class: "text-content", "{p.status}" }
+                                if let Some(pn) = &p.project_number {
+                                    dt { class: "text-muted", "Number" }
+                                    dd { class: "text-content", "{pn}" }
+                                }
+                                if let Some(d) = p.start_date {
+                                    dt { class: "text-muted", "Start" }
+                                    dd { class: "text-content", "{d}" }
+                                }
+                                if let Some(d) = p.target_end_date {
+                                    dt { class: "text-muted", "Target end" }
+                                    dd { class: "text-content", "{d}" }
+                                }
+                                if let Some(d) = p.actual_end_date {
+                                    dt { class: "text-muted", "Actual end" }
+                                    dd { class: "text-content", "{d}" }
+                                }
+                                if let Some(h) = &p.budget_hours {
+                                    dt { class: "text-muted", "Budget hours" }
+                                    dd { class: "text-content", "{h}" }
+                                }
+                            }
+                        }
+                        if !phases.is_empty() {
+                            Card {
+                                h3 { class: "text-lg font-semibold text-content mb-3", "Phases" }
+                                Table {
+                                    TableHead {
+                                        TableRow {
+                                            TableHeader { "Name" }
+                                            TableHeader { "Status" }
+                                            TableHeader { "Start" }
+                                            TableHeader { "End" }
+                                        }
+                                    }
+                                    TableBody {
+                                        for phase in phases.iter().cloned() {
+                                            TableRow { key: "{phase.id}",
+                                                TableCell {
+                                                    div {
+                                                        span { class: "font-medium text-content", "{phase.name}" }
+                                                        if let Some(desc) = phase.description {
+                                                            p { class: "text-xs text-muted", "{desc}" }
+                                                        }
+                                                    }
+                                                }
+                                                TableCell { "{phase.status}" }
+                                                TableCell {
+                                                    if let Some(d) = phase.start_date { "{d}" } else { "-" }
+                                                }
+                                                TableCell {
+                                                    if let Some(d) = phase.end_date { "{d}" } else { "-" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
