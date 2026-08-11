@@ -3739,12 +3739,55 @@ pub fn PortalExportPage() -> Element {
                                 dd { class: "text-content", {crate::utils::datetime::format_user_datetime(t, None)} }
                             }
                         }
-                        if let Some(url) = &job.signed_url {
-                            a {
-                                class: "mt-3 inline-block text-sm text-accent hover:opacity-80",
-                                href: "{url}",
-                                target: "_blank",
-                                "Download your bundle"
+                        if let Some(url) = job.signed_url.clone() {
+                            // PMS-729 phase 2 §7 slice D / I15 follow-up:
+                            // the bundle sits behind `RequirePortalAuth`,
+                            // so the SPA cannot use a plain <a href> (the
+                            // portal bearer only lives in WASM memory).
+                            // Fetch bytes with the bearer + save via the
+                            // Blob-URL trick every attachment download
+                            // already uses.
+                            {
+                                let mut downloading = use_signal(|| false);
+                                let mut dl_err = use_signal(String::new);
+                                let job_id = job.id.to_string();
+                                rsx! {
+                                    button {
+                                        r#type: "button",
+                                        class: "mt-3 inline-block text-sm text-accent hover:opacity-80 disabled:opacity-60",
+                                        disabled: *downloading.read(),
+                                        onclick: move |_| {
+                                            if *downloading.peek() {
+                                                return;
+                                            }
+                                            downloading.set(true);
+                                            dl_err.set(String::new());
+                                            let path = url.clone();
+                                            let filename = format!(
+                                                "mokosh-portal-export-{job_id}.json"
+                                            );
+                                            spawn(async move {
+                                                #[cfg(feature = "web")]
+                                                {
+                                                    match crate::hooks::fetch::api::get_portal_authed_bytes(&path).await {
+                                                        Ok((bytes, name)) => {
+                                                            let fname = name.unwrap_or(filename);
+                                                            if let Err(e) = crate::utils::download::save_bytes_as_file(&bytes, &fname) {
+                                                                dl_err.set(e);
+                                                            }
+                                                        }
+                                                        Err(e) => dl_err.set(e),
+                                                    }
+                                                }
+                                                downloading.set(false);
+                                            });
+                                        },
+                                        if *downloading.read() { "Preparing your download..." } else { "Download your bundle" }
+                                    }
+                                    if !dl_err().is_empty() {
+                                        p { class: "mt-2 text-sm text-red-600 dark:text-red-300", "{dl_err}" }
+                                    }
+                                }
                             }
                         } else if job.status == "queued" || job.status == "running" {
                             p { class: "mt-3 text-sm text-muted",
