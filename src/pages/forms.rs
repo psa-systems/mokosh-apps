@@ -1076,6 +1076,22 @@ fn expansion_after_move(expanded: &HashSet<usize>, from: usize, to: usize) -> Ha
         .collect()
 }
 
+/// The set of expanded field rows after a new field is added.
+///
+/// MAPPS-434: exactly the new row. Opening it is right, because it has nothing
+/// to summarise yet and typing into it is the whole reason it was added, but
+/// leaving the previous one open behind it rebuilt the wall PMS-760 removed:
+/// five clicks of Add field left five editors on screen, each with its label,
+/// type, hint, required checkbox and Advanced disclosure.
+///
+/// Only this path collapses anything. Clicking a row's own summary still opens
+/// it alongside whatever else is open, because comparing two fields is a real
+/// thing to want, and a failed save still opens every row that has a problem,
+/// which can be several at once.
+fn expansion_after_add(new_index: usize) -> HashSet<usize> {
+    HashSet::from([new_index])
+}
+
 /// What a collapsed field row calls itself.
 ///
 /// The label is what the client reads, so it is what the operator recognises
@@ -1847,10 +1863,12 @@ fn FormEditorModal(
                         onclick: move |_| {
                             // PMS-760: a new row opens, because it has nothing
                             // to summarise yet and typing into it is the whole
-                            // reason it was added.
+                            // reason it was added. MAPPS-434: and the row
+                            // before it closes, or building a form one field at
+                            // a time ends with every editor open.
                             let at = fields.read().len();
                             fields.write().push(FieldRow::new());
-                            expanded_fields.write().insert(at);
+                            expanded_fields.set(expansion_after_add(at));
                         },
                         "+ Add field"
                     }
@@ -3368,6 +3386,22 @@ mod tests {
             expansion_after_move(&HashSet::from([2usize]), 2, 2),
             HashSet::from([2usize]),
             "a drag that ends where it started"
+        );
+    }
+
+    /// MAPPS-434: adding a field opens it and closes the one before it, so a
+    /// form built one field at a time does not end as the wall PMS-760 removed.
+    #[test]
+    fn adding_a_field_opens_only_the_new_one() {
+        assert_eq!(
+            expansion_after_add(3),
+            HashSet::from([3usize]),
+            "the new row is open and nothing else is"
+        );
+        assert_eq!(
+            expansion_after_add(0),
+            HashSet::from([0usize]),
+            "including the first field of an empty form"
         );
     }
 
