@@ -46,6 +46,19 @@ pub struct ModalProps {
     onclose: EventHandler<()>,
     /// Optional footer actions
     footer: Option<Element>,
+    /// PMS-763: optional chrome between the header and the scrolling body,
+    /// pinned the way they are. For a tab bar or anything else that has to stay
+    /// put while the content moves under it.
+    ///
+    /// A caller CAN do this itself with a `sticky` element at the top of the
+    /// body, and the request-form builder did until this existed. It goes wrong
+    /// quietly: a sticky box is constrained by the scrollport inset by the
+    /// scroll container's padding, so `top-0` parks it 16px below the top of
+    /// the visible area and the content scrolls through the gap. Covering that
+    /// takes negative margins, a background and a z-index, all tuned to this
+    /// component's `px-4 py-4` from the outside, which stops matching the
+    /// moment that padding changes.
+    subheader: Option<Element>,
 }
 
 /// Modal dialog component
@@ -65,6 +78,7 @@ pub fn Modal(props: ModalProps) -> Element {
             size: props.size,
             onclose: props.onclose,
             footer: props.footer.clone(),
+            subheader: props.subheader.clone(),
             {props.children}
         }
     }
@@ -78,9 +92,8 @@ fn ModalDialog(
     size: ModalSize,
     onclose: EventHandler<()>,
     footer: Option<Element>,
+    subheader: Option<Element>,
 ) -> Element {
-    let size_class = size.class();
-
     // Restore focus to the control that opened the modal. Capture the active
     // element on the first render, before the dialog steals focus on mount, and
     // restore it when this component unmounts (any close path).
@@ -95,6 +108,30 @@ fn ModalDialog(
             let _ = el.focus();
         }
     });
+
+    rsx! {
+        ModalChrome { title, size, onclose, footer, subheader, {children} }
+    }
+}
+
+/// The panel itself: backdrop, pinned header, optional pinned subheader,
+/// scrolling body, pinned footer.
+///
+/// Split out of [`ModalDialog`] so the layout can be rendered in a host test.
+/// `ModalDialog` reads `web_sys::window()` to restore focus on close, and a
+/// wasm-bindgen import cannot be called off wasm, so the dialog as a whole is
+/// unrenderable there. The structure is what PMS-763 was about, so the
+/// structure is what the tests get to see - the real one, not a copy of it.
+#[component]
+fn ModalChrome(
+    children: Element,
+    title: String,
+    size: ModalSize,
+    onclose: EventHandler<()>,
+    footer: Option<Element>,
+    subheader: Option<Element>,
+) -> Element {
+    let size_class = size.class();
 
     rsx! {
         div { class: "fixed inset-0 z-50 overflow-y-auto",
@@ -140,6 +177,17 @@ fn ModalDialog(
                             class: "rounded-md text-subtle hover:text-content focus:outline-none focus:ring-2 focus:ring-accent",
                             onclick: move |_| onclose.call(()),
                             XMarkIcon {}
+                        }
+                    }
+
+                    // PMS-763: chrome between the header and the body, pinned
+                    // like both of them. Outside the scrolling region on
+                    // purpose: a tab bar that lives inside it has to be made to
+                    // hover over its own container, and whatever it fails to
+                    // cover is a strip of scrolled content sitting above it.
+                    if let Some(subheader) = subheader {
+                        div { class: "flex-shrink-0 px-4 border-b border-line",
+                            {subheader}
                         }
                     }
 
@@ -479,6 +527,86 @@ fn ToastRow(props: ToastRowProps) -> Element {
 #[cfg(test)]
 mod tests {
     use super::confirm_phrase_satisfied;
+    use super::*;
+
+    /// PMS-763: a modal whose chrome includes a tab bar. Rendered through the
+    /// REAL [`ModalChrome`], so the test moves when the component does.
+    #[component]
+    fn WithSubheader() -> Element {
+        rsx! {
+            ModalChrome {
+                title: "Title".to_string(),
+                size: ModalSize::Large,
+                onclose: move |_| {},
+                subheader: rsx! { nav { "SUBHEADER-MARKER" } },
+                "BODY-MARKER"
+            }
+        }
+    }
+
+    #[component]
+    fn WithoutSubheader() -> Element {
+        rsx! {
+            ModalChrome {
+                title: "Title".to_string(),
+                size: ModalSize::Large,
+                onclose: move |_| {},
+                "BODY-MARKER"
+            }
+        }
+    }
+
+    /// PMS-763 regression: the request-form builder's tab bar used to be a
+    /// `sticky` element at the top of the scrolling body, and a sticky box is
+    /// constrained by the scrollport inset by the scroll container's padding.
+    /// It therefore parked 16px below the top of the visible area and the field
+    /// list scrolled through the strip above it. A subheader must render
+    /// BEFORE the scrolling region, not inside it, so no such strip exists.
+    #[test]
+    fn a_subheader_is_pinned_outside_the_scrolling_body() {
+        let mut dom = VirtualDom::new(WithSubheader);
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+
+        let subheader = html
+            .find("SUBHEADER-MARKER")
+            .expect("the subheader renders");
+        // The BODY's scroller specifically. The outermost wrapper is also
+        // `overflow-y-auto` (it scrolls the whole overlay on a short viewport),
+        // and it opens the document, so a bare search for that class would
+        // compare against the wrong box and pass no matter where the subheader
+        // sat.
+        let scroller = html
+            .find("flex-1 min-h-0 overflow-y-auto")
+            .expect("the body is still the scrolling region");
+        let body = html.find("BODY-MARKER").expect("the body renders");
+
+        assert!(
+            subheader < scroller,
+            "the subheader must sit above the scroll container, not inside it; got: {html}"
+        );
+        assert!(scroller < body, "the body content is inside the scroller");
+        assert!(
+            html[..subheader].contains("flex-shrink-0"),
+            "the subheader is pinned like the header and footer; got: {html}"
+        );
+    }
+
+    /// The slot is optional, and a modal without one must render exactly what
+    /// it did before: no empty band, no second rule under the title.
+    #[test]
+    fn no_subheader_means_no_extra_chrome() {
+        let mut dom = VirtualDom::new(WithoutSubheader);
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+
+        assert!(!html.contains("SUBHEADER-MARKER"));
+        assert_eq!(
+            html.matches("border-b border-line").count(),
+            1,
+            "only the header's own rule, no empty band under the title; got: {html}"
+        );
+    }
 
     // PMS-369: type-to-confirm gate. The destructive button is enabled only
     // when `confirm_phrase_satisfied` returns true.
