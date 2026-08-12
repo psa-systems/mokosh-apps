@@ -1615,6 +1615,38 @@ fn FormEditorModal(
         })
         .collect();
 
+    // PMS-760: the three parts of a definition, one at a time. PMS-763: handed
+    // to the modal's pinned subheader rather than made sticky inside the body.
+    // Sticky put it 16px down from the top of the scrollport, because a sticky
+    // box is constrained by the scrollport inset by the scroll container's
+    // padding, and the field list scrolled through the strip above it. Pinned
+    // outside the scrolling region, there is no strip to bleed through.
+    let section_tabs = rsx! {
+        nav { class: "-mb-px flex gap-6", role: "tablist", aria_label: "Form sections",
+            EditorTabButton {
+                label: "Details",
+                count: None,
+                problems: problems().details,
+                active: section() == EditorSection::Details,
+                onclick: move |_| section.set(EditorSection::Details),
+            }
+            EditorTabButton {
+                label: "Fields",
+                count: Some(fields.read().len()),
+                problems: problems().fields,
+                active: section() == EditorSection::Fields,
+                onclick: move |_| section.set(EditorSection::Fields),
+            }
+            EditorTabButton {
+                label: "Rules",
+                count: Some(rules.read().len()),
+                problems: problems().rules,
+                active: section() == EditorSection::Rules,
+                onclick: move |_| section.set(EditorSection::Rules),
+            }
+        }
+    };
+
     rsx! {
         crate::components::Modal {
             open: true,
@@ -1622,6 +1654,7 @@ fn FormEditorModal(
             size: crate::components::ModalSize::Large,
             onclose: move |_| request_close.call(()),
             footer,
+            subheader: section_tabs,
 
             div { class: "space-y-4",
 
@@ -1673,38 +1706,6 @@ fn FormEditorModal(
                 // names the rows and rules its messages belong to.
                 if !error().is_empty() {
                     ErrorBanner { "{error()}" }
-                }
-
-                // PMS-760: the three parts of a definition, one at a time.
-                // Sticky so switching sections never means scrolling back up
-                // through a field list to reach the tabs.
-                // The negative margin plus matching padding makes the bar span
-                // the modal body's own gutters, so field rows scrolling past it
-                // do not show through the 16px either side of it.
-                div { class: "sticky top-0 z-10 -mx-4 -mt-1 border-b border-line bg-raised px-4 pt-1",
-                    nav { class: "-mb-px flex gap-6", role: "tablist", aria_label: "Form sections",
-                        EditorTabButton {
-                            label: "Details",
-                            count: None,
-                            problems: problems().details,
-                            active: section() == EditorSection::Details,
-                            onclick: move |_| section.set(EditorSection::Details),
-                        }
-                        EditorTabButton {
-                            label: "Fields",
-                            count: Some(fields.read().len()),
-                            problems: problems().fields,
-                            active: section() == EditorSection::Fields,
-                            onclick: move |_| section.set(EditorSection::Fields),
-                        }
-                        EditorTabButton {
-                            label: "Rules",
-                            count: Some(rules.read().len()),
-                            problems: problems().rules,
-                            active: section() == EditorSection::Rules,
-                            onclick: move |_| section.set(EditorSection::Rules),
-                        }
-                    }
                 }
 
                 // --- definition ------------------------------------------------
