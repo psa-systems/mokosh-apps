@@ -3836,6 +3836,14 @@ fn ContactForm(props: ContactFormProps) -> Element {
     });
     let mut company_id = use_signal(|| initial.company_id.clone());
     let mut company_name = use_signal(|| initial.company_name.clone());
+    // MAPPS-396 / PMS-729: single-shot "create contact + grant portal
+    // access" checkbox. Only wired in Create mode (Edit uses the
+    // dedicated ContactPortalCard toggle on the detail page, which the
+    // server already mints a setup token from on the false->true
+    // transition). When ticked, the POST body carries
+    // `create_portal_access: true` and the server mints the setup token
+    // and dispatches the auth.welcome email in the same transaction.
+    let mut create_portal_access = use_signal(|| false);
     // MAPPS-251: a contact's company can be a freeform typed name instead of an
     // FK-linked CRM company. Open in freeform mode when the loaded contact has a
     // company_name but no resolvable company_id (a freeform-only contact); else
@@ -3953,6 +3961,12 @@ fn ContactForm(props: ContactFormProps) -> Element {
             body["company_id"] = serde_json::json!(company_uuid);
         } else if !freeform_name.is_empty() {
             body["company_name"] = serde_json::json!(freeform_name);
+        }
+        // MAPPS-396 / PMS-729: opt-in single-shot "create + grant portal
+        // access". Only sent on Create (Edit ignores it; the toggle on
+        // the detail page owns the grant/revoke there).
+        if matches!(mode, ContactFormMode::Create) && *create_portal_access.read() {
+            body["create_portal_access"] = serde_json::json!(true);
         }
         let mode = mode.clone();
         let mode_for_toast = mode.clone();
@@ -4161,6 +4175,33 @@ fn ContactForm(props: ContactFormProps) -> Element {
                                 company_id.set(String::new());
                                 company_name.set(String::new());
                             },
+                        }
+                    }
+                }
+
+                // MAPPS-396 / PMS-729: single-shot portal-grant option. Only
+                // rendered on Create; Edit uses the ContactPortalCard on the
+                // detail page (which already fires the same setup-email
+                // dispatch on the false->true transition).
+                if matches!(&props.mode, ContactFormMode::Create) {
+                    div { class: "space-y-2 rounded-md border border-line bg-surface p-4",
+                        label { class: "flex items-start gap-3 cursor-pointer",
+                            input {
+                                r#type: "checkbox",
+                                class: "mt-1 h-4 w-4 rounded border-line text-accent focus:ring-accent",
+                                checked: *create_portal_access.read(),
+                                oninput: move |e: FormEvent| {
+                                    create_portal_access.set(e.value() == "true");
+                                },
+                            }
+                            div {
+                                span { class: "block text-sm font-medium text-content",
+                                    "Grant portal access"
+                                }
+                                p { class: "mt-1 text-xs text-muted",
+                                    "Emails this contact a link to set a password and sign in to the Client Portal. Requires an email address above."
+                                }
+                            }
                         }
                     }
                 }
@@ -4583,7 +4624,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                         Badge { variant: BadgeVariant::Green, "Granted" }
                     }
                     p { class: "text-xs text-muted",
-                        "This contact can sign in to the Client Portal once a password has been issued from Settings > Portal Users."
+                        "This contact can sign in to the Client Portal. A setup-password email was sent when access was granted; if the link expired (72h TTL), revoke and grant again to reissue it."
                     }
                     Button {
                         variant: ButtonVariant::Secondary,
@@ -4617,7 +4658,7 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                         Badge { variant: BadgeVariant::Gray, "Not granted" }
                     }
                     p { class: "text-xs text-muted",
-                        "Granting access flips the portal flag. A password still has to be issued separately from Settings > Portal Users before the contact can sign in."
+                        "Granting access emails this contact a link to set a password and sign in to the Client Portal. Requires a valid email address on the contact."
                     }
                     Button {
                         variant: ButtonVariant::Primary,
