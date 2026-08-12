@@ -66,6 +66,10 @@ pub fn FormsBuilderPage() -> Element {
     let mut editing = use_signal(|| None::<EditorState>);
     // MAPPS-424: (definition id, name) of the form being sent, if any.
     let mut sending = use_signal(|| None::<(String, String)>);
+    // PMS-764: bumped when a send completes, so the Recently sent panel picks
+    // up the link that was just issued. A counter rather than a handle on the
+    // panel's resource, so the panel keeps owning its own fetch.
+    let mut sent_reload = use_signal(|| 0u32);
     // PMS-744: the client's view of a saved definition, opened from its row.
     let mut previewing = use_signal(|| None::<PublicForm>);
 
@@ -326,6 +330,14 @@ pub fn FormsBuilderPage() -> Element {
             }
         }
 
+        // PMS-764: what became of the forms already sent. Until this, a sent
+        // link showed up in exactly one place, the company detail page, and
+        // nothing here led there: you sent a form, got a toast, and this page
+        // looked exactly as it had before.
+        div { class: "mt-6",
+            crate::pages::request_links::SentRequestLinksPanel { reload: sent_reload }
+        }
+
         if let Some(state) = editing.read().clone() {
             {
                 // The draft keyed to whatever is being edited: the one with a
@@ -357,7 +369,13 @@ pub fn FormsBuilderPage() -> Element {
                 form_definition_id: id,
                 form_name: name,
                 onclose: move |_| { sending.set(None); },
-                onsent: move |_| { sending.set(None); },
+                onsent: move |_| {
+                    sending.set(None);
+                    // PMS-764: the row appears in the panel below the moment it
+                    // is created, which is when "where did that go?" is actually
+                    // being asked.
+                    sent_reload += 1;
+                },
             }
         }
 
