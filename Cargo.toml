@@ -158,6 +158,21 @@ strip = true
 
 [profile.dev]
 opt-level = 0
+# MAPPS-396 dev-box unblock: rustc peak RSS on this crate's lib compile
+# (huge Dioxus router + all pages) sits around 2.5 GB with debug=2 and
+# still trips earlyoom at debug=1 (~1.5 GB free floor on this box). `debug = 0`
+# drops the DWARF section entirely; panic messages in the browser lose
+# source-line mapping but the app still boots. Bump back once the app is
+# split into smaller crates or run on a box with more RAM headroom.
+debug = 0
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# MAPPS-396: dx (`dx serve`) writes wasm builds under `target/wasm32-.../wasm-dev`,
+# a custom cargo profile it derives from `dev`. Declaring it here lets us set
+# per-profile knobs without touching host `dev`. Same rationale as above:
+# debug = 0 so rustc peak memory stays under this dev box's OOM floor.
+[profile.wasm-dev]
+inherits = "dev"
+debug = 0
