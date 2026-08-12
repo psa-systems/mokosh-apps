@@ -3317,6 +3317,59 @@ mod tests {
         );
     }
 
+    /// A drag moves a row and closes the gap behind it. The arrow buttons swap
+    /// two rows, which is right for a single step and wrong for a drag:
+    /// dropping field 5 onto field 1 must put it at 1 and push the rest down,
+    /// not exchange the two and scramble everything between them.
+    #[test]
+    fn a_dragged_row_lands_where_it_was_dropped() {
+        let mut rows = vec!["a", "b", "c", "d", "e"];
+        move_row(&mut rows, 4, 1);
+        assert_eq!(rows, vec!["a", "e", "b", "c", "d"]);
+
+        let mut rows = vec!["a", "b", "c", "d"];
+        move_row(&mut rows, 0, 2);
+        assert_eq!(rows, vec!["b", "c", "a", "d"], "and downwards too");
+
+        let mut rows = vec!["a", "b"];
+        move_row(&mut rows, 1, 1);
+        assert_eq!(rows, vec!["a", "b"], "a drag that ends where it started");
+        move_row(&mut rows, 0, 9);
+        assert_eq!(rows, vec!["a", "b"], "an index off the end changes nothing");
+    }
+
+    /// Expansion is keyed by position, so it has to shift exactly the way the
+    /// rows do. Otherwise dragging an open field leaves some other row showing
+    /// as open in its place.
+    #[test]
+    fn dragging_a_row_carries_its_open_state() {
+        assert_eq!(
+            expansion_after_move(&HashSet::from([4usize]), 4, 1),
+            HashSet::from([1usize]),
+            "the dragged row's own state lands on its new index"
+        );
+        assert_eq!(
+            expansion_after_move(&HashSet::from([1usize, 2]), 4, 1),
+            HashSet::from([2usize, 3]),
+            "rows the drag pushed down move with them"
+        );
+        assert_eq!(
+            expansion_after_move(&HashSet::from([1usize, 2]), 0, 2),
+            HashSet::from([0usize, 1]),
+            "and rows pulled up when the drag went the other way"
+        );
+        assert_eq!(
+            expansion_after_move(&HashSet::from([0usize, 3]), 1, 2),
+            HashSet::from([0usize, 3]),
+            "rows outside the moved span are untouched"
+        );
+        assert_eq!(
+            expansion_after_move(&HashSet::from([2usize]), 2, 2),
+            HashSet::from([2usize]),
+            "a drag that ends where it started"
+        );
+    }
+
     /// PMS-760: a row with a problem is opened by the failed save, and the
     /// summary marks it. Both of those hang off `any()`.
     #[test]
