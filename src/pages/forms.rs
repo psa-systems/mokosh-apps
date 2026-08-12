@@ -12,12 +12,15 @@
 //! the payload key, so a merge cannot express a rename). A whole-form editor
 //! matches both facts exactly.
 
+use std::collections::HashSet;
+
 use dioxus::prelude::*;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Checkbox, DataTable, ErrorBanner,
+    use_page_title, ArrowDownIcon, ArrowUpIcon, Badge, BadgeVariant, Button, ButtonVariant,
+    Checkbox, ChevronDownIcon, ChevronRightIcon, DataTable, ErrorBanner, IconButton, IconSize,
     Input, PageHeader, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
-    TableHeader, TableLoading, TableRow, Textarea,
+    TableHeader, TableLoading, TableRow, Textarea, TrashIcon,
 };
 use crate::modules::forms::{
     CreateFormDefinitionRequest, FieldType, FormDefinition, FormRule, UpdateFormDefinitionRequest,
@@ -141,7 +144,7 @@ pub fn FormsBuilderPage() -> Element {
         // away. Hidden entirely when there are none, because an empty
         // "Drafts (0)" panel is a permanent reminder of nothing.
         if !draft_rows.is_empty() {
-            div { class: "mb-4 rounded-md border border-default bg-surface-2 p-3",
+            div { class: "mb-4 rounded-md border border-line bg-surface-2 p-3",
                 p { class: "mb-2 text-sm font-medium text-content",
                     "Unfinished drafts"
                 }
@@ -161,7 +164,7 @@ pub fn FormsBuilderPage() -> Element {
                             let delete_id = draft.id.clone();
                             rsx! {
                                 li { key: "{key}",
-                                    class: "flex items-center justify-between gap-3 rounded border border-default bg-surface px-3 py-2",
+                                    class: "flex items-center justify-between gap-3 rounded border border-line bg-surface px-3 py-2",
                                     div { class: "min-w-0",
                                         span { class: "text-sm font-medium text-content", "{label}" }
                                         // Which form it belongs to, when it
@@ -938,6 +941,118 @@ struct FieldRowErrors {
     options: String,
 }
 
+impl FieldRowErrors {
+    /// Whether this row has anything wrong with it. PMS-760: a collapsed row
+    /// has no inputs on screen to carry a message, so the summary has to say
+    /// that there is one.
+    fn any(&self) -> bool {
+        *self != Self::default()
+    }
+}
+
+// ============================================================================
+// PMS-760: SECTIONS
+// ============================================================================
+
+/// Which part of the definition the editor is showing.
+///
+/// The modal used to render all three in one scroll: six form-level settings
+/// with a help line each, then every field fully expanded, then the rules. Only
+/// one of the three is ever being worked on, so only one is shown. Tabs rather
+/// than a wizard because editing an existing form is not a sequence: an
+/// operator opens it to change one field and must not be walked through
+/// Details to reach it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EditorSection {
+    Details,
+    Fields,
+    Rules,
+}
+
+/// How many problems the last save attempt found, per section.
+///
+/// PMS-747 put a count in the pinned footer because the footer is the only
+/// thing certain to be on screen when Create is pressed. With the sections
+/// split, a bare total would point at work the operator cannot see, so the
+/// count is kept per section: the tab bar shows where the problems are, and
+/// [`ProblemCounts::first_section`] decides which tab a failed save lands on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ProblemCounts {
+    details: usize,
+    fields: usize,
+    rules: usize,
+}
+
+impl ProblemCounts {
+    fn total(&self) -> usize {
+        self.details + self.fields + self.rules
+    }
+
+    /// The section to show after a failed save: the first one, in the order
+    /// they are presented, that has anything wrong with it. `None` when the
+    /// save had no problems, in which case the operator stays where they are.
+    fn first_section(&self) -> Option<EditorSection> {
+        if self.details > 0 {
+            Some(EditorSection::Details)
+        } else if self.fields > 0 {
+            Some(EditorSection::Fields)
+        } else if self.rules > 0 {
+            Some(EditorSection::Rules)
+        } else {
+            None
+        }
+    }
+}
+
+/// The set of expanded field rows after two rows swap places.
+///
+/// Expansion is keyed by position because a [`FieldRow`] has no identity of its
+/// own: the payload key is editable, and the draft round-trip would not carry a
+/// synthetic id. Position keys mean the structural operations have to move the
+/// expansion with the row, or moving an open field up would leave the field it
+/// displaced showing as open instead.
+fn expansion_after_swap(expanded: &HashSet<usize>, a: usize, b: usize) -> HashSet<usize> {
+    expanded
+        .iter()
+        .map(|&i| {
+            if i == a {
+                b
+            } else if i == b {
+                a
+            } else {
+                i
+            }
+        })
+        .collect()
+}
+
+/// The set of expanded field rows after one row is removed. Rows after it shift
+/// down by one; the removed row's own entry goes with it.
+fn expansion_after_remove(expanded: &HashSet<usize>, removed: usize) -> HashSet<usize> {
+    expanded
+        .iter()
+        .filter(|&&i| i != removed)
+        .map(|&i| if i > removed { i - 1 } else { i })
+        .collect()
+}
+
+/// What a collapsed field row calls itself.
+///
+/// The label is what the client reads, so it is what the operator recognises
+/// the row by. A field being typed has neither label nor reference name yet,
+/// and a blank summary row is unclickable-looking, so it says so.
+fn field_summary_label(row: &FieldRow) -> String {
+    let label = row.label.trim();
+    if !label.is_empty() {
+        return label.to_string();
+    }
+    let name = row.name.trim();
+    if !name.is_empty() {
+        return name.to_string();
+    }
+    "Untitled field".to_string()
+}
+
 // ============================================================================
 // EDITOR MODAL
 // ============================================================================
@@ -1003,7 +1118,21 @@ fn FormEditorModal(
     // pinned footer reports. The footer is the only place guaranteed to be on
     // screen when Create is pressed.
     let mut field_errors = use_signal(Vec::<FieldRowErrors>::new);
-    let mut problem_count = use_signal(|| 0usize);
+    // PMS-760: the same count, split by section so the tab bar can say where
+    // the problems are rather than only how many there are.
+    let mut problems = use_signal(ProblemCounts::default);
+    // PMS-760: which section is showing, and which field rows are open.
+    // Details first: it is where a new form starts, and where the two required
+    // values live. A single-field form opens with that field expanded, because
+    // collapsing the only row would show an operator nothing at all.
+    let mut section = use_signal(|| EditorSection::Details);
+    let mut expanded_fields = use_signal(|| {
+        if state.fields.len() == 1 {
+            HashSet::from([0usize])
+        } else {
+            HashSet::new()
+        }
+    });
     // PMS-744: preview of the client's view, built from the live editor state.
     let mut previewing = use_signal(|| false);
     // PMS-754: asked before a close that would throw work away.
@@ -1152,6 +1281,10 @@ fn FormEditorModal(
         }
 
         let rows = fields.read().clone();
+        // PMS-760: field problems and rule problems are collected apart, so
+        // the tab bar can point at the section holding each. They are still
+        // joined into one banner below, because the banner sits above the tabs
+        // and is the only surface that can speak for a section you are not on.
         let mut row_problems: Vec<String> = Vec::new();
         // PMS-747: every problem is written twice on purpose. Once into the row
         // it belongs to, so the input is marked where the operator is working,
@@ -1194,38 +1327,61 @@ fn FormEditorModal(
                 ));
             }
         }
+        // PMS-760: a collapsed row cannot show its own error, so every row
+        // that has one is opened. Added to what is already open rather than
+        // replacing it: an operator who expanded a row to work on it should
+        // find it still open after a failed save.
+        let failing_rows: Vec<usize> = row_errors
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| e.any().then_some(i))
+            .collect();
         field_errors.set(row_errors);
+        if !failing_rows.is_empty() {
+            expanded_fields.write().extend(failing_rows);
+        }
 
         // A rule pointing at a field that no longer exists can never fire, and
         // the server rejects it, so it is caught here for the same reason.
         let rule_rows = rules.read().clone();
+        let mut rule_problems: Vec<String> = Vec::new();
         for (i, r) in rule_rows.iter().enumerate() {
             let n = i + 1;
             if r.field.trim().is_empty() || r.when_field.trim().is_empty() {
-                row_problems.push(format!("Rule {n} needs both fields chosen."));
+                rule_problems.push(format!("Rule {n} needs both fields chosen."));
             }
             if r.equals.trim().is_empty() {
-                row_problems.push(format!("Rule {n} needs a value to match."));
+                rule_problems.push(format!("Rule {n} needs a value to match."));
             }
         }
 
         if has_unknown_rule {
-            row_problems.push(
+            rule_problems.push(
                 "This form has a rule this version cannot edit. Saving would remove it, so it is blocked. Update the app first.".to_string(),
             );
         }
 
-        if !row_problems.is_empty() {
-            error.set(row_problems.join(" "));
+        if !row_problems.is_empty() || !rule_problems.is_empty() {
+            let mut all = row_problems.clone();
+            all.extend(rule_problems.iter().cloned());
+            error.set(all.join(" "));
             failed = true;
         }
         // Counts the top-level slots too, so "1 problem" cannot mean an empty
         // Name field the operator was never pointed at.
-        problem_count.set(
-            row_problems.len()
-                + usize::from(!name_error.read().is_empty())
+        let counts = ProblemCounts {
+            details: usize::from(!name_error.read().is_empty())
                 + usize::from(!slug_error.read().is_empty()),
-        );
+            fields: row_problems.len(),
+            rules: rule_problems.len(),
+        };
+        problems.set(counts);
+        // PMS-760: and land on the section holding the first of them. Without
+        // this the footer could report problems while the operator sits on a
+        // tab where everything is fine.
+        if let Some(target) = counts.first_section() {
+            section.set(target);
+        }
         if failed {
             return;
         }
@@ -1364,14 +1520,18 @@ fn FormEditorModal(
         // only place a failed Create is certain to be seen. Without it, pressing
         // Create at the bottom of a three-field form set an error banner several
         // hundred pixels above the viewport and looked like a dead button.
-        if problem_count() > 0 {
+        if problems().total() > 0 {
             span {
-                class: "mr-auto self-center text-sm text-danger",
+                // PMS-760: `text-danger` is not a utility this build defines
+                // (input.css has no danger token), so this message rendered in
+                // body colour and read as ordinary text. The state colours are
+                // the red/green/yellow scale, which the theme guard allows.
+                class: "mr-auto self-center text-sm text-red-600 dark:text-red-400",
                 role: "alert",
-                if problem_count() == 1 {
+                if problems().total() == 1 {
                     "1 problem to fix above."
                 } else {
-                    "{problem_count()} problems to fix above."
+                    "{problems().total()} problems to fix above."
                 }
             }
         }
@@ -1418,14 +1578,14 @@ fn FormEditorModal(
             onclose: move |_| request_close.call(()),
             footer,
 
-            div { class: "space-y-6",
+            div { class: "space-y-4",
 
                 // PMS-754: a restored draft says so. Silently repopulating a
                 // form is its own surprise, and on an existing definition the
                 // draft may be older than what the server now holds, so the
                 // operator is told and offered the saved version back.
                 if draft_restored() {
-                    div { class: "rounded-md border border-default bg-surface-2 px-3 py-2 text-sm text-content flex items-center justify-between gap-3",
+                    div { class: "rounded-md border border-line bg-surface-2 px-3 py-2 text-sm text-content flex items-center justify-between gap-3",
                         span {
                             "Restored what you had unsaved. It has not been saved to the server."
                         }
@@ -1442,7 +1602,7 @@ fn FormEditorModal(
                                 fields.set(base.fields.clone());
                                 rules.set(base.rules.clone());
                                 field_errors.set(Vec::new());
-                                problem_count.set(0);
+                                problems.set(ProblemCounts::default());
                                 crate::utils::prefs::clear(&draft_key_for_discard);
                                 draft_restored.set(false);
                                 // PMS-759: and the server's copy, or the next
@@ -1463,12 +1623,54 @@ fn FormEditorModal(
                     }
                 }
 
+                // Above the tab bar on purpose: it is the one surface that can
+                // speak for a section the operator is not looking at, and it
+                // names the rows and rules its messages belong to.
                 if !error().is_empty() {
                     ErrorBanner { "{error()}" }
                 }
 
+                // PMS-760: the three parts of a definition, one at a time.
+                // Sticky so switching sections never means scrolling back up
+                // through a field list to reach the tabs.
+                // The negative margin plus matching padding makes the bar span
+                // the modal body's own gutters, so field rows scrolling past it
+                // do not show through the 16px either side of it.
+                div { class: "sticky top-0 z-10 -mx-4 -mt-1 border-b border-line bg-raised px-4 pt-1",
+                    nav { class: "-mb-px flex gap-6", role: "tablist", aria_label: "Form sections",
+                        EditorTabButton {
+                            label: "Details",
+                            count: None,
+                            problems: problems().details,
+                            active: section() == EditorSection::Details,
+                            onclick: move |_| section.set(EditorSection::Details),
+                        }
+                        EditorTabButton {
+                            label: "Fields",
+                            count: Some(fields.read().len()),
+                            problems: problems().fields,
+                            active: section() == EditorSection::Fields,
+                            onclick: move |_| section.set(EditorSection::Fields),
+                        }
+                        EditorTabButton {
+                            label: "Rules",
+                            count: Some(rules.read().len()),
+                            problems: problems().rules,
+                            active: section() == EditorSection::Rules,
+                            onclick: move |_| section.set(EditorSection::Rules),
+                        }
+                    }
+                }
+
                 // --- definition ------------------------------------------------
-                div { class: "space-y-4",
+                //
+                // The inactive sections are hidden rather than unmounted, so a
+                // half-typed field keeps its component-level state (PMS-516
+                // validates an input on blur, and remounting would reset that)
+                // and switching tabs costs no rebuild of the field list.
+                div {
+                    class: if section() == EditorSection::Details { "space-y-4" } else { "hidden" },
+                    role: "tabpanel",
                     Input {
                         name: "name",
                         label: "Name",
@@ -1548,11 +1750,17 @@ fn FormEditorModal(
 
                 // --- fields ----------------------------------------------------
                 div {
+                    class: if section() == EditorSection::Fields { "" } else { "hidden" },
+                    role: "tabpanel",
                     // PMS-750: a plain heading, not a header row. The control
                     // that adds a field lives under the last row; see below.
-                    h3 { class: "text-sm font-semibold text-content mb-2", "Fields" }
+                    // PMS-760: the heading itself is gone, because the tab is
+                    // the heading. What is left is the one thing the list does
+                    // not show by itself. The reference-name sentence went with
+                    // it: that control now lives behind Advanced, and carries
+                    // the same explanation as its own help text.
                     p { class: "text-xs text-muted mb-3",
-                        "Order here is the order the client sees. The reference name is the key the answer is stored under, so changing it on a live form starts a new column of answers."
+                        "Order here is the order the client sees. Open a field to edit it."
                     }
 
                     for (index, row) in fields.read().clone().into_iter().enumerate() {
@@ -1561,9 +1769,11 @@ fn FormEditorModal(
                             index,
                             row,
                             total: fields.read().len(),
+                            expanded: expanded_fields.read().contains(&index),
                             disabled: saving(),
                             errors: field_errors.read().get(index).cloned().unwrap_or_default(),
                             fields,
+                            expanded_fields,
                         }
                     }
 
@@ -1586,15 +1796,23 @@ fn FormEditorModal(
                         variant: ButtonVariant::Secondary,
                         class: "w-full".to_string(),
                         disabled: saving(),
-                        onclick: move |_| fields.write().push(FieldRow::new()),
+                        onclick: move |_| {
+                            // PMS-760: a new row opens, because it has nothing
+                            // to summarise yet and typing into it is the whole
+                            // reason it was added.
+                            let at = fields.read().len();
+                            fields.write().push(FieldRow::new());
+                            expanded_fields.write().insert(at);
+                        },
                         "+ Add field"
                     }
                 }
 
                 // --- rules -----------------------------------------------------
                 div {
-                    div { class: "flex items-center justify-between mb-2",
-                        h3 { class: "text-sm font-semibold text-content", "Conditional rules" }
+                    class: if section() == EditorSection::Rules { "" } else { "hidden" },
+                    role: "tabpanel",
+                    div { class: "flex items-center justify-end mb-2",
                         Button {
                             variant: ButtonVariant::Secondary,
                             disabled: saving() || field_names.len() < 2,
@@ -1935,14 +2153,67 @@ fn ClientPreviewModal(def: PublicForm, unsaved: bool, onclose: EventHandler<()>)
     }
 }
 
+/// PMS-760: one section of the editor, in the modal's tab bar.
+///
+/// Styled after the page-level tabs in `sla.rs` rather than inventing a second
+/// tab look. Carries its own item count, and its own problem count from the
+/// last save attempt, so a section with something wrong with it says so from
+/// whichever tab the operator is standing on.
+#[component]
+fn EditorTabButton(
+    label: String,
+    count: Option<usize>,
+    problems: usize,
+    active: bool,
+    onclick: EventHandler<MouseEvent>,
+) -> Element {
+    let class = if active {
+        "whitespace-nowrap border-b-2 border-accent px-1 py-2 text-sm font-medium text-accent"
+    } else {
+        "whitespace-nowrap border-b-2 border-transparent px-1 py-2 text-sm font-medium text-muted hover:border-line hover:text-content"
+    };
+    rsx! {
+        button {
+            r#type: "button",
+            class: "{class}",
+            role: "tab",
+            aria_selected: active,
+            onclick: move |e| onclick.call(e),
+            "{label}"
+            if let Some(count) = count {
+                span { class: "ml-1.5 rounded-full bg-surface-2 px-1.5 py-0.5 text-xs text-muted", "{count}" }
+            }
+            if problems > 0 {
+                span {
+                    class: "ml-1.5 rounded-full bg-red-100 px-1.5 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900 dark:text-red-300",
+                    // The number is already beside it; this names what it is
+                    // for someone who cannot see the colour.
+                    aria_label: "{problems} problems",
+                    "{problems}"
+                }
+            }
+        }
+    }
+}
+
+/// One field, collapsed to a summary until it is being worked on (PMS-760).
+///
+/// Every control used to be on screen for every field: label, reference name,
+/// type, hint, choices, maximum characters, required, and three text links to
+/// move or remove the row, each with its own help line. Eight fields was eight
+/// of those. Collapsed, a field is one line that says what it is; opening it
+/// gives back the full editor, and the controls that exist for edge cases sit
+/// behind Advanced inside it.
 #[component]
 fn FieldRowEditor(
     index: usize,
     row: FieldRow,
     total: usize,
+    expanded: bool,
     disabled: bool,
     errors: FieldRowErrors,
     fields: Signal<Vec<FieldRow>>,
+    expanded_fields: Signal<HashSet<usize>>,
 ) -> Element {
     let mut update = move |f: Box<dyn FnOnce(&mut FieldRow)>| {
         if let Some(target) = fields.write().get_mut(index) {
@@ -1955,152 +2226,254 @@ fn FieldRowEditor(
         .map(|t| SelectOption::new(t.as_str().to_string(), t.label().to_string()))
         .collect();
 
+    let mut show_advanced = use_signal(|| false);
+    // Forced open when the reference name is what is wrong, so a problem can
+    // never be reported by a control the operator cannot see. Derived rather
+    // than stored, so it follows the error rather than a stale copy of it.
+    let advanced_open = show_advanced() || !errors.name.is_empty();
+
+    let has_problem = errors.any();
+    let summary = field_summary_label(&row);
+    let type_label = row.field_type.label();
+    // A row with a problem is outlined in the state colour. `border-default`
+    // was never a utility this build defines, so the rows had no visible
+    // border at all before this: part of why the list read as one wall.
+    let container_class = if has_problem {
+        "rounded-md border border-red-300 dark:border-red-600 mb-2"
+    } else {
+        "rounded-md border border-line mb-2"
+    };
+
     rsx! {
-        div { class: "rounded-md border border-default p-3 mb-3 space-y-3",
-            div { class: "flex items-center justify-between",
-                span { class: "text-xs font-medium text-muted", "Field {index + 1}" }
-                div { class: "flex gap-2",
-                    Button {
-                        variant: ButtonVariant::Link,
+        div { class: "{container_class}",
+
+            // --- summary row -----------------------------------------------
+            div { class: "flex items-center gap-2 px-2 py-1.5",
+                button {
+                    r#type: "button",
+                    class: "flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-1 text-left hover:bg-surface-2",
+                    aria_expanded: expanded,
+                    onclick: move |_| {
+                        let mut open = expanded_fields.write();
+                        if !open.remove(&index) {
+                            open.insert(index);
+                        }
+                    },
+                    if expanded {
+                        ChevronDownIcon { size: IconSize::Small, class: "shrink-0 text-subtle".to_string() }
+                    } else {
+                        ChevronRightIcon { size: IconSize::Small, class: "shrink-0 text-subtle".to_string() }
+                    }
+                    span { class: "w-4 shrink-0 text-xs text-subtle", "{index + 1}" }
+                    span { class: "truncate text-sm font-medium text-content", "{summary}" }
+                    span { class: "shrink-0 text-xs text-muted", "{type_label}" }
+                    if row.is_required {
+                        Badge { variant: BadgeVariant::Gray, "Required" }
+                    }
+                    // A collapsed row has no inputs on screen to carry a
+                    // message, so the summary says there is one. The messages
+                    // themselves are inline, on the controls, once it opens.
+                    if has_problem {
+                        span { class: "shrink-0 text-xs font-medium text-red-600 dark:text-red-400", "Needs attention" }
+                    }
+                }
+                div { class: "flex shrink-0 items-center gap-1",
+                    // PMS-760: two icons rather than three text links. Through
+                    // `IconButton`, which requires the accessible name the text
+                    // used to be, so shrinking the control does not silently
+                    // remove it for a screen reader.
+                    IconButton {
+                        label: "Move field up".to_string(),
+                        class: "p-1 text-subtle hover:text-content".to_string(),
                         disabled: disabled || index == 0,
-                        onclick: move |_| { fields.write().swap(index, index - 1); },
-                        "Move up"
+                        onclick: move |_| {
+                            fields.write().swap(index, index - 1);
+                            let moved = expansion_after_swap(&expanded_fields.read().clone(), index, index - 1);
+                            expanded_fields.set(moved);
+                        },
+                        ArrowUpIcon { size: IconSize::Small }
                     }
-                    Button {
-                        variant: ButtonVariant::Link,
+                    IconButton {
+                        label: "Move field down".to_string(),
+                        class: "p-1 text-subtle hover:text-content".to_string(),
                         disabled: disabled || index + 1 >= total,
-                        onclick: move |_| { fields.write().swap(index, index + 1); },
-                        "Move down"
+                        onclick: move |_| {
+                            fields.write().swap(index, index + 1);
+                            let moved = expansion_after_swap(&expanded_fields.read().clone(), index, index + 1);
+                            expanded_fields.set(moved);
+                        },
+                        ArrowDownIcon { size: IconSize::Small }
                     }
-                    Button {
-                        variant: ButtonVariant::Link,
+                    IconButton {
+                        // The name opens with the action either way: the label
+                        // is the accessible name as well as the tooltip, so the
+                        // explanation for a disabled control is appended to it
+                        // rather than replacing it.
+                        label: if total <= 1 {
+                            "Remove field (a form needs at least one field)".to_string()
+                        } else {
+                            "Remove field".to_string()
+                        },
+                        class: "p-1 text-subtle hover:text-red-600 dark:hover:text-red-400".to_string(),
                         disabled: disabled || total <= 1,
-                        title: (total <= 1).then(|| "A form needs at least one field".to_string()),
-                        onclick: move |_| { fields.write().remove(index); },
-                        "Remove"
+                        onclick: move |_| {
+                            fields.write().remove(index);
+                            let left = expansion_after_remove(&expanded_fields.read().clone(), index);
+                            expanded_fields.set(left);
+                        },
+                        TrashIcon { size: IconSize::Small }
                     }
                 }
             }
 
-            div { class: "grid grid-cols-1 sm:grid-cols-2 gap-3",
-                Input {
-                    name: "label",
-                    label: "Label",
-                    value: row.label.clone(),
-                    required: true,
-                    disabled,
-                    error: errors.label.clone(),
-                    help: "What the client reads next to the input.".to_string(),
-                    oninput: move |e: FormEvent| {
-                        let v = e.value();
-                        update(Box::new(move |r| {
-                            // PMS-747: the reference name follows the label
-                            // until the operator takes it over, so nobody has
-                            // to invent a payload key to define a field.
-                            if !r.name_touched {
-                                r.name = field_name_from_label(&v);
+            // --- the field itself ------------------------------------------
+            if expanded {
+                div { class: "space-y-3 border-t border-line px-3 py-3",
+                    div { class: "grid grid-cols-1 sm:grid-cols-2 gap-3",
+                        Input {
+                            name: "label",
+                            label: "Label",
+                            value: row.label.clone(),
+                            required: true,
+                            disabled,
+                            error: errors.label.clone(),
+                            help: "What the client reads next to the input.".to_string(),
+                            oninput: move |e: FormEvent| {
+                                let v = e.value();
+                                update(Box::new(move |r| {
+                                    // PMS-747: the reference name follows the label
+                                    // until the operator takes it over, so nobody has
+                                    // to invent a payload key to define a field.
+                                    if !r.name_touched {
+                                        r.name = field_name_from_label(&v);
+                                    }
+                                    r.label = v;
+                                }));
+                            },
+                        }
+                        Select {
+                            name: "field_type",
+                            label: "Type",
+                            options: type_options,
+                            value: row.field_type.as_str().to_string(),
+                            disabled,
+                            onchange: move |e: FormEvent| {
+                                let v = e.value();
+                                update(Box::new(move |r| {
+                                    if let Some(t) = FieldType::from_str(&v) {
+                                        r.field_type = t;
+                                    }
+                                }));
+                            },
+                        }
+                        Input {
+                            name: "help_text",
+                            label: "Hint",
+                            value: row.help_text.clone(),
+                            disabled,
+                            help: "Optional guidance shown under the input.".to_string(),
+                            oninput: move |e: FormEvent| {
+                                let v = e.value();
+                                update(Box::new(move |r| r.help_text = v));
+                            },
+                        }
+
+                        // Stays in the open although it is type-specific: a
+                        // choice list with no choices is refused by the server,
+                        // so it is required rather than advanced.
+                        if row.field_type.needs_options() {
+                            Input {
+                                name: "options",
+                                label: "Choices",
+                                value: row.options.clone(),
+                                required: true,
+                                disabled,
+                                error: errors.options.clone(),
+                                help: "Comma separated. The client must pick one of these.".to_string(),
+                                oninput: move |e: FormEvent| {
+                                    let v = e.value();
+                                    update(Box::new(move |r| r.options = v));
+                                },
                             }
-                            r.label = v;
-                        }));
-                    },
-                }
-                Input {
-                    name: "name",
-                    label: "Reference name",
-                    value: row.name.clone(),
-                    required: true,
-                    disabled,
-                    error: errors.name.clone(),
-                    help: "Filled in from the label. Change it only if the answers have to arrive under a particular key.".to_string(),
-                    oninput: move |e: FormEvent| {
-                        let v = e.value();
-                        update(Box::new(move |r| {
-                            r.name_touched = true;
-                            r.name = v;
-                        }));
-                    },
-                }
-                Select {
-                    name: "field_type",
-                    label: "Type",
-                    options: type_options,
-                    value: row.field_type.as_str().to_string(),
-                    disabled,
-                    onchange: move |e: FormEvent| {
-                        let v = e.value();
-                        update(Box::new(move |r| {
-                            if let Some(t) = FieldType::from_str(&v) {
-                                r.field_type = t;
-                            }
-                        }));
-                    },
-                }
-                Input {
-                    name: "help_text",
-                    label: "Hint",
-                    value: row.help_text.clone(),
-                    disabled,
-                    help: "Optional guidance shown under the input.".to_string(),
-                    oninput: move |e: FormEvent| {
-                        let v = e.value();
-                        update(Box::new(move |r| r.help_text = v));
-                    },
-                }
-
-                if row.field_type.needs_options() {
-                    Input {
-                        name: "options",
-                        label: "Choices",
-                        value: row.options.clone(),
-                        required: true,
-                        disabled,
-                        error: errors.options.clone(),
-                        help: "Comma separated. The client must pick one of these.".to_string(),
-                        oninput: move |e: FormEvent| {
-                            let v = e.value();
-                            update(Box::new(move |r| r.options = v));
-                        },
+                        }
                     }
-                }
 
-                if row.field_type.honours_length() {
-                    Input {
-                        name: "max_length",
-                        label: "Maximum characters",
-                        r#type: "number".to_string(),
-                        min: Some("1".to_string()),
-                        value: row.max_length.clone(),
-                        disabled,
-                        help: "Optional.".to_string(),
-                        oninput: move |e: FormEvent| {
-                            let v = e.value();
-                            update(Box::new(move |r| r.max_length = v));
-                        },
-                    }
-                }
-            }
-
-            div { class: "flex flex-wrap gap-4",
-                Checkbox {
-                    name: "is_required",
-                    label: "Required".to_string(),
-                    checked: row.is_required,
-                    disabled,
-                    onchange: move |e: FormEvent| {
-                        let on = e.value() == "true" || e.value() == "on";
-                        update(Box::new(move |r| r.is_required = on));
-                    },
-                }
-                if matches!(row.field_type, FieldType::Date) {
                     Checkbox {
-                        name: "date_not_in_past",
-                        label: "Must not be in the past".to_string(),
-                        checked: row.date_not_in_past,
+                        name: "is_required",
+                        label: "Required".to_string(),
+                        checked: row.is_required,
                         disabled,
                         onchange: move |e: FormEvent| {
                             let on = e.value() == "true" || e.value() == "on";
-                            update(Box::new(move |r| r.date_not_in_past = on));
+                            update(Box::new(move |r| r.is_required = on));
                         },
+                    }
+
+                    // --- advanced ----------------------------------------------
+                    //
+                    // The controls that exist for a case rather than for a
+                    // field. The reference name is filled in from the label
+                    // (PMS-747) and is only touched when answers have to arrive
+                    // under a particular key; the rest are optional limits.
+                    button {
+                        r#type: "button",
+                        class: "flex items-center gap-1 text-xs font-medium text-muted hover:text-content",
+                        aria_expanded: advanced_open,
+                        onclick: move |_| { let next = !show_advanced(); show_advanced.set(next); },
+                        if advanced_open {
+                            ChevronDownIcon { size: IconSize::Small }
+                        } else {
+                            ChevronRightIcon { size: IconSize::Small }
+                        }
+                        "Advanced"
+                    }
+
+                    if advanced_open {
+                        div { class: "grid grid-cols-1 sm:grid-cols-2 gap-3",
+                            Input {
+                                name: "name",
+                                label: "Reference name",
+                                value: row.name.clone(),
+                                required: true,
+                                disabled,
+                                error: errors.name.clone(),
+                                help: "Filled in from the label. Change it only if the answers have to arrive under a particular key: on a live form it starts a new column of answers.".to_string(),
+                                oninput: move |e: FormEvent| {
+                                    let v = e.value();
+                                    update(Box::new(move |r| {
+                                        r.name_touched = true;
+                                        r.name = v;
+                                    }));
+                                },
+                            }
+                            if row.field_type.honours_length() {
+                                Input {
+                                    name: "max_length",
+                                    label: "Maximum characters",
+                                    r#type: "number".to_string(),
+                                    min: Some("1".to_string()),
+                                    value: row.max_length.clone(),
+                                    disabled,
+                                    help: "Optional.".to_string(),
+                                    oninput: move |e: FormEvent| {
+                                        let v = e.value();
+                                        update(Box::new(move |r| r.max_length = v));
+                                    },
+                                }
+                            }
+                            if matches!(row.field_type, FieldType::Date) {
+                                Checkbox {
+                                    name: "date_not_in_past",
+                                    label: "Must not be in the past".to_string(),
+                                    checked: row.date_not_in_past,
+                                    disabled,
+                                    onchange: move |e: FormEvent| {
+                                        let on = e.value() == "true" || e.value() == "on";
+                                        update(Box::new(move |r| r.date_not_in_past = on));
+                                    },
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -2123,14 +2496,15 @@ fn RuleRowEditor(
     };
 
     rsx! {
-        div { class: "rounded-md border border-default p-3 mb-3",
+        div { class: "rounded-md border border-line p-3 mb-3",
             div { class: "flex items-center justify-between mb-2",
                 span { class: "text-xs font-medium text-muted", "Rule {index + 1}" }
-                Button {
-                    variant: ButtonVariant::Link,
+                IconButton {
+                    label: "Remove rule".to_string(),
+                    class: "p-1 text-subtle hover:text-red-600 dark:hover:text-red-400".to_string(),
                     disabled,
                     onclick: move |_| { rules.write().remove(index); },
-                    "Remove"
+                    TrashIcon { size: IconSize::Small }
                 }
             }
             div { class: "grid grid-cols-1 sm:grid-cols-3 gap-3",
@@ -2675,5 +3049,135 @@ mod tests {
             "a rule this build cannot represent must block the save, not vanish on it"
         );
         assert!(state.rules.is_empty());
+    }
+
+    // ========================================================================
+    // PMS-760: density
+    // ========================================================================
+
+    /// A failed save must land on the section holding the problem. The footer
+    /// count is the only thing certain to be on screen (PMS-747), and a count
+    /// that points at a tab the operator is not on is worse than no count.
+    #[test]
+    fn a_failed_save_lands_on_the_section_that_failed() {
+        assert_eq!(
+            ProblemCounts {
+                details: 1,
+                fields: 2,
+                rules: 0
+            }
+            .first_section(),
+            Some(EditorSection::Details),
+            "the first section with a problem wins, in the order they are shown"
+        );
+        assert_eq!(
+            ProblemCounts {
+                details: 0,
+                fields: 3,
+                rules: 1
+            }
+            .first_section(),
+            Some(EditorSection::Fields)
+        );
+        assert_eq!(
+            ProblemCounts {
+                details: 0,
+                fields: 0,
+                rules: 1
+            }
+            .first_section(),
+            Some(EditorSection::Rules)
+        );
+        assert_eq!(
+            ProblemCounts::default().first_section(),
+            None,
+            "a clean save must not move the operator off the section they were working on"
+        );
+        assert_eq!(
+            ProblemCounts {
+                details: 1,
+                fields: 2,
+                rules: 3
+            }
+            .total(),
+            6,
+            "the footer total must be the sum of what the tabs report, or one of them is lying"
+        );
+    }
+
+    /// Expansion is keyed by position, so reordering has to carry it along.
+    /// Otherwise moving an open field up leaves the field it displaced showing
+    /// as open, with the operator's half-typed row collapsed under it.
+    #[test]
+    fn an_open_field_stays_open_when_it_moves() {
+        let expanded = HashSet::from([2usize]);
+        assert_eq!(
+            expansion_after_swap(&expanded, 2, 1),
+            HashSet::from([1usize]),
+            "the open row moved up, so the open position moves with it"
+        );
+        assert_eq!(
+            expansion_after_swap(&HashSet::from([1usize]), 2, 1),
+            HashSet::from([2usize]),
+            "and the row it displaced keeps its own state"
+        );
+        assert_eq!(
+            expansion_after_swap(&HashSet::from([0usize, 3]), 1, 2),
+            HashSet::from([0usize, 3]),
+            "rows either side of a swap are untouched"
+        );
+    }
+
+    /// Removing a row shifts everything after it down one. Without this,
+    /// removing field 1 would leave field 3 open and field 2 collapsed.
+    #[test]
+    fn removing_a_field_shifts_the_open_rows_below_it() {
+        assert_eq!(
+            expansion_after_remove(&HashSet::from([0usize, 2, 3]), 1),
+            HashSet::from([0usize, 1, 2])
+        );
+        assert_eq!(
+            expansion_after_remove(&HashSet::from([1usize]), 1),
+            HashSet::new(),
+            "the removed row takes its own entry with it"
+        );
+        assert_eq!(
+            expansion_after_remove(&HashSet::from([0usize]), 2),
+            HashSet::from([0usize]),
+            "rows above the removed one do not move"
+        );
+    }
+
+    /// A collapsed row has to say what it is. A field is normally given its
+    /// type before its label, so the unnamed case is ordinary rather than an
+    /// edge, and an empty summary row does not look clickable.
+    #[test]
+    fn a_collapsed_field_always_has_something_to_show() {
+        let mut row = FieldRow::new();
+        assert_eq!(field_summary_label(&row), "Untitled field");
+        row.name = "phone_number".to_string();
+        assert_eq!(
+            field_summary_label(&row),
+            "phone_number",
+            "the reference name stands in until the label is typed"
+        );
+        row.label = "  Phone number  ".to_string();
+        assert_eq!(
+            field_summary_label(&row),
+            "Phone number",
+            "the label is what the client reads, so it is what the row is called"
+        );
+    }
+
+    /// PMS-760: a row with a problem is opened by the failed save, and the
+    /// summary marks it. Both of those hang off `any()`.
+    #[test]
+    fn a_row_with_a_problem_is_distinguishable_from_a_clean_one() {
+        assert!(!FieldRowErrors::default().any());
+        assert!(FieldRowErrors {
+            name: "A reference name is required.".to_string(),
+            ..Default::default()
+        }
+        .any());
     }
 }
