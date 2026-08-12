@@ -213,3 +213,83 @@ pub fn StatCard(props: StatCardProps) -> Element {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dioxus::prelude::VirtualDom;
+
+    /// Padded on purpose: the body element then carries a class of its own
+    /// (`px-6 pb-6 pt-4`), which is what lets the test tell "inside the header"
+    /// from "first thing in the body". Those two are indistinguishable by
+    /// document order alone, and the bug was exactly the second one.
+    #[component]
+    fn WithSubtitle() -> Element {
+        rsx! {
+            Card {
+                title: "Recently sent".to_string(),
+                subtitle: "SUBTITLE-MARKER".to_string(),
+                "BODY-MARKER"
+            }
+        }
+    }
+
+    #[component]
+    fn WithoutSubtitle() -> Element {
+        rsx! {
+            Card { title: "Recently sent".to_string(), "BODY-MARKER" }
+        }
+    }
+
+    /// PMS-765 regression: a card's description belongs in the header, above
+    /// the rule. As the first thing in the body it had no space above it (a
+    /// `padding: false` card gives its body none at all) and a table header row
+    /// directly below, so it read as small grey text wedged between two lines.
+    #[test]
+    fn a_subtitle_sits_in_the_header_not_at_the_top_of_the_body() {
+        let mut dom = VirtualDom::new(WithSubtitle);
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+
+        let subtitle = html.find("SUBTITLE-MARKER").expect("the subtitle renders");
+        let body_element = html
+            .find("px-6 pb-6 pt-4")
+            .expect("the padded body element is still there");
+        let body = html.find("BODY-MARKER").expect("the body renders");
+
+        assert!(
+            subtitle < body_element,
+            "the subtitle must come before the body element even opens, or it is \
+             back inside the body where it started; got: {html}"
+        );
+        assert!(
+            body_element < body,
+            "and the body content is inside the body"
+        );
+        assert!(
+            html.contains("mt-1 text-sm text-muted"),
+            "descriptive copy is text-sm with room above it, not a size smaller \
+             and flush; got: {html}"
+        );
+        assert!(
+            html.contains("items-start"),
+            "a two-line heading aligns its actions to the title, not to the pair; \
+             got: {html}"
+        );
+    }
+
+    /// The prop is optional, and a card without one keeps the header it had.
+    #[test]
+    fn no_subtitle_leaves_the_header_alone() {
+        let mut dom = VirtualDom::new(WithoutSubtitle);
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+
+        assert!(!html.contains("SUBTITLE-MARKER"));
+        assert!(!html.contains("mt-1 text-sm text-muted"));
+        assert!(
+            html.contains("items-center"),
+            "a one-line heading still centres its actions against the title; got: {html}"
+        );
+    }
+}
