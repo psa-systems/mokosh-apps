@@ -657,6 +657,57 @@ pub fn PlusIcon(#[props(default)] size: IconSize, #[props(default)] class: Strin
     }
 }
 
+/// PMS-760: reordering an item in a list, as icon-only controls.
+///
+/// Added for the request-form builder, where "Move up" / "Move down" as text
+/// links were most of the noise on a field row. Paired with [`ArrowDownIcon`];
+/// use them through `IconButton`, which requires the accessible name that the
+/// text used to carry.
+#[component]
+pub fn ArrowUpIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M4.5 10.5 12 3m0 0 7.5 7.5M12 3v18",
+            }
+        }
+    }
+}
+
+/// See [`ArrowUpIcon`].
+#[component]
+pub fn ArrowDownIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M19.5 13.5 12 21m0 0-7.5-7.5M12 21V3",
+            }
+        }
+    }
+}
+
 #[component]
 pub fn PencilIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
     let size_class = size.class();
