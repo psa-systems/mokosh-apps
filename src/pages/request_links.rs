@@ -705,6 +705,43 @@ mod tests {
         );
     }
 
+    /// PMS-764: the panel shows the newest few and says how many it is not
+    /// showing. A truncated list that keeps quiet about it reads as "this is
+    /// everything", which is exactly the wrong impression for a page whose
+    /// whole job is telling you what has been sent.
+    #[test]
+    fn the_panel_admits_what_it_is_not_showing() {
+        let rows: Vec<RequestLink> = (0..11).map(|_| link(false, Duration::days(3))).collect();
+        let (visible, hidden) = recent_visible(rows, RECENT_SENT);
+        assert_eq!(visible.len(), RECENT_SENT);
+        assert_eq!(hidden, 3, "the rest are counted, not dropped silently");
+    }
+
+    #[test]
+    fn a_short_list_is_shown_whole_and_claims_nothing_hidden() {
+        let rows: Vec<RequestLink> = (0..3).map(|_| link(false, Duration::days(3))).collect();
+        let (visible, hidden) = recent_visible(rows, RECENT_SENT);
+        assert_eq!(visible.len(), 3);
+        assert_eq!(hidden, 0);
+
+        let (visible, hidden) = recent_visible(Vec::new(), RECENT_SENT);
+        assert!(visible.is_empty());
+        assert_eq!(hidden, 0, "an empty list has nothing hidden behind it");
+    }
+
+    /// The server returns the tenant's links newest first; the panel must not
+    /// reorder them, or "recently sent" stops meaning recently sent.
+    #[test]
+    fn the_server_ordering_is_kept() {
+        let mut newest = link(false, Duration::days(5));
+        newest.form_name = "Newest".into();
+        let mut oldest = link(true, Duration::days(1));
+        oldest.form_name = "Oldest".into();
+        let (visible, _) = recent_visible(vec![newest, oldest], RECENT_SENT);
+        assert_eq!(visible[0].form_name, "Newest");
+        assert_eq!(visible[1].form_name, "Oldest");
+    }
+
     #[test]
     fn a_live_unused_link_is_awaiting() {
         assert_eq!(
