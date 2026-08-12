@@ -3649,6 +3649,19 @@ struct PortalExportRow {
     signed_url: Option<String>,
     #[serde(default)]
     error_message: Option<String>,
+    /// PMS-729 phase 2 §7 slice D / I15 follow-up: the worker caps each
+    /// per-section fetch (see `export_worker.rs`), so a busy tenant's
+    /// bundle can be incomplete. Server hoists the top-level bundle
+    /// `truncated` marker onto its own column (migration 114) so the
+    /// SPA can warn on the status row without downloading the bundle.
+    #[serde(default)]
+    bundle_truncated: bool,
+    /// Per-section counts (`{tickets, ticket_notes, invoices, quotes}`)
+    /// observed at bundle time. Rendered next to the truncation warning
+    /// so the customer sees the actual row-count each section was
+    /// capped against.
+    #[serde(default)]
+    bundle_section_totals: Option<serde_json::Value>,
 }
 
 #[component]
@@ -3803,9 +3816,49 @@ pub fn PortalExportPage() -> Element {
                                 "Job error: {err}"
                             }
                         }
+                        // PMS-729 phase 2 §7 slice D / I15 follow-up:
+                        // when the worker capped any per-section fetch
+                        // (post-code-review finding #7's per-section
+                        // caps), surface it as an inline warning next
+                        // to the download button. Server exposes both
+                        // `bundle_truncated` and per-section counts on
+                        // the status row so the SPA does not have to
+                        // fetch the bundle to know it is incomplete.
+                        if job.bundle_truncated {
+                            div { class: "mt-4 rounded-md border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10 p-3",
+                                p { class: "text-sm font-medium text-amber-800 dark:text-amber-200",
+                                    "This bundle is incomplete."
+                                }
+                                p { class: "mt-1 text-xs text-amber-800 dark:text-amber-200",
+                                    "One or more sections had more rows than a single bundle can hold. The oldest matching rows were kept and the rest omitted. Contact your account team if you need the full history."
+                                }
+                                if let Some(totals) = &job.bundle_section_totals {
+                                    dl { class: "mt-2 grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1 text-xs text-amber-900 dark:text-amber-100",
+                                        dt { class: "font-medium", "Tickets" }
+                                        dd { {section_total_label(totals, "tickets")} }
+                                        dt { class: "font-medium", "Ticket notes" }
+                                        dd { {section_total_label(totals, "ticket_notes")} }
+                                        dt { class: "font-medium", "Invoices" }
+                                        dd { {section_total_label(totals, "invoices")} }
+                                        dt { class: "font-medium", "Quotes" }
+                                        dd { {section_total_label(totals, "quotes")} }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+/// Format one entry of the `bundle_section_totals` map for the truncated
+/// warning row. Missing / non-integer values render as a bare dash so
+/// the four-column grid does not go ragged.
+fn section_total_label(totals: &serde_json::Value, key: &str) -> String {
+    match totals.get(key).and_then(|v| v.as_i64()) {
+        Some(n) => n.to_string(),
+        None => "-".to_string(),
     }
 }
