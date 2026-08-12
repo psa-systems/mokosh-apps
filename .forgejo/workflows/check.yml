@@ -48,6 +48,12 @@ jobs:
       - name: Theme-token guard
         run: bash scripts/check-theme-tokens.sh
 
+      # MAPPS-433: a colour name input.css never defined emits no CSS at all,
+      # so the mistake is invisible in the browser and passes the theme-token
+      # guard, which hunts the opposite mistake.
+      - name: Defined-colour guard
+        run: bash scripts/check-defined-colors.sh
+
       # MAPPS-423: pin Cancel destinations for shared create/edit forms and
       # keep the base-layer pointer-cursor rule that compensates for Tailwind
       # v4's `button { cursor: default }` preflight.

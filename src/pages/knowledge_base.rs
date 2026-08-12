@@ -464,7 +464,7 @@ pub fn KBHomePage() -> Element {
                     "No ticket-driving articles yet. Use 'Open ticket about this article' on a KB page to start tracking."
                 }
             } else {
-                ul { class: "divide-y divide-border",
+                ul { class: "divide-y divide-line",
                     for row in top_driving.iter().cloned() {
                         li { class: "py-2 flex items-center justify-between gap-3",
                             Link {

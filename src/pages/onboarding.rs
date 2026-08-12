@@ -343,7 +343,7 @@ pub fn Onboarding() -> Element {
                                 },
                             }
                             if !logo_error().is_empty() {
-                                p { class: "text-xs text-danger", "{logo_error}" }
+                                p { class: "text-xs text-red-600 dark:text-red-400", "{logo_error}" }
                             } else {
                                 p { class: "text-xs text-muted",
                                     "PNG, JPEG, WebP or GIF, up to 1 MB. Shown to clients on the forms you send."

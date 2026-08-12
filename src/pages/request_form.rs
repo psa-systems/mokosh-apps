@@ -372,7 +372,7 @@ pub(crate) fn RequestFormBody(
 
         if !form_error.is_empty() {
             div {
-                class: "mb-4 rounded-md border border-danger px-3 py-2 text-sm text-danger",
+                class: "mb-4 rounded-md border border-red-300 px-3 py-2 text-sm text-red-600 dark:border-red-600 dark:text-red-400",
                 role: "alert",
                 "{form_error}"
             }

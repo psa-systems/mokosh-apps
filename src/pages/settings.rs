@@ -1123,7 +1123,7 @@ fn OrganizationSettingsBody() -> Element {
                     if logo_busy() {
                         p { class: "text-xs text-muted", "Uploading..." }
                     } else if !logo_error().is_empty() {
-                        p { class: "text-xs text-danger", role: "alert", "{logo_error}" }
+                        p { class: "text-xs text-red-600 dark:text-red-400", role: "alert", "{logo_error}" }
                     } else {
                         p { class: "text-xs text-muted",
                             "Optional. PNG, JPEG, WebP or GIF, up to 1 MB. Shown to clients at the top of the request forms you send and the email that carries them."

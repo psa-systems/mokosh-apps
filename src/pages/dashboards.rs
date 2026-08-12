@@ -219,7 +219,7 @@ pub fn SavedDashboardsPage() -> Element {
                                         TableCell { "{row_name}" }
                                         TableCell {
                                             if row_default {
-                                                span { class: "text-success font-medium", "Default" }
+                                                span { class: "font-medium text-green-600 dark:text-green-400", "Default" }
                                             } else {
                                                 span { class: "text-muted", "-" }
                                             }
