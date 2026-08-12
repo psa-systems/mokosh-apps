@@ -24,7 +24,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::components::{
-    Badge, BadgeVariant, Button, ButtonVariant, CollapsibleCard, ErrorBanner, Input, Select,
+    Badge, BadgeVariant, Button, ButtonVariant, Card, CollapsibleCard, ErrorBanner, Input, Select,
     SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
     TableRow,
 };
@@ -154,6 +154,135 @@ pub fn CompanyRequestFormsCard(company_id: String, company_name: String) -> Elem
                     sending.set(false);
                     links.restart();
                 },
+            }
+        }
+    }
+}
+
+/// PMS-764: how many of the tenant's most recent links the builder shows.
+///
+/// Enough to answer "did that go out, and has anyone replied" at a glance,
+/// short enough that the panel stays a panel rather than becoming a second
+/// table competing with the definitions above it. The full history per client
+/// is on the company page, which every row links to.
+const RECENT_SENT: usize = 8;
+
+/// The links the panel shows, and how many it is leaving out.
+///
+/// The server returns every link the tenant has issued, newest first, and this
+/// takes the head of that. The remainder is returned rather than dropped
+/// because a truncated list that does not say so reads as "this is everything".
+fn recent_visible(rows: Vec<RequestLink>, cap: usize) -> (Vec<RequestLink>, usize) {
+    let hidden = rows.len().saturating_sub(cap);
+    let mut rows = rows;
+    rows.truncate(cap);
+    (rows, hidden)
+}
+
+/// PMS-764: what became of the forms this tenant has sent, on the page they
+/// were sent from.
+///
+/// Until this existed, a sent link appeared in exactly one place, the company
+/// detail page, and nothing on the builder led there: you sent a form, got a
+/// toast, and the page you were standing on looked exactly as it had before.
+/// The status data needed no new endpoint - `GET /form-request-links` takes
+/// `company_id` as an OPTIONAL filter, and without it returns the tenant's
+/// whole list, newest first, with each row already naming its client.
+///
+/// `reload` is bumped by the caller after a send so the row appears at the
+/// moment it is created, which is when the question is actually being asked.
+#[component]
+pub fn SentRequestLinksPanel(reload: ReadSignal<u32>) -> Element {
+    let links = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _reachable = crate::hooks::use_server_reachable();
+        // Subscribes this resource to the caller's send, without the caller
+        // needing a handle on the resource itself.
+        let _after_send = reload();
+        let _token = crate::hooks::fetch::api::current_access_token()?;
+        crate::hooks::fetch::api::get_authed_typed::<Vec<RequestLink>>("/form-request-links")
+            .await
+            .ok()
+    });
+
+    let snap = links.read_unchecked();
+    let now = Utc::now();
+
+    rsx! {
+        Card { title: "Recently sent".to_string(), padding: false,
+            p { class: "px-6 pb-4 text-xs text-muted",
+                "Links you have emailed clients, newest first. Open a client to see everything sent to them."
+            }
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Form" }
+                        TableHeader { "Client" }
+                        TableHeader { "Sent to" }
+                        TableHeader { "Status" }
+                        TableHeader { "Expires" }
+                    }
+                }
+                match &*snap {
+                    None => rsx! { TableLoading { columns: 5, rows: 3 } },
+                    Some(None) => rsx! {
+                        TableEmpty { columns: 5, message: "Could not load sent forms.".to_string() }
+                    },
+                    Some(Some(rows)) if rows.is_empty() => rsx! {
+                        TableEmpty {
+                            columns: 5,
+                            message: "Nothing sent yet. Use Send on a form above to email a client a link.".to_string(),
+                        }
+                    },
+                    Some(Some(rows)) => {
+                        let (visible, hidden) = recent_visible(rows.clone(), RECENT_SENT);
+                        rsx! {
+                            TableBody {
+                                for link in visible.into_iter() {
+                                    {
+                                        let key = link.id.to_string();
+                                        let status = link.status(now);
+                                        let variant = match status {
+                                            RequestLinkStatus::Submitted => BadgeVariant::Green,
+                                            RequestLinkStatus::Awaiting => BadgeVariant::Blue,
+                                            RequestLinkStatus::Expired => BadgeVariant::Gray,
+                                        };
+                                        let expires = crate::utils::datetime::format_user_datetime(link.expires_at, None);
+                                        let company_id = link.company_id.to_string();
+                                        rsx! {
+                                            TableRow { key: "{key}",
+                                                TableCell { span { class: "font-medium text-content", "{link.form_name}" } }
+                                                TableCell {
+                                                    // The way in. Everything else
+                                                    // about this client, including
+                                                    // their full request history,
+                                                    // is one click from here.
+                                                    Link {
+                                                        to: crate::Route::CompanyDetail { id: company_id },
+                                                        class: "underline text-accent hover:opacity-90",
+                                                        "{link.company_name}"
+                                                    }
+                                                }
+                                                TableCell { class: "text-muted", "{link.recipient_email}" }
+                                                TableCell { Badge { variant, "{status.label()}" } }
+                                                TableCell { class: "text-muted", "{expires}" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if hidden > 0 {
+                                TableBody {
+                                    TableRow {
+                                        TableCell { colspan: 5, class: "text-xs text-muted",
+                                            "{hidden} older link(s) not shown. Open a client to see their full history."
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -574,6 +703,43 @@ mod tests {
             "/contacts/new?company_id=11111111-1111-1111-1111-111111111111&company_name=Acme%20%26%20Co",
             "an unencoded `&` in the name would truncate the query and drop the prefill"
         );
+    }
+
+    /// PMS-764: the panel shows the newest few and says how many it is not
+    /// showing. A truncated list that keeps quiet about it reads as "this is
+    /// everything", which is exactly the wrong impression for a page whose
+    /// whole job is telling you what has been sent.
+    #[test]
+    fn the_panel_admits_what_it_is_not_showing() {
+        let rows: Vec<RequestLink> = (0..11).map(|_| link(false, Duration::days(3))).collect();
+        let (visible, hidden) = recent_visible(rows, RECENT_SENT);
+        assert_eq!(visible.len(), RECENT_SENT);
+        assert_eq!(hidden, 3, "the rest are counted, not dropped silently");
+    }
+
+    #[test]
+    fn a_short_list_is_shown_whole_and_claims_nothing_hidden() {
+        let rows: Vec<RequestLink> = (0..3).map(|_| link(false, Duration::days(3))).collect();
+        let (visible, hidden) = recent_visible(rows, RECENT_SENT);
+        assert_eq!(visible.len(), 3);
+        assert_eq!(hidden, 0);
+
+        let (visible, hidden) = recent_visible(Vec::new(), RECENT_SENT);
+        assert!(visible.is_empty());
+        assert_eq!(hidden, 0, "an empty list has nothing hidden behind it");
+    }
+
+    /// The server returns the tenant's links newest first; the panel must not
+    /// reorder them, or "recently sent" stops meaning recently sent.
+    #[test]
+    fn the_server_ordering_is_kept() {
+        let mut newest = link(false, Duration::days(5));
+        newest.form_name = "Newest".into();
+        let mut oldest = link(true, Duration::days(1));
+        oldest.form_name = "Oldest".into();
+        let (visible, _) = recent_visible(vec![newest, oldest], RECENT_SENT);
+        assert_eq!(visible[0].form_name, "Newest");
+        assert_eq!(visible[1].form_name, "Oldest");
     }
 
     #[test]
