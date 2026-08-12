@@ -2305,7 +2305,15 @@ fn FieldRowEditor(
                         ArrowDownIcon { size: IconSize::Small }
                     }
                     IconButton {
-                        label: if total <= 1 { "A form needs at least one field".to_string() } else { "Remove field".to_string() },
+                        // The name opens with the action either way: the label
+                        // is the accessible name as well as the tooltip, so the
+                        // explanation for a disabled control is appended to it
+                        // rather than replacing it.
+                        label: if total <= 1 {
+                            "Remove field (a form needs at least one field)".to_string()
+                        } else {
+                            "Remove field".to_string()
+                        },
                         class: "p-1 text-subtle hover:text-red-600 dark:hover:text-red-400".to_string(),
                         disabled: disabled || total <= 1,
                         onclick: move |_| {
