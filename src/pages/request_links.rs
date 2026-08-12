@@ -209,10 +209,15 @@ pub fn SentRequestLinksPanel(reload: ReadSignal<u32>) -> Element {
     let now = Utc::now();
 
     rsx! {
-        Card { title: "Recently sent".to_string(), padding: false,
-            p { class: "px-6 pb-4 text-xs text-muted",
-                "Links you have emailed clients, newest first. Open a client to see everything sent to them."
-            }
+        Card {
+            title: "Recently sent".to_string(),
+            // PMS-765: the card's own subtitle, in the header above the rule.
+            // As the first child of the body it had no space above it (a
+            // `padding: false` card gives its body none) and a table header row
+            // directly below, so it read as a band of small grey text wedged
+            // between two lines.
+            subtitle: "Links you have emailed clients, newest first. Open a client to see everything sent to them.".to_string(),
+            padding: false,
             Table {
                 TableHead {
                     TableRow {

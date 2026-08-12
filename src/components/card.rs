@@ -13,6 +13,17 @@ pub struct CardProps {
     /// Optional header title
     #[props(default)]
     title: String,
+    /// PMS-765: optional line under the title, inside the header.
+    ///
+    /// A card that needs a sentence of explanation used to put one at the top
+    /// of its body, where it lands under the header's rule with whatever
+    /// padding that card happens to have: none at all on a `padding: false`
+    /// card, which is how the request-form panel ended up with small grey text
+    /// jammed between the header rule and a table header row. Here it is part
+    /// of the heading, above the rule, at the size the rest of the app uses for
+    /// descriptive copy.
+    #[props(default)]
+    subtitle: String,
     /// Optional header actions
     actions: Option<Element>,
     /// Whether to add padding
@@ -47,6 +58,7 @@ pub fn Card(props: CardProps) -> Element {
             if has_header {
                 CardHeader {
                     title: props.title,
+                    subtitle: props.subtitle,
                     actions: props.actions,
                 }
             }
@@ -61,6 +73,10 @@ pub fn Card(props: CardProps) -> Element {
 #[derive(Props, Clone, PartialEq)]
 pub struct CardHeaderProps {
     title: String,
+    /// See [`CardProps::subtitle`]. Empty renders nothing at all, so a card
+    /// without one keeps the header it already had.
+    #[props(default)]
+    subtitle: String,
     actions: Option<Element>,
     #[props(default)]
     class: String,
@@ -68,8 +84,16 @@ pub struct CardHeaderProps {
 
 #[component]
 pub fn CardHeader(props: CardHeaderProps) -> Element {
+    // `items-start` rather than `items-center` once a subtitle is in play: with
+    // two lines of heading, centring the actions against the pair leaves them
+    // floating beside the description instead of level with the title.
+    let align = if props.subtitle.is_empty() {
+        "items-center"
+    } else {
+        "items-start"
+    };
     let class = format!(
-        "flex items-center justify-between px-6 pt-6 pb-4 border-b border-line {}",
+        "flex {align} justify-between px-6 pt-6 pb-4 border-b border-line {}",
         props.class
     );
 
@@ -78,6 +102,11 @@ pub fn CardHeader(props: CardHeaderProps) -> Element {
             div {
                 h3 { class: "text-lg font-medium text-content",
                     "{props.title}"
+                }
+                if !props.subtitle.is_empty() {
+                    p { class: "mt-1 text-sm text-muted",
+                        "{props.subtitle}"
+                    }
                 }
             }
             div { class: "flex items-center space-x-2",
