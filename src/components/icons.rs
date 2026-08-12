@@ -685,6 +685,38 @@ pub fn ArrowUpIcon(#[props(default)] size: IconSize, #[props(default)] class: St
     }
 }
 
+/// The grip on a draggable row (Heroicons `bars-2`).
+///
+/// PMS-760: two bars rather than the six-dot grip other kits ship, because
+/// Heroicons has no grip and inventing one would be the only hand-drawn icon in
+/// the set. It is a cursor affordance, not a control: the row it sits on is
+/// what carries the drag, and the arrow buttons beside it are what a keyboard
+/// or a touch screen reorders with.
+#[component]
+pub fn DragHandleIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M3.75 9h16.5m-16.5 6.75h16.5",
+            }
+        }
+    }
+}
+
 /// See [`ArrowUpIcon`].
 #[component]
 pub fn ArrowDownIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {

@@ -18,9 +18,9 @@ use dioxus::prelude::*;
 
 use crate::components::{
     use_page_title, ArrowDownIcon, ArrowUpIcon, Badge, BadgeVariant, Button, ButtonVariant,
-    Checkbox, ChevronDownIcon, ChevronRightIcon, DataTable, ErrorBanner, IconButton, IconSize,
-    Input, PageHeader, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
-    TableHeader, TableLoading, TableRow, Textarea, TrashIcon,
+    Checkbox, ChevronDownIcon, ChevronRightIcon, DataTable, DragHandleIcon, ErrorBanner,
+    IconButton, IconSize, Input, PageHeader, Select, SelectOption, Table, TableBody, TableCell,
+    TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea, TrashIcon,
 };
 use crate::modules::forms::{
     CreateFormDefinitionRequest, FieldType, FormDefinition, FormRule, UpdateFormDefinitionRequest,
@@ -1036,6 +1036,46 @@ fn expansion_after_remove(expanded: &HashSet<usize>, removed: usize) -> HashSet<
         .collect()
 }
 
+/// Move one item to another position, closing the gap behind it.
+///
+/// What a drag does, as against the swap the arrow buttons do: dropping field 5
+/// onto field 1 puts it at 1 and pushes 1..4 down, rather than exchanging the
+/// two and scrambling everything between them. Out-of-range indices and a move
+/// to where the item already is are no-ops, so a drag that ends on itself
+/// leaves the list alone.
+fn move_row<T>(items: &mut Vec<T>, from: usize, to: usize) {
+    if from == to || from >= items.len() || to >= items.len() {
+        return;
+    }
+    let item = items.remove(from);
+    items.insert(to, item);
+}
+
+/// The set of expanded field rows after one row is dragged to a new position.
+///
+/// The counterpart of [`move_row`] for expansion state, which is keyed by
+/// position. Rows between the two ends shift by one, in whichever direction
+/// closes the gap; the dragged row's own entry lands on its new index.
+fn expansion_after_move(expanded: &HashSet<usize>, from: usize, to: usize) -> HashSet<usize> {
+    if from == to {
+        return expanded.clone();
+    }
+    expanded
+        .iter()
+        .map(|&i| {
+            if i == from {
+                to
+            } else if from < to && i > from && i <= to {
+                i - 1
+            } else if to < from && i >= to && i < from {
+                i + 1
+            } else {
+                i
+            }
+        })
+        .collect()
+}
+
 /// What a collapsed field row calls itself.
 ///
 /// The label is what the client reads, so it is what the operator recognises
@@ -1133,6 +1173,11 @@ fn FormEditorModal(
             HashSet::new()
         }
     });
+    // PMS-760: the drag in progress. `drag_from` is the row that was picked up
+    // and `drag_over` the row it is currently above; both live here rather than
+    // in the row, because a drag is a conversation between two of them.
+    let drag_from = use_signal(|| None::<usize>);
+    let drag_over = use_signal(|| None::<usize>);
     // PMS-744: preview of the client's view, built from the live editor state.
     let mut previewing = use_signal(|| false);
     // PMS-754: asked before a close that would throw work away.
@@ -1760,7 +1805,7 @@ fn FormEditorModal(
                     // it: that control now lives behind Advanced, and carries
                     // the same explanation as its own help text.
                     p { class: "text-xs text-muted mb-3",
-                        "Order here is the order the client sees. Open a field to edit it."
+                        "Order here is the order the client sees. Open a field to edit it, and drag a row by its handle to move it."
                     }
 
                     for (index, row) in fields.read().clone().into_iter().enumerate() {
@@ -1774,6 +1819,8 @@ fn FormEditorModal(
                             errors: field_errors.read().get(index).cloned().unwrap_or_default(),
                             fields,
                             expanded_fields,
+                            drag_from,
+                            drag_over,
                         }
                     }
 
@@ -2214,6 +2261,10 @@ fn FieldRowEditor(
     errors: FieldRowErrors,
     fields: Signal<Vec<FieldRow>>,
     expanded_fields: Signal<HashSet<usize>>,
+    /// PMS-760: the row currently being dragged, and the row it is over. Shared
+    /// across every row in the list, because a drag has two ends.
+    drag_from: Signal<Option<usize>>,
+    drag_over: Signal<Option<usize>>,
 ) -> Element {
     let mut update = move |f: Box<dyn FnOnce(&mut FieldRow)>| {
         if let Some(target) = fields.write().get_mut(index) {
@@ -2235,20 +2286,117 @@ fn FieldRowEditor(
     let has_problem = errors.any();
     let summary = field_summary_label(&row);
     let type_label = row.field_type.label();
+
+    // PMS-760: the row is the drag source, but only once the grip has been
+    // pressed. A permanently draggable row swallows text selection inside its
+    // own inputs (a drag beats a selection in every browser, and Firefox will
+    // not let you select inside a draggable ancestor at all), so `draggable` is
+    // armed on mousedown over the grip and disarmed when the drag ends.
+    let mut drag_armed = use_signal(|| false);
+    let mut drag_from = drag_from;
+    let mut drag_over = drag_over;
+    let can_drag = !disabled && total > 1;
+    let being_dragged = drag_from() == Some(index);
+    let is_drop_target = drag_over() == Some(index) && drag_from().is_some_and(|f| f != index);
+
+    // `drop` commits, `dragend` only cleans up. Committing on `dragend` too
+    // would look like a useful fallback for a drop the browser refused, but
+    // `dragend` is also what fires when the drag is CANCELLED: releasing over
+    // nothing, or pressing Escape mid-drag. Reordering someone's fields because
+    // they changed their mind is worse than the drag doing nothing.
+    let mut commit_drag = move || {
+        let Some(from) = drag_from() else {
+            return;
+        };
+        let to = drag_over().unwrap_or(from);
+        drag_from.set(None);
+        drag_over.set(None);
+        drag_armed.set(false);
+        if from == to {
+            return;
+        }
+        let moved = expansion_after_move(&expanded_fields.read().clone(), from, to);
+        move_row(&mut fields.write(), from, to);
+        expanded_fields.set(moved);
+    };
+    let mut cancel_drag = move || {
+        drag_from.set(None);
+        drag_over.set(None);
+        drag_armed.set(false);
+    };
+
     // A row with a problem is outlined in the state colour. `border-default`
     // was never a utility this build defines, so the rows had no visible
     // border at all before this: part of why the list read as one wall.
-    let container_class = if has_problem {
-        "rounded-md border border-red-300 dark:border-red-600 mb-2"
+    let border_class = if has_problem {
+        "border-red-300 dark:border-red-600"
+    } else if is_drop_target {
+        "border-accent"
     } else {
-        "rounded-md border border-line mb-2"
+        "border-line"
     };
+    let drag_class = if being_dragged {
+        " opacity-50"
+    } else if is_drop_target {
+        // Where it would land, in the accent, without moving anything until
+        // the drag is actually let go.
+        " ring-2 ring-accent"
+    } else {
+        ""
+    };
+    let container_class = format!("rounded-md border {border_class} mb-2{drag_class}");
 
     rsx! {
-        div { class: "{container_class}",
+        div {
+            class: "{container_class}",
+            draggable: drag_armed(),
+            ondragstart: move |_| {
+                drag_from.set(Some(index));
+                drag_over.set(Some(index));
+            },
+            // Every row is a drop target. `prevent_default` on dragover is what
+            // makes a drop legal at all: without it the browser refuses the
+            // drop and no `drop` event is ever delivered.
+            ondragover: move |e| {
+                if drag_from().is_some() {
+                    e.prevent_default();
+                    if drag_over() != Some(index) {
+                        drag_over.set(Some(index));
+                    }
+                }
+            },
+            ondragenter: move |e| {
+                if drag_from().is_some() {
+                    e.prevent_default();
+                    drag_over.set(Some(index));
+                }
+            },
+            ondrop: move |e| {
+                e.prevent_default();
+                commit_drag();
+            },
+            // Fires on the source row after `drop` (which has already cleared
+            // the state, so this is a no-op then) and after a cancelled drag,
+            // where it is the only thing that puts the row back.
+            ondragend: move |_| cancel_drag(),
 
             // --- summary row -----------------------------------------------
             div { class: "flex items-center gap-2 px-2 py-1.5",
+                // The grip. Not a button: it does nothing on click, and a
+                // control that is only a cursor affordance would be one more
+                // stop for a keyboard user who already has the arrows. Hidden
+                // from assistive tech for the same reason, with the drag itself
+                // announced by the arrows' labels.
+                if can_drag {
+                    span {
+                        class: "shrink-0 cursor-grab px-0.5 text-subtle hover:text-content active:cursor-grabbing",
+                        title: "Drag to reorder",
+                        aria_hidden: true,
+                        onmousedown: move |_| drag_armed.set(true),
+                        onmouseup: move |_| drag_armed.set(false),
+                        DragHandleIcon { size: IconSize::Small }
+                    }
+                }
                 button {
                     r#type: "button",
                     class: "flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-1 text-left hover:bg-surface-2",
@@ -3166,6 +3314,59 @@ mod tests {
             field_summary_label(&row),
             "Phone number",
             "the label is what the client reads, so it is what the row is called"
+        );
+    }
+
+    /// A drag moves a row and closes the gap behind it. The arrow buttons swap
+    /// two rows, which is right for a single step and wrong for a drag:
+    /// dropping field 5 onto field 1 must put it at 1 and push the rest down,
+    /// not exchange the two and scramble everything between them.
+    #[test]
+    fn a_dragged_row_lands_where_it_was_dropped() {
+        let mut rows = vec!["a", "b", "c", "d", "e"];
+        move_row(&mut rows, 4, 1);
+        assert_eq!(rows, vec!["a", "e", "b", "c", "d"]);
+
+        let mut rows = vec!["a", "b", "c", "d"];
+        move_row(&mut rows, 0, 2);
+        assert_eq!(rows, vec!["b", "c", "a", "d"], "and downwards too");
+
+        let mut rows = vec!["a", "b"];
+        move_row(&mut rows, 1, 1);
+        assert_eq!(rows, vec!["a", "b"], "a drag that ends where it started");
+        move_row(&mut rows, 0, 9);
+        assert_eq!(rows, vec!["a", "b"], "an index off the end changes nothing");
+    }
+
+    /// Expansion is keyed by position, so it has to shift exactly the way the
+    /// rows do. Otherwise dragging an open field leaves some other row showing
+    /// as open in its place.
+    #[test]
+    fn dragging_a_row_carries_its_open_state() {
+        assert_eq!(
+            expansion_after_move(&HashSet::from([4usize]), 4, 1),
+            HashSet::from([1usize]),
+            "the dragged row's own state lands on its new index"
+        );
+        assert_eq!(
+            expansion_after_move(&HashSet::from([1usize, 2]), 4, 1),
+            HashSet::from([2usize, 3]),
+            "rows the drag pushed down move with them"
+        );
+        assert_eq!(
+            expansion_after_move(&HashSet::from([1usize, 2]), 0, 2),
+            HashSet::from([0usize, 1]),
+            "and rows pulled up when the drag went the other way"
+        );
+        assert_eq!(
+            expansion_after_move(&HashSet::from([0usize, 3]), 1, 2),
+            HashSet::from([0usize, 3]),
+            "rows outside the moved span are untouched"
+        );
+        assert_eq!(
+            expansion_after_move(&HashSet::from([2usize]), 2, 2),
+            HashSet::from([2usize]),
+            "a drag that ends where it started"
         );
     }
 
