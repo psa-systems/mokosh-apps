@@ -46,6 +46,19 @@ pub struct ModalProps {
     onclose: EventHandler<()>,
     /// Optional footer actions
     footer: Option<Element>,
+    /// PMS-763: optional chrome between the header and the scrolling body,
+    /// pinned the way they are. For a tab bar or anything else that has to stay
+    /// put while the content moves under it.
+    ///
+    /// A caller CAN do this itself with a `sticky` element at the top of the
+    /// body, and the request-form builder did until this existed. It goes wrong
+    /// quietly: a sticky box is constrained by the scrollport inset by the
+    /// scroll container's padding, so `top-0` parks it 16px below the top of
+    /// the visible area and the content scrolls through the gap. Covering that
+    /// takes negative margins, a background and a z-index, all tuned to this
+    /// component's `px-4 py-4` from the outside, which stops matching the
+    /// moment that padding changes.
+    subheader: Option<Element>,
 }
 
 /// Modal dialog component
@@ -65,6 +78,7 @@ pub fn Modal(props: ModalProps) -> Element {
             size: props.size,
             onclose: props.onclose,
             footer: props.footer.clone(),
+            subheader: props.subheader.clone(),
             {props.children}
         }
     }
@@ -78,9 +92,8 @@ fn ModalDialog(
     size: ModalSize,
     onclose: EventHandler<()>,
     footer: Option<Element>,
+    subheader: Option<Element>,
 ) -> Element {
-    let size_class = size.class();
-
     // Restore focus to the control that opened the modal. Capture the active
     // element on the first render, before the dialog steals focus on mount, and
     // restore it when this component unmounts (any close path).
@@ -95,6 +108,30 @@ fn ModalDialog(
             let _ = el.focus();
         }
     });
+
+    rsx! {
+        ModalChrome { title, size, onclose, footer, subheader, {children} }
+    }
+}
+
+/// The panel itself: backdrop, pinned header, optional pinned subheader,
+/// scrolling body, pinned footer.
+///
+/// Split out of [`ModalDialog`] so the layout can be rendered in a host test.
+/// `ModalDialog` reads `web_sys::window()` to restore focus on close, and a
+/// wasm-bindgen import cannot be called off wasm, so the dialog as a whole is
+/// unrenderable there. The structure is what PMS-763 was about, so the
+/// structure is what the tests get to see - the real one, not a copy of it.
+#[component]
+fn ModalChrome(
+    children: Element,
+    title: String,
+    size: ModalSize,
+    onclose: EventHandler<()>,
+    footer: Option<Element>,
+    subheader: Option<Element>,
+) -> Element {
+    let size_class = size.class();
 
     rsx! {
         div { class: "fixed inset-0 z-50 overflow-y-auto",
@@ -140,6 +177,17 @@ fn ModalDialog(
                             class: "rounded-md text-subtle hover:text-content focus:outline-none focus:ring-2 focus:ring-accent",
                             onclick: move |_| onclose.call(()),
                             XMarkIcon {}
+                        }
+                    }
+
+                    // PMS-763: chrome between the header and the body, pinned
+                    // like both of them. Outside the scrolling region on
+                    // purpose: a tab bar that lives inside it has to be made to
+                    // hover over its own container, and whatever it fails to
+                    // cover is a strip of scrolled content sitting above it.
+                    if let Some(subheader) = subheader {
+                        div { class: "flex-shrink-0 px-4 border-b border-line",
+                            {subheader}
                         }
                     }
 
