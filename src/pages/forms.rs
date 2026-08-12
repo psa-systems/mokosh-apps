@@ -3042,4 +3042,134 @@ mod tests {
         );
         assert!(state.rules.is_empty());
     }
+
+    // ========================================================================
+    // PMS-760: density
+    // ========================================================================
+
+    /// A failed save must land on the section holding the problem. The footer
+    /// count is the only thing certain to be on screen (PMS-747), and a count
+    /// that points at a tab the operator is not on is worse than no count.
+    #[test]
+    fn a_failed_save_lands_on_the_section_that_failed() {
+        assert_eq!(
+            ProblemCounts {
+                details: 1,
+                fields: 2,
+                rules: 0
+            }
+            .first_section(),
+            Some(EditorSection::Details),
+            "the first section with a problem wins, in the order they are shown"
+        );
+        assert_eq!(
+            ProblemCounts {
+                details: 0,
+                fields: 3,
+                rules: 1
+            }
+            .first_section(),
+            Some(EditorSection::Fields)
+        );
+        assert_eq!(
+            ProblemCounts {
+                details: 0,
+                fields: 0,
+                rules: 1
+            }
+            .first_section(),
+            Some(EditorSection::Rules)
+        );
+        assert_eq!(
+            ProblemCounts::default().first_section(),
+            None,
+            "a clean save must not move the operator off the section they were working on"
+        );
+        assert_eq!(
+            ProblemCounts {
+                details: 1,
+                fields: 2,
+                rules: 3
+            }
+            .total(),
+            6,
+            "the footer total must be the sum of what the tabs report, or one of them is lying"
+        );
+    }
+
+    /// Expansion is keyed by position, so reordering has to carry it along.
+    /// Otherwise moving an open field up leaves the field it displaced showing
+    /// as open, with the operator's half-typed row collapsed under it.
+    #[test]
+    fn an_open_field_stays_open_when_it_moves() {
+        let expanded = HashSet::from([2usize]);
+        assert_eq!(
+            expansion_after_swap(&expanded, 2, 1),
+            HashSet::from([1usize]),
+            "the open row moved up, so the open position moves with it"
+        );
+        assert_eq!(
+            expansion_after_swap(&HashSet::from([1usize]), 2, 1),
+            HashSet::from([2usize]),
+            "and the row it displaced keeps its own state"
+        );
+        assert_eq!(
+            expansion_after_swap(&HashSet::from([0usize, 3]), 1, 2),
+            HashSet::from([0usize, 3]),
+            "rows either side of a swap are untouched"
+        );
+    }
+
+    /// Removing a row shifts everything after it down one. Without this,
+    /// removing field 1 would leave field 3 open and field 2 collapsed.
+    #[test]
+    fn removing_a_field_shifts_the_open_rows_below_it() {
+        assert_eq!(
+            expansion_after_remove(&HashSet::from([0usize, 2, 3]), 1),
+            HashSet::from([0usize, 1, 2])
+        );
+        assert_eq!(
+            expansion_after_remove(&HashSet::from([1usize]), 1),
+            HashSet::new(),
+            "the removed row takes its own entry with it"
+        );
+        assert_eq!(
+            expansion_after_remove(&HashSet::from([0usize]), 2),
+            HashSet::from([0usize]),
+            "rows above the removed one do not move"
+        );
+    }
+
+    /// A collapsed row has to say what it is. A field is normally given its
+    /// type before its label, so the unnamed case is ordinary rather than an
+    /// edge, and an empty summary row does not look clickable.
+    #[test]
+    fn a_collapsed_field_always_has_something_to_show() {
+        let mut row = FieldRow::new();
+        assert_eq!(field_summary_label(&row), "Untitled field");
+        row.name = "phone_number".to_string();
+        assert_eq!(
+            field_summary_label(&row),
+            "phone_number",
+            "the reference name stands in until the label is typed"
+        );
+        row.label = "  Phone number  ".to_string();
+        assert_eq!(
+            field_summary_label(&row),
+            "Phone number",
+            "the label is what the client reads, so it is what the row is called"
+        );
+    }
+
+    /// PMS-760: a row with a problem is opened by the failed save, and the
+    /// summary marks it. Both of those hang off `any()`.
+    #[test]
+    fn a_row_with_a_problem_is_distinguishable_from_a_clean_one() {
+        assert!(!FieldRowErrors::default().any());
+        assert!(FieldRowErrors {
+            name: "A reference name is required.".to_string(),
+            ..Default::default()
+        }
+        .any());
+    }
 }
