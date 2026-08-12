@@ -141,7 +141,7 @@ pub fn FormsBuilderPage() -> Element {
         // away. Hidden entirely when there are none, because an empty
         // "Drafts (0)" panel is a permanent reminder of nothing.
         if !draft_rows.is_empty() {
-            div { class: "mb-4 rounded-md border border-default bg-surface-2 p-3",
+            div { class: "mb-4 rounded-md border border-line bg-surface-2 p-3",
                 p { class: "mb-2 text-sm font-medium text-content",
                     "Unfinished drafts"
                 }
@@ -161,7 +161,7 @@ pub fn FormsBuilderPage() -> Element {
                             let delete_id = draft.id.clone();
                             rsx! {
                                 li { key: "{key}",
-                                    class: "flex items-center justify-between gap-3 rounded border border-default bg-surface px-3 py-2",
+                                    class: "flex items-center justify-between gap-3 rounded border border-line bg-surface px-3 py-2",
                                     div { class: "min-w-0",
                                         span { class: "text-sm font-medium text-content", "{label}" }
                                         // Which form it belongs to, when it
@@ -1366,7 +1366,11 @@ fn FormEditorModal(
         // hundred pixels above the viewport and looked like a dead button.
         if problem_count() > 0 {
             span {
-                class: "mr-auto self-center text-sm text-danger",
+                // `text-danger` is not a utility this build defines (input.css
+                // has no danger token), so this message rendered in body
+                // colour and read as ordinary text. The state colours are
+                // the red/green/yellow scale, which the theme guard allows.
+                class: "mr-auto self-center text-sm text-red-600 dark:text-red-400",
                 role: "alert",
                 if problem_count() == 1 {
                     "1 problem to fix above."
@@ -1425,7 +1429,7 @@ fn FormEditorModal(
                 // draft may be older than what the server now holds, so the
                 // operator is told and offered the saved version back.
                 if draft_restored() {
-                    div { class: "rounded-md border border-default bg-surface-2 px-3 py-2 text-sm text-content flex items-center justify-between gap-3",
+                    div { class: "rounded-md border border-line bg-surface-2 px-3 py-2 text-sm text-content flex items-center justify-between gap-3",
                         span {
                             "Restored what you had unsaved. It has not been saved to the server."
                         }
@@ -1956,7 +1960,7 @@ fn FieldRowEditor(
         .collect();
 
     rsx! {
-        div { class: "rounded-md border border-default p-3 mb-3 space-y-3",
+        div { class: "rounded-md border border-line p-3 mb-3 space-y-3",
             div { class: "flex items-center justify-between",
                 span { class: "text-xs font-medium text-muted", "Field {index + 1}" }
                 div { class: "flex gap-2",
@@ -2123,7 +2127,7 @@ fn RuleRowEditor(
     };
 
     rsx! {
-        div { class: "rounded-md border border-default p-3 mb-3",
+        div { class: "rounded-md border border-line p-3 mb-3",
             div { class: "flex items-center justify-between mb-2",
                 span { class: "text-xs font-medium text-muted", "Rule {index + 1}" }
                 Button {
