@@ -13,6 +13,17 @@ pub struct CardProps {
     /// Optional header title
     #[props(default)]
     title: String,
+    /// PMS-765: optional line under the title, inside the header.
+    ///
+    /// A card that needs a sentence of explanation used to put one at the top
+    /// of its body, where it lands under the header's rule with whatever
+    /// padding that card happens to have: none at all on a `padding: false`
+    /// card, which is how the request-form panel ended up with small grey text
+    /// jammed between the header rule and a table header row. Here it is part
+    /// of the heading, above the rule, at the size the rest of the app uses for
+    /// descriptive copy.
+    #[props(default)]
+    subtitle: String,
     /// Optional header actions
     actions: Option<Element>,
     /// Whether to add padding
@@ -47,6 +58,7 @@ pub fn Card(props: CardProps) -> Element {
             if has_header {
                 CardHeader {
                     title: props.title,
+                    subtitle: props.subtitle,
                     actions: props.actions,
                 }
             }
@@ -61,6 +73,10 @@ pub fn Card(props: CardProps) -> Element {
 #[derive(Props, Clone, PartialEq)]
 pub struct CardHeaderProps {
     title: String,
+    /// See [`CardProps::subtitle`]. Empty renders nothing at all, so a card
+    /// without one keeps the header it already had.
+    #[props(default)]
+    subtitle: String,
     actions: Option<Element>,
     #[props(default)]
     class: String,
@@ -68,8 +84,16 @@ pub struct CardHeaderProps {
 
 #[component]
 pub fn CardHeader(props: CardHeaderProps) -> Element {
+    // `items-start` rather than `items-center` once a subtitle is in play: with
+    // two lines of heading, centring the actions against the pair leaves them
+    // floating beside the description instead of level with the title.
+    let align = if props.subtitle.is_empty() {
+        "items-center"
+    } else {
+        "items-start"
+    };
     let class = format!(
-        "flex items-center justify-between px-6 pt-6 pb-4 border-b border-line {}",
+        "flex {align} justify-between px-6 pt-6 pb-4 border-b border-line {}",
         props.class
     );
 
@@ -78,6 +102,11 @@ pub fn CardHeader(props: CardHeaderProps) -> Element {
             div {
                 h3 { class: "text-lg font-medium text-content",
                     "{props.title}"
+                }
+                if !props.subtitle.is_empty() {
+                    p { class: "mt-1 text-sm text-muted",
+                        "{props.subtitle}"
+                    }
                 }
             }
             div { class: "flex items-center space-x-2",
@@ -182,5 +211,85 @@ pub fn StatCard(props: StatCardProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dioxus::prelude::VirtualDom;
+
+    /// Padded on purpose: the body element then carries a class of its own
+    /// (`px-6 pb-6 pt-4`), which is what lets the test tell "inside the header"
+    /// from "first thing in the body". Those two are indistinguishable by
+    /// document order alone, and the bug was exactly the second one.
+    #[component]
+    fn WithSubtitle() -> Element {
+        rsx! {
+            Card {
+                title: "Recently sent".to_string(),
+                subtitle: "SUBTITLE-MARKER".to_string(),
+                "BODY-MARKER"
+            }
+        }
+    }
+
+    #[component]
+    fn WithoutSubtitle() -> Element {
+        rsx! {
+            Card { title: "Recently sent".to_string(), "BODY-MARKER" }
+        }
+    }
+
+    /// PMS-765 regression: a card's description belongs in the header, above
+    /// the rule. As the first thing in the body it had no space above it (a
+    /// `padding: false` card gives its body none at all) and a table header row
+    /// directly below, so it read as small grey text wedged between two lines.
+    #[test]
+    fn a_subtitle_sits_in_the_header_not_at_the_top_of_the_body() {
+        let mut dom = VirtualDom::new(WithSubtitle);
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+
+        let subtitle = html.find("SUBTITLE-MARKER").expect("the subtitle renders");
+        let body_element = html
+            .find("px-6 pb-6 pt-4")
+            .expect("the padded body element is still there");
+        let body = html.find("BODY-MARKER").expect("the body renders");
+
+        assert!(
+            subtitle < body_element,
+            "the subtitle must come before the body element even opens, or it is \
+             back inside the body where it started; got: {html}"
+        );
+        assert!(
+            body_element < body,
+            "and the body content is inside the body"
+        );
+        assert!(
+            html.contains("mt-1 text-sm text-muted"),
+            "descriptive copy is text-sm with room above it, not a size smaller \
+             and flush; got: {html}"
+        );
+        assert!(
+            html.contains("items-start"),
+            "a two-line heading aligns its actions to the title, not to the pair; \
+             got: {html}"
+        );
+    }
+
+    /// The prop is optional, and a card without one keeps the header it had.
+    #[test]
+    fn no_subtitle_leaves_the_header_alone() {
+        let mut dom = VirtualDom::new(WithoutSubtitle);
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
+
+        assert!(!html.contains("SUBTITLE-MARKER"));
+        assert!(!html.contains("mt-1 text-sm text-muted"));
+        assert!(
+            html.contains("items-center"),
+            "a one-line heading still centres its actions against the title; got: {html}"
+        );
     }
 }
