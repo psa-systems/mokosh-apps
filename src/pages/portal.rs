@@ -1201,7 +1201,7 @@ pub fn PortalQuoteDetailPage(props: PortalQuoteDetailPageProps) -> Element {
                                     p { class: "mb-3 text-sm text-red-600 dark:text-red-300", "{error}" }
                                 }
                                 textarea {
-                                    class: "w-full rounded-md border border-default bg-surface p-2 text-sm",
+                                    class: "w-full rounded-md border border-line bg-surface p-2 text-sm",
                                     rows: 3,
                                     placeholder: "Anything you want to add (optional)",
                                     value: "{notes}",
