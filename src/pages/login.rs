@@ -38,6 +38,14 @@ struct LoginBody {
     /// after a first attempt reported `approval_required`. Omitted otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     approval_code: Option<String>,
+    /// MAPPS-396: tenant slug the operator types into the form. The
+    /// server resolves it against `tenants.slug WHERE status = 'active'`
+    /// before running the email/password lookup, so a non-default
+    /// tenant's user (e.g. `agent@acme.example` under `acme`) can sign
+    /// in from the standalone form. Omitted (`None`) falls back to
+    /// the default tenant server-side, matching pre-MAPPS-396 behavior.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tenant_slug: Option<String>,
 }
 
 /// The fields of mokosh-server's `LoginResponse` this SPA consumes. Unknown
@@ -74,6 +82,10 @@ pub fn StandaloneLogin() -> Element {
     // MAPPS-397: same two-step shape for the emailed sign-in approval code.
     let mut approval_code = use_signal(String::new);
     let mut approval_needed = use_signal(|| false);
+    // MAPPS-396: tenant slug (e.g. `acme`), typed by the operator. Blank =
+    // fall back to the default tenant server-side. The field is always
+    // rendered; a self-hosted single-tenant deployment can just ignore it.
+    let mut tenant_slug = use_signal(String::new);
 
     let mut handle_submit = move |_| {
         if saving() {
@@ -89,6 +101,16 @@ pub fn StandaloneLogin() -> Element {
         let mfa = if code.is_empty() { None } else { Some(code) };
         let appr = approval_code.read().trim().to_string();
         let approval = if appr.is_empty() { None } else { Some(appr) };
+        // MAPPS-396: normalize the slug to lowercase (matches
+        // `tenants.slug` writes, which are also lowercase) and drop
+        // blank input so the request omits the field rather than
+        // sending an empty string the server would reject.
+        let slug_raw = tenant_slug.read().trim().to_ascii_lowercase();
+        let slug = if slug_raw.is_empty() {
+            None
+        } else {
+            Some(slug_raw)
+        };
         saving.set(true);
         error.set(String::new());
 
@@ -102,6 +124,7 @@ pub fn StandaloneLogin() -> Element {
                     remember_me: false,
                     mfa_code: mfa.clone(),
                     approval_code: approval.clone(),
+                    tenant_slug: slug.clone(),
                 };
                 match crate::hooks::fetch::api::post_typed::<LoginResp, _>("/auth/login", &body)
                     .await
@@ -181,7 +204,7 @@ pub fn StandaloneLogin() -> Element {
             }
             #[cfg(not(feature = "web"))]
             {
-                let _ = (em, pw, mfa, approval);
+                let _ = (em, pw, mfa, approval, slug);
             }
             saving.set(false);
         });
@@ -226,6 +249,23 @@ pub fn StandaloneLogin() -> Element {
                             oninput: move |e: FormEvent| {
                                 error.set(String::new());
                                 password.set(e.value());
+                            },
+                        }
+
+                        // MAPPS-396: tenant slug (blank = default tenant).
+                        // Rendered on every deploy: a single-tenant self-host
+                        // simply leaves it blank and the server routes to the
+                        // default tenant, matching pre-MAPPS-396 behavior.
+                        Input {
+                            name: "tenant_slug",
+                            label: "Tenant (optional)",
+                            r#type: "text".to_string(),
+                            value: tenant_slug(),
+                            required: false,
+                            disabled: saving(),
+                            oninput: move |e: FormEvent| {
+                                error.set(String::new());
+                                tenant_slug.set(e.value());
                             },
                         }
 
@@ -322,6 +362,7 @@ mod tests {
             approval_code,
             device_id,
             tenant_id,
+            tenant_slug,
         } = req;
         let _ = LoginBody {
             email,
@@ -329,9 +370,11 @@ mod tests {
             remember_me,
             mfa_code,
             approval_code,
+            tenant_slug,
         };
         // Deliberately not sent by the standalone form: the MFA recovery code,
-        // the per-browser device id, and the hostname-derived tenant hint.
+        // the per-browser device id, and the hostname-derived tenant UUID hint
+        // (MAPPS-396 uses the sibling `tenant_slug` field instead).
         let _ = (recovery_code, device_id, tenant_id);
     }
 
@@ -364,7 +407,28 @@ mod tests {
             remember_me: false,
             mfa_code: None,
             approval_code: approval_code.map(str::to_string),
+            tenant_slug: None,
         }
+    }
+
+    /// MAPPS-396: `tenant_slug: None` omits the field entirely so a
+    /// server that predates the field decodes cleanly, and a
+    /// single-tenant self-host does not send a stray empty value.
+    #[test]
+    fn tenant_slug_is_omitted_when_absent() {
+        let json = serde_json::to_string(&body(None)).expect("serializes");
+        assert!(!json.contains("tenant_slug"), "{json}");
+    }
+
+    /// MAPPS-396: when the operator types a slug the wire carries it
+    /// as an ordinary string field, unquoted / unencoded, so the
+    /// server's straight column lookup succeeds without extra parsing.
+    #[test]
+    fn tenant_slug_is_sent_when_present() {
+        let mut b = body(None);
+        b.tenant_slug = Some("acme".to_string());
+        let json = serde_json::to_string(&b).expect("serializes");
+        assert!(json.contains(r#""tenant_slug":"acme""#), "{json}");
     }
 
     #[test]

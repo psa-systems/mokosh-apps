@@ -58,6 +58,10 @@ ammonia = "4"
 # pinned in Cargo.lock.
 [dependencies.mokosh-types]
 git = "https://dev.a8n.run/psa-systems/mokosh-server.git"
+# MAPPS-396: track the server's `mokosh-client-login` branch while
+# `tenant_slug` on LoginRequest waits to reach main. Drop `branch = ...`
+# once the branch merges so the pin follows main again.
+branch = "mokosh-client-login"
 
 [dependencies.dioxus]
 version = "0.7.7"
