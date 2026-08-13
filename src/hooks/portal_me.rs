@@ -14,7 +14,9 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 /// Snapshot of the authenticated portal contact. Matches mokosh-server's
-/// `CurrentContact` DTO (`src/modules/portal/models.rs`).
+/// `CurrentContactMe` DTO (`src/modules/portal/models.rs`): the JWT
+/// claims plus account-state fields (currently `mfa_enabled`) the
+/// Settings page needs without a second round-trip.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct PortalMe {
     pub id: uuid::Uuid,
@@ -23,6 +25,11 @@ pub struct PortalMe {
     pub email: String,
     pub first_name: String,
     pub last_name: String,
+    /// Server's `contacts.portal_mfa_enabled`. Drives the "Set up
+    /// two-factor auth" vs "Two-factor auth is on" affordance on
+    /// `/portal/settings`.
+    #[serde(default)]
+    pub mfa_enabled: bool,
 }
 
 impl PortalMe {
@@ -128,6 +135,20 @@ pub fn clear_portal_me() {
 #[cfg(not(feature = "web"))]
 pub fn clear_portal_me() {}
 
+/// Force `GET /portal/auth/me` to run again on the next
+/// `ensure_portal_me_fetch()` call. Used by write flows that mutate
+/// server-side identity state (MFA enable/disable, later profile
+/// updates) so the cached snapshot reflects the change without a full
+/// logout.
+#[cfg(feature = "web")]
+pub fn invalidate_portal_me() {
+    *HAS_FETCHED_ME.write() = false;
+    ensure_portal_me_fetch();
+}
+
+#[cfg(not(feature = "web"))]
+pub fn invalidate_portal_me() {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,6 +161,7 @@ mod tests {
             email: email.to_string(),
             first_name: first.to_string(),
             last_name: last.to_string(),
+            mfa_enabled: false,
         }
     }
 

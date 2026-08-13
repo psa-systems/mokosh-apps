@@ -3834,8 +3834,13 @@ struct PortalApprovalRow {
     id: uuid::Uuid,
     #[serde(default)]
     target: String,
-    #[serde(default)]
-    entity_id: Option<uuid::Uuid>,
+    /// Server sends `entity_id: Uuid` non-optional (portal models.rs);
+    /// `#[serde(default)]` on `uuid::Uuid::nil` keeps decoding safe if
+    /// the wire ever changes to omit the field, while restoring the
+    /// non-Option shape means the header rendering no longer emits
+    /// "target - " with a bare empty id.
+    #[serde(default = "uuid::Uuid::nil")]
+    entity_id: uuid::Uuid,
     #[serde(default)]
     label: Option<String>,
     #[serde(default)]
@@ -3848,6 +3853,23 @@ struct PortalApprovalRow {
     decision_notes: Option<String>,
     #[serde(default)]
     decided_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Route the caller through to the underlying entity behind an
+/// approval, when the entity kind has a portal-scoped page. Approvals
+/// currently only assign against tickets (phase 1 target); other
+/// server-side kinds return `None` and the card omits the link
+/// affordance rather than dead-ending.
+fn portal_approval_deep_link(target: &str, entity_id: uuid::Uuid) -> Option<Route> {
+    if entity_id.is_nil() {
+        return None;
+    }
+    match target {
+        "ticket" => Some(Route::PortalTicketDetail {
+            id: entity_id.to_string(),
+        }),
+        _ => None,
+    }
 }
 
 #[component]
@@ -3945,19 +3967,44 @@ fn PortalApprovalCard(props: PortalApprovalCardProps) -> Element {
         }
     };
 
+    let deep_link = portal_approval_deep_link(&row.target, row.entity_id);
+    let title = row
+        .label
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            // Fallback title when the server did not supply a label
+            // (non-ticket target, or a ticket whose row was purged).
+            // "Ticket" is capitalized so the fallback reads as English
+            // rather than the raw enum literal.
+            let kind = match row.target.as_str() {
+                "ticket" => "Ticket",
+                other if !other.is_empty() => other,
+                _ => "Approval",
+            };
+            if row.entity_id.is_nil() {
+                kind.to_string()
+            } else {
+                format!("{kind} {}", row.entity_id)
+            }
+        });
+
     rsx! {
         Card {
             div { class: "flex items-start justify-between mb-3",
                 div {
-                    if let Some(label) = &row.label {
-                        h3 { class: "text-base font-semibold text-content", "{label}" }
-                    } else {
-                        h3 { class: "text-base font-semibold text-content",
-                            "{row.target} - {row.entity_id.map(|e| e.to_string()).unwrap_or_default()}"
-                        }
-                    }
+                    h3 { class: "text-base font-semibold text-content", "{title}" }
                     if let Some(notes) = &row.notes {
                         p { class: "mt-1 text-sm text-muted whitespace-pre-wrap", "{notes}" }
+                    }
+                    if let Some(route) = deep_link.clone() {
+                        div { class: "mt-2",
+                            Link {
+                                to: route,
+                                class: "text-xs text-accent hover:opacity-90",
+                                "Open ticket ->"
+                            }
+                        }
                     }
                 }
                 Badge { variant: badge_variant, "{badge_label}" }
@@ -4068,6 +4115,9 @@ pub fn PortalCompanyPage() -> Element {
     let mut selected_delegatee = use_signal(String::new);
     let mut grant_tickets = use_signal(|| true);
     let mut grant_invoices = use_signal(|| false);
+    // Optional expiry (`YYYY-MM-DD`). Empty = never expires; the server
+    // upgrades the string to a `DateTime<Utc>` (end-of-day) when set.
+    let mut grant_expires = use_signal(String::new);
     let mut grant_error = use_signal(String::new);
     let mut granting = use_signal(|| false);
 
@@ -4319,6 +4369,22 @@ pub fn PortalCompanyPage() -> Element {
                                         "See my invoices"
                                     }
                                 }
+                                div { class: "space-y-1",
+                                    label { class: "block text-xs font-medium text-content",
+                                        r#for: "delegation_expires_at",
+                                        "Expires (optional)"
+                                    }
+                                    input {
+                                        id: "delegation_expires_at",
+                                        r#type: "date",
+                                        class: "block rounded-md border border-line bg-surface px-3 py-2 text-content text-sm",
+                                        value: "{grant_expires}",
+                                        onchange: move |e: FormEvent| grant_expires.set(e.value()),
+                                    }
+                                    p { class: "text-xs text-muted",
+                                        "Leave blank to grant access until you revoke it."
+                                    }
+                                }
                                 if !grant_error().is_empty() {
                                     p { class: "text-sm text-red-600 dark:text-red-300", "{grant_error}" }
                                 }
@@ -4339,10 +4405,27 @@ pub fn PortalCompanyPage() -> Element {
                                                 "tickets": grant_tickets(),
                                                 "invoices": grant_invoices(),
                                             });
-                                            let body = serde_json::json!({
-                                                "delegatee_contact_id": delegatee,
-                                                "scope": scope,
-                                            });
+                                            // `<input type="date">` returns `YYYY-MM-DD`.
+                                            // Send it as an RFC3339 end-of-day UTC so
+                                            // the delegation stays valid through the
+                                            // full day the user picked, rather than
+                                            // expiring at 00:00 that morning. Empty
+                                            // stays empty so the field drops from
+                                            // the wire and the server keeps the
+                                            // never-expires default.
+                                            let expires_raw = grant_expires.read().trim().to_string();
+                                            let expires_json = if expires_raw.is_empty() {
+                                                serde_json::Value::Null
+                                            } else {
+                                                serde_json::Value::String(format!("{expires_raw}T23:59:59Z"))
+                                            };
+                                            let mut body_map = serde_json::Map::new();
+                                            body_map.insert("delegatee_contact_id".into(), serde_json::Value::String(delegatee));
+                                            body_map.insert("scope".into(), scope);
+                                            if !expires_json.is_null() {
+                                                body_map.insert("expires_at".into(), expires_json);
+                                            }
+                                            let body = serde_json::Value::Object(body_map);
                                             spawn(async move {
                                                 #[cfg(feature = "web")]
                                                 {

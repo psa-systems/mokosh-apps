@@ -38,6 +38,18 @@ struct PortalLoginBody {
     /// server sees a clean shape on the first-attempt (no-code) path.
     #[serde(skip_serializing_if = "String::is_empty")]
     mfa_code: String,
+    /// PMS-729 phase 2 H4: single-use recovery code. Supplied instead
+    /// of `mfa_code` when the customer lost their authenticator device.
+    /// Dropped from the wire when empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    recovery_code: String,
+    /// PMS-729 phase 2 H8: Cloudflare Turnstile response token. Only
+    /// needed after the source IP has crossed the failure threshold;
+    /// the server returns a 403 CAPTCHA_REQUIRED envelope carrying
+    /// the site_key, the SPA renders the widget, and the returned
+    /// token comes back here on the retry.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    captcha_token: String,
 }
 
 /// The fields of mokosh-server's `PortalLoginResponse` this page consumes.
@@ -71,6 +83,26 @@ pub fn PortalLoginPage() -> Element {
     // `mfa_code` populated.
     let mut mfa_required = use_signal(|| false);
     let mut mfa_code = use_signal(String::new);
+    // PMS-729 phase 2 H4 follow-up: recovery code alternative to TOTP.
+    // Rendered next to the MFA input when `use_recovery = true`. Sent
+    // as `recovery_code` (dropping `mfa_code`) so a customer with a
+    // lost authenticator device can still sign in.
+    let mut use_recovery = use_signal(|| false);
+    let mut recovery_code = use_signal(String::new);
+    // PMS-729 phase 2 H8: CAPTCHA challenge state. `captcha_site_key`
+    // flips to Some(...) when the server returns a
+    // 403 CAPTCHA_REQUIRED / CAPTCHA_INVALID envelope; the SPA lazy-
+    // loads the Turnstile script and renders a widget. The widget's
+    // JS callback pokes the token into `captcha_token` via a global
+    // window function set up by `install_turnstile_callback`.
+    let mut captcha_site_key = use_signal(|| None::<String>);
+    let mut captcha_token = use_signal(String::new);
+    // Install the Turnstile JS -> Rust bridge once per page mount. The
+    // callback is registered on `window` so Cloudflare's `data-callback`
+    // attribute can call into it; it writes back into our own signal so
+    // the submit path picks up the token on the next click.
+    #[cfg(feature = "web")]
+    use_hook(move || install_turnstile_callback(captcha_token));
     // PMS-729: kick the shared `/portal/host` branding fetch. The result
     // lives in `PORTAL_HOST_HINT` so `PortalLayout` can paint the same
     // MSP name + logo after login without re-fetching. Idempotent - the
@@ -105,7 +137,10 @@ pub fn PortalLoginPage() -> Element {
         let em = email.read().trim().to_string();
         let pw = password.read().clone();
         let code = mfa_code.read().trim().to_string();
+        let rec = recovery_code.read().trim().to_string();
+        let cap = captcha_token.read().trim().to_string();
         let is_mfa_stage = mfa_required();
+        let recovery_mode = use_recovery();
         if em.is_empty() || pw.is_empty() {
             error.set("Enter your email and password.".to_string());
             return;
@@ -114,8 +149,19 @@ pub fn PortalLoginPage() -> Element {
             error.set("Enter your account name, email, and password.".to_string());
             return;
         }
-        if is_mfa_stage && code.is_empty() {
+        if is_mfa_stage && recovery_mode && rec.is_empty() {
+            error.set("Paste a recovery code from the list your MSP gave you.".to_string());
+            return;
+        }
+        if is_mfa_stage && !recovery_mode && code.is_empty() {
             error.set("Enter the 6-digit code from your authenticator app.".to_string());
+            return;
+        }
+        // When the widget is up, refuse to submit without a token so the
+        // customer sees "solve the CAPTCHA" instead of the server 403.
+        let captcha_up = captcha_site_key.read().is_some();
+        if captcha_up && cap.is_empty() {
+            error.set("Please complete the CAPTCHA challenge above and try again.".to_string());
             return;
         }
         saving.set(true);
@@ -125,10 +171,6 @@ pub fn PortalLoginPage() -> Element {
             #[cfg(feature = "web")]
             {
                 use crate::hooks::fetch::api::ApiError;
-                // PMS-729: send the slug only when the SPA is on a
-                // legacy host (no host hint). On a portal host, leave
-                // it empty so `skip_serializing_if` drops the field
-                // entirely and the server derives from Host.
                 let body = PortalLoginBody {
                     tenant_slug: if host_derived {
                         String::new()
@@ -137,7 +179,20 @@ pub fn PortalLoginPage() -> Element {
                     },
                     email: em.clone(),
                     password: pw.clone(),
-                    mfa_code: code.clone(),
+                    // Only one of mfa_code / recovery_code goes on the
+                    // wire per attempt, so the server side treats the
+                    // request unambiguously.
+                    mfa_code: if recovery_mode {
+                        String::new()
+                    } else {
+                        code.clone()
+                    },
+                    recovery_code: if recovery_mode {
+                        rec.clone()
+                    } else {
+                        String::new()
+                    },
+                    captcha_token: cap.clone(),
                 };
                 match crate::hooks::fetch::api::post_typed::<PortalLoginResp, _>(
                     "/portal/auth/login",
@@ -145,17 +200,17 @@ pub fn PortalLoginPage() -> Element {
                 )
                 .await
                 {
-                    // PMS-729 phase 2 H4: MFA stage. Server needs a
-                    // second-factor code; swap the UI to the code
-                    // input and stop here. The SAME body (email +
-                    // password + slug) is re-POSTed on the next
-                    // submit; a token is only issued when both
-                    // factors verify.
                     Ok(PortalLoginResp {
                         mfa_required: true, ..
                     }) => {
                         mfa_required.set(true);
                         mfa_code.set(String::new());
+                        recovery_code.set(String::new());
+                        // A successful password + captcha exchange consumed
+                        // the token; clear + hide the widget so the MFA
+                        // retry does not carry a stale token.
+                        captcha_token.set(String::new());
+                        captcha_site_key.set(None);
                     }
                     Ok(resp) => {
                         crate::hooks::fetch::api::set_portal_access_token(Some(resp.access_token));
@@ -164,14 +219,49 @@ pub fn PortalLoginPage() -> Element {
                         ));
                         nav.replace(Route::PortalHome {});
                     }
-                    // The server answers 401 for a wrong password, an unknown
-                    // contact, and an unknown tenant alike, so the copy cannot
-                    // name which one was wrong.
+                    // PMS-729 phase 2 H8: 403 CAPTCHA_REQUIRED /
+                    // CAPTCHA_INVALID. Envelope carries the Turnstile
+                    // site_key; render the widget and prompt the
+                    // customer to solve it. Second submit re-sends the
+                    // form with captcha_token populated.
+                    Err(ApiError::Status {
+                        code: 403,
+                        envelope_code,
+                        envelope_body,
+                        message,
+                        ..
+                    }) if envelope_code == "CAPTCHA_REQUIRED"
+                        || envelope_code == "CAPTCHA_INVALID" =>
+                    {
+                        let site_key = envelope_body
+                            .as_ref()
+                            .and_then(|v| v.get("error"))
+                            .and_then(|e| e.get("captcha"))
+                            .and_then(|c| c.get("site_key"))
+                            .and_then(|s| s.as_str())
+                            .map(str::to_string)
+                            .unwrap_or_default();
+                        captcha_token.set(String::new());
+                        if site_key.is_empty() {
+                            // Server should always send a key with a
+                            // CAPTCHA_REQUIRED envelope; if not, we
+                            // cannot render the widget and the account
+                            // is effectively locked out. Fall back to
+                            // the server's own message so the customer
+                            // sees an actionable error.
+                            error.set(if message.is_empty() {
+                                "The server asked for a CAPTCHA but did not provide one. Contact your account team.".to_string()
+                            } else { message });
+                        } else {
+                            captcha_site_key.set(Some(site_key));
+                            error.set(
+                                "Too many sign-in attempts from this network. Solve the CAPTCHA below and try again.".to_string(),
+                            );
+                        }
+                    }
                     Err(ApiError::Status { code: 401, .. }) => {
                         error.set("Invalid account name, email, or password.".to_string());
                     }
-                    // Rate limiter or the persistent failed-attempt lockout
-                    // (mokosh-server PMS-501).
                     Err(ApiError::Status { code: 429, .. }) => {
                         error.set(
                             "Too many sign-in attempts. Please wait a moment and try again."
@@ -183,7 +273,7 @@ pub fn PortalLoginPage() -> Element {
             }
             #[cfg(not(feature = "web"))]
             {
-                let _ = (slug, em, pw);
+                let _ = (slug, em, pw, code, rec, cap);
             }
             saving.set(false);
         });
@@ -252,22 +342,63 @@ pub fn PortalLoginPage() -> Element {
                             // credentials are already verified server-
                             // side (this is the second POST); the user
                             // types the 6-digit code from their
-                            // authenticator app and re-submits.
+                            // authenticator app and re-submits. When
+                            // `use_recovery` is on, the recovery-code
+                            // input replaces the TOTP input; the
+                            // submit picks the right field based on
+                            // the same signal.
                             div {
-                                p { class: "text-sm text-content mb-2",
-                                    "Enter the 6-digit code from your authenticator app to finish signing in."
+                                if use_recovery() {
+                                    p { class: "text-sm text-content mb-2",
+                                        "Paste one of the recovery codes your MSP gave you when you enabled two-factor auth. Each code works only once."
+                                    }
+                                    Input {
+                                        name: "recovery_code",
+                                        label: "Recovery code",
+                                        r#type: "text".to_string(),
+                                        value: recovery_code(),
+                                        required: true,
+                                        disabled: saving(),
+                                        oninput: move |e: FormEvent| {
+                                            error.set(String::new());
+                                            recovery_code.set(e.value());
+                                        },
+                                    }
+                                } else {
+                                    p { class: "text-sm text-content mb-2",
+                                        "Enter the 6-digit code from your authenticator app to finish signing in."
+                                    }
+                                    Input {
+                                        name: "mfa_code",
+                                        label: "Authenticator code",
+                                        r#type: "text".to_string(),
+                                        value: mfa_code(),
+                                        required: true,
+                                        disabled: saving(),
+                                        oninput: move |e: FormEvent| {
+                                            error.set(String::new());
+                                            mfa_code.set(e.value());
+                                        },
+                                    }
                                 }
-                                Input {
-                                    name: "mfa_code",
-                                    label: "Authenticator code",
-                                    r#type: "text".to_string(),
-                                    value: mfa_code(),
-                                    required: true,
-                                    disabled: saving(),
-                                    oninput: move |e: FormEvent| {
+                                button {
+                                    r#type: "button",
+                                    class: "mt-2 text-xs text-accent hover:opacity-80",
+                                    onclick: move |_| {
+                                        let flip = !use_recovery();
+                                        use_recovery.set(flip);
                                         error.set(String::new());
-                                        mfa_code.set(e.value());
+                                        if flip {
+                                            mfa_code.set(String::new());
+                                        } else {
+                                            recovery_code.set(String::new());
+                                        }
                                     },
+                                    if use_recovery() {
+                                        "Use my authenticator code instead"
+                                    } else {
+                                        "I lost my authenticator - use a recovery code"
+                                    }
                                 }
                             }
                         } else {
@@ -315,6 +446,34 @@ pub fn PortalLoginPage() -> Element {
                                     error.set(String::new());
                                     password.set(e.value());
                                 },
+                            }
+                        }
+
+                        // PMS-729 phase 2 H8: Cloudflare Turnstile
+                        // challenge. Rendered only when the server
+                        // returned a CAPTCHA_REQUIRED / CAPTCHA_INVALID
+                        // envelope; the Turnstile JS script auto-mounts
+                        // into any element with class=cf-turnstile and
+                        // calls `window.__portal_captcha_cb` (installed
+                        // in `install_turnstile_callback`) with the
+                        // token. Loading the script lazily keeps a
+                        // customer whose IP never crossed the threshold
+                        // from paying the extra request.
+                        if let Some(site_key) = captcha_site_key.read().as_ref() {
+                            div { class: "mt-4",
+                                p { class: "text-xs text-muted mb-2",
+                                    "For your security, please verify you are not a bot."
+                                }
+                                div {
+                                    class: "cf-turnstile",
+                                    "data-sitekey": "{site_key}",
+                                    "data-callback": "__portal_captcha_cb",
+                                }
+                                {
+                                    #[cfg(feature = "web")]
+                                    ensure_turnstile_script_loaded();
+                                    rsx! {}
+                                }
                             }
                         }
 
@@ -383,37 +542,131 @@ pub fn PortalLoginPage() -> Element {
     }
 }
 
+/// PMS-729 phase 2 H8: bind the token signal to the JS callback
+/// Cloudflare Turnstile invokes when the widget resolves. Turnstile
+/// posts the token as the first argument; a global function is the
+/// only integration seam its `data-callback` attribute exposes. The
+/// callback stashes the token into a WASM-side JS bag that this hook
+/// polls at 400ms on each render. Fires once per page mount via
+/// `use_hook` so a re-render does not re-register.
+#[cfg(feature = "web")]
+fn install_turnstile_callback(mut captcha_token: Signal<String>) {
+    use wasm_bindgen::prelude::Closure;
+    use wasm_bindgen::JsCast;
+
+    let Some(win) = web_sys::window() else {
+        return;
+    };
+    // Idempotent: only install once per page load. Dioxus signals are
+    // `Copy`; a re-invocation would leak a second closure and orphan
+    // the first, wasting memory but not breaking correctness. Skip
+    // the second install.
+    if js_sys::Reflect::get(&win, &"__portal_captcha_cb".into())
+        .map(|v| !v.is_undefined() && !v.is_null())
+        .unwrap_or(false)
+    {
+        return;
+    }
+    // Turnstile's data-callback expects a single-arg fn(token). We use
+    // `FnMut` because Dioxus's `Signal::set` takes `&mut self`; wrap in
+    // `Closure::wrap` (which accepts FnMut) instead of `Closure::new`
+    // (which requires Fn).
+    let cb = Closure::wrap(Box::new(move |token: wasm_bindgen::JsValue| {
+        if let Some(s) = token.as_string() {
+            captcha_token.set(s);
+        }
+    }) as Box<dyn FnMut(wasm_bindgen::JsValue)>);
+    let _ = js_sys::Reflect::set(
+        &win,
+        &"__portal_captcha_cb".into(),
+        cb.as_ref().unchecked_ref(),
+    );
+    // Leak the closure so it stays alive for the lifetime of the page.
+    // The alternative (storing it in a signal) would drop it on the
+    // component's own re-render / unmount and break the callback the
+    // second the customer navigates.
+    cb.forget();
+}
+
+/// Lazily append the Turnstile script into `<head>` the first time a
+/// challenge is displayed. Cloudflare's own script scans the DOM for
+/// `class=cf-turnstile` and mounts a widget in each, so nothing else
+/// is required from the SPA. Idempotent: guards on a data-attribute
+/// tag so a subsequent render does not add duplicate `<script>` tags.
+#[cfg(feature = "web")]
+fn ensure_turnstile_script_loaded() {
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    if doc
+        .query_selector("script[data-portal-turnstile='1']")
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return;
+    }
+    let Some(head) = doc.head() else {
+        return;
+    };
+    let Ok(el) = doc.create_element("script") else {
+        return;
+    };
+    let _ = el.set_attribute(
+        "src",
+        "https://challenges.cloudflare.com/turnstile/v0/api.js",
+    );
+    let _ = el.set_attribute("async", "true");
+    let _ = el.set_attribute("defer", "true");
+    let _ = el.set_attribute("data-portal-turnstile", "1");
+    let _ = head.append_child(&el);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn body_matches_the_server_request_shape() {
-        let json = serde_json::to_string(&PortalLoginBody {
+    fn body(mfa_code: &str, recovery_code: &str, captcha_token: &str) -> PortalLoginBody {
+        PortalLoginBody {
             tenant_slug: "acme".to_string(),
             email: "contact@example.com".to_string(),
             password: "pw".to_string(),
-            mfa_code: String::new(),
-        })
-        .expect("serializes");
+            mfa_code: mfa_code.to_string(),
+            recovery_code: recovery_code.to_string(),
+            captcha_token: captcha_token.to_string(),
+        }
+    }
+
+    #[test]
+    fn body_matches_the_server_request_shape() {
+        let json = serde_json::to_string(&body("", "", "")).expect("serializes");
         assert!(json.contains(r#""tenant_slug":"acme""#), "{json}");
         assert!(json.contains(r#""email":"contact@example.com""#), "{json}");
         assert!(json.contains(r#""password":"pw""#), "{json}");
-        // Empty mfa_code is dropped from the wire so the first-attempt
+        // Empty optional fields drop from the wire so the first-attempt
         // POST looks identical to the pre-H4 shape.
         assert!(!json.contains("mfa_code"), "empty mfa_code dropped: {json}");
+        assert!(
+            !json.contains("recovery_code"),
+            "empty recovery_code dropped: {json}"
+        );
+        assert!(
+            !json.contains("captcha_token"),
+            "empty captcha_token dropped: {json}"
+        );
     }
 
     #[test]
     fn body_includes_mfa_code_when_supplied() {
-        let json = serde_json::to_string(&PortalLoginBody {
-            tenant_slug: String::new(),
-            email: "contact@example.com".to_string(),
-            password: "pw".to_string(),
-            mfa_code: "123456".to_string(),
-        })
-        .expect("serializes");
+        let json = serde_json::to_string(&body("123456", "", "")).expect("serializes");
         assert!(json.contains(r#""mfa_code":"123456""#), "{json}");
+    }
+
+    #[test]
+    fn body_carries_recovery_and_captcha_when_supplied() {
+        let json = serde_json::to_string(&body("", "ABCDE-12345", "tk_test")).expect("serializes");
+        assert!(json.contains(r#""recovery_code":"ABCDE-12345""#), "{json}");
+        assert!(json.contains(r#""captcha_token":"tk_test""#), "{json}");
     }
 
     #[test]

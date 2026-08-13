@@ -754,6 +754,8 @@ pub mod api {
             code: 401,
             message: String::new(),
             fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
         })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::post(&url)
@@ -782,6 +784,8 @@ pub mod api {
             code: 401,
             message: String::new(),
             fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
         })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::post(&url)
@@ -807,6 +811,8 @@ pub mod api {
             code: 401,
             message: String::new(),
             fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
         })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::put(&url)
@@ -825,15 +831,31 @@ pub mod api {
         // Reuse the standard 4xx envelope parse: `crate::utils::error::ErrorResponse`
         // is the shape mokosh-server ships for every validation / auth failure.
         let body_text = resp.text().await.unwrap_or_default();
-        let (message, fields) =
+        let (message, fields, envelope_code, envelope_body) =
             match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
-                Ok(env) => (env.error.message, env.error.errors.unwrap_or_default()),
-                Err(_) => (body_text.chars().take(200).collect(), Vec::new()),
+                Ok(env) => {
+                    let code = env.error.code.clone();
+                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
+                    (
+                        env.error.message,
+                        env.error.errors.unwrap_or_default(),
+                        code,
+                        raw,
+                    )
+                }
+                Err(_) => (
+                    body_text.chars().take(200).collect(),
+                    Vec::new(),
+                    String::new(),
+                    None,
+                ),
             };
         Err(ApiError::Status {
             code: status,
             message,
             fields,
+            envelope_code,
+            envelope_body,
         })
     }
 
@@ -944,6 +966,17 @@ pub mod api {
             code: u16,
             message: String,
             fields: Vec<crate::utils::error::FieldError>,
+            /// Server envelope's `error.code` (the string identifier), when
+            /// present. Distinct from the HTTP `code` (the numeric status)
+            /// above so callers can branch on the domain-level signal
+            /// (`CAPTCHA_REQUIRED`, `ACCOUNT_DELETED`, ...) without
+            /// pattern-matching on human-facing message text.
+            envelope_code: String,
+            /// Raw JSON body of the error response, preserved when the
+            /// caller needs a subfield the typed shape does not carry
+            /// (e.g. the portal-login CAPTCHA `error.captcha.site_key`).
+            /// Empty when the body did not parse as JSON.
+            envelope_body: Option<serde_json::Value>,
         },
         /// Response was 2xx but the body could not be decoded into the
         /// target type.
@@ -960,6 +993,7 @@ pub mod api {
                     code,
                     message,
                     fields,
+                    ..
                 } => match *code {
                     401 => "Your session has expired. Please sign in again.".into(),
                     403 => "You do not have permission to do that.".into(),
@@ -1046,7 +1080,7 @@ pub mod api {
                 .map_err(|e| ApiError::Decode(e.to_string()));
         }
         let body = response.text().await.unwrap_or_default();
-        let (message, fields) =
+        let (message, fields, envelope_code, envelope_body) =
             match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
                 Ok(env) => {
                     // MAPPS-348: mirror `status_error`'s terminal-state
@@ -1055,16 +1089,34 @@ pub mod api {
                     if status == 410 && env.error.code == "ACCOUNT_DELETED" {
                         super::note_account_deleted();
                     }
-                    (env.error.message, env.error.errors.unwrap_or_default())
+                    let code = env.error.code.clone();
+                    // Keep the raw parse around so callers who need a
+                    // sub-object (`error.captcha.site_key` on the portal
+                    // login CAPTCHA challenge) can pluck it out without
+                    // a second parse.
+                    let raw = serde_json::from_str::<serde_json::Value>(&body).ok();
+                    (
+                        env.error.message,
+                        env.error.errors.unwrap_or_default(),
+                        code,
+                        raw,
+                    )
                 }
                 // Fall back to the raw body, capped so a runaway HTML
                 // 500 page doesn't end up in a toast.
-                Err(_) => (body.chars().take(200).collect(), Vec::new()),
+                Err(_) => (
+                    body.chars().take(200).collect(),
+                    Vec::new(),
+                    String::new(),
+                    None,
+                ),
             };
         Err(ApiError::Status {
             code: status,
             message,
             fields,
+            envelope_code,
+            envelope_body,
         })
     }
 
@@ -1209,15 +1261,31 @@ pub mod api {
             return Ok(());
         }
         let body = resp.text().await.unwrap_or_default();
-        let (message, fields) =
+        let (message, fields, envelope_code, envelope_body) =
             match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
-                Ok(env) => (env.error.message, env.error.errors.unwrap_or_default()),
-                Err(_) => (body.chars().take(200).collect(), Vec::new()),
+                Ok(env) => {
+                    let code = env.error.code.clone();
+                    let raw = serde_json::from_str::<serde_json::Value>(&body).ok();
+                    (
+                        env.error.message,
+                        env.error.errors.unwrap_or_default(),
+                        code,
+                        raw,
+                    )
+                }
+                Err(_) => (
+                    body.chars().take(200).collect(),
+                    Vec::new(),
+                    String::new(),
+                    None,
+                ),
             };
         Err(ApiError::Status {
             code: status,
             message,
             fields,
+            envelope_code,
+            envelope_body,
         })
     }
 
@@ -1230,6 +1298,8 @@ pub mod api {
             code: 401,
             message: String::new(),
             fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
         })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::put(&url)
@@ -1256,6 +1326,8 @@ pub mod api {
             code: 401,
             message: String::new(),
             fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
         })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::patch(&url)
@@ -1275,6 +1347,8 @@ pub mod api {
             code: 401,
             message: String::new(),
             fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
         })?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::delete(&url)
@@ -1289,15 +1363,31 @@ pub mod api {
             Ok(())
         } else {
             let body = resp.text().await.unwrap_or_default();
-            let (message, fields) =
+            let (message, fields, envelope_code, envelope_body) =
                 match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body) {
-                    Ok(env) => (env.error.message, env.error.errors.unwrap_or_default()),
-                    Err(_) => (body.chars().take(200).collect(), Vec::new()),
+                    Ok(env) => {
+                        let code = env.error.code.clone();
+                        let raw = serde_json::from_str::<serde_json::Value>(&body).ok();
+                        (
+                            env.error.message,
+                            env.error.errors.unwrap_or_default(),
+                            code,
+                            raw,
+                        )
+                    }
+                    Err(_) => (
+                        body.chars().take(200).collect(),
+                        Vec::new(),
+                        String::new(),
+                        None,
+                    ),
                 };
             Err(ApiError::Status {
                 code: status,
                 message,
                 fields,
+                envelope_code,
+                envelope_body,
             })
         }
     }
