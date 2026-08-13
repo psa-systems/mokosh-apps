@@ -156,6 +156,20 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
+# dx serve --release / `just dev-release` writes wasm builds under
+# target/wasm32-unknown-unknown/wasm-release/, a custom profile that
+# inherits from release. On a memory-constrained dev box the stock
+# [profile.release] settings (`lto = true` + `codegen-units = 1`) peak
+# rustc RSS around 4-5 GB during LTO codegen and OOM. Thin LTO with
+# codegen-units = 16 gives ~90% of the size reduction (small wasm keeps
+# wasm-bindgen happy) at roughly a third of the peak memory. Trade for
+# production: none - the [profile.release] block above is untouched, so
+# CI + deployed builds still use fat LTO. This profile is dev-only.
+[profile.wasm-release]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+
 [profile.dev]
 opt-level = 0
 # MAPPS-396 dev-box unblock: rustc peak RSS on this crate's lib compile
