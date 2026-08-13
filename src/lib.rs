@@ -716,6 +716,9 @@ pub enum Route {
     #[route("/portal/kb")]
     PortalKB {},
 
+    #[route("/portal/kb/:id")]
+    PortalKBArticle { id: String },
+
     // PMS-729 phase 2 §7 slice B / I8: authenticated portal forms.
     // List of MSP-published request forms + a detail page that renders
     // the field set as a submit form.
@@ -1452,6 +1455,11 @@ fn PortalInvoiceDetail(id: String) -> Element {
 #[component]
 fn PortalKB() -> Element {
     rsx! { portal::PortalKBPage {} }
+}
+
+#[component]
+fn PortalKBArticle(id: String) -> Element {
+    rsx! { portal::PortalKBArticlePage { id } }
 }
 
 #[component]

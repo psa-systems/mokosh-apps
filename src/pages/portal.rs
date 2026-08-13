@@ -236,13 +236,10 @@ fn DashboardCards(props: DashboardCardsProps) -> Element {
                         "No quotes waiting on you."
                     }
                 } else {
-                    // Quote list lives at a different route in the agent
-                    // shell today; portal quote list is a phase 2 §7 follow
-                    // up (D8). For now the card gets a subtle affordance so
-                    // the customer knows there is something to look at
-                    // without a broken link.
-                    p { class: "text-sm text-muted",
-                        "Check the notifications inbox once quote review lands in the portal."
+                    Link {
+                        to: Route::PortalQuoteList {},
+                        class: "text-sm text-accent hover:opacity-90 inline-flex items-center",
+                        "Review pending quotes ->"
                     }
                 }
             }
@@ -294,24 +291,36 @@ fn ActivityRowView(props: ActivityRowViewProps) -> Element {
     }
 }
 
-/// Portal ticket list page
+/// Portal ticket list page. Fetches `GET /portal/tickets` (server-side
+/// scoped to the caller's own company + tenant via `RequirePortalAuth`)
+/// and renders a table of the customer's tickets, most-recently-updated
+/// first per the server default. Mirrors `PortalInvoiceDetailPage`'s
+/// pattern for outage-aware states and tenant-generation subscription.
 #[component]
 pub fn PortalTicketListPage() -> Element {
-    // MAPPS-414: the hardcoded demo ticket rows were removed so no fabricated
-    // tickets reach a real client (the same defect MAPPS-403 fixed on
-    // PortalHomePage). Until the portal ticket-list endpoint is wired, the page
-    // shows an honest empty state.
-    //
-    // Eventual fix: fetch the portal ticket-list endpoint via `use_resource` +
-    // `get_portal_authed` + `use_server_reachable`, mirroring
-    // `PortalInvoiceDetailPage`, then render the rows and the outage-aware
-    // states from the live payload (gated off now, wire later, ref MAPPS-414).
-    //
-    // MAPPS-357: N/A while the page fetches nothing. The "New Ticket" control
-    // is a plain navigation Link, not a mutation, so it stays enabled.
+    let tickets = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _reachable = crate::hooks::use_server_reachable();
+        // Reasonable single-page cap; a customer accumulating more than 100
+        // open tickets is a support case for the account team, and the
+        // pagination affordance can land as its own item.
+        crate::hooks::fetch::api::get_portal_authed::<crate::utils::Paginated<PortalTicketDetail>>(
+            "/portal/tickets?limit=100",
+        )
+        .await
+        .ok()
+    });
+
+    let snap = tickets.read_unchecked();
+    let fetch_failed = matches!(*snap, Some(None));
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
+        return rsx! {
+            PortalUnavailable { title: "My Tickets".to_string() }
+        };
+    }
+
     rsx! {
-        // Title is rendered once below alongside the "New Ticket"
-        // action button (P1-10 dedup).
         PortalLayout {
             div { class: "flex items-center justify-between mb-6",
                 h1 { class: "text-2xl font-bold text-content", "My Tickets" }
@@ -325,44 +334,263 @@ pub fn PortalTicketListPage() -> Element {
                 }
             }
 
-            // Honest empty state in place of the removed demo rows: no
-            // fabricated tickets until the portal API lands (matches the
-            // MAPPS-403 PortalHomePage placeholder style).
-            Card {
-                p { class: "text-sm text-muted", "No tickets yet." }
+            match &*snap {
+                None => rsx! { crate::components::DetailSkeleton {} },
+                Some(None) => rsx! {
+                    Card {
+                        p { class: "text-sm text-red-600 dark:text-red-300",
+                            "Could not load your tickets. Refresh in a moment."
+                        }
+                    }
+                },
+                Some(Some(page)) if page.data.is_empty() => rsx! {
+                    Card {
+                        p { class: "text-sm text-muted", "No tickets yet." }
+                    }
+                },
+                Some(Some(page)) => rsx! {
+                    Card {
+                        Table {
+                            TableHead {
+                                TableRow {
+                                    TableHeader { "Number" }
+                                    TableHeader { "Subject" }
+                                    TableHeader { "Status" }
+                                    TableHeader { "Priority" }
+                                    TableHeader { class: "text-right", "Updated" }
+                                }
+                            }
+                            TableBody {
+                                for row in page.data.iter() {
+                                    PortalTicketRow { key: "{row.id}", ticket: row.clone() }
+                                }
+                            }
+                        }
+                    }
+                },
             }
         }
     }
 }
 
-/// Portal new ticket page
+#[derive(Props, Clone, PartialEq)]
+struct PortalTicketRowProps {
+    ticket: PortalTicketDetail,
+}
+
+#[component]
+fn PortalTicketRow(props: PortalTicketRowProps) -> Element {
+    let t = props.ticket;
+    let status_label = if t.status.name.is_empty() {
+        "Unknown".to_string()
+    } else {
+        t.status.name.clone()
+    };
+    let status_variant = crate::components::ticket_status_badge(&status_label);
+    let priority = t.priority.name.clone();
+    let updated_iso = t.updated_at.map(|d| d.to_rfc3339()).unwrap_or_default();
+    let updated = t
+        .updated_at
+        .map(|d| crate::utils::datetime::format_user_datetime(d, None))
+        .unwrap_or_else(|| "-".to_string());
+    let number = if t.ticket_number.is_empty() {
+        "-".to_string()
+    } else {
+        t.ticket_number.clone()
+    };
+    let subject = if t.title.is_empty() {
+        "(no subject)".to_string()
+    } else {
+        t.title.clone()
+    };
+    let detail_route = Route::PortalTicketDetail {
+        id: t.id.to_string(),
+    };
+    rsx! {
+        TableRow {
+            TableCell {
+                Link {
+                    to: detail_route.clone(),
+                    class: "text-accent hover:opacity-90 font-mono text-sm",
+                    "{number}"
+                }
+            }
+            TableCell {
+                Link {
+                    to: detail_route,
+                    class: "text-content hover:text-accent",
+                    "{subject}"
+                }
+            }
+            TableCell {
+                Badge { variant: status_variant, "{status_label}" }
+            }
+            TableCell {
+                if priority.is_empty() {
+                    span { class: "text-sm text-muted", "-" }
+                } else {
+                    span { class: "text-sm text-content", "{priority}" }
+                }
+            }
+            TableCell { class: "text-right",
+                if updated_iso.is_empty() {
+                    span { class: "text-sm text-muted", "-" }
+                } else {
+                    span { class: "text-sm text-muted",
+                        time { datetime: "{updated_iso}", "{updated}" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Portal new-ticket page. Hits `POST /portal/tickets`
+/// (`CreatePortalTicketRequest` in `mokosh-server/src/modules/portal/models.rs`),
+/// which is intentionally narrow: title + description only. Priority /
+/// type pickers are deferred until the portal exposes the corresponding
+/// lookup endpoints; leaving both null lets the agent triage set them.
 #[component]
 pub fn PortalTicketNewPage() -> Element {
-    // MAPPS-357: N/A because this is a static "coming soon" page. It has no
-    // fetch and no working submit (the form was removed), so there is no
-    // primary resource to gate and no mutating control to disable.
+    let nav = use_navigator();
+    let mut title = use_signal(String::new);
+    let mut description = use_signal(String::new);
+    let mut submitting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    let can_mutate = crate::hooks::use_can_mutate();
+
+    let mut handle_submit = move |_| {
+        if *submitting.read() {
+            return;
+        }
+        let t = title.read().trim().to_string();
+        let d = description.read().trim().to_string();
+        if t.is_empty() {
+            error.set("Please enter a short subject describing the issue.".to_string());
+            return;
+        }
+        if t.chars().count() > 200 {
+            error.set("Subject is too long (max 200 characters).".to_string());
+            return;
+        }
+        submitting.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                use crate::hooks::fetch::api::ApiError;
+                let body = serde_json::json!({
+                    "title": t,
+                    "description": if d.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(d) },
+                });
+                match crate::hooks::fetch::api::post_portal_authed_typed::<PortalTicketDetail, _>(
+                    "/portal/tickets",
+                    &body,
+                )
+                .await
+                {
+                    Ok(ticket) => {
+                        // Navigate straight to the new ticket so the
+                        // customer sees confirmation + can add followups
+                        // / attachments via the reply form on detail.
+                        nav.replace(Route::PortalTicketDetail {
+                            id: ticket.id.to_string(),
+                        });
+                    }
+                    Err(ApiError::Status { message, .. }) if !message.is_empty() => {
+                        error.set(message);
+                    }
+                    Err(e) => error.set(e.user_message()),
+                }
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                let _ = (t, d);
+            }
+            submitting.set(false);
+        });
+    };
+
     rsx! {
-        // P1-10 dedup: title rendered once below.
         PortalLayout {
+            div { class: "mb-6",
+                Link {
+                    to: Route::PortalTicketList {},
+                    class: "text-sm text-accent hover:opacity-90",
+                    "Back to tickets"
+                }
+            }
             h1 { class: "text-2xl font-bold text-content mb-6", "Submit a Ticket" }
 
-            // Honest "coming soon" state. The previous form's inputs were
-            // dead (no-op oninput handlers) and there is no `POST
-            // /portal/tickets` endpoint to submit to, so the page never
-            // created a ticket. Rather than present a form that silently
-            // discards input, tell the user the flow is not available yet
-            // and point them at a working channel.
             Card {
-                div { class: "py-12 text-center",
-                    h2 { class: "text-lg font-medium text-content mb-2",
-                        "Coming soon"
+                form {
+                    class: "space-y-4",
+                    onsubmit: move |evt: Event<FormData>| {
+                        evt.prevent_default();
+                        handle_submit(());
+                    },
+
+                    div {
+                        label { class: "block text-sm font-medium text-content mb-1",
+                            r#for: "portal-ticket-subject",
+                            "Subject"
+                        }
+                        input {
+                            id: "portal-ticket-subject",
+                            r#type: "text",
+                            class: "w-full rounded-md border border-line bg-surface text-content p-2 text-sm focus:border-accent focus:ring-accent",
+                            placeholder: "Short summary of the issue",
+                            required: true,
+                            maxlength: 200,
+                            disabled: *submitting.read() || !can_mutate,
+                            value: "{title}",
+                            oninput: move |e: FormEvent| {
+                                error.set(String::new());
+                                title.set(e.value());
+                            },
+                        }
                     }
-                    p { class: "text-sm text-muted mb-6 max-w-md mx-auto",
-                        "Submitting tickets from the portal is not available yet. In the meantime, please contact your account team to open a request."
+
+                    div {
+                        label { class: "block text-sm font-medium text-content mb-1",
+                            r#for: "portal-ticket-desc",
+                            "Details (optional)"
+                        }
+                        textarea {
+                            id: "portal-ticket-desc",
+                            class: "w-full rounded-md border border-line bg-surface text-content p-2 text-sm focus:border-accent focus:ring-accent",
+                            rows: 6,
+                            placeholder: "What's happening? Include any error messages, steps to reproduce, or timing details.",
+                            disabled: *submitting.read() || !can_mutate,
+                            value: "{description}",
+                            oninput: move |e: FormEvent| description.set(e.value()),
+                        }
                     }
-                    Link {
-                        to: Route::PortalTicketList {},
-                        Button { variant: ButtonVariant::Secondary, "Back to tickets" }
+
+                    if !error().is_empty() {
+                        p { class: "text-sm text-red-600 dark:text-red-300", role: "alert",
+                            "{error}"
+                        }
+                    }
+
+                    div { class: "flex justify-end gap-2",
+                        Link {
+                            to: Route::PortalTicketList {},
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                disabled: *submitting.read(),
+                                "Cancel"
+                            }
+                        }
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            r#type: "submit".to_string(),
+                            loading: *submitting.read(),
+                            disabled: *submitting.read() || !can_mutate,
+                            title: (!can_mutate).then(|| "Can't submit while the server is unreachable".to_string()),
+                            "Submit ticket"
+                        }
                     }
                 }
             }
@@ -377,11 +605,15 @@ pub struct PortalTicketDetailPageProps {
 }
 
 /// Subset of the server portal ticket response (`GET
-/// /api/v1/portal/tickets/{id}`) the detail page renders. Mirrors the
-/// agent-side `RemoteTicketDetail` shape; serde drops unknown fields and
-/// every field defaults so a thinner portal payload still decodes.
-#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+/// /api/v1/portal/tickets/{id}` for the detail, `GET /portal/tickets` for
+/// the list) the portal renders. Mirrors the agent-side
+/// `RemoteTicketDetail` shape; serde drops unknown fields and every
+/// field defaults so a thinner portal payload still decodes. Shared by
+/// the list table and the detail card so the two never drift.
+#[derive(Clone, Debug, PartialEq, Default, serde::Deserialize)]
 struct PortalTicketDetail {
+    #[serde(default = "uuid::Uuid::nil")]
+    id: uuid::Uuid,
     #[serde(default)]
     ticket_number: String,
     #[serde(default)]
@@ -391,7 +623,15 @@ struct PortalTicketDetail {
     #[serde(default)]
     status: PortalSummary,
     #[serde(default)]
+    priority: PortalSummary,
+    #[serde(default)]
+    type_name: Option<String>,
+    #[serde(default)]
+    assigned_to_name: Option<String>,
+    #[serde(default)]
     created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// A `{ id, name }`-style lookup value (status/priority). Only `name` is
@@ -473,6 +713,10 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
                     } else {
                         ticket.status.name.clone()
                     };
+                    let status_variant = crate::components::ticket_status_badge(&status_label);
+                    let priority = ticket.priority.name.clone();
+                    let type_name = ticket.type_name.clone().unwrap_or_default();
+                    let assigned = ticket.assigned_to_name.clone().unwrap_or_default();
                     let created = ticket
                         .created_at
                         .map(|d| d.format("Created %b %-d, %Y").to_string())
@@ -480,6 +724,14 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
                     // MAPPS-409: machine-readable form for the `<time>` wrapper.
                     let created_iso = ticket
                         .created_at
+                        .map(|d| d.to_rfc3339())
+                        .unwrap_or_default();
+                    let updated = ticket
+                        .updated_at
+                        .map(|d| crate::utils::datetime::format_user_datetime(d, None))
+                        .unwrap_or_default();
+                    let updated_iso = ticket
+                        .updated_at
                         .map(|d| d.to_rfc3339())
                         .unwrap_or_default();
                     let subject = if ticket.title.is_empty() {
@@ -496,11 +748,44 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
                                         "{subject}"
                                     }
                                     div { class: "flex items-center mt-2 space-x-4",
-                                        Badge { variant: BadgeVariant::Yellow, "{status_label}" }
+                                        Badge { variant: status_variant, "{status_label}" }
                                         if !created.is_empty() {
                                             span { class: "text-sm text-muted",
                                                 time { datetime: "{created_iso}", "{created}" }
                                             }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Ticket meta grid: fields the customer needs to
+                            // triage progress at a glance. Fields that carry
+                            // no server value are hidden entirely rather than
+                            // shown as "-" placeholders.
+                            div { class: "grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm mb-6",
+                                if !priority.is_empty() {
+                                    div {
+                                        span { class: "text-muted", "Priority: " }
+                                        span { class: "text-content", "{priority}" }
+                                    }
+                                }
+                                if !type_name.is_empty() {
+                                    div {
+                                        span { class: "text-muted", "Type: " }
+                                        span { class: "text-content", "{type_name}" }
+                                    }
+                                }
+                                if !assigned.is_empty() {
+                                    div {
+                                        span { class: "text-muted", "Assigned to: " }
+                                        span { class: "text-content", "{assigned}" }
+                                    }
+                                }
+                                if !updated_iso.is_empty() {
+                                    div {
+                                        span { class: "text-muted", "Last update: " }
+                                        span { class: "text-content",
+                                            time { datetime: "{updated_iso}", "{updated}" }
                                         }
                                     }
                                 }
@@ -974,32 +1259,109 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
     }
 }
 
-/// Portal invoice list page
+/// Portal invoice list page. Fetches `GET /portal/invoices`
+/// (company-scoped server-side per PMS-25) and renders a table.
+/// Outage-aware states mirror `PortalTicketListPage`.
 #[component]
 pub fn PortalInvoiceListPage() -> Element {
-    // MAPPS-414: the hardcoded demo invoice rows (with fabricated amounts and
-    // decorative "View" buttons) were removed so no fake invoices reach a real
-    // client (the same defect MAPPS-403 fixed on PortalHomePage). Until the
-    // portal invoice-list endpoint is wired, the page shows an honest empty
-    // state.
-    //
-    // Eventual fix: fetch the portal invoice-list endpoint via `use_resource` +
-    // `get_portal_authed` + `use_server_reachable`, mirroring
-    // `PortalInvoiceDetailPage`, then render the rows and the outage-aware
-    // states from the live payload (gated off now, wire later, ref MAPPS-414).
-    //
-    // MAPPS-357: N/A while the page fetches nothing.
+    let invoices = use_resource(move || async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _reachable = crate::hooks::use_server_reachable();
+        crate::hooks::fetch::api::get_portal_authed::<crate::utils::Paginated<PortalInvoiceDetail>>(
+            "/portal/invoices?limit=100",
+        )
+        .await
+        .ok()
+    });
+
+    let snap = invoices.read_unchecked();
+    let fetch_failed = matches!(*snap, Some(None));
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
+        return rsx! {
+            PortalUnavailable { title: "Invoices".to_string() }
+        };
+    }
+
     rsx! {
-        // P1-10 dedup: title rendered once below.
         PortalLayout {
             h1 { class: "text-2xl font-bold text-content mb-6", "Invoices" }
 
-            // Honest empty state in place of the removed demo rows: no
-            // fabricated invoices until the portal API lands (matches the
-            // MAPPS-403 PortalHomePage placeholder style).
-            Card {
-                p { class: "text-sm text-muted", "No invoices yet." }
+            match &*snap {
+                None => rsx! { crate::components::DetailSkeleton {} },
+                Some(None) => rsx! {
+                    Card {
+                        p { class: "text-sm text-red-600 dark:text-red-300",
+                            "Could not load your invoices. Refresh in a moment."
+                        }
+                    }
+                },
+                Some(Some(page)) if page.data.is_empty() => rsx! {
+                    Card {
+                        p { class: "text-sm text-muted", "No invoices yet." }
+                    }
+                },
+                Some(Some(page)) => rsx! {
+                    Card {
+                        Table {
+                            TableHead {
+                                TableRow {
+                                    TableHeader { "Number" }
+                                    TableHeader { "Issued" }
+                                    TableHeader { "Due" }
+                                    TableHeader { "Status" }
+                                    TableHeader { class: "text-right", "Total" }
+                                    TableHeader { class: "text-right", "Balance" }
+                                }
+                            }
+                            TableBody {
+                                for row in page.data.iter() {
+                                    PortalInvoiceRow { key: "{row.id}", invoice: row.clone() }
+                                }
+                            }
+                        }
+                    }
+                },
             }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct PortalInvoiceRowProps {
+    invoice: PortalInvoiceDetail,
+}
+
+#[component]
+fn PortalInvoiceRow(props: PortalInvoiceRowProps) -> Element {
+    let inv = props.invoice;
+    let (status_variant, status_label) = invoice_status_badge(&inv.status);
+    let number = if inv.invoice_number.is_empty() {
+        "-".to_string()
+    } else {
+        inv.invoice_number.clone()
+    };
+    let issued = inv.invoice_date.clone().unwrap_or_else(|| "-".to_string());
+    let due = inv.due_date.clone().unwrap_or_else(|| "-".to_string());
+    let total = portal_money(&inv.total);
+    let balance = portal_money(&inv.balance_due);
+    let detail_route = Route::PortalInvoiceDetail {
+        id: inv.id.to_string(),
+    };
+    rsx! {
+        TableRow {
+            TableCell {
+                Link {
+                    to: detail_route.clone(),
+                    class: "text-accent hover:opacity-90 font-mono text-sm",
+                    "{number}"
+                }
+            }
+            TableCell { span { class: "text-sm text-muted", "{issued}" } }
+            TableCell { span { class: "text-sm text-muted", "{due}" } }
+            TableCell { Badge { variant: status_variant, "{status_label}" } }
+            TableCell { class: "text-right", "{total}" }
+            TableCell { class: "text-right font-medium", "{balance}" }
         }
     }
 }
@@ -1011,11 +1373,15 @@ pub struct PortalInvoiceDetailPageProps {
 }
 
 /// Subset of the server portal invoice response (`GET
-/// /api/v1/portal/invoices/{id}`, company-scoped per PMS-25) the detail
-/// page renders. Mirrors the agent-side `InvoiceDetail`; amounts arrive
-/// as strings and every field defaults so a thinner payload still decodes.
-#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+/// /api/v1/portal/invoices/{id}`, company-scoped per PMS-25) that the
+/// portal renders. Mirrors the agent-side `InvoiceDetail`; amounts
+/// arrive as strings and every field defaults so a thinner payload
+/// still decodes. Shared by the list and detail so their column set
+/// never drifts.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
 struct PortalInvoiceDetail {
+    #[serde(default = "uuid::Uuid::nil")]
+    id: uuid::Uuid,
     #[serde(default)]
     invoice_number: String,
     #[serde(default)]
@@ -1058,6 +1424,39 @@ fn portal_money(raw: &str) -> String {
     crate::utils::money::format_money_str(raw)
 }
 
+/// True when the invoice looks like something the customer can pay now:
+/// balance still owed AND status is not in the definitively-not-payable
+/// set. Server enforces the same policy (plus "gateway configured")
+/// again on POST, so the button gates on the cheap client-visible
+/// signal.
+fn can_pay_invoice(status: &str, balance_due: &str) -> bool {
+    matches!(
+        status,
+        "" | "pending" | "sent" | "partially_paid" | "overdue"
+    ) && balance_due
+        .trim()
+        .parse::<f64>()
+        .map(|v| v > 0.0)
+        .unwrap_or(false)
+}
+
+/// True when `?paid=1` is on the current URL. Set by the checkout
+/// success_url (mokosh-server/src/modules/portal/routes.rs:1266) so the
+/// customer returns to a "payment received" banner. The payment row
+/// itself lands via Stripe webhook shortly after; we do not race the
+/// webhook here.
+fn is_stripe_return_paid() -> bool {
+    #[cfg(feature = "web")]
+    {
+        if let Some(search) = web_sys::window().and_then(|w| w.location().search().ok()) {
+            if let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) {
+                return params.get("paid").as_deref() == Some("1");
+            }
+        }
+    }
+    false
+}
+
 #[component]
 pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
     let id_for_resource = props.id.clone();
@@ -1098,6 +1497,8 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
         };
     }
 
+    let show_paid_banner = is_stripe_return_paid();
+
     rsx! {
         PortalLayout {
             div { class: "mb-6",
@@ -1105,6 +1506,17 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                     to: Route::PortalInvoiceList {},
                     class: "text-sm text-accent hover:opacity-90",
                     "Back to invoices"
+                }
+            }
+
+            if show_paid_banner {
+                Card {
+                    div { class: "p-1",
+                        p { class: "text-sm text-green-700 dark:text-green-300",
+                            role: "status",
+                            "Thanks - your payment is being processed. The balance will update as soon as the payment lands (usually seconds)."
+                        }
+                    }
                 }
             }
 
@@ -1199,6 +1611,20 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                                 p { class: "text-sm text-muted", "Subtotal {subtotal}" }
                                 p { class: "text-2xl font-bold text-content", "Total {total}" }
                             }
+
+                            // PMS-711 SPA half: the "Pay Now" affordance.
+                            // Hidden entirely once the invoice cannot be
+                            // paid (zero balance, void, written-off,
+                            // draft) so the button is never a dead
+                            // control; server also rejects those states
+                            // and reports "gateway not configured" as
+                            // an inline error.
+                            if can_pay_invoice(&inv.status, &inv.balance_due) {
+                                PortalInvoicePayButton {
+                                    invoice_id: props.id.clone(),
+                                    amount_due: portal_money(&inv.balance_due),
+                                }
+                            }
                         }
 
                         // PMS-729 phase 2 §7 slice A / I11: payment
@@ -1210,6 +1636,104 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                         PortalInvoicePaymentsCard { invoice_id: props.id.clone() }
                     }
                 }
+            }
+        }
+    }
+}
+
+// PMS-711 SPA half: Pay Now button -----------------------------------------
+
+/// Response shape for `POST /api/v1/portal/invoices/{id}/pay`, matching
+/// `PayInvoiceResponse` on the server.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalPayInvoiceResponse {
+    #[serde(default)]
+    checkout_url: String,
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct PortalInvoicePayButtonProps {
+    invoice_id: String,
+    /// Already-formatted amount for the button label.
+    amount_due: String,
+}
+
+/// Renders the "Pay Now" button on an invoice with a live balance. On
+/// click, POSTs `/portal/invoices/{id}/pay` and redirects the browser
+/// to the returned hosted-checkout URL. Any server error (invoice not
+/// payable, gateway not configured) surfaces as an inline red note so
+/// the customer sees the reason rather than a silent no-op.
+#[component]
+fn PortalInvoicePayButton(props: PortalInvoicePayButtonProps) -> Element {
+    let id_for_click = props.invoice_id.clone();
+    let mut starting = use_signal(|| false);
+    let mut error = use_signal(String::new);
+    let can_mutate = crate::hooks::use_can_mutate();
+
+    let handle_click = move |_| {
+        if *starting.read() {
+            return;
+        }
+        starting.set(true);
+        error.set(String::new());
+        let id = id_for_click.clone();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                use crate::hooks::fetch::api::ApiError;
+                match crate::hooks::fetch::api::post_portal_authed_typed::<
+                    PortalPayInvoiceResponse,
+                    serde_json::Value,
+                >(
+                    &format!("/portal/invoices/{id}/pay"),
+                    &serde_json::json!({}),
+                )
+                .await
+                {
+                    Ok(resp) if !resp.checkout_url.is_empty() => {
+                        if let Some(win) = web_sys::window() {
+                            let _ = win.location().assign(&resp.checkout_url);
+                        }
+                        // Intentionally leave `starting = true` while
+                        // the browser navigates; on nav-back the page
+                        // remounts and the state resets.
+                        return;
+                    }
+                    Ok(_) => {
+                        error.set(
+                            "The payment gateway returned no checkout URL. Please contact your account team."
+                                .to_string(),
+                        );
+                    }
+                    Err(ApiError::Status { message, .. }) if !message.is_empty() => {
+                        error.set(message);
+                    }
+                    Err(e) => error.set(e.user_message()),
+                }
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                let _ = id;
+            }
+            starting.set(false);
+        });
+    };
+
+    rsx! {
+        div { class: "mt-4 border-t border-line pt-4 flex flex-col items-end gap-2",
+            if !error().is_empty() {
+                p { class: "text-sm text-red-600 dark:text-red-300",
+                    role: "alert",
+                    "{error}"
+                }
+            }
+            Button {
+                variant: ButtonVariant::Primary,
+                disabled: *starting.read() || !can_mutate,
+                loading: *starting.read(),
+                title: (!can_mutate).then(|| "Can't start a payment while the server is unreachable".to_string()),
+                onclick: handle_click,
+                "Pay {props.amount_due}"
             }
         }
     }
@@ -1469,11 +1993,128 @@ struct PortalArticleItemProps {
 fn PortalArticleItem(props: PortalArticleItemProps) -> Element {
     rsx! {
         Link {
-            to: Route::KBArticleDetail { id: props.id.clone() },
+            // Portal-scoped reader route (PortalKBArticle). Previously
+            // pointed at Route::KBArticleDetail, which is the AGENT KB
+            // detail page gated by AuthGuard - a signed-in portal
+            // customer clicking a KB article was bounced to `/login`
+            // (the agent login) mid-read.
+            to: Route::PortalKBArticle { id: props.id.clone() },
             class: "block p-3 -mx-3 hover:bg-surface-2 rounded-lg transition-colors",
             h4 { class: "font-medium text-content", "{props.title}" }
             if !props.summary.is_empty() {
                 p { class: "text-sm text-muted mt-1", "{props.summary}" }
+            }
+        }
+    }
+}
+
+/// Portal-scoped KB article reader. Fetches `GET /portal/kb/{id}`;
+/// server enforces the same publish + visibility check the feed uses,
+/// so a stored-but-not-visible article 404s and the page renders the
+/// generic "not available" state rather than confirming the article
+/// exists.
+#[derive(Props, Clone, PartialEq)]
+pub struct PortalKBArticlePageProps {
+    pub id: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+struct PortalKbArticleDetail {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[component]
+pub fn PortalKBArticlePage(props: PortalKBArticlePageProps) -> Element {
+    let id_for_resource = props.id.clone();
+    let article_resource = use_resource(move || {
+        let id = id_for_resource.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
+            crate::hooks::fetch::api::get_portal_authed::<PortalKbArticleDetail>(&format!(
+                "/portal/kb/{id}"
+            ))
+            .await
+            .ok()
+        }
+    });
+
+    let snap = article_resource.read_unchecked();
+    let fetch_failed = matches!(*snap, Some(None));
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
+        return rsx! { PortalUnavailable { title: "Knowledge Base".to_string() } };
+    }
+
+    rsx! {
+        PortalLayout {
+            div { class: "mb-6",
+                Link {
+                    to: Route::PortalKB {},
+                    class: "text-sm text-accent hover:opacity-90",
+                    "Back to articles"
+                }
+            }
+
+            match &*snap {
+                None => rsx! { crate::components::DetailSkeleton {} },
+                Some(None) => rsx! {
+                    Card {
+                        div { class: "py-8 text-center",
+                            p { class: "text-sm text-red-600 dark:text-red-300 mb-2",
+                                "This article is not available."
+                            }
+                            Link {
+                                to: Route::PortalKB {},
+                                class: "text-sm text-accent hover:opacity-90",
+                                "Back to articles"
+                            }
+                        }
+                    }
+                },
+                Some(Some(article)) => {
+                    let updated_iso = article.updated_at
+                        .map(|d| d.to_rfc3339())
+                        .unwrap_or_default();
+                    let updated = article.updated_at
+                        .map(|d| crate::utils::datetime::format_user_datetime(d, None))
+                        .unwrap_or_default();
+                    let summary = article.summary.clone().unwrap_or_default();
+                    let content = article.content.clone();
+                    rsx! {
+                        Card {
+                            h1 { class: "text-2xl font-bold text-content mb-1", "{article.title}" }
+                            if !updated_iso.is_empty() {
+                                p { class: "text-xs text-muted mb-4",
+                                    "Last updated "
+                                    time { datetime: "{updated_iso}", "{updated}" }
+                                }
+                            }
+                            if !summary.is_empty() {
+                                p { class: "text-sm text-muted italic mb-4", "{summary}" }
+                            }
+                            // Server currently returns raw content
+                            // (markdown or plain text). Rendering as
+                            // `pre-wrap` preserves the author's line
+                            // breaks without introducing an HTML-render
+                            // path a client-side XSS could ride on;
+                            // richer markdown/HTML rendering is a
+                            // follow-up when the server side settles on
+                            // a canonical content type.
+                            div {
+                                class: "text-sm text-content whitespace-pre-wrap",
+                                "{content}"
+                            }
+                        }
+                    }
+                }
             }
         }
     }
