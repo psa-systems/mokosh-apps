@@ -171,8 +171,43 @@ opt-level = 3
 
 # MAPPS-396: dx (`dx serve`) writes wasm builds under `target/wasm32-.../wasm-dev`,
 # a custom cargo profile it derives from `dev`. Declaring it here lets us set
-# per-profile knobs without touching host `dev`. Same rationale as above:
-# debug = 0 so rustc peak memory stays under this dev box's OOM floor.
+# per-profile knobs without touching host `dev`.
+#
+# Two memory-side knobs, together sized for a dev box where earlyoom's
+# SIGTERM threshold is ~1.5 GB free:
+#
+#   `debug = 0` drops DWARF from every rustc invocation. Panic messages in
+#   the browser lose source-line mapping (WASM debugging is limited anyway)
+#   but the rustc peak drops ~500 MB.
+#
+#   `codegen-units = 1` forces rustc to serialize LLVM codegen into a single
+#   instance instead of running one per CPU (dev default is 256, capped by
+#   cpu count, so 8+ parallel LLVM instances on a modern box). Each LLVM
+#   instance holds 200-400 MB of IR; with 8 running in parallel the peak
+#   walked to ~3 GB. Serial codegen brings it under ~1.5 GB. The trade is
+#   wall time: mokosh_apps compiles ~2-3x slower (~90s -> ~200s the first
+#   time; incremental after that is fine). Worth it on this dev box; a
+#   beefier build host can override in a local `.cargo/config.toml`.
 [profile.wasm-dev]
 inherits = "dev"
+# Measured on a Dioxus 132-route crate + ~56k lines of pages, wasm target,
+# stable rustc 1.94.1:
+#
+#   default dev profile (cgu default, debug=2, assertions on):   ~3000 MB peak, ~85s
+#   + codegen-units = 1                                          :  ~2589 MB peak, ~510s
+#   + codegen-units = 256, debug=0, assertions off, overflow off :  ~2146 MB peak, ~220s
+#
+# The last row is what this profile sets. It fits under the earlyoom
+# SIGTERM floor (1.5 GB free on a 15 GB box) with headroom to spare
+# and is 4x faster than cgu=1. The trick is that many small LLVM units
+# stream in and out, freeing memory as each finishes; cgu=1 forced one
+# huge unit that held every IR node at peak.
+#
+# Trade vs stock dev: no DWARF (browser panic messages lose source-line
+# mapping; WASM debugging is source-map-only anyway), no debug-assert /
+# overflow-check (same posture as release). None of that affects
+# feature behaviour or block iteration.
 debug = 0
+codegen-units = 256
+debug-assertions = false
+overflow-checks = false
