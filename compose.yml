@@ -22,6 +22,22 @@ services:
       # hosts where dx's debug-mode post-processing chokes on the giant
       # unstripped WASM (`Failed to write executable`).
       DX_SERVE_ARGS: ${DX_SERVE_ARGS:-}
+      # PMS-729 / MAPPS-396: cap cargo package parallelism to a single
+      # rustc process. Combined with the wasm-dev profile's
+      # `codegen-units = 256` streaming (in Cargo.toml), this keeps rustc
+      # peak RSS around ~2.1 GB - fits under the ~1.5 GB earlyoom SIGTERM
+      # floor on a 15 GB dev box with headroom.
+      #
+      # Without this the container defaults to `nproc` parallel rustc
+      # processes on a full dep recompile (e.g. after a profile flag
+      # change invalidates fingerprints), and each holds 200-400 MB - 8
+      # concurrent = 2-3 GB spike that trips OOM protection before the
+      # mokosh_apps crate even starts.
+      #
+      # Container-scoped so host `cargo` outside the container keeps its
+      # nproc parallelism. Wall-time cost: ~2x slower on a cold cache;
+      # incremental rebuilds are unchanged.
+      CARGO_BUILD_JOBS: "1"
     ports:
       # LAN-IP bind so other Docker containers on the host can reach the
       # dev server, plus a localhost bind so the browser can hit
