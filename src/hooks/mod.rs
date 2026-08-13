@@ -15,6 +15,7 @@ pub mod edit_queue;
 pub mod fetch;
 pub mod portal_auth;
 pub mod portal_branding;
+pub mod portal_me;
 pub mod portal_theme;
 pub mod remote_data;
 pub mod server_status;

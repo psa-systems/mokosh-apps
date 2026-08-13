@@ -794,6 +794,49 @@ pub mod api {
         handle_response(resp).await
     }
 
+    /// PMS-729 follow-up: portal-authed PUT with a JSON body that returns 204.
+    /// Used by change-password. Surfaces `ApiError` so the caller can key on
+    /// specific status codes (401 = current password wrong, 400 = new
+    /// password fails policy) with typed `.message` for the server text.
+    #[cfg(feature = "web")]
+    pub async fn put_portal_authed_json_no_content<B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<(), ApiError> {
+        let t = current_portal_access_token().ok_or_else(|| ApiError::Status {
+            code: 401,
+            message: String::new(),
+            fields: Vec::new(),
+        })?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::put(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        let status = resp.status();
+        super::note_response_status(status);
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+        // Reuse the standard 4xx envelope parse: `crate::utils::error::ErrorResponse`
+        // is the shape mokosh-server ships for every validation / auth failure.
+        let body_text = resp.text().await.unwrap_or_default();
+        let (message, fields) =
+            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
+                Ok(env) => (env.error.message, env.error.errors.unwrap_or_default()),
+                Err(_) => (body_text.chars().take(200).collect(), Vec::new()),
+            };
+        Err(ApiError::Status {
+            code: status,
+            message,
+            fields,
+        })
+    }
+
     /// PMS-729 phase 2 §7 slice B / I12: portal-authed empty-body PUT.
     /// Used by the inbox mark-read call (`PUT
     /// /portal/notifications/{id}/read` responds 204 with no payload).
@@ -1279,6 +1322,7 @@ mod tests {
         "post_portal_authed_multipart",
         "get_portal_authed_bytes",
         "put_portal_authed_no_content",
+        "put_portal_authed_json_no_content",
         "delete_portal_authed_no_content",
     ];
 

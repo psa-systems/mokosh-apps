@@ -1109,6 +1109,13 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
     use_hook(crate::hooks::portal_branding::ensure_portal_branding_fetch);
     let hint = crate::hooks::portal_branding::use_portal_host_hint();
 
+    // PMS-729 follow-up: fetch the authenticated portal contact so the
+    // user menu can render the customer's name instead of a bare icon.
+    // Idempotent + one-shot latched; no-op for the login-page path where
+    // there is no session yet.
+    #[cfg(feature = "web")]
+    use_hook(crate::hooks::portal_me::ensure_portal_me_fetch);
+
     // PMS-729 phase 2 H2: mount the auto-refresh background loop for
     // every authenticated portal session. Rotates the access + refresh
     // token pair every ~12 min so a 15-min access token never lapses
@@ -1164,7 +1171,13 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
             // a customer's eye lands on the H1 next to the primary
             // action rather than up in the chrome.
             header { class: "h-16 flex items-center bg-surface-2 border-b border-line shrink-0 z-20",
-                div { class: "flex items-center h-full md:w-56 px-4 md:px-6",
+                // PMS-729 follow-up: the brand block used to be capped at
+                // `md:w-56` (224px), which truncated any tenant whose logo
+                // plus name pushed past that cap (e.g. the ACME fixture's
+                // 128px wordmark logo + "Acme MSP" spilled into "Ac..."
+                // ellipsis). Drop the width cap so the block auto-sizes to
+                // its content; the `flex-1` spacer below absorbs the rest.
+                div { class: "flex items-center h-full px-4 md:px-6 gap-2",
                     button {
                         class: "md:hidden p-2 mr-2 rounded-md text-subtle hover:text-content hover:bg-surface",
                         aria_label: "Open navigation",
@@ -1192,7 +1205,10 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
                                 }
                             }
                         }
-                        span { class: "text-lg font-bold text-accent truncate",
+                        // No `truncate` here now that the brand block
+                        // auto-sizes. `whitespace-nowrap` keeps the label
+                        // on one line if the sidebar rail is narrow.
+                        span { class: "text-lg font-bold text-accent whitespace-nowrap",
                             "{brand_label}"
                         }
                     }
@@ -1607,8 +1623,6 @@ fn PortalUserMenu() -> Element {
     // PMS-729 phase 2 H1: portal accounts do NOT federate through bunyip
     // (they authenticate via `POST /portal/auth/login` against a
     // `contacts` row), so the agent-side hub-logout URL does not apply.
-    // Account Settings is a portal-owned page (to be added in phase 2
-    // §6); for now the menu just has the logout action.
     let logout = move |_| {
         open.set(false);
         // Revoke the refresh token server-side + clear the in-memory
@@ -1617,31 +1631,62 @@ fn PortalUserMenu() -> Element {
         // to localStorage.
         spawn(async move {
             crate::hooks::portal_auth::portal_logout().await;
+            // PMS-729 follow-up: clear the cached /portal/auth/me
+            // snapshot too so a fresh login re-fetches the identity.
+            #[cfg(feature = "web")]
+            crate::hooks::portal_me::clear_portal_me();
             nav.replace(Route::PortalLogin {});
         });
     };
+
+    // PMS-729 follow-up: pull the authenticated contact so the button
+    // renders the customer's name and the dropdown header shows name +
+    // email. Missing (pre-fetch tick, non-web build) falls through to
+    // the plain-icon shape.
+    #[cfg(feature = "web")]
+    let me = crate::hooks::portal_me::use_portal_me();
+    #[cfg(not(feature = "web"))]
+    let me: Option<crate::hooks::portal_me::PortalMe> = None;
+
+    let name_for_button = me.as_ref().map(|m| m.display_name()).unwrap_or_default();
+    let initials = me.as_ref().map(|m| m.initials()).unwrap_or_default();
 
     rsx! {
         div { class: "relative",
             // MAPPS-384: same hover-highlight + tooltip treatment as the
             // app-side `UserMenu`, matching the sibling top-bar icons.
+            // PMS-729 follow-up: shows the customer's name next to the
+            // avatar when the /portal/auth/me fetch has landed; falls
+            // back to the icon-only shape until then.
             button {
                 r#type: "button",
-                class: "p-2 rounded-full text-subtle hover:text-content hover:bg-surface-2 focus:outline-none",
-                aria_label: "User menu",
-                title: "User menu",
+                class: "flex items-center gap-2 px-2 py-1 rounded-md text-subtle hover:text-content hover:bg-surface-2 focus:outline-none",
+                aria_label: if name_for_button.is_empty() { "User menu".to_string() } else { format!("User menu for {name_for_button}") },
+                title: if name_for_button.is_empty() { "User menu".to_string() } else { name_for_button.clone() },
                 aria_expanded: if open() { "true" } else { "false" },
                 aria_haspopup: "menu",
                 onclick: move |_| {
                     let next = !*open.read();
                     open.set(next);
                 },
-                // No color class on the icon: it inherits `currentColor` from
-                // the button (`text-subtle`, `hover:text-content`) so it
-                // brightens on hover like the sibling top-bar icons. Pinning
-                // `text-subtle` here would override the button's hover color and
-                // leave the icon looking dead on hover (MAPPS-384 follow-up).
-                UserCircleIcon { size: IconSize::Large }
+                if !initials.is_empty() {
+                    // Initials avatar. `bg-accent/10 text-accent` gives
+                    // it a light chip look that inherits the tenant's
+                    // primary color (branding hook overrides --accent).
+                    span { class: "flex items-center justify-center h-8 w-8 rounded-full bg-accent/10 text-accent text-xs font-semibold",
+                        "{initials}"
+                    }
+                } else {
+                    UserCircleIcon { size: IconSize::Large }
+                }
+                if !name_for_button.is_empty() {
+                    // The name label collapses on narrow screens so the
+                    // top bar never wraps; the initials avatar stays
+                    // visible as the tap target.
+                    span { class: "hidden sm:inline text-sm text-content font-medium max-w-40 truncate",
+                        "{name_for_button}"
+                    }
+                }
             }
             if *open.read() {
                 // MAPPS-384: outside-click backdrop (see `UserMenu`).
@@ -1650,12 +1695,32 @@ fn PortalUserMenu() -> Element {
                     onclick: move |_| open.set(false),
                 }
                 div {
-                    class: "absolute right-0 mt-2 w-52 rounded-md shadow-lg bg-raised ring-1 ring-black/5 z-20 p-1",
+                    class: "absolute right-0 mt-2 w-64 rounded-md shadow-lg bg-raised ring-1 ring-black/5 z-20 p-1",
                     role: "menu",
-                    // PMS-729 phase 2 H1: portal-only Logout. Account
-                    // Settings will land as a portal-owned page in the
-                    // phase 2 §6 work; bunyip's `/settings` does not
-                    // apply to portal contacts.
+                    // PMS-729 follow-up: identity header. Shows the
+                    // signed-in customer's name + email so the visitor
+                    // knows which account they are about to configure
+                    // or sign out of.
+                    if let Some(m) = me.as_ref() {
+                        div { class: "px-3 py-2 border-b border-line mb-1",
+                            p { class: "text-sm font-medium text-content truncate",
+                                "{m.display_name()}"
+                            }
+                            p { class: "text-xs text-muted truncate",
+                                "{m.email}"
+                            }
+                        }
+                    }
+                    // PMS-729 follow-up: Settings link. Lands on the
+                    // portal-owned settings page (password change, MFA,
+                    // sessions) so a customer never has to hunt through
+                    // the sidebar to reach account controls.
+                    Link {
+                        to: Route::PortalSettings {},
+                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
+                        onclick: move |_| open.set(false),
+                        "Settings"
+                    }
                     button {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-surface-2",
                         onclick: logout,

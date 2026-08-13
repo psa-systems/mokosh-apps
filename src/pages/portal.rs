@@ -3397,7 +3397,7 @@ struct PortalDelegationRow {
 
 #[component]
 pub fn PortalCompanyPage() -> Element {
-    let contacts_resource = use_resource(|| async {
+    let mut contacts_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_portal_authed::<Vec<PortalCompanyContactRow>>(
             "/portal/company/contacts",
@@ -3429,6 +3429,19 @@ pub fn PortalCompanyPage() -> Element {
     let mut grant_invoices = use_signal(|| false);
     let mut grant_error = use_signal(String::new);
     let mut granting = use_signal(|| false);
+
+    // PMS-729 follow-up: invite-a-colleague form. Adds a new portal
+    // contact under the caller's own company + tenant (server enforces
+    // scoping from the JWT) and dispatches the same auth.welcome
+    // setup-link email an agent-side grant fires. After a successful
+    // invite the contacts + delegations resources restart so the new
+    // colleague shows up in the roster + the delegatee picker.
+    let mut invite_first = use_signal(String::new);
+    let mut invite_last = use_signal(String::new);
+    let mut invite_email = use_signal(String::new);
+    let mut invite_error = use_signal(String::new);
+    let mut invite_ok = use_signal(String::new);
+    let mut inviting = use_signal(|| false);
 
     // Anyone but the caller is a candidate for delegation.
     let candidate_contacts: Vec<PortalCompanyContactRow> =
@@ -3522,10 +3535,119 @@ pub fn PortalCompanyPage() -> Element {
                             }
                         }
                     }
+                    // PMS-729 follow-up: invite-a-colleague form,
+                    // always available on the Company page regardless of
+                    // whether any delegatee candidates exist. Adding a
+                    // colleague triggers the same auth.welcome setup-
+                    // link email an agent-side grant fires.
+                    div { class: "mt-4 border-t border-line pt-4",
+                        h3 { class: "text-sm font-semibold text-content mb-2", "Invite a colleague to the portal" }
+                        p { class: "text-xs text-muted mb-3",
+                            "Adds a colleague from your own company and emails them a link to set a password."
+                        }
+                        div { class: "grid grid-cols-1 sm:grid-cols-3 gap-2",
+                            crate::components::Input {
+                                name: "invite_first_name",
+                                label: "First name",
+                                value: invite_first.read().clone(),
+                                required: true,
+                                disabled: *inviting.read(),
+                                oninput: move |e: FormEvent| {
+                                    invite_error.set(String::new());
+                                    invite_ok.set(String::new());
+                                    invite_first.set(e.value());
+                                },
+                            }
+                            crate::components::Input {
+                                name: "invite_last_name",
+                                label: "Last name",
+                                value: invite_last.read().clone(),
+                                required: true,
+                                disabled: *inviting.read(),
+                                oninput: move |e: FormEvent| {
+                                    invite_error.set(String::new());
+                                    invite_ok.set(String::new());
+                                    invite_last.set(e.value());
+                                },
+                            }
+                            crate::components::Input {
+                                name: "invite_email",
+                                label: "Email",
+                                r#type: "email".to_string(),
+                                value: invite_email.read().clone(),
+                                required: true,
+                                disabled: *inviting.read(),
+                                oninput: move |e: FormEvent| {
+                                    invite_error.set(String::new());
+                                    invite_ok.set(String::new());
+                                    invite_email.set(e.value());
+                                },
+                            }
+                        }
+                        if !invite_error().is_empty() {
+                            p { class: "mt-2 text-sm text-red-600 dark:text-red-300", "{invite_error}" }
+                        }
+                        if !invite_ok().is_empty() {
+                            p { class: "mt-2 text-sm text-green-700 dark:text-green-400", role: "status", "{invite_ok}" }
+                        }
+                        div { class: "mt-3 flex justify-end",
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                loading: *inviting.read(),
+                                disabled: *inviting.read(),
+                                onclick: move |_| {
+                                    let f = invite_first.read().trim().to_string();
+                                    let l = invite_last.read().trim().to_string();
+                                    let e = invite_email.read().trim().to_string();
+                                    if f.is_empty() || l.is_empty() || e.is_empty() {
+                                        invite_error.set("First name, last name and email are required.".to_string());
+                                        return;
+                                    }
+                                    if !e.contains('@') {
+                                        invite_error.set("Email must contain an @ sign.".to_string());
+                                        return;
+                                    }
+                                    inviting.set(true);
+                                    invite_error.set(String::new());
+                                    invite_ok.set(String::new());
+                                    let body = serde_json::json!({
+                                        "first_name": f,
+                                        "last_name": l,
+                                        "email": e,
+                                    });
+                                    let email_for_msg = e.clone();
+                                    spawn(async move {
+                                        #[cfg(feature = "web")]
+                                        {
+                                            #[derive(serde::Deserialize)]
+                                            struct InviteResp { #[allow(dead_code)] id: uuid::Uuid }
+                                            match crate::hooks::fetch::api::post_portal_authed_typed::<InviteResp, _>(
+                                                "/portal/company/contacts",
+                                                &body,
+                                            ).await {
+                                                Ok(_) => {
+                                                    invite_first.set(String::new());
+                                                    invite_last.set(String::new());
+                                                    invite_email.set(String::new());
+                                                    invite_ok.set(format!("Invite sent to {email_for_msg}. They can sign in once they set a password."));
+                                                    contacts_resource.restart();
+                                                    delegations_resource.restart();
+                                                }
+                                                Err(e) => invite_error.set(e.user_message()),
+                                            }
+                                        }
+                                        inviting.set(false);
+                                    });
+                                },
+                                "Send invite"
+                            }
+                        }
+                    }
+
                     div { class: "mt-4 border-t border-line pt-4",
                         h3 { class: "text-sm font-semibold text-content mb-2", "Grant a new delegation" }
                         if candidate_contacts.is_empty() {
-                            p { class: "text-sm text-muted", "Invite a colleague first before granting access." }
+                            p { class: "text-sm text-muted", "Once a colleague accepts the invite above, you can delegate access to them here." }
                         } else {
                             div { class: "space-y-2",
                                 label { class: "block text-xs font-medium text-content", "Colleague" }

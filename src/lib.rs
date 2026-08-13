@@ -763,6 +763,11 @@ pub enum Route {
     #[route("/portal/search")]
     PortalSearch {},
 
+    // PMS-729 follow-up: portal-owned account settings (profile display,
+    // change-password form). Reached from the user-menu Settings link.
+    #[route("/portal/settings")]
+    PortalSettings {},
+
     // End of PortalGuard scope.
     #[end_layout]
 
@@ -1507,6 +1512,11 @@ fn PortalApprovalList() -> Element {
 #[component]
 fn PortalCompany() -> Element {
     rsx! { portal::PortalCompanyPage {} }
+}
+
+#[component]
+fn PortalSettings() -> Element {
+    rsx! { portal_settings::PortalSettingsPage {} }
 }
 
 #[component]
