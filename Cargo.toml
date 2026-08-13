@@ -204,23 +204,31 @@ opt-level = 3
 #   beefier build host can override in a local `.cargo/config.toml`.
 [profile.wasm-dev]
 inherits = "dev"
-# Measured on a Dioxus 132-route crate + ~56k lines of pages, wasm target,
-# stable rustc 1.94.1:
+# Two problems this profile solves for a memory-constrained dev box:
 #
-#   default dev profile (cgu default, debug=2, assertions on):   ~3000 MB peak, ~85s
-#   + codegen-units = 1                                          :  ~2589 MB peak, ~510s
-#   + codegen-units = 256, debug=0, assertions off, overflow off :  ~2146 MB peak, ~220s
+# 1. rustc peak RSS on the mokosh_apps lib compile
+#    Measured on a Dioxus 132-route crate + ~56k lines of pages, stable rustc
+#    1.94.1, wasm target:
+#      stock dev  (cgu default, debug=2, assertions on) : ~3000 MB, ~85s
+#      + codegen-units = 1                              : ~2589 MB, ~510s
+#      + cgu = 256, debug = 0, assertions off, ovf off  : ~2146 MB, ~220s
+#    codegen-units = 256 lets LLVM stream small units in and out; cgu = 1
+#    (the first instinct) forced one huge unit that held every IR node at peak.
 #
-# The last row is what this profile sets. It fits under the earlyoom
-# SIGTERM floor (1.5 GB free on a 15 GB box) with headroom to spare
-# and is 4x faster than cgu=1. The trick is that many small LLVM units
-# stream in and out, freeing memory as each finishes; cgu=1 forced one
-# huge unit that held every IR node at peak.
+# 2. wasm-bindgen post-process OOM after cargo finished
+#    A 44 MB unstripped dev WASM expands ~30x during wasm-bindgen's parse:
+#    ~1.5 GB in wasm-bindgen + another ~1.5 GB dx holds simultaneously = OOM
+#    even after cargo succeeded. `opt-level = "s"` (dead-code + basic inlining
+#    tuned for size) drops the WASM to ~15-20 MB, so wasm-bindgen fits in
+#    ~500 MB. Trade: mokosh_apps compile is slower (opt-level ~1 for the
+#    app code) but the whole pipeline actually completes.
 #
 # Trade vs stock dev: no DWARF (browser panic messages lose source-line
 # mapping; WASM debugging is source-map-only anyway), no debug-assert /
-# overflow-check (same posture as release). None of that affects
-# feature behaviour or block iteration.
+# overflow-check (same posture as release). None of that affects feature
+# behaviour. The opt-level = "s" DOES slow down hot-reload iteration; the
+# alternative is `just dev-release` (thin-LTO, no hot reload at all).
+opt-level = "s"
 debug = 0
 codegen-units = 256
 debug-assertions = false
