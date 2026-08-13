@@ -804,6 +804,24 @@ fn HubRedirect(target: String, label: &'static str) -> Element {
 
 #[component]
 fn Home() -> Element {
+    // PMS-729: when the SPA is served from a portal host (e.g.
+    // `acme.client.localhost:4301`), the root path belongs to the
+    // customer portal, not the agent marketing home page. Redirect to
+    // `/portal/login` so a visitor typing the bare host lands where the
+    // MSP branding hint renders and the login form is offered.
+    //
+    // Non-portal hosts (localhost:4301, msp.<tld>) keep the pre-729
+    // behaviour and render the agent-side home page.
+    #[cfg(feature = "web")]
+    if hooks::fetch::api::on_portal_host() {
+        let nav = use_navigator();
+        nav.replace(Route::PortalLogin {});
+        return rsx! {
+            div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
+                "Redirecting to the portal sign-in…"
+            }
+        };
+    }
     rsx! { home::HomePage {} }
 }
 
