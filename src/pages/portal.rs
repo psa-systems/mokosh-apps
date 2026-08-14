@@ -3690,6 +3690,14 @@ pub fn PortalFormDetailPage(props: PortalFormDetailPageProps) -> Element {
     let mut receipt = use_signal(String::new);
     let form_id = props.id.clone();
 
+    // Files selected across every `file`-typed field on the form,
+    // keyed by field name. Uploaded to the created ticket's first
+    // note after submit; JSON has no channel for binary uploads.
+    #[cfg(feature = "web")]
+    let mut selected_files_by_field: Signal<
+        std::collections::HashMap<String, web_sys::FileList>,
+    > = use_signal(std::collections::HashMap::new);
+
     rsx! {
         PortalLayout { title: form.as_ref().map(|f| f.name.clone()).unwrap_or_else(|| "Form".to_string()),
             div { class: "mb-6",
@@ -3750,13 +3758,39 @@ pub fn PortalFormDetailPage(props: PortalFormDetailPageProps) -> Element {
                                             let mut map = answers.read().clone();
                                             map.insert(name.clone(), v);
                                             answers.set(map);
-                                            // Clear any prior error the
-                                            // moment the customer starts
-                                            // typing again.
                                             let mut errs = field_errors.read().clone();
                                             if errs.remove(&name).is_some() {
                                                 field_errors.set(errs);
                                             }
+                                        }
+                                    },
+                                    onfiles: {
+                                        let name = field.name.clone();
+                                        move |files: Option<web_sys::FileList>| {
+                                            #[cfg(feature = "web")]
+                                            {
+                                                let mut map = selected_files_by_field.read().clone();
+                                                match files {
+                                                    Some(f) if f.length() > 0 => {
+                                                        map.insert(name.clone(), f);
+                                                    }
+                                                    _ => { map.remove(&name); }
+                                                }
+                                                selected_files_by_field.set(map);
+                                                // Mirror the file-picked state
+                                                // into `answers` so client- + server-
+                                                // side required-check pass.
+                                                let mut ans = answers.read().clone();
+                                                let placeholder = if let Some(files) = selected_files_by_field.peek().get(&name) {
+                                                    format!("[{} file(s) attached]", files.length())
+                                                } else {
+                                                    String::new()
+                                                };
+                                                ans.insert(name.clone(), placeholder);
+                                                answers.set(ans);
+                                            }
+                                            #[cfg(not(feature = "web"))]
+                                            { let _ = files; }
                                         }
                                     },
                                 }
@@ -3836,6 +3870,8 @@ pub fn PortalFormDetailPage(props: PortalFormDetailPageProps) -> Element {
                                         );
                                         let body = serde_json::json!({ "payload": payload });
                                         let form_id = form_id.clone();
+                                        #[cfg(feature = "web")]
+                                        let files_snapshot = selected_files_by_field.read().clone();
                                         spawn(async move {
                                             #[cfg(feature = "web")]
                                             {
@@ -3848,6 +3884,41 @@ pub fn PortalFormDetailPage(props: PortalFormDetailPageProps) -> Element {
                                                             .and_then(|v| v.as_str())
                                                             .unwrap_or("")
                                                             .to_string();
+                                                        // Upload any file-typed
+                                                        // field's selection to the
+                                                        // created ticket's first
+                                                        // public note (same pattern
+                                                        // ticket-create attachments
+                                                        // use). Empty selection map
+                                                        // = no follow-up requests.
+                                                        let ticket_id = resp.get("ticket_id")
+                                                            .and_then(|v| v.as_str())
+                                                            .map(str::to_string)
+                                                            .unwrap_or_default();
+                                                        if !ticket_id.is_empty() && !files_snapshot.is_empty() {
+                                                            let note_body = serde_json::json!({
+                                                                "content": "Files attached with your form submission.",
+                                                            });
+                                                            if let Ok(note) = crate::hooks::fetch::api::post_portal_authed_typed::<serde_json::Value, _>(
+                                                                &format!("/portal/tickets/{ticket_id}/notes"),
+                                                                &note_body,
+                                                            ).await {
+                                                                let note_id = note.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                                                if !note_id.is_empty() {
+                                                                    for (_, files) in files_snapshot.iter() {
+                                                                        for i in 0..files.length() {
+                                                                            let Some(file) = files.item(i) else { continue };
+                                                                            let Ok(form) = web_sys::FormData::new() else { continue };
+                                                                            if form.append_with_blob("file", &file).is_err() { continue; }
+                                                                            let path = format!(
+                                                                                "/portal/tickets/{ticket_id}/notes/{note_id}/attachments"
+                                                                            );
+                                                                            let _ = crate::hooks::fetch::api::post_portal_authed_multipart::<serde_json::Value>(&path, &form).await;
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
                                                         receipt.set(num);
                                                     }
                                                     Err(e) => error.set(e.user_message()),
@@ -3877,6 +3948,16 @@ struct PortalFormFieldRowProps {
     #[props(default)]
     error: String,
     onchange: EventHandler<String>,
+    /// File-input change handler for `field_type = "file"`. Ignored for
+    /// every other field type. `None` payload = the customer cleared
+    /// the selection; the enclosing form should drop any prior state
+    /// for the field.
+    #[cfg(feature = "web")]
+    #[props(default)]
+    onfiles: Option<EventHandler<Option<web_sys::FileList>>>,
+    #[cfg(not(feature = "web"))]
+    #[props(default)]
+    onfiles: Option<EventHandler<Option<()>>>,
 }
 
 #[component]
@@ -3960,6 +4041,42 @@ fn PortalFormFieldRow(props: PortalFormFieldRowProps) -> Element {
                         value: "{value}",
                         required: required_attr,
                         oninput: move |e: FormEvent| onchange.call(e.value()),
+                    }
+                },
+                "file" => rsx! {
+                    input {
+                        id: "{field_name}",
+                        r#type: "file",
+                        multiple: true,
+                        class: "block w-full text-sm text-content file:mr-3 file:rounded file:border-0 file:bg-accent file:px-3 file:py-1.5 file:text-on-accent hover:file:opacity-90",
+                        required: required_attr,
+                        onchange: {
+                            let onfiles = props.onfiles;
+                            let dom_id = field_name.clone();
+                            move |_e: FormEvent| {
+                                #[cfg(feature = "web")]
+                                {
+                                    use wasm_bindgen::JsCast;
+                                    let files = web_sys::window()
+                                        .and_then(|w| w.document())
+                                        .and_then(|d| d.get_element_by_id(&dom_id))
+                                        .and_then(|el| el.dyn_into::<web_sys::HtmlInputElement>().ok())
+                                        .and_then(|input| input.files());
+                                    if let Some(cb) = onfiles.as_ref() {
+                                        cb.call(files);
+                                    }
+                                }
+                                #[cfg(not(feature = "web"))]
+                                {
+                                    if let Some(cb) = onfiles.as_ref() {
+                                        cb.call(None);
+                                    }
+                                }
+                            }
+                        },
+                    }
+                    if !value.is_empty() {
+                        p { class: "mt-1 text-xs text-muted", "{value}" }
                     }
                 },
                 _ => rsx! {
