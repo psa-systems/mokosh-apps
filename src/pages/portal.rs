@@ -2224,6 +2224,29 @@ struct PortalNotificationRow {
     read_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default)]
     created_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Server's joined template event_type (`ticket.note_added`,
+    /// `sla.at_risk`, `auth.welcome`, ...). Used to render a section-
+    /// level deep-link so a customer can click through instead of
+    /// having to hunt for the entity manually.
+    #[serde(default)]
+    event_type: Option<String>,
+}
+
+/// Route the customer through to the portal section this notification
+/// is about. Section-level rather than per-entity (the row does not
+/// carry an entity id; a schema change would add one, but the
+/// section link is the highest-value fix without editing migrations).
+/// Returns `None` for event types with no obvious portal home so the
+/// row just renders as-is instead of dead-linking.
+fn portal_notification_deep_link(event_type: &str) -> Option<(Route, &'static str)> {
+    let prefix = event_type.split('.').next().unwrap_or("");
+    match prefix {
+        "ticket" | "sla" => Some((Route::PortalTicketList {}, "Go to tickets")),
+        "invoice" | "payment" => Some((Route::PortalInvoiceList {}, "Go to invoices")),
+        "quote" => Some((Route::PortalQuoteList {}, "Go to quotes")),
+        "kb" | "article" => Some((Route::PortalKB {}, "Go to knowledge base")),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
@@ -2365,6 +2388,10 @@ fn PortalNotificationsRow(props: PortalNotificationsRowProps) -> Element {
     } else {
         ""
     };
+    let deep_link = row
+        .event_type
+        .as_deref()
+        .and_then(portal_notification_deep_link);
     rsx! {
         li { class: "block px-4 py-3 {unread_class}",
             div { class: "flex items-start justify-between gap-4",
@@ -2373,8 +2400,17 @@ fn PortalNotificationsRow(props: PortalNotificationsRowProps) -> Element {
                         p { class: "text-sm font-medium text-content", "{subject}" }
                     }
                     p { class: "mt-1 text-sm text-muted whitespace-pre-wrap", "{body}" }
-                    if !when.is_empty() {
-                        p { class: "mt-1 text-xs text-subtle", "{when}" }
+                    div { class: "mt-1 flex items-center gap-3 text-xs",
+                        if !when.is_empty() {
+                            span { class: "text-subtle", "{when}" }
+                        }
+                        if let Some((route, label)) = deep_link.clone() {
+                            Link {
+                                to: route,
+                                class: "text-accent hover:opacity-80",
+                                "{label} ->"
+                            }
+                        }
                     }
                 }
                 if is_unread {
