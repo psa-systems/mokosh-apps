@@ -4588,6 +4588,23 @@ struct PortalDelegationRow {
     granted_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// Delegation another colleague has granted TO the caller (read-only).
+/// Matches server `PortalIncomingDelegation`.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalIncomingDelegationRow {
+    id: uuid::Uuid,
+    #[serde(default)]
+    delegator_name: String,
+    #[serde(default)]
+    delegator_email: String,
+    #[serde(default)]
+    scope: serde_json::Value,
+    #[serde(default)]
+    granted_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 #[component]
 pub fn PortalCompanyPage() -> Element {
     let mut contacts_resource = use_resource(|| async {
@@ -4606,6 +4623,14 @@ pub fn PortalCompanyPage() -> Element {
         .await
         .ok()
     });
+    let incoming_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_portal_authed::<Vec<PortalIncomingDelegationRow>>(
+            "/portal/company/delegations/received",
+        )
+        .await
+        .ok()
+    });
     let contacts_snap = contacts_resource.read_unchecked();
     let contacts: Vec<PortalCompanyContactRow> = match &*contacts_snap {
         Some(Some(rs)) => rs.clone(),
@@ -4613,6 +4638,11 @@ pub fn PortalCompanyPage() -> Element {
     };
     let delegations_snap = delegations_resource.read_unchecked();
     let delegations: Vec<PortalDelegationRow> = match &*delegations_snap {
+        Some(Some(rs)) => rs.clone(),
+        _ => Vec::new(),
+    };
+    let incoming_snap = incoming_resource.read_unchecked();
+    let incoming: Vec<PortalIncomingDelegationRow> = match &*incoming_snap {
         Some(Some(rs)) => rs.clone(),
         _ => Vec::new(),
     };
@@ -4666,6 +4696,46 @@ pub fn PortalCompanyPage() -> Element {
                                             contacts_resource.restart();
                                             delegations_resource.restart();
                                         },
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if !incoming.is_empty() {
+                    Card {
+                        h2 { class: "text-lg font-semibold text-content mb-3", "Access shared with you" }
+                        p { class: "text-xs text-muted mb-3",
+                            "Colleagues who have given you view access to their own tickets or invoices. Only the person who granted a delegation can revoke it."
+                        }
+                        Table {
+                            TableHead { TableRow {
+                                TableHeader { "Colleague" }
+                                TableHeader { "Scope" }
+                                TableHeader { "Granted" }
+                                TableHeader { "Expires" }
+                            } }
+                            TableBody {
+                                for d in incoming.iter().cloned() {
+                                    TableRow { key: "{d.id}",
+                                        TableCell {
+                                            div {
+                                                span { class: "font-medium text-content", "{d.delegator_name}" }
+                                                p { class: "text-xs text-muted", "{d.delegator_email}" }
+                                            }
+                                        }
+                                        TableCell {
+                                            span { class: "text-xs text-muted",
+                                                "{format_delegation_scope(&d.scope)}"
+                                            }
+                                        }
+                                        TableCell {
+                                            if let Some(t) = d.granted_at { {crate::utils::datetime::format_user_datetime(t, None)} } else { "-" }
+                                        }
+                                        TableCell {
+                                            if let Some(t) = d.expires_at { {crate::utils::datetime::format_user_datetime(t, None)} } else { "Never" }
+                                        }
                                     }
                                 }
                             }
@@ -5216,6 +5286,23 @@ pub fn PortalExportPage() -> Element {
         });
     });
 
+    // History of prior export jobs. Reruns whenever a fresh request
+    // lands (via current_job_id.set(...)) so the new row appears at
+    // the top without a page reload; also picks up status flips a
+    // few ticks later via refetch_gen since it reads that too.
+    let current_job_for_history = current_job_id.read().clone();
+    let history = use_resource(use_reactive!(
+        |current_job_for_history, refetch_gen| async move {
+            let _ = (current_job_for_history, refetch_gen.read());
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_portal_authed::<Vec<PortalExportRow>>("/portal/export")
+                .await
+                .ok()
+                .unwrap_or_default()
+        }
+    ));
+    let history_rows: Vec<PortalExportRow> = history.read_unchecked().clone().unwrap_or_default();
+
     let request_export = move |_| {
         if *submitting.read() {
             return;
@@ -5368,6 +5455,69 @@ pub fn PortalExportPage() -> Element {
                                         dd { {section_total_label(totals, "invoices")} }
                                         dt { class: "font-medium", "Quotes" }
                                         dd { {section_total_label(totals, "quotes")} }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Past exports table. Hidden entirely on an empty
+                // history so a first-time customer does not see a
+                // stray card; otherwise renders the newest 50 rows
+                // with a Load button for any that still has a live
+                // signed_url (the download itself streams through
+                // the same authed Blob-URL trick the current-job
+                // panel uses).
+                if !history_rows.is_empty() {
+                    Card {
+                        h3 { class: "text-base font-semibold text-content mb-3", "Past exports" }
+                        Table {
+                            TableHead { TableRow {
+                                TableHeader { "Requested" }
+                                TableHeader { "Status" }
+                                TableHeader { "Ready" }
+                                TableHeader { "Expires" }
+                                TableHeader { class: "text-right", "Download" }
+                            } }
+                            TableBody {
+                                for row in history_rows.iter().cloned() {
+                                    {
+                                        let is_current = current_job_id.read().as_str() == row.id.to_string();
+                                        let requested = crate::utils::datetime::format_user_datetime(row.requested_at.unwrap_or_default(), None);
+                                        let ready = row.ready_at.map(|d| crate::utils::datetime::format_user_datetime(d, None)).unwrap_or_default();
+                                        let expires = row.expires_at.map(|d| crate::utils::datetime::format_user_datetime(d, None)).unwrap_or_default();
+                                        let can_download = row.signed_url.as_deref().map(|s| !s.is_empty()).unwrap_or(false);
+                                        let status_label = crate::components::humanize_enum_label(&row.status);
+                                        let row_id = row.id.to_string();
+                                        rsx! {
+                                            TableRow { key: "{row.id}",
+                                                TableCell {
+                                                    span { "{requested}" }
+                                                    if is_current {
+                                                        span { class: "ml-2 text-xs text-accent", "Selected" }
+                                                    }
+                                                }
+                                                TableCell { "{status_label}" }
+                                                TableCell {
+                                                    if ready.is_empty() { "-" } else { "{ready}" }
+                                                }
+                                                TableCell {
+                                                    if expires.is_empty() { "-" } else { "{expires}" }
+                                                }
+                                                TableCell { class: "text-right",
+                                                    if can_download {
+                                                        Button {
+                                                            variant: ButtonVariant::Secondary,
+                                                            onclick: move |_| current_job_id.set(row_id.clone()),
+                                                            "Select"
+                                                        }
+                                                    } else {
+                                                        span { class: "text-xs text-muted", "-" }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
