@@ -859,6 +859,118 @@ pub mod api {
         })
     }
 
+    /// Portal-authed PATCH with a JSON body that returns 204. Mirrors
+    /// [`put_portal_authed_json_no_content`] for the profile self-edit
+    /// path (`PATCH /portal/auth/me`).
+    #[cfg(feature = "web")]
+    pub async fn patch_portal_authed_json_no_content<B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<(), ApiError> {
+        let t = current_portal_access_token().ok_or_else(|| ApiError::Status {
+            code: 401,
+            message: String::new(),
+            fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
+        })?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::patch(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        let status = resp.status();
+        super::note_response_status(status);
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+        let body_text = resp.text().await.unwrap_or_default();
+        let (message, fields, envelope_code, envelope_body) =
+            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
+                Ok(env) => {
+                    let code = env.error.code.clone();
+                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
+                    (
+                        env.error.message,
+                        env.error.errors.unwrap_or_default(),
+                        code,
+                        raw,
+                    )
+                }
+                Err(_) => (
+                    body_text.chars().take(200).collect(),
+                    Vec::new(),
+                    String::new(),
+                    None,
+                ),
+            };
+        Err(ApiError::Status {
+            code: status,
+            message,
+            fields,
+            envelope_code,
+            envelope_body,
+        })
+    }
+
+    /// Portal-authed POST that discards the response body. Used by
+    /// mutating endpoints that respond 204 (`/portal/company/contacts/
+    /// {id}/resend-invite`, ...). Surfaces `ApiError` so the caller
+    /// can branch on the envelope code without a second parse.
+    #[cfg(feature = "web")]
+    pub async fn post_portal_authed_no_content(path: &str) -> Result<(), ApiError> {
+        let t = current_portal_access_token().ok_or_else(|| ApiError::Status {
+            code: 401,
+            message: String::new(),
+            fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
+        })?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::post(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .send()
+            .await
+            .map_err(network_err)?;
+        let status = resp.status();
+        super::note_response_status(status);
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+        let body_text = resp.text().await.unwrap_or_default();
+        let (message, fields, envelope_code, envelope_body) =
+            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
+                Ok(env) => {
+                    let code = env.error.code.clone();
+                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
+                    (
+                        env.error.message,
+                        env.error.errors.unwrap_or_default(),
+                        code,
+                        raw,
+                    )
+                }
+                Err(_) => (
+                    body_text.chars().take(200).collect(),
+                    Vec::new(),
+                    String::new(),
+                    None,
+                ),
+            };
+        Err(ApiError::Status {
+            code: status,
+            message,
+            fields,
+            envelope_code,
+            envelope_body,
+        })
+    }
+
     /// PMS-729 phase 2 §7 slice B / I12: portal-authed empty-body PUT.
     /// Used by the inbox mark-read call (`PUT
     /// /portal/notifications/{id}/read` responds 204 with no payload).
@@ -1413,6 +1525,8 @@ mod tests {
         "get_portal_authed_bytes",
         "put_portal_authed_no_content",
         "put_portal_authed_json_no_content",
+        "patch_portal_authed_json_no_content",
+        "post_portal_authed_no_content",
         "delete_portal_authed_no_content",
     ];
 

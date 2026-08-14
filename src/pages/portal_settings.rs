@@ -39,28 +39,175 @@ pub fn PortalSettingsPage() -> Element {
     rsx! {
         crate::components::PortalLayout { title: "Settings".to_string(),
             div { class: "space-y-6",
-                Card {
-                    h2 { class: "text-lg font-semibold text-content mb-3", "Profile" }
-                    if let Some(m) = me.as_ref() {
-                        dl { class: "grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-sm",
-                            dt { class: "text-muted", "Name" }
-                            dd { class: "text-content", "{m.display_name()}" }
-                            dt { class: "text-muted", "Email" }
-                            dd { class: "text-content", "{m.email}" }
-                        }
-                        p { class: "mt-3 text-xs text-muted",
-                            "Name and email are managed by your account team. Contact them to update either."
-                        }
-                    } else {
-                        p { class: "text-sm text-muted", "Loading your profile..." }
-                    }
-                }
+                ProfileCard { me: me.clone() }
 
                 ChangePasswordCard {}
 
                 MfaCard { mfa_enabled: me.as_ref().map(|m| m.mfa_enabled).unwrap_or(false) }
 
                 SessionsCard {}
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct ProfileCardProps {
+    me: Option<crate::hooks::portal_me::PortalMe>,
+}
+
+/// Profile card: self-edit of first / last name via
+/// PATCH /portal/auth/me. Email stays read-only (identity is keyed
+/// on it, and changing it is an agent-side workflow).
+#[component]
+fn ProfileCard(props: ProfileCardProps) -> Element {
+    let mut editing = use_signal(|| false);
+    let mut first = use_signal(String::new);
+    let mut last = use_signal(String::new);
+    let mut saving = use_signal(|| false);
+    let mut error = use_signal(String::new);
+
+    // Seed the inputs from `me` the first time it becomes available;
+    // avoids clobbering the customer's mid-edit typing on a refetch.
+    use_effect({
+        let me_snap = props.me.clone();
+        move || {
+            if !editing() {
+                if let Some(m) = me_snap.as_ref() {
+                    if first.peek().is_empty() {
+                        first.set(m.first_name.clone());
+                    }
+                    if last.peek().is_empty() {
+                        last.set(m.last_name.clone());
+                    }
+                }
+            }
+        }
+    });
+
+    let mut save = move |_| {
+        if saving() {
+            return;
+        }
+        let f = first.read().trim().to_string();
+        let l = last.read().trim().to_string();
+        if f.is_empty() || l.is_empty() {
+            error.set("First and last name are required.".to_string());
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                use crate::hooks::fetch::api::ApiError;
+                let body = serde_json::json!({ "first_name": f, "last_name": l });
+                match crate::hooks::fetch::api::patch_portal_authed_json_no_content(
+                    "/portal/auth/me",
+                    &body,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        editing.set(false);
+                        crate::hooks::portal_me::invalidate_portal_me();
+                    }
+                    Err(ApiError::Status { message, .. }) if !message.is_empty() => {
+                        error.set(message);
+                    }
+                    Err(e) => error.set(e.user_message()),
+                }
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                let _ = (f, l);
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        Card {
+            div { class: "flex items-center justify-between mb-3",
+                h2 { class: "text-lg font-semibold text-content", "Profile" }
+                if !editing() && props.me.is_some() {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| {
+                            error.set(String::new());
+                            editing.set(true);
+                        },
+                        "Edit"
+                    }
+                }
+            }
+            match (&props.me, editing()) {
+                (Some(m), false) => rsx! {
+                    dl { class: "grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-sm",
+                        dt { class: "text-muted", "Name" }
+                        dd { class: "text-content", "{m.display_name()}" }
+                        dt { class: "text-muted", "Email" }
+                        dd { class: "text-content", "{m.email}" }
+                    }
+                    p { class: "mt-3 text-xs text-muted",
+                        "Email changes are handled by your account team. Contact them if it needs to change."
+                    }
+                },
+                (Some(_), true) => rsx! {
+                    form {
+                        class: "space-y-3",
+                        onsubmit: move |evt: Event<FormData>| {
+                            evt.prevent_default();
+                            save(());
+                        },
+                        Input {
+                            name: "profile_first_name",
+                            label: "First name",
+                            value: first(),
+                            required: true,
+                            disabled: saving(),
+                            oninput: move |e: FormEvent| {
+                                error.set(String::new());
+                                first.set(e.value());
+                            },
+                        }
+                        Input {
+                            name: "profile_last_name",
+                            label: "Last name",
+                            value: last(),
+                            required: true,
+                            disabled: saving(),
+                            oninput: move |e: FormEvent| {
+                                error.set(String::new());
+                                last.set(e.value());
+                            },
+                        }
+                        if !error().is_empty() {
+                            p { class: "text-sm text-red-600 dark:text-red-400", role: "alert", "{error}" }
+                        }
+                        div { class: "flex gap-2",
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                r#type: "submit".to_string(),
+                                loading: saving(),
+                                disabled: saving(),
+                                "Save"
+                            }
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                disabled: saving(),
+                                onclick: move |_| {
+                                    editing.set(false);
+                                    error.set(String::new());
+                                },
+                                "Cancel"
+                            }
+                        }
+                    }
+                },
+                (None, _) => rsx! {
+                    p { class: "text-sm text-muted", "Loading your profile..." }
+                },
             }
         }
     }

@@ -17,10 +17,50 @@
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "web")]
+use dioxus::prelude::*;
+
+#[cfg(feature = "web")]
 use crate::hooks::fetch::api::{
     current_portal_refresh_token, has_portal_session, set_portal_access_token,
     set_portal_refresh_token,
 };
+
+/// Sticky "your last portal session ended, please sign in again" flag.
+///
+/// Flipped to `true` any time [`refresh_portal_session`] sees a 401
+/// (revoked, expired, replay-detected) so the login page can surface
+/// an explicit reason instead of the customer landing on a blank
+/// login form and wondering why they got kicked out.
+///
+/// GlobalSignal (not context) for the same reason the fetch layer
+/// uses one: portal_auth is not a component and can't reach a
+/// context-provided signal; wasm is single-threaded so this is safe.
+/// Cleared on a successful login (see `portal_login.rs`).
+#[cfg(feature = "web")]
+pub static PORTAL_SESSION_EXPIRED: GlobalSignal<bool> = Signal::global(|| false);
+
+/// Reactive read for the login page.
+#[cfg(feature = "web")]
+pub fn portal_session_expired_flag() -> bool {
+    *PORTAL_SESSION_EXPIRED.read()
+}
+
+#[cfg(not(feature = "web"))]
+pub fn portal_session_expired_flag() -> bool {
+    false
+}
+
+/// Clear the sticky flag. Called from the login page after a
+/// successful sign-in so the banner does not re-appear.
+#[cfg(feature = "web")]
+pub fn clear_portal_session_expired() {
+    if *PORTAL_SESSION_EXPIRED.peek() {
+        *PORTAL_SESSION_EXPIRED.write() = false;
+    }
+}
+
+#[cfg(not(feature = "web"))]
+pub fn clear_portal_session_expired() {}
 
 /// Access-token TTL is 15 minutes on the server. Rotate before the
 /// midpoint so a wall-clock skew of a few minutes still lands inside
@@ -74,10 +114,13 @@ pub async fn refresh_portal_session() -> Result<(), String> {
         }
         // 401 means the token is dead (expired, revoked, or replay
         // detected). Clear local state so the guard bounces the user
-        // to /portal/login on the next fetch attempt.
+        // to /portal/login on the next fetch attempt, and flip the
+        // sticky flag so the login page can render an explicit
+        // "your session expired" banner instead of a blank form.
         Err(ApiError::Status { code: 401, .. }) => {
             set_portal_access_token(None);
             set_portal_refresh_token(None);
+            *PORTAL_SESSION_EXPIRED.write() = true;
             Err("portal session expired".to_string())
         }
         Err(e) => Err(e.user_message()),

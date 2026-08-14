@@ -4517,19 +4517,17 @@ pub fn PortalCompanyPage() -> Element {
                             TableHead { TableRow {
                                 TableHeader { "Name" }
                                 TableHeader { "Email" }
+                                TableHeader { class: "text-right", "Manage" }
                             } }
                             TableBody {
                                 for c in contacts.iter().cloned() {
-                                    TableRow { key: "{c.id}",
-                                        TableCell {
-                                            if c.is_you {
-                                                span { class: "font-medium text-content", "{c.first_name} {c.last_name}" }
-                                                Badge { variant: BadgeVariant::Blue, class: "ml-2".to_string(), "You" }
-                                            } else {
-                                                span { class: "text-content", "{c.first_name} {c.last_name}" }
-                                            }
-                                        }
-                                        TableCell { "{c.email}" }
+                                    PortalColleagueRow {
+                                        key: "{c.id}",
+                                        contact: c.clone(),
+                                        on_change: move |_| {
+                                            contacts_resource.restart();
+                                            delegations_resource.restart();
+                                        },
                                     }
                                 }
                             }
@@ -4813,6 +4811,138 @@ pub fn PortalCompanyPage() -> Element {
                                         "Grant access"
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct PortalColleagueRowProps {
+    contact: PortalCompanyContactRow,
+    on_change: EventHandler<()>,
+}
+
+/// One row on the "Colleagues with portal access" table. Renders the
+/// colleague's name + email plus, for anyone who is not the caller,
+/// Resend-invite and Remove buttons wired to the server-side
+/// `/portal/company/contacts/{id}/resend-invite` and DELETE endpoints.
+/// A row spawns its own confirm-for-remove flow so the destructive
+/// action always sits behind an explicit second click.
+#[component]
+fn PortalColleagueRow(props: PortalColleagueRowProps) -> Element {
+    let c = props.contact.clone();
+    let id = c.id;
+    let mut confirming = use_signal(|| false);
+    let mut working = use_signal(|| false);
+    let mut msg = use_signal(String::new);
+    let mut err = use_signal(String::new);
+
+    let resend = move |_| {
+        if working() {
+            return;
+        }
+        working.set(true);
+        msg.set(String::new());
+        err.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                use crate::hooks::fetch::api::ApiError;
+                match crate::hooks::fetch::api::post_portal_authed_no_content(&format!(
+                    "/portal/company/contacts/{id}/resend-invite"
+                ))
+                .await
+                {
+                    Ok(()) => msg.set("Invite resent.".to_string()),
+                    Err(ApiError::Status { message, .. }) if !message.is_empty() => {
+                        err.set(message)
+                    }
+                    Err(e) => err.set(e.user_message()),
+                }
+            }
+            working.set(false);
+        });
+    };
+
+    let confirm_remove = move |_| {
+        if working() {
+            return;
+        }
+        working.set(true);
+        msg.set(String::new());
+        err.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let path = format!("/portal/company/contacts/{id}");
+                match crate::hooks::fetch::api::delete_portal_authed_no_content(&path).await {
+                    Ok(()) => {
+                        props.on_change.call(());
+                    }
+                    Err(m) => err.set(m),
+                }
+            }
+            working.set(false);
+            confirming.set(false);
+        });
+    };
+
+    rsx! {
+        TableRow {
+            TableCell {
+                if c.is_you {
+                    span { class: "font-medium text-content", "{c.first_name} {c.last_name}" }
+                    Badge { variant: BadgeVariant::Blue, class: "ml-2".to_string(), "You" }
+                } else {
+                    span { class: "text-content", "{c.first_name} {c.last_name}" }
+                }
+                if !msg().is_empty() {
+                    p { class: "text-xs text-green-700 dark:text-green-400 mt-1", role: "status", "{msg}" }
+                }
+                if !err().is_empty() {
+                    p { class: "text-xs text-red-600 dark:text-red-300 mt-1", role: "alert", "{err}" }
+                }
+            }
+            TableCell { "{c.email}" }
+            TableCell { class: "text-right",
+                if !c.is_you {
+                    if confirming() {
+                        div { class: "inline-flex items-center gap-2",
+                            span { class: "text-xs text-muted", "Remove?" }
+                            Button {
+                                variant: ButtonVariant::Danger,
+                                disabled: working(),
+                                onclick: confirm_remove,
+                                "Confirm remove"
+                            }
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                disabled: working(),
+                                onclick: move |_| confirming.set(false),
+                                "Cancel"
+                            }
+                        }
+                    } else {
+                        div { class: "inline-flex items-center gap-2",
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                disabled: working(),
+                                onclick: resend,
+                                "Resend invite"
+                            }
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                disabled: working(),
+                                onclick: move |_| {
+                                    err.set(String::new());
+                                    msg.set(String::new());
+                                    confirming.set(true);
+                                },
+                                "Remove"
                             }
                         }
                     }

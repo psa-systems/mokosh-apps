@@ -124,6 +124,11 @@ pub fn PortalLoginPage() -> Element {
     // without the page having to poll.
     let hint_snapshot = crate::hooks::portal_branding::use_portal_host_hint();
 
+    // Session-expired banner (set by `refresh_portal_session` when the
+    // token dies). Reactive read so the banner appears the moment the
+    // background loop flips the flag, without a route change.
+    let session_expired = crate::hooks::portal_auth::portal_session_expired_flag();
+
     let host_derived_for_submit = hint_snapshot.is_some();
     let mut handle_submit = move |_| {
         if saving() {
@@ -217,6 +222,10 @@ pub fn PortalLoginPage() -> Element {
                         crate::hooks::fetch::api::set_portal_refresh_token(Some(
                             resp.refresh_token,
                         ));
+                        // Fresh session; drop the sticky "your last
+                        // session expired" flag so returning to
+                        // /portal/login later starts clean.
+                        crate::hooks::portal_auth::clear_portal_session_expired();
                         nav.replace(Route::PortalHome {});
                     }
                     // PMS-729 phase 2 H8: 403 CAPTCHA_REQUIRED /
@@ -326,6 +335,20 @@ pub fn PortalLoginPage() -> Element {
                         } else {
                             p { class: "mt-2 text-sm text-content",
                                 "Use the email your account team set up for you."
+                            }
+                        }
+                    }
+
+                    // Session-expired notice. Rendered above the form
+                    // whenever the background refresh loop just landed
+                    // a 401 (revoked / expired / replay-detected) so a
+                    // customer bounced mid-work sees an explicit reason
+                    // rather than an unexplained login prompt.
+                    if session_expired {
+                        div { class: "mb-4 rounded-md border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10 p-3",
+                            p { class: "text-sm text-amber-800 dark:text-amber-200",
+                                role: "status",
+                                "You were signed out because your session expired. Please sign in again to continue."
                             }
                         }
                     }
