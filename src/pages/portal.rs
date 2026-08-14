@@ -1398,6 +1398,22 @@ struct PortalInvoiceDetail {
     total: String,
     #[serde(default)]
     balance_due: String,
+    /// PMS-711 follow-up: header fields the server serializes on
+    /// `InvoiceResponse` (billing/models.rs) that the portal detail
+    /// used to drop. Every field is optional so a partial payload
+    /// still decodes.
+    #[serde(default)]
+    po_number: Option<String>,
+    #[serde(default)]
+    notes: Option<String>,
+    #[serde(default)]
+    payment_terms: Option<String>,
+    #[serde(default)]
+    payment_term_name: Option<String>,
+    #[serde(default)]
+    tax_amount: Option<String>,
+    #[serde(default)]
+    discount_amount: Option<String>,
     #[serde(default)]
     lines: Option<Vec<PortalInvoiceLine>>,
 }
@@ -1412,6 +1428,13 @@ struct PortalInvoiceLine {
     unit_price: String,
     #[serde(default)]
     total: String,
+    /// Server sends `line_type` as one of `service` / `product` /
+    /// `time_entry` / `mileage` / `adjustment` / `tax` / `discount`.
+    /// The portal shows a small chip on non-service rows so a
+    /// customer can tell a discount from a regular line without
+    /// having to read the description.
+    #[serde(default)]
+    line_type: String,
 }
 
 /// Render an amount string as currency. Routes through the shared
@@ -1555,6 +1578,27 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                     let subtotal = portal_money(&inv.subtotal);
                     let total = portal_money(&inv.total);
                     let lines = inv.lines.clone().unwrap_or_default();
+                    let po = inv.po_number.clone().filter(|s| !s.is_empty());
+                    // Prefer the joined `payment_term_name` (from the
+                    // payment_terms lookup) over the legacy free-text
+                    // `payment_terms` column; the server keeps both so
+                    // an in-flight upgrade renders correctly either way.
+                    let terms = inv
+                        .payment_term_name
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| inv.payment_terms.clone().filter(|s| !s.is_empty()));
+                    let notes = inv.notes.clone().filter(|s| !s.is_empty());
+                    let tax = inv
+                        .tax_amount
+                        .as_deref()
+                        .filter(|s| !s.is_empty() && *s != "0" && *s != "0.00")
+                        .map(portal_money);
+                    let discount = inv
+                        .discount_amount
+                        .as_deref()
+                        .filter(|s| !s.is_empty() && *s != "0" && *s != "0.00")
+                        .map(portal_money);
                     rsx! {
                         Card {
                             div { class: "flex justify-between items-start mb-6",
@@ -1573,6 +1617,18 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                                 div {
                                     h3 { class: "text-xs font-medium text-muted uppercase mb-1", "Bill To" }
                                     p { class: "font-medium", "{company_name}" }
+                                    if let Some(p_num) = po.as_ref() {
+                                        p { class: "text-xs text-muted mt-2",
+                                            "PO: "
+                                            span { class: "font-mono text-content", "{p_num}" }
+                                        }
+                                    }
+                                    if let Some(t) = terms.as_ref() {
+                                        p { class: "text-xs text-muted",
+                                            "Terms: "
+                                            span { class: "text-content", "{t}" }
+                                        }
+                                    }
                                 }
                                 div {
                                     h3 { class: "text-xs font-medium text-muted uppercase mb-1", "Amount Due" }
@@ -1595,11 +1651,30 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                                             TableEmptyRow { columns: 4, class: "text-muted", "No line items." }
                                         } else {
                                             for (idx, line) in lines.iter().enumerate() {
-                                                TableRow { key: "{idx}",
-                                                    TableCell { "{line.description}" }
-                                                    TableCell { class: "text-right", "{line.quantity}" }
-                                                    TableCell { class: "text-right", {portal_money(&line.unit_price)} }
-                                                    TableCell { class: "text-right", {portal_money(&line.total)} }
+                                                {
+                                                    // Skip the type chip for the default `service`
+                                                    // line so a normal invoice stays visually clean;
+                                                    // discount / tax / adjustment / product rows get
+                                                    // a small humanized label so a customer can tell
+                                                    // them apart without reading the description.
+                                                    let show_type = !line.line_type.is_empty()
+                                                        && line.line_type != "service";
+                                                    let type_label = crate::components::humanize_enum_label(&line.line_type);
+                                                    rsx! {
+                                                        TableRow { key: "{idx}",
+                                                            TableCell {
+                                                                span { "{line.description}" }
+                                                                if show_type {
+                                                                    span { class: "ml-2 inline-block rounded bg-surface-2 px-1.5 py-0.5 text-xs text-muted",
+                                                                        "{type_label}"
+                                                                    }
+                                                                }
+                                                            }
+                                                            TableCell { class: "text-right", "{line.quantity}" }
+                                                            TableCell { class: "text-right", {portal_money(&line.unit_price)} }
+                                                            TableCell { class: "text-right", {portal_money(&line.total)} }
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -1609,7 +1684,20 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
 
                             div { class: "border-t border-line pt-4 text-right space-y-1",
                                 p { class: "text-sm text-muted", "Subtotal {subtotal}" }
+                                if let Some(d) = discount.as_ref() {
+                                    p { class: "text-sm text-muted", "Discount -{d}" }
+                                }
+                                if let Some(t) = tax.as_ref() {
+                                    p { class: "text-sm text-muted", "Tax {t}" }
+                                }
                                 p { class: "text-2xl font-bold text-content", "Total {total}" }
+                            }
+
+                            if let Some(n) = notes.as_ref() {
+                                div { class: "border-t border-line pt-4 mt-4",
+                                    h3 { class: "text-xs font-medium text-muted uppercase mb-2", "Notes" }
+                                    p { class: "text-sm text-content whitespace-pre-wrap", "{n}" }
+                                }
                             }
 
                             // PMS-711 SPA half: the "Pay Now" affordance.
@@ -2549,18 +2637,32 @@ pub fn PortalQuoteDetailPage(props: PortalQuoteDetailPageProps) -> Element {
                                 TableHead {
                                     TableRow {
                                         TableHeader { "Description" }
-                                        TableHeader { "Qty" }
-                                        TableHeader { "Unit price" }
-                                        TableHeader { "Total" }
+                                        TableHeader { class: "text-right", "Qty" }
+                                        TableHeader { class: "text-right", "Unit price" }
+                                        TableHeader { class: "text-right", "Total" }
                                     }
                                 }
                                 TableBody {
                                     for line in q.lines.clone().unwrap_or_default() {
-                                        TableRow { key: "{line.id}",
-                                            TableCell { "{line.description}" }
-                                            TableCell { "{line.quantity}" }
-                                            TableCell { "{format_money(line.unit_price)}" }
-                                            TableCell { class: "font-medium", "{format_money(line.total)}" }
+                                        {
+                                            let show_type = !line.line_type.is_empty()
+                                                && line.line_type != "service";
+                                            let type_label = crate::components::humanize_enum_label(&line.line_type);
+                                            rsx! {
+                                                TableRow { key: "{line.id}",
+                                                    TableCell {
+                                                        span { "{line.description}" }
+                                                        if show_type {
+                                                            span { class: "ml-2 inline-block rounded bg-surface-2 px-1.5 py-0.5 text-xs text-muted",
+                                                                "{type_label}"
+                                                            }
+                                                        }
+                                                    }
+                                                    TableCell { class: "text-right", "{line.quantity}" }
+                                                    TableCell { class: "text-right", "{format_money(line.unit_price)}" }
+                                                    TableCell { class: "text-right font-medium", "{format_money(line.total)}" }
+                                                }
+                                            }
                                         }
                                     }
                                 }
