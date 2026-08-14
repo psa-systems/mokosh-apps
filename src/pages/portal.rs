@@ -1784,25 +1784,66 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                     class: "text-sm text-accent hover:opacity-90",
                     "Back to invoices"
                 }
-                // Print / Save-as-PDF affordance. Browsers expose
-                // Save-as-PDF in the same dialog as Print (Chrome +
-                // Firefox both default to it under "Destination"), so
-                // one button covers "give me a PDF of this invoice"
-                // AND "print a hard copy". `no-print` on the wrapper
-                // hides the button in the printed output; @media print
-                // hides the portal chrome so the invoice card fills
-                // the sheet.
-                Button {
-                    variant: ButtonVariant::Secondary,
-                    onclick: move |_| {
-                        #[cfg(feature = "web")]
-                        {
-                            if let Some(win) = web_sys::window() {
-                                let _ = win.print();
+                div { class: "flex items-center gap-2",
+                    // Server-rendered PDF download. Streams the same
+                    // invoice bytes the workflow / email-attach paths
+                    // will produce, so a customer's saved PDF matches
+                    // the one their agent side sends. Auth-scoped
+                    // Blob-URL fetch because the portal token lives in
+                    // WASM memory, not a cookie.
+                    {
+                        let mut downloading = use_signal(|| false);
+                        let mut dl_err = use_signal(String::new);
+                        let inv_id = props.id.clone();
+                        rsx! {
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                disabled: downloading(),
+                                onclick: move |_| {
+                                    if downloading() { return; }
+                                    downloading.set(true);
+                                    dl_err.set(String::new());
+                                    let id = inv_id.clone();
+                                    spawn(async move {
+                                        #[cfg(feature = "web")]
+                                        {
+                                            let path = format!("/portal/invoices/{id}/pdf");
+                                            match crate::hooks::fetch::api::get_portal_authed_bytes(&path).await {
+                                                Ok((bytes, name)) => {
+                                                    let fname = name.unwrap_or_else(|| format!("invoice-{id}.pdf"));
+                                                    if let Err(e) = crate::utils::download::save_bytes_as_file(&bytes, &fname) {
+                                                        dl_err.set(e);
+                                                    }
+                                                }
+                                                Err(e) => dl_err.set(e),
+                                            }
+                                        }
+                                        downloading.set(false);
+                                    });
+                                },
+                                if downloading() { "Preparing..." } else { "Download PDF" }
+                            }
+                            if !dl_err().is_empty() {
+                                span { class: "text-xs text-red-600 dark:text-red-300", "{dl_err}" }
                             }
                         }
-                    },
-                    "Print / Save as PDF"
+                    }
+                    // Browser print (also offers Save-as-PDF from the
+                    // same dialog). Kept alongside the server PDF for
+                    // customers who want the layout their browser
+                    // shows rather than the server-side render.
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| {
+                            #[cfg(feature = "web")]
+                            {
+                                if let Some(win) = web_sys::window() {
+                                    let _ = win.print();
+                                }
+                            }
+                        },
+                        "Print"
+                    }
                 }
             }
 
