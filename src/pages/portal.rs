@@ -2502,25 +2502,62 @@ struct PortalNotificationRow {
     created_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Server's joined template event_type (`ticket.note_added`,
     /// `sla.at_risk`, `auth.welcome`, ...). Used to render a section-
-    /// level deep-link so a customer can click through instead of
-    /// having to hunt for the entity manually.
+    /// level deep-link when the row does not carry per-entity
+    /// metadata (see below).
     #[serde(default)]
     event_type: Option<String>,
+    /// Per-entity metadata written by the dispatcher when the event's
+    /// render context supplied `entity_type` + `entity_id`
+    /// (migration 121). Present on ticket / invoice / quote /
+    /// kb-article rows; absent on auth / system events with no
+    /// single-entity target.
+    #[serde(default)]
+    entity_type: Option<String>,
+    #[serde(default)]
+    entity_id: Option<uuid::Uuid>,
 }
 
-/// Route the customer through to the portal section this notification
-/// is about. Section-level rather than per-entity (the row does not
-/// carry an entity id; a schema change would add one, but the
-/// section link is the highest-value fix without editing migrations).
-/// Returns `None` for event types with no obvious portal home so the
+/// Route the customer through to a specific entity when the
+/// notification row carries per-entity metadata, otherwise fall back
+/// to the section-level route keyed off the event_type prefix.
+/// Returns `None` for events with no obvious portal home so the
 /// row just renders as-is instead of dead-linking.
-fn portal_notification_deep_link(event_type: &str) -> Option<(Route, &'static str)> {
+fn portal_notification_deep_link(
+    event_type: &str,
+    entity_type: Option<&str>,
+    entity_id: Option<uuid::Uuid>,
+) -> Option<(Route, String)> {
+    // Prefer the per-entity link when the dispatcher stamped both
+    // fields. The entity_type mapping intentionally covers the
+    // handful the portal has detail pages for; a novel entity kind
+    // falls through to the event_type prefix fallback below.
+    if let (Some(kind), Some(id)) = (entity_type, entity_id) {
+        if !id.is_nil() {
+            let id = id.to_string();
+            let mapped = match kind {
+                "ticket" => Some((Route::PortalTicketDetail { id }, "Open ticket".to_string())),
+                "invoice" => Some((
+                    Route::PortalInvoiceDetail { id },
+                    "Open invoice".to_string(),
+                )),
+                "quote" => Some((Route::PortalQuoteDetail { id }, "Open quote".to_string())),
+                "kb_article" | "kb" | "article" => {
+                    Some((Route::PortalKBArticle { id }, "Open article".to_string()))
+                }
+                _ => None,
+            };
+            if mapped.is_some() {
+                return mapped;
+            }
+        }
+    }
+
     let prefix = event_type.split('.').next().unwrap_or("");
     match prefix {
-        "ticket" | "sla" => Some((Route::PortalTicketList {}, "Go to tickets")),
-        "invoice" | "payment" => Some((Route::PortalInvoiceList {}, "Go to invoices")),
-        "quote" => Some((Route::PortalQuoteList {}, "Go to quotes")),
-        "kb" | "article" => Some((Route::PortalKB {}, "Go to knowledge base")),
+        "ticket" | "sla" => Some((Route::PortalTicketList {}, "Go to tickets".to_string())),
+        "invoice" | "payment" => Some((Route::PortalInvoiceList {}, "Go to invoices".to_string())),
+        "quote" => Some((Route::PortalQuoteList {}, "Go to quotes".to_string())),
+        "kb" | "article" => Some((Route::PortalKB {}, "Go to knowledge base".to_string())),
         _ => None,
     }
 }
@@ -2664,10 +2701,11 @@ fn PortalNotificationsRow(props: PortalNotificationsRowProps) -> Element {
     } else {
         ""
     };
-    let deep_link = row
-        .event_type
-        .as_deref()
-        .and_then(portal_notification_deep_link);
+    let deep_link = portal_notification_deep_link(
+        row.event_type.as_deref().unwrap_or(""),
+        row.entity_type.as_deref(),
+        row.entity_id,
+    );
     rsx! {
         li { class: "block px-4 py-3 {unread_class}",
             div { class: "flex items-start justify-between gap-4",
