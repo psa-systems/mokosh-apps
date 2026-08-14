@@ -3310,6 +3310,7 @@ pub fn PortalFormDetailPage(props: PortalFormDetailPageProps) -> Element {
     };
 
     let mut answers = use_signal(std::collections::HashMap::<String, String>::new);
+    let mut field_errors = use_signal(std::collections::HashMap::<String, String>::new);
     let mut submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
     let mut receipt = use_signal(String::new);
@@ -3368,12 +3369,20 @@ pub fn PortalFormDetailPage(props: PortalFormDetailPageProps) -> Element {
                                 PortalFormFieldRow {
                                     field: field.clone(),
                                     value: answers.read().get(&field.name).cloned().unwrap_or_default(),
+                                    error: field_errors.read().get(&field.name).cloned().unwrap_or_default(),
                                     onchange: {
                                         let name = field.name.clone();
                                         move |v: String| {
                                             let mut map = answers.read().clone();
                                             map.insert(name.clone(), v);
                                             answers.set(map);
+                                            // Clear any prior error the
+                                            // moment the customer starts
+                                            // typing again.
+                                            let mut errs = field_errors.read().clone();
+                                            if errs.remove(&name).is_some() {
+                                                field_errors.set(errs);
+                                            }
                                         }
                                     },
                                 }
@@ -3389,14 +3398,65 @@ pub fn PortalFormDetailPage(props: PortalFormDetailPageProps) -> Element {
                                 loading: *submitting.read(),
                                 onclick: {
                                     let form_id = form_id.clone();
+                                    let form_fields = f.fields.clone();
                                     move |_| {
                                         if *submitting.read() {
                                             return;
                                         }
+                                        // Client-side gate. Server re-validates
+                                        // (single source of truth) but running
+                                        // it here spares a round-trip on the
+                                        // obvious "required field is empty"
+                                        // case AND lets the SPA surface the
+                                        // message next to the offending input
+                                        // instead of only a banner.
+                                        let cur = answers.read().clone();
+                                        let mut errs: std::collections::HashMap<String, String> =
+                                            std::collections::HashMap::new();
+                                        for field in form_fields.iter() {
+                                            let v = cur.get(&field.name).cloned().unwrap_or_default();
+                                            let trimmed = v.trim();
+                                            if field.is_required && trimmed.is_empty() {
+                                                errs.insert(
+                                                    field.name.clone(),
+                                                    "This field is required.".to_string(),
+                                                );
+                                                continue;
+                                            }
+                                            if !trimmed.is_empty() {
+                                                let len = trimmed.chars().count() as i32;
+                                                if let Some(min) = field.min_length {
+                                                    if len < min {
+                                                        errs.insert(
+                                                            field.name.clone(),
+                                                            format!("At least {min} characters required."),
+                                                        );
+                                                        continue;
+                                                    }
+                                                }
+                                                if let Some(max) = field.max_length {
+                                                    if len > max {
+                                                        errs.insert(
+                                                            field.name.clone(),
+                                                            format!("At most {max} characters allowed."),
+                                                        );
+                                                        continue;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if !errs.is_empty() {
+                                            field_errors.set(errs);
+                                            error.set(
+                                                "Please fix the highlighted fields.".to_string(),
+                                            );
+                                            return;
+                                        }
+                                        field_errors.set(std::collections::HashMap::new());
                                         submitting.set(true);
                                         error.set(String::new());
                                         let payload: serde_json::Value = serde_json::Value::Object(
-                                            answers.read().iter()
+                                            cur.iter()
                                                 .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
                                                 .collect()
                                         );
@@ -3437,6 +3497,11 @@ pub fn PortalFormDetailPage(props: PortalFormDetailPageProps) -> Element {
 struct PortalFormFieldRowProps {
     field: PortalFormField,
     value: String,
+    /// Per-field error message set by the submit-time validator on the
+    /// enclosing form. Empty string = no error; a non-empty string
+    /// renders inline under the input.
+    #[props(default)]
+    error: String,
     onchange: EventHandler<String>,
 }
 
@@ -3448,7 +3513,20 @@ fn PortalFormFieldRow(props: PortalFormFieldRowProps) -> Element {
     let field_name = f.name.clone();
     let onchange = props.onchange;
     let label_class = "block text-sm font-medium text-content mb-1";
-    let input_class = "block w-full rounded-md border border-line bg-surface px-3 py-2 text-content focus:outline-none focus:ring-2 focus:ring-accent";
+    let base_input_class = "block w-full rounded-md border bg-surface px-3 py-2 text-content focus:outline-none focus:ring-2 focus:ring-accent";
+    let border_class = if props.error.is_empty() {
+        "border-line"
+    } else {
+        "border-red-500 dark:border-red-400"
+    };
+    let input_class = format!("{base_input_class} {border_class}");
+    let input_class = input_class.as_str();
+    // `input_class` and `field_name` are captured by move into the
+    // per-branch input elements below; clone into locals so each rsx!
+    // arm can own its own copy without fighting the borrow checker.
+    let required_attr = f.is_required;
+    let min_attr = f.min_length.filter(|n| *n > 0);
+    let max_attr = f.max_length.filter(|n| *n > 0);
     rsx! {
         div {
             label { class: "{label_class}", r#for: "{field_name}",
@@ -3467,6 +3545,9 @@ fn PortalFormFieldRow(props: PortalFormFieldRowProps) -> Element {
                         class: "{input_class}",
                         rows: 4,
                         value: "{value}",
+                        required: required_attr,
+                        minlength: min_attr,
+                        maxlength: max_attr,
                         oninput: move |e: FormEvent| onchange.call(e.value()),
                     }
                 },
@@ -3477,6 +3558,7 @@ fn PortalFormFieldRow(props: PortalFormFieldRowProps) -> Element {
                             id: "{field_name}",
                             class: "{input_class}",
                             value: "{value}",
+                            required: required_attr,
                             onchange: move |e: FormEvent| onchange.call(e.value()),
                             option { value: "", disabled: true, selected: value.is_empty(), "Choose..." }
                             for opt in options {
@@ -3502,6 +3584,7 @@ fn PortalFormFieldRow(props: PortalFormFieldRowProps) -> Element {
                         r#type: "date",
                         class: "{input_class}",
                         value: "{value}",
+                        required: required_attr,
                         oninput: move |e: FormEvent| onchange.call(e.value()),
                     }
                 },
@@ -3511,9 +3594,15 @@ fn PortalFormFieldRow(props: PortalFormFieldRowProps) -> Element {
                         r#type: "text",
                         class: "{input_class}",
                         value: "{value}",
+                        required: required_attr,
+                        minlength: min_attr,
+                        maxlength: max_attr,
                         oninput: move |e: FormEvent| onchange.call(e.value()),
                     }
                 },
+            }
+            if !props.error.is_empty() {
+                p { class: "mt-1 text-xs text-red-600 dark:text-red-300", role: "alert", "{props.error}" }
             }
         }
     }
