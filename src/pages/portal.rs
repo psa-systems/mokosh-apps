@@ -3415,6 +3415,16 @@ struct PortalSearchSectionProps {
 fn PortalSearchSection(props: PortalSearchSectionProps) -> Element {
     let showing = props.hits.len() as i64;
     let more = props.total.saturating_sub(showing);
+    // Section-list route for the "See all" link when the preview
+    // truncated. Kb has no portal-scoped list page besides the
+    // reader index, which is fine as the fall-through.
+    let list_route = match props.kind.as_str() {
+        "ticket" => Some(Route::PortalTicketList {}),
+        "invoice" => Some(Route::PortalInvoiceList {}),
+        "quote" => Some(Route::PortalQuoteList {}),
+        "kb" => Some(Route::PortalKB {}),
+        _ => None,
+    };
     rsx! {
         Card {
             div { class: "flex items-center justify-between mb-3",
@@ -3430,7 +3440,16 @@ fn PortalSearchSection(props: PortalSearchSectionProps) -> Element {
             }
             if more > 0 {
                 p { class: "mt-3 text-xs text-muted",
-                    "{more} more result(s) not shown. Narrow the search to see them."
+                    "{more} more result(s) not shown. "
+                    if let Some(route) = list_route.clone() {
+                        Link {
+                            to: route,
+                            class: "text-accent hover:opacity-80",
+                            "See all {props.title.to_lowercase()} ->"
+                        }
+                    } else {
+                        span { "Narrow the search to see them." }
+                    }
                 }
             }
         }
