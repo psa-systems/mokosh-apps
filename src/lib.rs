@@ -719,6 +719,11 @@ pub enum Route {
     #[route("/portal/kb/:id")]
     PortalKBArticle { id: String },
 
+    // PMS-729 follow-up: the full paginated inbox. Reached from the
+    // top-bar bell's "See all notifications" footer.
+    #[route("/portal/notifications")]
+    PortalNotifications {},
+
     // PMS-729 phase 2 §7 slice B / I8: authenticated portal forms.
     // List of MSP-published request forms + a detail page that renders
     // the field set as a submit form.
@@ -1460,6 +1465,11 @@ fn PortalKB() -> Element {
 #[component]
 fn PortalKBArticle(id: String) -> Element {
     rsx! { portal::PortalKBArticlePage { id } }
+}
+
+#[component]
+fn PortalNotifications() -> Element {
+    rsx! { portal::PortalNotificationsPage {} }
 }
 
 #[component]

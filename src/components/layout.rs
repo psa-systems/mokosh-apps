@@ -1501,6 +1501,18 @@ fn PortalInboxBell() -> Element {
                             }
                         }
                     }
+                    // "See all" footer takes the customer to the full
+                    // paginated inbox at /portal/notifications, where
+                    // older rows (beyond the bell's first-page snapshot)
+                    // are reachable.
+                    div { class: "px-4 py-2 border-t border-line text-center bg-raised sticky bottom-0",
+                        Link {
+                            to: Route::PortalNotifications {},
+                            class: "text-sm text-accent hover:opacity-80",
+                            onclick: move |_| open.set(false),
+                            "See all notifications"
+                        }
+                    }
                 }
             }
         }

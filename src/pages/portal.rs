@@ -2120,6 +2120,197 @@ pub fn PortalKBArticlePage(props: PortalKBArticlePageProps) -> Element {
     }
 }
 
+// ---- portal notifications inbox page ---------------------------------------
+
+/// One in-app notification row, matching mokosh-server's
+/// `PortalNotification` DTO. Duplicated (not imported) to keep the
+/// notifications page decoupled from the layout's bell component.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalNotificationRow {
+    id: uuid::Uuid,
+    #[serde(default)]
+    subject: Option<String>,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    read_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    created_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+struct PortalNotificationsPayload {
+    #[serde(default)]
+    notifications: Vec<PortalNotificationRow>,
+    #[serde(default)]
+    unread_count: i64,
+    #[serde(default)]
+    total: i64,
+}
+
+const NOTIFICATIONS_PER_PAGE: i64 = 20;
+
+/// Portal notifications inbox. Fetches `GET /portal/notifications?page=N`
+/// against the paginated server endpoint and renders one row per
+/// notification with an unread badge, mark-as-read affordance, and
+/// page-back / page-forward controls at the footer. The bell menu in
+/// the top bar keeps its own fetch (first page, 20 rows); this page is
+/// the affordance for anything older.
+#[component]
+pub fn PortalNotificationsPage() -> Element {
+    let mut page = use_signal(|| 1i64);
+
+    let mut inbox = use_resource(use_reactive!(|page| async move {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _reachable = crate::hooks::use_server_reachable();
+        let p = *page.read();
+        crate::hooks::fetch::api::get_portal_authed::<PortalNotificationsPayload>(&format!(
+            "/portal/notifications?page={p}&per_page={NOTIFICATIONS_PER_PAGE}"
+        ))
+        .await
+        .ok()
+    }));
+
+    let snap = inbox.read_unchecked();
+    let fetch_failed = matches!(*snap, Some(None));
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
+        return rsx! { PortalUnavailable { title: "Notifications".to_string() } };
+    }
+
+    let payload: PortalNotificationsPayload = match &*snap {
+        Some(Some(p)) => p.clone(),
+        _ => PortalNotificationsPayload::default(),
+    };
+    let cur = *page.read();
+    let last_page = ((payload.total - 1).max(0) / NOTIFICATIONS_PER_PAGE) + 1;
+    let has_prev = cur > 1;
+    let has_next = cur < last_page;
+
+    rsx! {
+        PortalLayout { title: "Notifications".to_string(),
+            div { class: "flex items-center justify-between mb-6",
+                h1 { class: "text-2xl font-bold text-content", "Notifications" }
+                if payload.unread_count > 0 {
+                    span { class: "text-sm text-muted",
+                        "{payload.unread_count} unread"
+                    }
+                }
+            }
+
+            match &*snap {
+                None => rsx! { crate::components::DetailSkeleton {} },
+                Some(None) => rsx! {
+                    Card {
+                        p { class: "text-sm text-red-600 dark:text-red-300",
+                            "Could not load your notifications. Refresh in a moment."
+                        }
+                    }
+                },
+                Some(Some(_)) if payload.notifications.is_empty() => rsx! {
+                    Card {
+                        p { class: "text-sm text-muted", "No notifications yet." }
+                    }
+                },
+                Some(Some(_)) => rsx! {
+                    Card {
+                        ul { class: "divide-y divide-line",
+                            for row in payload.notifications.iter().cloned() {
+                                PortalNotificationsRow {
+                                    key: "{row.id}",
+                                    row,
+                                    on_read: move |_| inbox.restart(),
+                                }
+                            }
+                        }
+                    }
+                    div { class: "mt-4 flex items-center justify-between text-sm text-muted",
+                        div {
+                            "Page {cur} of {last_page.max(1)} - {payload.total} total"
+                        }
+                        div { class: "flex gap-2",
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                disabled: !has_prev,
+                                onclick: move |_| {
+                                    let cur = *page.peek();
+                                    if cur > 1 { page.set(cur - 1); }
+                                },
+                                "Newer"
+                            }
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                disabled: !has_next,
+                                onclick: move |_| {
+                                    let cur = *page.peek();
+                                    page.set(cur + 1);
+                                },
+                                "Older"
+                            }
+                        }
+                    }
+                },
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct PortalNotificationsRowProps {
+    row: PortalNotificationRow,
+    on_read: EventHandler<()>,
+}
+
+#[component]
+fn PortalNotificationsRow(props: PortalNotificationsRowProps) -> Element {
+    let row = props.row.clone();
+    let is_unread = row.read_at.is_none();
+    let id = row.id;
+    let subject = row.subject.clone().unwrap_or_default();
+    let body = row.body.clone();
+    let when = row
+        .created_at
+        .map(|d| crate::utils::datetime::format_user_datetime(d, None))
+        .unwrap_or_default();
+    let unread_class = if is_unread {
+        "bg-accent-50 dark:bg-accent-900/40"
+    } else {
+        ""
+    };
+    rsx! {
+        li { class: "block px-4 py-3 {unread_class}",
+            div { class: "flex items-start justify-between gap-4",
+                div { class: "min-w-0 flex-1",
+                    if !subject.is_empty() {
+                        p { class: "text-sm font-medium text-content", "{subject}" }
+                    }
+                    p { class: "mt-1 text-sm text-muted whitespace-pre-wrap", "{body}" }
+                    if !when.is_empty() {
+                        p { class: "mt-1 text-xs text-subtle", "{when}" }
+                    }
+                }
+                if is_unread {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| {
+                            let on_read = props.on_read;
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    let path = format!("/portal/notifications/{id}/read");
+                                    let _ = crate::hooks::fetch::api::put_portal_authed_no_content(&path).await;
+                                    on_read.call(());
+                                }
+                            });
+                        },
+                        "Mark read"
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ============================================================================
 // PMS-675: client quote sign-off.
 //
@@ -2658,13 +2849,30 @@ struct PortalSearchHit {
 pub fn PortalSearchPage() -> Element {
     let initial_q = crate::utils::url::current_query_param("q").unwrap_or_default();
     let mut query = use_signal(|| initial_q.clone());
+    // Debounced mirror of `query` that actually drives the fetch. Every
+    // keystroke bumps `query` immediately (so the input stays
+    // responsive) but only the last value in each 300ms quiet window
+    // makes it into `debounced` and re-triggers `/portal/search`. Prior
+    // behaviour fired one authenticated request per keystroke.
+    let mut debounced = use_signal(|| initial_q.clone());
 
-    // Read the current input for the fetch closure. Storing in a
-    // `Memo` so a keystroke re-runs the resource without re-rendering
-    // every other subtree.
-    let q_signal = query;
+    use_effect(move || {
+        // Snapshot the current input; the future below writes it back
+        // only if no newer keystroke has arrived by the time the delay
+        // elapses (guarded by comparing against the live signal at
+        // fire-time).
+        let snapshot = query.read().clone();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            gloo_timers::future::TimeoutFuture::new(300).await;
+            if *query.peek() == snapshot && *debounced.peek() != snapshot {
+                debounced.set(snapshot);
+            }
+        });
+    });
+
     let results = use_resource(move || {
-        let q = q_signal.read().clone();
+        let q = debounced.read().clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             if q.trim().is_empty() {
@@ -4515,26 +4723,65 @@ pub fn PortalExportPage() -> Element {
     let mut submitting = use_signal(|| false);
     let mut current_job_id = use_signal(String::new);
     let mut error = use_signal(String::new);
+    // Auto-poll heartbeat. Bumped by a self-scheduling effect every
+    // 3s while the current job is still queued or running so the
+    // customer sees the status flip to "ready" without reloading the
+    // page. Baked into the resource closure as a reactive dep so a
+    // bump re-runs the fetch.
+    let mut refetch_gen = use_signal(|| 0u32);
 
     let job_id_for_fetch = current_job_id.read().clone();
-    let poll = use_resource(move || {
-        let id = job_id_for_fetch.clone();
-        async move {
-            if id.is_empty() {
-                return None;
-            }
-            let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_portal_authed::<PortalExportRow>(&format!(
-                "/portal/export/{id}"
-            ))
-            .await
-            .ok()
+    let poll = use_resource(use_reactive!(|job_id_for_fetch, refetch_gen| async move {
+        if job_id_for_fetch.is_empty() {
+            return None;
         }
-    });
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        let _tick = refetch_gen.read();
+        crate::hooks::fetch::api::get_portal_authed::<PortalExportRow>(&format!(
+            "/portal/export/{job_id_for_fetch}"
+        ))
+        .await
+        .ok()
+    }));
     let job: Option<PortalExportRow> = match &*poll.read_unchecked() {
         Some(Some(j)) => Some(j.clone()),
         _ => None,
     };
+
+    // Status snapshot readable from the polling task. The effect below
+    // mirrors the resource output into it on every fetch so the
+    // once-per-mount polling loop can peek at the latest value without
+    // holding a reactive borrow.
+    let mut poll_status = use_signal(String::new);
+    use_effect(move || {
+        let snap = poll.read_unchecked();
+        let s = match &*snap {
+            Some(Some(j)) => j.status.clone(),
+            _ => String::new(),
+        };
+        if *poll_status.peek() != s {
+            poll_status.set(s);
+        }
+    });
+
+    // Single self-scheduling polling task spawned on mount. Wakes
+    // every 3s and, when the current job is still queued/running,
+    // bumps `refetch_gen` so the resource re-fetches; otherwise the
+    // wake is a no-op and the loop keeps sleeping cheaply. Terminates
+    // when the component unmounts (spawn's future is dropped).
+    #[cfg(feature = "web")]
+    use_hook(move || {
+        spawn(async move {
+            loop {
+                gloo_timers::future::TimeoutFuture::new(3000).await;
+                let status = poll_status.peek().clone();
+                if matches!(status.as_str(), "queued" | "running") {
+                    let n = *refetch_gen.peek();
+                    refetch_gen.set(n + 1);
+                }
+            }
+        });
+    });
 
     let request_export = move |_| {
         if *submitting.read() {
@@ -4650,7 +4897,7 @@ pub fn PortalExportPage() -> Element {
                             }
                         } else if job.status == "queued" || job.status == "running" {
                             p { class: "mt-3 text-sm text-muted",
-                                "We are preparing your bundle. Refresh this page in a minute or two."
+                                "We are preparing your bundle. This page will update automatically as soon as it is ready."
                             }
                         } else if job.status == "expired" {
                             p { class: "mt-3 text-sm text-muted",
