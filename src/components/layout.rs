@@ -1161,8 +1161,10 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
     let hint_for_footer = hint.clone();
 
     rsx! {
-        div { class: "h-screen flex flex-col bg-app overflow-hidden",
-            super::ServerStatusBanner {}
+        div { class: "h-screen flex flex-col bg-app overflow-hidden print:h-auto print:overflow-visible",
+            div { class: "no-print",
+                super::ServerStatusBanner {}
+            }
 
             // Portal top bar. Hamburger (mobile only) opens the
             // sidebar drawer. Brand block on the left; theme toggle +
@@ -1170,7 +1172,7 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
             // main region (via PortalPageHeader), not the top bar, so
             // a customer's eye lands on the H1 next to the primary
             // action rather than up in the chrome.
-            header { class: "h-16 flex items-center bg-surface-2 border-b border-line shrink-0 z-20",
+            header { class: "h-16 flex items-center bg-surface-2 border-b border-line shrink-0 z-20 no-print",
                 // PMS-729 follow-up: the brand block used to be capped at
                 // `md:w-56` (224px), which truncated any tenant whose logo
                 // plus name pushed past that cap (e.g. the ACME fixture's
@@ -1230,16 +1232,18 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
                         onclick: move |_| sidebar_open.set(false),
                     }
                 }
-                PortalSidebar {
-                    open: *sidebar_open.read(),
-                    onclose: move |_| sidebar_open.set(false),
+                div { class: "no-print contents",
+                    PortalSidebar {
+                        open: *sidebar_open.read(),
+                        onclose: move |_| sidebar_open.set(false),
+                    }
                 }
                 // Main content region. `overflow-y-auto` scrolls
                 // independently of the sidebar (which never scrolls with
                 // only four items). Same max-w-7xl inner container the
                 // pre-slice-4 layout used so page bodies keep their
                 // spacing without every page having to re-set it.
-                main { class: "flex-1 overflow-y-auto overscroll-contain py-8",
+                main { class: "flex-1 overflow-y-auto overscroll-contain py-8 print:overflow-visible print:py-0",
                     div { class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
                         if !props.title.is_empty() {
                             PortalPageHeader { title: props.title.clone() }
@@ -1251,7 +1255,7 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
                         // page content, not as a fixed strip that
                         // shifts the layout. Mirrors the AppShell
                         // pattern of chrome-inside-scroll.
-                        footer { class: "mt-12 border-t border-line pt-6",
+                        footer { class: "mt-12 border-t border-line pt-6 no-print",
                             {
                                 let footer = hint_for_footer
                                     .as_ref()

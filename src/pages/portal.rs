@@ -458,6 +458,25 @@ pub fn PortalTicketNewPage() -> Element {
     let mut submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
 
+    // Attachments-on-create. `CreatePortalTicketRequest` on the server
+    // takes only title + description, so files land in a follow-up
+    // step: after the ticket is created, the SPA posts a first
+    // public note ("Files attached to this ticket") and uploads each
+    // file to that note via the existing per-note multipart endpoint.
+    // A partial failure (ticket created, some files failed) still
+    // navigates the customer to the detail page with an inline
+    // warning so the conversation is never lost.
+    #[cfg(feature = "web")]
+    let mut selected_files: Signal<Option<web_sys::FileList>> = use_signal(|| None);
+    #[cfg(feature = "web")]
+    let selected_file_count = selected_files
+        .read()
+        .as_ref()
+        .map(|f| f.length())
+        .unwrap_or(0);
+    #[cfg(not(feature = "web"))]
+    let selected_file_count: u32 = 0;
+
     let can_mutate = crate::hooks::use_can_mutate();
 
     let mut handle_submit = move |_| {
@@ -476,6 +495,8 @@ pub fn PortalTicketNewPage() -> Element {
         }
         submitting.set(true);
         error.set(String::new());
+        #[cfg(feature = "web")]
+        let files_snapshot = selected_files.read().clone();
         spawn(async move {
             #[cfg(feature = "web")]
             {
@@ -491,12 +512,85 @@ pub fn PortalTicketNewPage() -> Element {
                 .await
                 {
                     Ok(ticket) => {
-                        // Navigate straight to the new ticket so the
-                        // customer sees confirmation + can add followups
-                        // / attachments via the reply form on detail.
-                        nav.replace(Route::PortalTicketDetail {
-                            id: ticket.id.to_string(),
-                        });
+                        let ticket_id = ticket.id.to_string();
+                        // Attachments phase. Skipped when the customer
+                        // selected no files. Any failure here is
+                        // logged and surfaced via a query param on
+                        // the detail page rather than blocking the
+                        // navigation, because the ticket itself is
+                        // already persisted.
+                        let mut had_upload_failure = false;
+                        if let Some(files) = files_snapshot.as_ref() {
+                            if files.length() > 0 {
+                                let note_body = serde_json::json!({
+                                    "content": "Files attached to this ticket."
+                                });
+                                match crate::hooks::fetch::api::post_portal_authed_typed::<
+                                    serde_json::Value,
+                                    _,
+                                >(
+                                    &format!("/portal/tickets/{ticket_id}/notes"), &note_body
+                                )
+                                .await
+                                {
+                                    Ok(note) => {
+                                        let note_id = note
+                                            .get("id")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
+                                        if note_id.is_empty() {
+                                            had_upload_failure = true;
+                                        } else {
+                                            for i in 0..files.length() {
+                                                let Some(file) = files.item(i) else {
+                                                    continue;
+                                                };
+                                                let form = match web_sys::FormData::new() {
+                                                    Ok(f) => f,
+                                                    Err(_) => {
+                                                        had_upload_failure = true;
+                                                        continue;
+                                                    }
+                                                };
+                                                if form.append_with_blob("file", &file).is_err() {
+                                                    had_upload_failure = true;
+                                                    continue;
+                                                }
+                                                let path = format!(
+                                                    "/portal/tickets/{ticket_id}/notes/{note_id}/attachments"
+                                                );
+                                                if crate::hooks::fetch::api::post_portal_authed_multipart::<serde_json::Value>(
+                                                    &path,
+                                                    &form,
+                                                )
+                                                .await
+                                                .is_err()
+                                                {
+                                                    had_upload_failure = true;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Err(_) => {
+                                        had_upload_failure = true;
+                                    }
+                                }
+                            }
+                        }
+                        // Navigate straight to the new ticket. Append
+                        // ?upload=failed on partial-upload so the
+                        // detail page can surface an inline warning.
+                        let target = if had_upload_failure {
+                            format!("/portal/tickets/{ticket_id}?upload=failed")
+                        } else {
+                            format!("/portal/tickets/{ticket_id}")
+                        };
+                        if let Some(win) = web_sys::window() {
+                            let _ = win.location().assign(&target);
+                        } else {
+                            nav.replace(Route::PortalTicketDetail { id: ticket_id });
+                        }
                     }
                     Err(ApiError::Status { message, .. }) if !message.is_empty() => {
                         error.set(message);
@@ -568,6 +662,44 @@ pub fn PortalTicketNewPage() -> Element {
                         }
                     }
 
+                    // Attach files on create. Uses the same DOM-read
+                    // trick as the reply-form: Dioxus's `onchange`
+                    // payload does not surface `HTMLInputElement.files`
+                    // directly, so pull the FileList off the actual
+                    // element after the change fires.
+                    div {
+                        label {
+                            class: "block text-sm font-medium text-content mb-1",
+                            r#for: "portal-new-ticket-attachments",
+                            "Attach files (optional)"
+                        }
+                        input {
+                            id: "portal-new-ticket-attachments",
+                            r#type: "file",
+                            multiple: true,
+                            class: "block w-full text-sm text-content file:mr-3 file:rounded file:border-0 file:bg-accent file:px-3 file:py-1.5 file:text-on-accent hover:file:opacity-90",
+                            disabled: *submitting.read() || !can_mutate,
+                            onchange: move |_e: FormEvent| {
+                                #[cfg(feature = "web")]
+                                {
+                                    use wasm_bindgen::JsCast;
+                                    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                                        if let Some(el) = doc.get_element_by_id("portal-new-ticket-attachments") {
+                                            if let Ok(input) = el.dyn_into::<web_sys::HtmlInputElement>() {
+                                                selected_files.set(input.files());
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                        }
+                        if selected_file_count > 0 {
+                            p { class: "mt-1 text-xs text-muted",
+                                "{selected_file_count} file(s) will be attached after the ticket is created."
+                            }
+                        }
+                    }
+
                     if !error().is_empty() {
                         p { class: "text-sm text-red-600 dark:text-red-300", role: "alert",
                             "{error}"
@@ -634,18 +766,25 @@ struct PortalTicketDetail {
     updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// A `{ id, name }`-style lookup value (status/priority). Only `name` is
-/// rendered here.
+/// A `{ id, name }`-style lookup value (status/priority). `is_closed`
+/// is optional for statuses; unused for priorities (server sends it
+/// only on `status`).
 #[derive(Clone, Debug, PartialEq, Default, serde::Deserialize)]
 struct PortalSummary {
     #[serde(default)]
     name: String,
+    /// True when the status is one the tenant considers "closed"
+    /// (resolved / declined / etc.). Feeds the "Reopen ticket"
+    /// affordance on the detail page. Defaults to false so decodes
+    /// for priorities (which never carry this) stay clean.
+    #[serde(default)]
+    is_closed: bool,
 }
 
 #[component]
 pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
     let id_for_resource = props.id.clone();
-    let ticket_resource = use_resource(move || {
+    let mut ticket_resource = use_resource(move || {
         let id = id_for_resource.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -714,6 +853,16 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
                         ticket.status.name.clone()
                     };
                     let status_variant = crate::components::ticket_status_badge(&status_label);
+                    let is_closed = ticket.status.is_closed;
+                    // Surface a warning banner when the create flow
+                    // landed here with `?upload=failed`, meaning the
+                    // ticket persisted but at least one attachment
+                    // upload failed. The customer's conversation is
+                    // not lost, but they need to know to retry the
+                    // upload via the reply form.
+                    let upload_failed = crate::utils::url::current_query_param("upload")
+                        .as_deref()
+                        == Some("failed");
                     let priority = ticket.priority.name.clone();
                     let type_name = ticket.type_name.clone().unwrap_or_default();
                     let assigned = ticket.assigned_to_name.clone().unwrap_or_default();
@@ -741,6 +890,14 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
                     };
                     let description = ticket.description.clone().unwrap_or_default();
                     rsx! {
+                        if upload_failed {
+                            Card {
+                                p { class: "text-sm text-amber-800 dark:text-amber-200",
+                                    role: "alert",
+                                    "The ticket was created, but at least one file failed to attach. Please retry the upload via the reply form below."
+                                }
+                            }
+                        }
                         Card {
                             div { class: "flex items-start justify-between mb-6",
                                 div {
@@ -798,6 +955,13 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
                                     p { "{description}" }
                                 }
                             }
+
+                            if is_closed {
+                                PortalTicketReopenPanel {
+                                    ticket_id: props.id.clone(),
+                                    on_reopened: move |_| ticket_resource.restart(),
+                                }
+                            }
                         }
 
                         // PMS-729 phase 2 §7 slice A / I10: SLA card.
@@ -817,6 +981,96 @@ pub fn PortalTicketDetailPage(props: PortalTicketDetailPageProps) -> Element {
                         // does not have to filter again.
                         PortalTicketComments { ticket_id: props.id.clone() }
                     }
+                }
+            }
+        }
+    }
+}
+
+// ---- portal ticket reopen ------------------------------------------------
+
+#[derive(Props, Clone, PartialEq)]
+struct PortalTicketReopenPanelProps {
+    ticket_id: String,
+    on_reopened: EventHandler<()>,
+}
+
+/// Inline reopen affordance rendered under the ticket description on
+/// tickets whose current status is one the tenant considers closed.
+/// Optional `reason` textarea passes through as a public note the
+/// agent side sees on the same thread; empty is fine.
+#[component]
+fn PortalTicketReopenPanel(props: PortalTicketReopenPanelProps) -> Element {
+    let mut reason = use_signal(String::new);
+    let mut working = use_signal(|| false);
+    let mut err = use_signal(String::new);
+    let can_mutate = crate::hooks::use_can_mutate();
+
+    let reopen = move |_| {
+        if working() {
+            return;
+        }
+        working.set(true);
+        err.set(String::new());
+        let id = props.ticket_id.clone();
+        let r = reason.read().trim().to_string();
+        let on_reopened = props.on_reopened;
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                use crate::hooks::fetch::api::ApiError;
+                let body = if r.is_empty() {
+                    serde_json::json!({})
+                } else {
+                    serde_json::json!({ "reason": r })
+                };
+                match crate::hooks::fetch::api::post_portal_authed_typed::<serde_json::Value, _>(
+                    &format!("/portal/tickets/{id}/reopen"),
+                    &body,
+                )
+                .await
+                {
+                    Ok(_) => {
+                        reason.set(String::new());
+                        on_reopened.call(());
+                    }
+                    Err(ApiError::Status { message, .. }) if !message.is_empty() => {
+                        err.set(message)
+                    }
+                    Err(e) => err.set(e.user_message()),
+                }
+            }
+            working.set(false);
+        });
+    };
+
+    rsx! {
+        div { class: "mt-6 border-t border-line pt-4",
+            h3 { class: "text-sm font-medium text-content mb-2", "Not resolved yet?" }
+            p { class: "text-xs text-muted mb-2",
+                "If your issue is still happening, you can reopen the ticket. The agent team will see any note you leave."
+            }
+            textarea {
+                class: "w-full rounded-md border border-line bg-surface text-content p-2 text-sm mb-2",
+                rows: 2,
+                placeholder: "Optional: what's still wrong?",
+                value: "{reason}",
+                oninput: move |e: FormEvent| {
+                    err.set(String::new());
+                    reason.set(e.value());
+                },
+            }
+            if !err().is_empty() {
+                p { class: "text-sm text-red-600 dark:text-red-300 mb-2", role: "alert", "{err}" }
+            }
+            div { class: "flex justify-end",
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    disabled: working() || !can_mutate,
+                    loading: working(),
+                    title: (!can_mutate).then(|| "Can't reopen a ticket while the server is unreachable".to_string()),
+                    onclick: reopen,
+                    "Reopen ticket"
                 }
             }
         }
@@ -1524,11 +1778,31 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
 
     rsx! {
         PortalLayout {
-            div { class: "mb-6",
+            div { class: "mb-6 flex items-center justify-between no-print",
                 Link {
                     to: Route::PortalInvoiceList {},
                     class: "text-sm text-accent hover:opacity-90",
                     "Back to invoices"
+                }
+                // Print / Save-as-PDF affordance. Browsers expose
+                // Save-as-PDF in the same dialog as Print (Chrome +
+                // Firefox both default to it under "Destination"), so
+                // one button covers "give me a PDF of this invoice"
+                // AND "print a hard copy". `no-print` on the wrapper
+                // hides the button in the printed output; @media print
+                // hides the portal chrome so the invoice card fills
+                // the sheet.
+                Button {
+                    variant: ButtonVariant::Secondary,
+                    onclick: move |_| {
+                        #[cfg(feature = "web")]
+                        {
+                            if let Some(win) = web_sys::window() {
+                                let _ = win.print();
+                            }
+                        }
+                    },
+                    "Print / Save as PDF"
                 }
             }
 
@@ -1708,9 +1982,11 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                             // and reports "gateway not configured" as
                             // an inline error.
                             if can_pay_invoice(&inv.status, &inv.balance_due) {
-                                PortalInvoicePayButton {
-                                    invoice_id: props.id.clone(),
-                                    amount_due: portal_money(&inv.balance_due),
+                                div { class: "no-print",
+                                    PortalInvoicePayButton {
+                                        invoice_id: props.id.clone(),
+                                        amount_due: portal_money(&inv.balance_due),
+                                    }
                                 }
                             }
                         }
