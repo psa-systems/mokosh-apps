@@ -45,6 +45,8 @@ pub fn PortalSettingsPage() -> Element {
 
                 MfaCard { mfa_enabled: me.as_ref().map(|m| m.mfa_enabled).unwrap_or(false) }
 
+                NotificationPreferencesCard {}
+
                 SessionsCard {}
             }
         }
@@ -749,6 +751,183 @@ fn MfaCard(props: MfaCardProps) -> Element {
                                 disabled: working(),
                                 r#type: "submit".to_string(),
                                 "Set up two-factor auth"
+                            }
+                        }
+                    }
+                },
+            }
+        }
+    }
+}
+
+// ---- Notification preferences -------------------------------------------
+
+#[derive(Clone, PartialEq, Deserialize)]
+struct NotificationEventOption {
+    #[serde(default)]
+    event_type: String,
+    #[serde(default)]
+    channels: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, Deserialize)]
+struct NotificationPreference {
+    #[serde(default)]
+    event_type: String,
+    #[serde(default)]
+    is_enabled: bool,
+    #[serde(default)]
+    channel_types: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, Deserialize, Default)]
+struct NotificationPreferencesPayload {
+    #[serde(default)]
+    available: Vec<NotificationEventOption>,
+    #[serde(default)]
+    preferences: Vec<NotificationPreference>,
+}
+
+/// Humanize a `ticket.note_added`-style event token into "Ticket note
+/// added". Splits on `.` and `_`, title-cases each word.
+fn humanize_event(token: &str) -> String {
+    token
+        .split(|c: char| c == '.' || c == '_')
+        .filter(|s| !s.is_empty())
+        .enumerate()
+        .map(|(i, word)| {
+            let mut chars = word.chars();
+            let first: String = chars
+                .next()
+                .map(|c| c.to_uppercase().collect())
+                .unwrap_or_default();
+            if i == 0 {
+                format!("{first}{}", chars.as_str())
+            } else {
+                format!(" {first}{}", chars.as_str())
+            }
+        })
+        .collect()
+}
+
+#[component]
+fn NotificationPreferencesCard() -> Element {
+    let mut version = use_signal(|| 0u32);
+    let mut error = use_signal(String::new);
+
+    let payload = use_resource(use_reactive!(|version| async move {
+        let _v = version.read();
+        #[cfg(feature = "web")]
+        {
+            crate::hooks::fetch::api::get_portal_authed::<NotificationPreferencesPayload>(
+                "/portal/auth/me/notification-preferences",
+            )
+            .await
+            .ok()
+        }
+        #[cfg(not(feature = "web"))]
+        {
+            None::<NotificationPreferencesPayload>
+        }
+    }));
+
+    let snap = payload.read_unchecked();
+    let data: NotificationPreferencesPayload = match &*snap {
+        Some(Some(p)) => p.clone(),
+        _ => NotificationPreferencesPayload::default(),
+    };
+    // Fast lookup: event_type -> is_enabled (true when the caller
+    // has no explicit preference row, matching the server's
+    // accept-all default).
+    let enabled_map: std::collections::HashMap<String, bool> = data
+        .preferences
+        .iter()
+        .map(|p| (p.event_type.clone(), p.is_enabled))
+        .collect();
+
+    let mut toggle = move |event_type: String, next: bool| {
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let body = serde_json::json!({
+                    "event_type": event_type,
+                    "is_enabled": next,
+                    "channel_types": [],
+                });
+                match crate::hooks::fetch::api::put_portal_authed_json_no_content(
+                    "/portal/auth/me/notification-preferences",
+                    &body,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        let n = *version.peek();
+                        version.set(n + 1);
+                    }
+                    Err(e) => error.set(e.user_message()),
+                }
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                let _ = (event_type, next);
+            }
+        });
+    };
+
+    rsx! {
+        Card {
+            h2 { class: "text-lg font-semibold text-content mb-1", "Notification preferences" }
+            p { class: "text-xs text-muted mb-4",
+                "Choose which events you want us to notify you about. Turning an event off suppresses email and in-app notifications for it; it will still be recorded in your account."
+            }
+            if !error().is_empty() {
+                p { class: "text-sm text-red-600 dark:text-red-400 mb-3", role: "alert", "{error}" }
+            }
+            match &*snap {
+                None => rsx! {
+                    p { class: "text-sm text-muted", "Loading preferences..." }
+                },
+                Some(None) => rsx! {
+                    p { class: "text-sm text-red-600 dark:text-red-400",
+                        "Could not load your notification preferences. Refresh in a moment."
+                    }
+                },
+                Some(Some(_)) if data.available.is_empty() => rsx! {
+                    p { class: "text-sm text-muted",
+                        "Your account team has not configured any notifications yet."
+                    }
+                },
+                Some(Some(_)) => rsx! {
+                    ul { class: "divide-y divide-line",
+                        for opt in data.available.iter().cloned() {
+                            {
+                                let label = humanize_event(&opt.event_type);
+                                let channels = opt.channels.join(", ");
+                                let is_on = enabled_map.get(&opt.event_type).copied().unwrap_or(true);
+                                let ev_for_click = opt.event_type.clone();
+                                rsx! {
+                                    li { key: "{opt.event_type}",
+                                        class: "py-3 flex items-center justify-between gap-4",
+                                        div { class: "min-w-0 flex-1",
+                                            p { class: "text-sm font-medium text-content", "{label}" }
+                                            if !channels.is_empty() {
+                                                p { class: "text-xs text-muted", "Via: {channels}" }
+                                            }
+                                        }
+                                        label { class: "inline-flex items-center gap-2 text-sm",
+                                            input {
+                                                r#type: "checkbox",
+                                                checked: is_on,
+                                                onchange: move |_| {
+                                                    let next = !is_on;
+                                                    toggle(ev_for_click.clone(), next);
+                                                },
+                                            }
+                                            if is_on { span { class: "text-muted", "On" } } else { span { class: "text-muted", "Off" } }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
