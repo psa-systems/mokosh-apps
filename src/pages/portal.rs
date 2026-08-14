@@ -3446,18 +3446,29 @@ pub fn PortalAssetListPage() -> Element {
                         }
                         TableBody {
                             for row in rows.iter().cloned() {
-                                TableRow { key: "{row.id}",
-                                    TableCell {
-                                        Link {
-                                            to: Route::PortalAssetDetail { id: row.id.to_string() },
-                                            class: "text-accent hover:opacity-80 font-medium",
-                                            "{row.name}"
+                                {
+                                    let (status_variant, status_label) = crate::components::asset_status_badge(&row.status);
+                                    let asset_type = crate::components::humanize_enum_label(&row.asset_type);
+                                    rsx! {
+                                        TableRow { key: "{row.id}",
+                                            TableCell {
+                                                Link {
+                                                    to: Route::PortalAssetDetail { id: row.id.to_string() },
+                                                    class: "text-accent hover:opacity-80 font-medium",
+                                                    "{row.name}"
+                                                }
+                                                if let Some(tag) = &row.asset_tag {
+                                                    div { class: "text-xs text-muted font-mono", "{tag}" }
+                                                }
+                                            }
+                                            TableCell { "{asset_type}" }
+                                            TableCell {
+                                                Badge { variant: status_variant, "{status_label}" }
+                                            }
+                                            TableCell {
+                                                if let Some(sn) = row.serial_number { "{sn}" } else { "-" }
+                                            }
                                         }
-                                    }
-                                    TableCell { "{row.asset_type}" }
-                                    TableCell { "{row.status}" }
-                                    TableCell {
-                                        if let Some(sn) = row.serial_number { "{sn}" } else { "-" }
                                     }
                                 }
                             }
@@ -3503,14 +3514,18 @@ pub fn PortalAssetDetailPage(props: PortalAssetDetailPageProps) -> Element {
                         }
                     }
                 },
-                Some(Some(a)) => rsx! {
+                Some(Some(a)) => {
+                    let (status_variant, status_label) = crate::components::asset_status_badge(&a.status);
+                    let asset_type = crate::components::humanize_enum_label(&a.asset_type);
+                    rsx! {
                     Card {
-                        h2 { class: "text-xl font-bold text-content mb-4", "{a.name}" }
+                        div { class: "flex items-start justify-between mb-4",
+                            h2 { class: "text-xl font-bold text-content", "{a.name}" }
+                            Badge { variant: status_variant, "{status_label}" }
+                        }
                         dl { class: "grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-sm",
                             dt { class: "text-muted", "Type" }
-                            dd { class: "text-content", "{a.asset_type}" }
-                            dt { class: "text-muted", "Status" }
-                            dd { class: "text-content", "{a.status}" }
+                            dd { class: "text-content", "{asset_type}" }
                             if let Some(tag) = &a.asset_tag {
                                 dt { class: "text-muted", "Asset tag" }
                                 dd { class: "text-content", "{tag}" }
@@ -3536,6 +3551,7 @@ pub fn PortalAssetDetailPage(props: PortalAssetDetailPageProps) -> Element {
                                 dd { class: "text-content", "{eol}" }
                             }
                         }
+                    }
                     }
                 },
             }
@@ -3599,27 +3615,57 @@ pub fn PortalContractListPage() -> Element {
                                 TableHeader { "Name" }
                                 TableHeader { "Type" }
                                 TableHeader { "Status" }
+                                TableHeader { class: "text-right", "Amount" }
                                 TableHeader { "Start" }
                                 TableHeader { "End" }
                             }
                         }
                         TableBody {
                             for row in rows.iter().cloned() {
-                                TableRow { key: "{row.id}",
-                                    TableCell {
-                                        Link {
-                                            to: Route::PortalContractDetail { id: row.id.to_string() },
-                                            class: "text-accent hover:opacity-80 font-medium",
-                                            "{row.name}"
+                                {
+                                    let (status_variant, status_label) = crate::components::contract_status_badge(&row.status);
+                                    let ctype = crate::components::humanize_enum_label(&row.contract_type);
+                                    let amount = row.billing_amount
+                                        .as_deref()
+                                        .filter(|s| !s.is_empty())
+                                        .map(portal_money);
+                                    let cycle = row.billing_cycle
+                                        .as_deref()
+                                        .filter(|s| !s.is_empty())
+                                        .map(crate::components::humanize_enum_label);
+                                    rsx! {
+                                        TableRow { key: "{row.id}",
+                                            TableCell {
+                                                Link {
+                                                    to: Route::PortalContractDetail { id: row.id.to_string() },
+                                                    class: "text-accent hover:opacity-80 font-medium",
+                                                    "{row.name}"
+                                                }
+                                                if let Some(num) = &row.contract_number {
+                                                    div { class: "text-xs text-muted font-mono", "{num}" }
+                                                }
+                                            }
+                                            TableCell { "{ctype}" }
+                                            TableCell {
+                                                Badge { variant: status_variant, "{status_label}" }
+                                            }
+                                            TableCell { class: "text-right",
+                                                if let Some(a) = amount {
+                                                    span { class: "font-medium", "{a}" }
+                                                    if let Some(c) = cycle {
+                                                        div { class: "text-xs text-muted", "{c}" }
+                                                    }
+                                                } else {
+                                                    "-"
+                                                }
+                                            }
+                                            TableCell {
+                                                if let Some(d) = row.start_date { "{d}" } else { "-" }
+                                            }
+                                            TableCell {
+                                                if let Some(d) = row.end_date { "{d}" } else { "-" }
+                                            }
                                         }
-                                    }
-                                    TableCell { "{row.contract_type}" }
-                                    TableCell { "{row.status}" }
-                                    TableCell {
-                                        if let Some(d) = row.start_date { "{d}" } else { "-" }
-                                    }
-                                    TableCell {
-                                        if let Some(d) = row.end_date { "{d}" } else { "-" }
                                     }
                                 }
                             }
@@ -3659,14 +3705,22 @@ pub fn PortalContractDetailPage(props: PortalContractDetailPageProps) -> Element
             match &*snap {
                 None => rsx! { Card { p { class: "text-sm text-muted py-4 text-center", "Loading..." } } },
                 Some(None) => rsx! { Card { p { class: "text-sm text-red-600 dark:text-red-300 py-4 text-center", "Could not load contract." } } },
-                Some(Some(c)) => rsx! {
+                Some(Some(c)) => {
+                    let (status_variant, status_label) = crate::components::contract_status_badge(&c.status);
+                    let ctype = crate::components::humanize_enum_label(&c.contract_type);
+                    let cycle = c.billing_cycle
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .map(crate::components::humanize_enum_label);
+                    rsx! {
                     Card {
-                        h2 { class: "text-xl font-bold text-content mb-4", "{c.name}" }
+                        div { class: "flex items-start justify-between mb-4",
+                            h2 { class: "text-xl font-bold text-content", "{c.name}" }
+                            Badge { variant: status_variant, "{status_label}" }
+                        }
                         dl { class: "grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-sm",
                             dt { class: "text-muted", "Type" }
-                            dd { class: "text-content", "{c.contract_type}" }
-                            dt { class: "text-muted", "Status" }
-                            dd { class: "text-content", "{c.status}" }
+                            dd { class: "text-content", "{ctype}" }
                             if let Some(cn) = &c.contract_number {
                                 dt { class: "text-muted", "Contract number" }
                                 dd { class: "text-content", "{cn}" }
@@ -3679,7 +3733,7 @@ pub fn PortalContractDetailPage(props: PortalContractDetailPageProps) -> Element
                                 dt { class: "text-muted", "End" }
                                 dd { class: "text-content", "{d}" }
                             }
-                            if let Some(cy) = &c.billing_cycle {
+                            if let Some(cy) = cycle {
                                 dt { class: "text-muted", "Billing cycle" }
                                 dd { class: "text-content", "{cy}" }
                             }
@@ -3688,6 +3742,7 @@ pub fn PortalContractDetailPage(props: PortalContractDetailPageProps) -> Element
                                 dd { class: "text-content", {portal_money(a)} }
                             }
                         }
+                    }
                     }
                 },
             }
@@ -3734,16 +3789,39 @@ fn format_minutes(minutes: i32) -> String {
     }
 }
 
+const TIME_ENTRIES_PER_PAGE: i64 = 50;
+
 #[component]
 pub fn PortalTimeEntryListPage() -> Element {
-    let list = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_portal_authed::<Vec<PortalTimeEntryRow>>(
-            "/portal/time-entries",
-        )
-        .await
-        .ok()
-    });
+    // Filters + pagination state. Empty strings drop from the wire so
+    // the first render calls the endpoint with no query params (matches
+    // the pre-filter behaviour for an unfiltered first page).
+    let mut from_signal = use_signal(String::new);
+    let mut to_signal = use_signal(String::new);
+    let mut page_signal = use_signal(|| 1i64);
+
+    let from_for_fetch = from_signal.read().clone();
+    let to_for_fetch = to_signal.read().clone();
+    let page_for_fetch = *page_signal.read();
+
+    let list = use_resource(use_reactive!(
+        |from_for_fetch, to_for_fetch, page_for_fetch| async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let mut params: Vec<String> = Vec::new();
+            params.push(format!("page={page_for_fetch}"));
+            params.push(format!("per_page={TIME_ENTRIES_PER_PAGE}"));
+            if !from_for_fetch.is_empty() {
+                params.push(format!("from={from_for_fetch}"));
+            }
+            if !to_for_fetch.is_empty() {
+                params.push(format!("to={to_for_fetch}"));
+            }
+            let path = format!("/portal/time-entries?{}", params.join("&"));
+            crate::hooks::fetch::api::get_portal_authed::<Vec<PortalTimeEntryRow>>(&path)
+                .await
+                .ok()
+        }
+    ));
     let snap = list.read_unchecked();
     let rows: Vec<PortalTimeEntryRow> = match &*snap {
         Some(Some(rows)) => rows.clone(),
@@ -3751,22 +3829,74 @@ pub fn PortalTimeEntryListPage() -> Element {
     };
     let loading = snap.is_none();
     let total: i32 = rows.iter().map(|r| r.duration_minutes).sum();
+    let cur_page = *page_signal.read();
+    let full_page = rows.len() as i64 == TIME_ENTRIES_PER_PAGE;
+    let has_prev = cur_page > 1;
+    let has_next = full_page;
 
     rsx! {
         PortalLayout { title: "Time entries".to_string(),
+            div { class: "mb-4 flex flex-wrap items-end gap-3",
+                div {
+                    label { class: "block text-xs font-medium text-content mb-1",
+                        r#for: "time_entries_from", "From"
+                    }
+                    input {
+                        id: "time_entries_from",
+                        r#type: "date",
+                        class: "rounded-md border border-line bg-surface px-3 py-2 text-content text-sm",
+                        value: "{from_signal}",
+                        onchange: move |e: FormEvent| {
+                            from_signal.set(e.value());
+                            page_signal.set(1);
+                        },
+                    }
+                }
+                div {
+                    label { class: "block text-xs font-medium text-content mb-1",
+                        r#for: "time_entries_to", "To"
+                    }
+                    input {
+                        id: "time_entries_to",
+                        r#type: "date",
+                        class: "rounded-md border border-line bg-surface px-3 py-2 text-content text-sm",
+                        value: "{to_signal}",
+                        onchange: move |e: FormEvent| {
+                            to_signal.set(e.value());
+                            page_signal.set(1);
+                        },
+                    }
+                }
+                if !from_signal.read().is_empty() || !to_signal.read().is_empty() {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: move |_| {
+                            from_signal.set(String::new());
+                            to_signal.set(String::new());
+                            page_signal.set(1);
+                        },
+                        "Clear"
+                    }
+                }
+            }
+
             if loading {
                 Card { p { class: "text-sm text-muted py-4 text-center", "Loading time entries..." } }
             } else if rows.is_empty() {
                 Card {
                     p { class: "text-sm text-muted py-4 text-center",
-                        "No time has been logged against your company yet."
+                        if from_signal.read().is_empty() && to_signal.read().is_empty() {
+                            "No time has been logged against your company yet."
+                        } else {
+                            "No time entries in that date range."
+                        }
                     }
                 }
             } else {
                 Card {
                     div { class: "mb-3 flex items-center justify-between",
                         p { class: "text-sm text-muted",
-                            "Showing the {rows.len()} newest entries; total {format_minutes(total)}."
+                            "Showing {rows.len()} entries on page {cur_page}; total {format_minutes(total)}."
                         }
                     }
                     Table {
@@ -3774,7 +3904,7 @@ pub fn PortalTimeEntryListPage() -> Element {
                             TableRow {
                                 TableHeader { "Date" }
                                 TableHeader { "Work" }
-                                TableHeader { "Duration" }
+                                TableHeader { class: "text-right", "Duration" }
                                 TableHeader { "Ticket" }
                                 TableHeader { "Project" }
                                 TableHeader { "Billing" }
@@ -3782,33 +3912,62 @@ pub fn PortalTimeEntryListPage() -> Element {
                         }
                         TableBody {
                             for row in rows.iter().cloned() {
-                                TableRow { key: "{row.id}",
-                                    TableCell {
-                                        if let Some(d) = row.date { "{d}" } else { "-" }
-                                    }
-                                    TableCell { "{row.work_type}" }
-                                    TableCell { "{format_minutes(row.duration_minutes)}" }
-                                    TableCell {
-                                        if let Some(number) = row.ticket_number.clone() {
-                                            if let Some(id) = row.ticket_id {
-                                                Link {
-                                                    to: Route::PortalTicketDetail { id: id.to_string() },
-                                                    class: "text-accent hover:opacity-80",
-                                                    "#{number}"
-                                                }
-                                            } else {
-                                                "#{number}"
+                                {
+                                    let work = crate::components::humanize_enum_label(&row.work_type);
+                                    let billing = crate::components::humanize_enum_label(&row.billing_status);
+                                    rsx! {
+                                        TableRow { key: "{row.id}",
+                                            TableCell {
+                                                if let Some(d) = row.date { "{d}" } else { "-" }
                                             }
-                                        } else {
-                                            "-"
+                                            TableCell { "{work}" }
+                                            TableCell { class: "text-right", "{format_minutes(row.duration_minutes)}" }
+                                            TableCell {
+                                                if let Some(number) = row.ticket_number.clone() {
+                                                    if let Some(id) = row.ticket_id {
+                                                        Link {
+                                                            to: Route::PortalTicketDetail { id: id.to_string() },
+                                                            class: "text-accent hover:opacity-80",
+                                                            "#{number}"
+                                                        }
+                                                    } else {
+                                                        "#{number}"
+                                                    }
+                                                } else {
+                                                    "-"
+                                                }
+                                            }
+                                            TableCell {
+                                                if let Some(n) = row.project_name { "{n}" } else { "-" }
+                                            }
+                                            TableCell { "{billing}" }
                                         }
                                     }
-                                    TableCell {
-                                        if let Some(n) = row.project_name { "{n}" } else { "-" }
-                                    }
-                                    TableCell { "{row.billing_status}" }
                                 }
                             }
+                        }
+                    }
+                }
+                div { class: "mt-4 flex items-center justify-between text-sm text-muted",
+                    div { "Page {cur_page}" }
+                    div { class: "flex gap-2",
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            disabled: !has_prev,
+                            onclick: move |_| {
+                                let c = *page_signal.peek();
+                                if c > 1 { page_signal.set(c - 1); }
+                            },
+                            "Newer"
+                        }
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            disabled: !has_next,
+                            onclick: move |_| {
+                                let c = *page_signal.peek();
+                                page_signal.set(c + 1);
+                            },
+                            "Older"
                         }
                     }
                 }
@@ -4663,22 +4822,28 @@ pub fn PortalCompanyPage() -> Element {
     }
 }
 
+/// Human summary of a delegation-scope JSON blob. Reads every truthy
+/// key on the object dynamically so a new server-side scope key lands
+/// in the SPA without a code change (previous version hardcoded
+/// `tickets` and `invoices` only, silently dropping anything else).
+/// Non-boolean values are ignored - the scope schema promises a bool
+/// per key, and a caller sending a string or number is treated as
+/// "not granted" rather than "granted".
+///
+/// Sorting keeps the output stable across renders so a "tickets,
+/// invoices" grant always reads the same way regardless of
+/// serialization order.
 fn format_delegation_scope(scope: &serde_json::Value) -> String {
-    let mut parts: Vec<&str> = Vec::new();
-    if scope
-        .get("tickets")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-    {
-        parts.push("tickets");
-    }
-    if scope
-        .get("invoices")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-    {
-        parts.push("invoices");
-    }
+    let obj = match scope.as_object() {
+        Some(o) => o,
+        None => return "nothing yet".to_string(),
+    };
+    let mut parts: Vec<String> = obj
+        .iter()
+        .filter(|(_, v)| v.as_bool().unwrap_or(false))
+        .map(|(k, _)| crate::components::humanize_enum_label(k).to_lowercase())
+        .collect();
+    parts.sort();
     if parts.is_empty() {
         "nothing yet".to_string()
     } else {
