@@ -338,13 +338,20 @@ pub fn use_active_org_loader() {
 }
 
 /// Background token-refresh loop. Mount once near the root of the app
-/// (alongside `use_auth_provider`). Polls the AuthContext every 30
-/// seconds; if the access token is within 60s of expiry, exchanges the
-/// refresh token for a new pair and pushes the result back into the
-/// context. On any refresh failure (the storage layer detected reuse,
-/// the refresh token has expired, the network is gone) the local auth
-/// state is cleared and the browser is sent to /login. The user
-/// experiences a transparent re-login rather than mysterious 401s.
+/// (alongside `use_auth_provider`). Evaluates the persisted token bundle
+/// at mount and every 30 seconds after; if the access token is within
+/// 60s of expiry, exchanges the refresh token for a new pair and pushes
+/// the result back into the context. On any refresh failure (the storage
+/// layer detected reuse, the refresh token has expired, the network is
+/// gone) the local auth state is cleared and the browser is sent to
+/// /login. The user experiences a transparent re-login rather than
+/// mysterious 401s.
+///
+/// MAPPS-435: this loop is no longer the only thing standing between a
+/// spent token and a request. The renewal it drives lives in
+/// [`crate::hooks::fetch::api::renew_access_token`], which the request
+/// path also calls, because a tab the browser discarded and re-created
+/// mounts its pages before any loop has ticked.
 pub fn use_token_refresh() {
     let mut auth = use_auth();
     // Note: this hook is mounted on the root `App` component, which is
@@ -355,86 +362,86 @@ pub fn use_token_refresh() {
 
     use_future(move || async move {
         loop {
+            oidc_refresh_tick(&mut auth).await;
+            // MAPPS-435: the sleep is LAST. Sleeping first meant a tab the
+            // browser had discarded and re-created ran on whatever
+            // sessionStorage held for the first 30 seconds, however dead, and
+            // every page that mounted in that window 401'd.
             #[cfg(feature = "web")]
             gloo_timers::future::TimeoutFuture::new(30_000).await;
+        }
+    });
+}
 
-            // Snapshot what we need under a short read; never hold the
-            // lock across the network call.
-            let snap = {
-                let a = auth.read();
-                a.tokens.as_ref().and_then(|t| {
-                    t.refresh_token.as_ref().map(|rt| {
-                        (
-                            t.access_token.clone(),
-                            rt.clone(),
-                            t.id_token.clone(),
-                            t.expires_at,
-                        )
-                    })
-                })
-            };
-            let (_access, refresh, id_token, expires_at) = match snap {
-                Some(s) => s,
-                None => continue, // not signed in, nothing to do
-            };
+/// One evaluation of the OIDC refresh window. Returns without renewing when
+/// there is no persisted OIDC session, it carries no refresh token, or the
+/// access token is still comfortably valid.
+async fn oidc_refresh_tick(auth: &mut Signal<AuthContext>) {
+    // The persisted bundle is the source of truth, not the context's copy: a
+    // renewal on the request path (MAPPS-435) rotates the refresh token in
+    // sessionStorage, and replaying the superseded copy the context still
+    // holds is what the OP's reuse detection answers by killing the grant.
+    let stored = match crate::modules::oidc::storage::load_auth() {
+        Some(s) => s,
+        None => return, // not signed in through OIDC, nothing to do
+    };
+    if stored.refresh_token.is_none() {
+        return; // nothing to renew with; let it expire
+    }
 
-            // Refresh window: 60s before expiry. If we already missed
-            // it (clock jump / tab was backgrounded), refresh now.
-            let now = chrono::Utc::now();
-            if expires_at - now > chrono::Duration::seconds(60) {
-                continue;
+    // Refresh window: 60s before expiry. If we already missed it (clock jump /
+    // tab was backgrounded), refresh now.
+    let now = chrono::Utc::now();
+    if stored.expires_at - now > chrono::Duration::seconds(60) {
+        return;
+    }
+
+    // Renewal itself lives in the fetch layer so a tick and a request-time
+    // renewal that coincide share one flight (MAPPS-435).
+    match crate::hooks::fetch::api::renew_access_token().await {
+        Ok(()) => {
+            // Mirror the rotated bundle into the context so its copy does not
+            // age out behind sessionStorage.
+            if let Some(fresh) = crate::modules::oidc::storage::load_auth() {
+                auth.write().tokens = Some(Tokens {
+                    access_token: fresh.access_token,
+                    id_token: fresh.id_token,
+                    refresh_token: fresh.refresh_token,
+                    expires_at: fresh.expires_at,
+                    scope: fresh.scope,
+                });
             }
 
-            let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
-            match crate::modules::oidc::refresh_tokens(&cfg, &refresh, &id_token).await {
-                Ok(new_tokens) => {
-                    crate::hooks::fetch::api::set_access_token(Some(
-                        new_tokens.access_token.clone(),
-                    ));
-                    crate::modules::oidc::storage::save_auth(
-                        &crate::modules::oidc::storage::StoredTokens {
-                            access_token: new_tokens.access_token.clone(),
-                            id_token: new_tokens.id_token.clone(),
-                            refresh_token: new_tokens.refresh_token.clone(),
-                            expires_at: new_tokens.expires_at,
-                            scope: new_tokens.scope.clone(),
-                        },
-                    );
-                    auth.write().tokens = Some(new_tokens);
-
-                    // Refresh the cached CurrentUser from /v1/auth/me so
-                    // any server-side change since the original id_token
-                    // was minted (role demotion, name update, active-
-                    // tenant switch from another tab) propagates within
-                    // one refresh window. Mokosh is RFC-compliant and
-                    // typically omits id_token on refresh-grant responses,
-                    // so the cached id_token's claims will be stale for
-                    // the life of the session if we don't actively
-                    // re-fetch. Memberships are also cleared so the
-                    // membership-loader effect re-runs.
-                    refresh_user_from_me(&mut auth).await;
-                }
-                Err(e) => {
-                    tracing::warn!("token refresh failed; signing out: {e}");
-                    {
-                        let mut a = auth.write();
-                        a.user = None;
-                        a.tokens = None;
-                    }
-                    crate::hooks::fetch::api::set_access_token(None);
-                    crate::modules::oidc::storage::clear_auth();
-                    // Hard redirect (see note on the hook above): we
-                    // are outside the Router subtree, so use_navigator
-                    // is unavailable. window.location.set_href works
-                    // regardless and triggers a full page reload,
-                    // which is appropriate after a forced sign-out.
-                    if let Some(win) = web_sys::window() {
-                        let _ = win.location().set_href("/login");
-                    }
+            // Refresh the cached CurrentUser from /v1/auth/me so any
+            // server-side change since the original id_token was minted (role
+            // demotion, name update, active-tenant switch from another tab)
+            // propagates within one refresh window. Mokosh is RFC-compliant
+            // and typically omits id_token on refresh-grant responses, so the
+            // cached id_token's claims will be stale for the life of the
+            // session if we don't actively re-fetch. Memberships are also
+            // cleared so the membership-loader effect re-runs.
+            refresh_user_from_me(auth).await;
+        }
+        Err(e) => {
+            tracing::warn!("token refresh failed; signing out: {e}");
+            {
+                let mut a = auth.write();
+                a.user = None;
+                a.tokens = None;
+            }
+            crate::hooks::fetch::api::set_access_token(None);
+            crate::modules::oidc::storage::clear_auth();
+            // Hard redirect (see note on the hook above): we are outside the
+            // Router subtree, so use_navigator is unavailable.
+            // window.location.set_href works regardless and triggers a full
+            // page reload, which is appropriate after a forced sign-out.
+            if let Some(win) = web_sys::window() {
+                if let Err(e) = win.location().set_href("/login") {
+                    tracing::warn!("redirect to /login after sign-out failed: {e:?}");
                 }
             }
         }
-    });
+    }
 }
 
 /// MAPPS-374: silent refresh for STANDALONE (non-OIDC) sessions - the mirror of
@@ -456,79 +463,58 @@ pub fn use_standalone_token_refresh() {
 
     use_future(move || async move {
         loop {
+            standalone_refresh_tick(&mut auth).await;
+            // MAPPS-435: sleep LAST, for the reason given on the OIDC loop.
             #[cfg(feature = "web")]
             gloo_timers::future::TimeoutFuture::new(30_000).await;
-
-            // Reload the persisted session each tick so a login or logout in
-            // this tab is seen. No standalone session -> nothing to do (the OIDC
-            // loop above owns OIDC sessions).
-            let session = match crate::modules::oidc::storage::load_standalone() {
-                Some(s) => s,
-                None => continue,
-            };
-            // A standalone session with no refresh token cannot be renewed;
-            // leave it to expire rather than spin on it every tick.
-            let refresh = match session.refresh_token.clone() {
-                Some(rt) => rt,
-                None => continue,
-            };
-
-            // Refresh window: 60s before expiry. If a backgrounded tab sailed
-            // past it (throttled timers), refresh now - same policy as the OIDC
-            // loop above.
-            let now = chrono::Utc::now();
-            if session.expires_at - now > chrono::Duration::seconds(60) {
-                continue;
-            }
-
-            #[derive(serde::Serialize)]
-            struct RefreshReq {
-                refresh_token: String,
-            }
-            #[derive(serde::Deserialize)]
-            struct RefreshResp {
-                access_token: String,
-                refresh_token: String,
-                expires_at: chrono::DateTime<chrono::Utc>,
-            }
-
-            match crate::hooks::fetch::api::post_typed::<RefreshResp, _>(
-                "/auth/refresh",
-                &RefreshReq {
-                    refresh_token: refresh,
-                },
-            )
-            .await
-            {
-                Ok(resp) => {
-                    crate::hooks::fetch::api::set_access_token(Some(resp.access_token.clone()));
-                    crate::modules::oidc::storage::save_standalone(
-                        &crate::modules::oidc::storage::StandaloneSession {
-                            access_token: resp.access_token,
-                            refresh_token: Some(resp.refresh_token),
-                            expires_at: resp.expires_at,
-                            user: session.user,
-                        },
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!("standalone token refresh failed; signing out: {e:?}");
-                    {
-                        let mut a = auth.write();
-                        a.user = None;
-                        a.tokens = None;
-                    }
-                    crate::modules::oidc::storage::clear_standalone();
-                    crate::hooks::fetch::api::set_access_token(None);
-                    // Hard redirect (mirrors use_token_refresh): this hook is
-                    // mounted above the Router, so use_navigator is unavailable.
-                    if let Some(win) = web_sys::window() {
-                        let _ = win.location().set_href("/login");
-                    }
-                }
-            }
         }
     });
+}
+
+/// One evaluation of the standalone refresh window. Reloads the persisted
+/// session each tick so a login or logout in this tab is seen.
+async fn standalone_refresh_tick(auth: &mut Signal<AuthContext>) {
+    // An OIDC session is the loop above's business, and the shared renewal
+    // prefers the OIDC bundle, so bail before reaching for it.
+    if crate::modules::oidc::storage::load_auth().is_some() {
+        return;
+    }
+    let session = match crate::modules::oidc::storage::load_standalone() {
+        Some(s) => s,
+        None => return,
+    };
+    // A standalone session with no refresh token cannot be renewed; leave it
+    // to expire rather than spin on it every tick.
+    if session.refresh_token.is_none() {
+        return;
+    }
+
+    // Refresh window: 60s before expiry. If a backgrounded tab sailed past it
+    // (throttled timers), refresh now - same policy as the OIDC loop above.
+    let now = chrono::Utc::now();
+    if session.expires_at - now > chrono::Duration::seconds(60) {
+        return;
+    }
+
+    // Shared single-flight renewal (MAPPS-435); it persists the rotated
+    // session and swaps the fetch layer's bearer.
+    if let Err(e) = crate::hooks::fetch::api::renew_access_token().await {
+        tracing::warn!("standalone token refresh failed; signing out: {e}");
+        {
+            let mut a = auth.write();
+            a.user = None;
+            a.tokens = None;
+        }
+        crate::modules::oidc::storage::clear_standalone();
+        crate::hooks::fetch::api::set_access_token(None);
+        // Hard redirect (mirrors use_token_refresh): this hook is mounted
+        // above the Router, so use_navigator is unavailable.
+        if let Some(win) = web_sys::window() {
+            if let Err(e) = win.location().set_href("/login") {
+                tracing::warn!("redirect to /login after sign-out failed: {e:?}");
+            }
+        }
+    }
 }
 
 /// MAPPS-355: proactive auth heartbeat. Mount once at the app root
@@ -556,29 +542,34 @@ pub fn use_standalone_token_refresh() {
 pub fn use_auth_heartbeat() {
     use_future(move || async move {
         loop {
+            heartbeat_tick().await;
+            // MAPPS-435: sleep LAST, for the reason given on the OIDC loop.
             #[cfg(feature = "web")]
             gloo_timers::future::TimeoutFuture::new(30_000).await;
-
-            #[cfg(feature = "web")]
-            {
-                if *crate::hooks::fetch::ACCOUNT_DELETED.peek() {
-                    continue;
-                }
-                if crate::hooks::fetch::api::current_access_token().is_none() {
-                    continue;
-                }
-                if tab_is_hidden() {
-                    continue;
-                }
-                // Fire and discard. The fetch layer handles the 410 case
-                // (flips ACCOUNT_DELETED); 401 / 200 / network errors are
-                // no-ops here because the token-refresh loop above and the
-                // per-page fetches already handle those paths.
-                let _ = crate::hooks::fetch::api::get_authed_typed::<serde_json::Value>("/auth/me")
-                    .await;
-            }
         }
     });
+}
+
+/// One heartbeat evaluation. Returns without firing when the overlay is
+/// already up, nobody is signed in, or the tab is in the background.
+async fn heartbeat_tick() {
+    #[cfg(feature = "web")]
+    {
+        if *crate::hooks::fetch::ACCOUNT_DELETED.peek() {
+            return;
+        }
+        if crate::hooks::fetch::api::current_access_token().is_none() {
+            return;
+        }
+        if tab_is_hidden() {
+            return;
+        }
+        // Fire and discard. The fetch layer handles the 410 case (flips
+        // ACCOUNT_DELETED) and, since MAPPS-435, the 401 case (renew, else
+        // clear the session and redirect); 200 / network errors are no-ops
+        // here.
+        let _ = crate::hooks::fetch::api::get_authed_typed::<serde_json::Value>("/auth/me").await;
+    }
 }
 
 /// Read `document.visibilityState`. Returns `true` when the tab is hidden
@@ -790,6 +781,32 @@ mod tests {
             !production_src().contains("issuer_get_authed"),
             "an issuer-hosted call cannot succeed with a mokosh-audience token"
         );
+    }
+
+    /// MAPPS-435 recurrence guard.
+    ///
+    /// A polling loop that sleeps before it evaluates is useless to the case
+    /// that motivated it: a tab the browser discarded and re-created starts
+    /// every loop from scratch, so a sleep-first loop leaves the SPA running
+    /// on whatever sessionStorage held for the first 30 seconds, however
+    /// stale, and every page that mounts in that window 401s. The condition
+    /// therefore has to be evaluated once at mount, before any sleep.
+    #[test]
+    fn the_auth_loops_evaluate_before_they_sleep() {
+        let mut loops = 0;
+        for segment in production_src().split("loop {").skip(1) {
+            loops += 1;
+            let first = segment
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty() && !l.starts_with("//"))
+                .unwrap_or_default();
+            assert!(
+                !first.contains("TimeoutFuture") && !first.starts_with("#[cfg"),
+                "this loop sleeps before it evaluates anything: {first}"
+            );
+        }
+        assert_eq!(loops, 3, "this file runs three polling loops");
     }
 
     /// A failed load must leave the org unnamed rather than invent one. The
