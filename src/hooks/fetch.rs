@@ -244,6 +244,294 @@ pub mod api {
         ACCESS_TOKEN.with(|t| t.borrow().clone())
     }
 
+    // --- Access-token renewal on the request path (MAPPS-435) ------------
+    //
+    // The 30 second refresh loops in `crate::hooks::auth` cannot be what keeps
+    // a dead bearer off the wire: a tab that the browser discarded and
+    // re-created starts every hook from scratch, so the first page mount fires
+    // its fetches before any loop has evaluated anything. The renewal
+    // therefore also lives on the request path - fresh before the send, and
+    // one recovery attempt when the server rejects the bearer anyway.
+
+    /// Seconds before expiry at which the held access token is treated as
+    /// spent. Same window the auth loops use.
+    #[cfg(feature = "web")]
+    const REFRESH_WINDOW_SECS: i64 = 60;
+
+    /// How long a completed renewal answers for the 401s that were already in
+    /// flight when it landed. Without it, a 401 no renewal can fix (revoked
+    /// grant, rejected audience) would spend a refresh token per request and
+    /// re-drive every mounted resource on each one, forever.
+    #[cfg(feature = "web")]
+    const RENEWAL_DEBOUNCE_SECS: i64 = 30;
+
+    #[cfg(feature = "web")]
+    type Renewal = futures_util::future::Shared<
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>>>>,
+    >;
+
+    #[cfg(feature = "web")]
+    thread_local! {
+        /// The renewal in flight, tagged with the id of its flight. Concurrent
+        /// callers join it instead of each spending the refresh token, which
+        /// the OP's reuse detection would read as a replay and answer by
+        /// killing the whole grant chain.
+        static RENEWAL: std::cell::RefCell<Option<(u64, Renewal)>> =
+            const { std::cell::RefCell::new(None) };
+        /// Flight counter, so a caller only ever clears its own flight.
+        static RENEWAL_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+        /// Outcome of the last completed renewal, and when it completed.
+        #[allow(clippy::type_complexity)]
+        static LAST_RENEWAL: std::cell::RefCell<
+            Option<(chrono::DateTime<chrono::Utc>, Result<(), String>)>,
+        > = const { std::cell::RefCell::new(None) };
+    }
+
+    /// Expiry of the persisted session the held bearer came from. `None` when
+    /// nothing is persisted (dev bypass, sessionStorage disabled), which is
+    /// also "nothing to renew from".
+    #[cfg(feature = "web")]
+    fn persisted_expiry() -> Option<chrono::DateTime<chrono::Utc>> {
+        if let Some(t) = crate::modules::oidc::storage::load_auth() {
+            return Some(t.expires_at);
+        }
+        crate::modules::oidc::storage::load_standalone().map(|s| s.expires_at)
+    }
+
+    /// Whether the held bearer is inside its refresh window or already past
+    /// expiry.
+    #[cfg(feature = "web")]
+    fn access_token_is_stale() -> bool {
+        if current_access_token().is_none() {
+            return false;
+        }
+        match persisted_expiry() {
+            Some(exp) => exp - chrono::Utc::now() <= chrono::Duration::seconds(REFRESH_WINDOW_SECS),
+            None => false,
+        }
+    }
+
+    /// Whether `token` is the agent bearer this SPA currently holds.
+    ///
+    /// This is the lane check. The portal session token lives in its own
+    /// holder and never matches (MAPPS-395), and a request that carries no
+    /// bearer at all (`POST /auth/login`) matches nothing, so neither can
+    /// reach the agent renewal or sign-out paths.
+    #[cfg(feature = "web")]
+    fn is_agent_bearer(token: &str) -> bool {
+        current_access_token().as_deref() == Some(token)
+    }
+
+    /// Resolve the bearer a `_with_auth` helper should send, and whether the
+    /// request is agent-lane. Agent-lane means the caller handed us the bearer
+    /// this SPA holds, so it is renewed when spent and its 401 is a session
+    /// event; anything else is passed through untouched.
+    #[cfg(feature = "web")]
+    async fn agent_lane_bearer(token: &str) -> (bool, String) {
+        if !is_agent_bearer(token) {
+            return (false, token.to_string());
+        }
+        ensure_fresh_access_token().await;
+        // Re-read: the renewal above may have replaced what the caller holds.
+        (
+            true,
+            current_access_token().unwrap_or_else(|| token.to_string()),
+        )
+    }
+
+    /// Renew the held access token when it is within [`REFRESH_WINDOW_SECS`]
+    /// of expiry or already past it, so no request goes out with a bearer the
+    /// SPA already knows is dead. A no-op otherwise: the common case costs one
+    /// sessionStorage read.
+    ///
+    /// Single-flight, see [`renew_access_token`]. A failure here is logged but
+    /// does not sign the user out: the request still goes out, and the 401 it
+    /// earns runs [`note_agent_unauthorized`], which owns that decision.
+    #[cfg(feature = "web")]
+    pub async fn ensure_fresh_access_token() {
+        if !access_token_is_stale() {
+            return;
+        }
+        if let Err(e) = renew_access_token().await {
+            tracing::warn!("access-token renewal before a request failed: {e}");
+        }
+    }
+
+    /// Exchange the persisted refresh token for a new access token, joining
+    /// the renewal already in flight rather than starting a second one.
+    ///
+    /// Also the auth loops' renewal (`crate::hooks::auth`), so a loop tick and
+    /// a request-time renewal that coincide spend one refresh token between
+    /// them instead of racing each other into a reuse detection.
+    #[cfg(feature = "web")]
+    pub async fn renew_access_token() -> Result<(), String> {
+        let (flight, shared) = RENEWAL.with(|slot| {
+            if let Some((flight, existing)) = slot.borrow().as_ref() {
+                return (*flight, existing.clone());
+            }
+            let flight = RENEWAL_SEQ.with(|seq| {
+                let next = seq.get().wrapping_add(1);
+                seq.set(next);
+                next
+            });
+            let started: std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>>>> =
+                Box::pin(renew_persisted_session());
+            let shared = futures_util::FutureExt::shared(started);
+            *slot.borrow_mut() = Some((flight, shared.clone()));
+            (flight, shared)
+        });
+        let outcome = shared.await;
+        // Clear only OUR flight. A renewal started after this one finished is
+        // a different flight, and clearing it would have every caller joining
+        // it start yet another.
+        let cleared = RENEWAL.with(|slot| {
+            let mut held = slot.borrow_mut();
+            if held
+                .as_ref()
+                .is_some_and(|(held_flight, _)| *held_flight == flight)
+            {
+                *held = None;
+                true
+            } else {
+                false
+            }
+        });
+        if cleared {
+            LAST_RENEWAL
+                .with(|slot| *slot.borrow_mut() = Some((chrono::Utc::now(), outcome.clone())));
+        }
+        outcome
+    }
+
+    /// The renewal implementation. OIDC first, because that is the bundle
+    /// `rehydrate_from_storage` prefers when both are somehow present.
+    #[cfg(feature = "web")]
+    async fn renew_persisted_session() -> Result<(), String> {
+        use crate::modules::oidc::storage;
+
+        if let Some(stored) = storage::load_auth() {
+            let refresh = stored
+                .refresh_token
+                .clone()
+                .ok_or_else(|| "the stored OIDC session carries no refresh token".to_string())?;
+            let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
+            let fresh = crate::modules::oidc::refresh_tokens(&cfg, &refresh, &stored.id_token)
+                .await
+                .map_err(|e| e.to_string())?;
+            storage::save_auth(&storage::StoredTokens {
+                access_token: fresh.access_token.clone(),
+                id_token: fresh.id_token,
+                refresh_token: fresh.refresh_token,
+                expires_at: fresh.expires_at,
+                scope: fresh.scope,
+            });
+            // Last, because the generation bump re-drives every mounted
+            // resource: the new token must already be persisted when they go.
+            set_access_token(Some(fresh.access_token));
+            return Ok(());
+        }
+
+        if let Some(session) = storage::load_standalone() {
+            let refresh = session.refresh_token.clone().ok_or_else(|| {
+                "the stored standalone session carries no refresh token".to_string()
+            })?;
+
+            #[derive(serde::Serialize)]
+            struct RefreshReq {
+                refresh_token: String,
+            }
+            #[derive(serde::Deserialize)]
+            struct RefreshResp {
+                access_token: String,
+                refresh_token: String,
+                expires_at: chrono::DateTime<chrono::Utc>,
+            }
+
+            // `post_typed` sends no bearer, so this cannot recurse back into
+            // the renewal path through a 401.
+            let resp = post_typed::<RefreshResp, _>(
+                "/auth/refresh",
+                &RefreshReq {
+                    refresh_token: refresh,
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            storage::save_standalone(&storage::StandaloneSession {
+                access_token: resp.access_token.clone(),
+                refresh_token: Some(resp.refresh_token),
+                expires_at: resp.expires_at,
+                user: session.user,
+            });
+            set_access_token(Some(resp.access_token));
+            return Ok(());
+        }
+
+        Err("no persisted session to renew".to_string())
+    }
+
+    /// A request that carried the agent bearer was answered 401.
+    ///
+    /// One renewal attempt: on success [`set_access_token`] bumps
+    /// [`super::TENANT_GENERATION`], and every `use_resource` closure that
+    /// reads [`super::active_tenant_generation`] re-fetches with the new token
+    /// on its own. On failure, or with nothing to renew from, the session is
+    /// cleared and the browser is sent to `/login` - the same end state as the
+    /// refresh loop's failure branch in `crate::hooks::auth::use_token_refresh`.
+    ///
+    /// Only reached from the agent lane ([`is_agent_bearer`]). A `/portal/*`
+    /// 401 belongs to a separate identity and a `POST /auth/login` 401 means
+    /// wrong password; neither may sign an agent out.
+    #[cfg(feature = "web")]
+    async fn note_agent_unauthorized() {
+        match recent_renewal() {
+            // A renewal landed moments ago, so this 401 was answered against
+            // the token it replaced; the resources it re-drove carry the new
+            // one. Renewing again would spend a refresh token per stale reply.
+            Some(Ok(())) => return,
+            // The renewal that just failed is why this 401 happened. Do not
+            // try again, and do not leave the screen sitting on the error.
+            Some(Err(e)) => {
+                tracing::warn!("agent bearer rejected and the last renewal failed: {e}");
+                end_agent_session();
+                return;
+            }
+            None => {}
+        }
+        if let Err(e) = renew_access_token().await {
+            tracing::warn!("agent bearer rejected and could not be renewed: {e}");
+            end_agent_session();
+        }
+    }
+
+    /// Outcome of the last renewal while it is still recent enough to answer
+    /// for a 401 that was already in flight. `None` once it has aged out.
+    #[cfg(feature = "web")]
+    fn recent_renewal() -> Option<Result<(), String>> {
+        LAST_RENEWAL.with(|slot| {
+            slot.borrow().as_ref().and_then(|(at, outcome)| {
+                (chrono::Utc::now() - *at < chrono::Duration::seconds(RENEWAL_DEBOUNCE_SECS))
+                    .then(|| outcome.clone())
+            })
+        })
+    }
+
+    /// Clear the session and hard-redirect to `/login`. The fetch layer sits
+    /// below the Router and cannot reach `AuthContext`, so the full reload is
+    /// what drops the cleared state onto the login screen - the same reason
+    /// `use_token_refresh` redirects this way.
+    #[cfg(feature = "web")]
+    fn end_agent_session() {
+        set_access_token(None);
+        // Clears the standalone session too (see `storage::clear_auth`).
+        crate::modules::oidc::storage::clear_auth();
+        if let Some(win) = web_sys::window() {
+            if let Err(e) = win.location().set_href("/login") {
+                tracing::warn!("could not redirect to /login after signing out: {e:?}");
+            }
+        }
+    }
+
     // MAPPS-395: the client-portal session token, a separate token class from
     // `ACCESS_TOKEN`. mokosh-server mints it at `POST /portal/auth/login` with
     // `typ: "portal_access"` over a `contacts` row, and every `/portal/*` route
@@ -419,6 +707,7 @@ pub mod api {
     #[cfg(feature = "web")]
     pub async fn get_with_auth<T: DeserializeOwned>(path: &str, token: &str) -> Result<T, String> {
         let url = format!("{}{}", api_base(), path);
+        let (agent_lane, token) = agent_lane_bearer(token).await;
 
         let response = Request::get(&url)
             .header("Content-Type", "application/json")
@@ -427,6 +716,9 @@ pub mod api {
             .await
             .map_err(transport_err)?;
 
+        if agent_lane && response.status() == 401 {
+            note_agent_unauthorized().await;
+        }
         if response.ok() {
             response.json::<T>().await.map_err(|e| e.to_string())
         } else {
@@ -465,6 +757,7 @@ pub mod api {
         token: &str,
     ) -> Result<T, String> {
         let url = format!("{}{}", api_base(), path);
+        let (agent_lane, token) = agent_lane_bearer(token).await;
 
         let response = Request::post(&url)
             .header("Content-Type", "application/json")
@@ -475,6 +768,9 @@ pub mod api {
             .await
             .map_err(transport_err)?;
 
+        if agent_lane && response.status() == 401 {
+            note_agent_unauthorized().await;
+        }
         if response.ok() {
             response.json::<T>().await.map_err(|e| e.to_string())
         } else {
@@ -490,6 +786,7 @@ pub mod api {
         token: &str,
     ) -> Result<T, String> {
         let url = format!("{}{}", api_base(), path);
+        let (agent_lane, token) = agent_lane_bearer(token).await;
 
         let response = Request::put(&url)
             .header("Content-Type", "application/json")
@@ -500,6 +797,9 @@ pub mod api {
             .await
             .map_err(transport_err)?;
 
+        if agent_lane && response.status() == 401 {
+            note_agent_unauthorized().await;
+        }
         if response.ok() {
             response.json::<T>().await.map_err(|e| e.to_string())
         } else {
@@ -520,6 +820,7 @@ pub mod api {
         token: &str,
     ) -> Result<T, String> {
         let url = format!("{}{}", api_base(), path);
+        let (agent_lane, token) = agent_lane_bearer(token).await;
 
         let response = Request::patch(&url)
             .header("Content-Type", "application/json")
@@ -530,6 +831,9 @@ pub mod api {
             .await
             .map_err(transport_err)?;
 
+        if agent_lane && response.status() == 401 {
+            note_agent_unauthorized().await;
+        }
         if response.ok() {
             response.json::<T>().await.map_err(|e| e.to_string())
         } else {
@@ -541,6 +845,7 @@ pub mod api {
     #[cfg(feature = "web")]
     pub async fn delete_with_auth(path: &str, token: &str) -> Result<(), String> {
         let url = format!("{}{}", api_base(), path);
+        let (agent_lane, token) = agent_lane_bearer(token).await;
 
         let response = Request::delete(&url)
             .header("Content-Type", "application/json")
@@ -549,6 +854,9 @@ pub mod api {
             .await
             .map_err(transport_err)?;
 
+        if agent_lane && response.status() == 401 {
+            note_agent_unauthorized().await;
+        }
         if response.ok() {
             Ok(())
         } else {
@@ -564,6 +872,7 @@ pub mod api {
     #[cfg(feature = "web")]
     pub async fn post_no_content_with_auth(path: &str, token: &str) -> Result<(), String> {
         let url = format!("{}{}", api_base(), path);
+        let (agent_lane, token) = agent_lane_bearer(token).await;
 
         let response = Request::post(&url)
             .header("Authorization", &format!("Bearer {}", token))
@@ -571,6 +880,9 @@ pub mod api {
             .await
             .map_err(transport_err)?;
 
+        if agent_lane && response.status() == 401 {
+            note_agent_unauthorized().await;
+        }
         if response.ok() {
             Ok(())
         } else {
@@ -599,6 +911,7 @@ pub mod api {
     ) -> Result<T, ApiError> {
         use wasm_bindgen::JsCast;
 
+        ensure_fresh_access_token().await;
         let token = current_access_token()
             .ok_or_else(|| ApiError::Network("not authenticated".to_string()))?;
 
@@ -623,6 +936,9 @@ pub mod api {
             .send()
             .await
             .map_err(network_err)?;
+        if resp.status() == 401 {
+            note_agent_unauthorized().await;
+        }
         handle_response(resp).await
     }
 
@@ -633,9 +949,15 @@ pub mod api {
     // signed in (`ACCESS_TOKEN` is None) we send the request without an
     // Authorization header and let the server's 401 surface naturally;
     // the OIDC SPA pattern then redirects to the login page.
+    //
+    // MAPPS-435: each renews a spent token before it reads the holder, so the
+    // bearer that goes out is one the SPA believes in. The 401 recovery lives
+    // one level down, in the `_with_auth` helpers, which is also where the
+    // page code that resolves its own bearer arrives.
 
     #[cfg(feature = "web")]
     pub async fn get_authed<T: DeserializeOwned>(path: &str) -> Result<T, String> {
+        ensure_fresh_access_token().await;
         match current_access_token() {
             Some(t) => get_with_auth(path, &t).await,
             None => get(path).await,
@@ -647,6 +969,7 @@ pub mod api {
         path: &str,
         body: &B,
     ) -> Result<T, String> {
+        ensure_fresh_access_token().await;
         match current_access_token() {
             Some(t) => post_with_auth(path, body, &t).await,
             None => post(path, body).await,
@@ -658,12 +981,14 @@ pub mod api {
         path: &str,
         body: &B,
     ) -> Result<T, String> {
+        ensure_fresh_access_token().await;
         let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
         put_with_auth(path, body, &t).await
     }
 
     #[cfg(feature = "web")]
     pub async fn delete_authed(path: &str) -> Result<(), String> {
+        ensure_fresh_access_token().await;
         let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
         delete_with_auth(path, &t).await
     }
@@ -673,6 +998,7 @@ pub mod api {
         path: &str,
         body: &B,
     ) -> Result<T, String> {
+        ensure_fresh_access_token().await;
         let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
         patch_with_auth(path, body, &t).await
     }
@@ -681,6 +1007,7 @@ pub mod api {
     /// `post_no_content_with_auth`).
     #[cfg(feature = "web")]
     pub async fn post_authed_no_content(path: &str) -> Result<(), String> {
+        ensure_fresh_access_token().await;
         let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
         post_no_content_with_auth(path, &t).await
     }
@@ -896,12 +1223,19 @@ pub mod api {
 
     #[cfg(feature = "web")]
     pub async fn get_authed_typed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
+        ensure_fresh_access_token().await;
         let url = format!("{}{}", api_base(), path);
         let mut req = Request::get(&url).header("Content-Type", "application/json");
-        if let Some(t) = current_access_token() {
+        let bearer = current_access_token();
+        if let Some(t) = &bearer {
             req = req.header("Authorization", &format!("Bearer {t}"));
         }
         let resp = req.send().await.map_err(network_err)?;
+        // Only when we actually sent the agent bearer: an anonymous 401 is the
+        // caller's to render, not a session event.
+        if bearer.is_some() && resp.status() == 401 {
+            note_agent_unauthorized().await;
+        }
         handle_response(resp).await
     }
 
@@ -911,9 +1245,11 @@ pub mod api {
     /// memory rather than a cookie (the data export, MAPPS-364).
     #[cfg(feature = "web")]
     pub async fn get_authed_bytes(path: &str) -> Result<(Vec<u8>, Option<String>), String> {
+        ensure_fresh_access_token().await;
         let url = format!("{}{}", api_base(), path);
         let mut req = Request::get(&url);
-        if let Some(t) = current_access_token() {
+        let bearer = current_access_token();
+        if let Some(t) = &bearer {
             req = req.header("Authorization", &format!("Bearer {t}"));
         }
         let resp = req.send().await.map_err(|e| {
@@ -924,6 +1260,9 @@ pub mod api {
         })?;
         // Any response clears the "down" state (a 5xx re-flags it).
         super::note_response_status(resp.status());
+        if bearer.is_some() && resp.status() == 401 {
+            note_agent_unauthorized().await;
+        }
         if !resp.ok() {
             return Err(status_error(resp).await);
         }
@@ -961,9 +1300,11 @@ pub mod api {
         path: &str,
         body: &B,
     ) -> Result<T, ApiError> {
+        ensure_fresh_access_token().await;
         let url = format!("{}{}", api_base(), path);
         let mut req = Request::post(&url).header("Content-Type", "application/json");
-        if let Some(t) = current_access_token() {
+        let bearer = current_access_token();
+        if let Some(t) = &bearer {
             req = req.header("Authorization", &format!("Bearer {t}"));
         }
         let resp = req
@@ -972,6 +1313,9 @@ pub mod api {
             .send()
             .await
             .map_err(network_err)?;
+        if bearer.is_some() && resp.status() == 401 {
+            note_agent_unauthorized().await;
+        }
         handle_response(resp).await
     }
 
@@ -1049,6 +1393,7 @@ pub mod api {
         path: &str,
         body: &B,
     ) -> Result<T, ApiError> {
+        ensure_fresh_access_token().await;
         let t = current_access_token().ok_or_else(|| ApiError::Status {
             code: 401,
             message: String::new(),
@@ -1063,6 +1408,9 @@ pub mod api {
             .send()
             .await
             .map_err(network_err)?;
+        if resp.status() == 401 {
+            note_agent_unauthorized().await;
+        }
         handle_response(resp).await
     }
 
@@ -1075,6 +1423,7 @@ pub mod api {
         path: &str,
         body: &B,
     ) -> Result<T, ApiError> {
+        ensure_fresh_access_token().await;
         let t = current_access_token().ok_or_else(|| ApiError::Status {
             code: 401,
             message: String::new(),
@@ -1089,11 +1438,15 @@ pub mod api {
             .send()
             .await
             .map_err(network_err)?;
+        if resp.status() == 401 {
+            note_agent_unauthorized().await;
+        }
         handle_response(resp).await
     }
 
     #[cfg(feature = "web")]
     pub async fn delete_authed_typed(path: &str) -> Result<(), ApiError> {
+        ensure_fresh_access_token().await;
         let t = current_access_token().ok_or_else(|| ApiError::Status {
             code: 401,
             message: String::new(),
@@ -1108,6 +1461,9 @@ pub mod api {
             .map_err(network_err)?;
         let status = resp.status();
         super::note_response_status(status);
+        if status == 401 {
+            note_agent_unauthorized().await;
+        }
         if (200..300).contains(&status) {
             Ok(())
         } else {
@@ -1166,6 +1522,21 @@ mod tests {
             .expect("split always yields a first segment")
     }
 
+    /// The only bearer-sending helper that is NOT on the agent lane: it reads
+    /// the portal holder, and a `/portal/*` 401 belongs to that identity.
+    const PORTAL_BEARER_SENDERS: &[&str] = &["post_portal_authed_typed"];
+
+    /// Helpers that deliberately send no bearer. A 401 from one of them is the
+    /// caller's to render (wrong password on `POST /auth/login`, an expired
+    /// public link), never a signal to end the agent session.
+    const UNAUTHENTICATED_HELPERS: &[&str] = &[
+        "get",
+        "post",
+        "post_typed",
+        "get_typed",
+        "post_typed_no_content",
+    ];
+
     /// Name of the function a `fn` line declares, if it declares one.
     fn fn_name(trimmed: &str) -> Option<String> {
         let idx = if trimmed.starts_with("fn ") {
@@ -1178,6 +1549,95 @@ mod tests {
             .take_while(|c| c.is_alphanumeric() || *c == '_')
             .collect();
         (!name.is_empty()).then_some(name)
+    }
+
+    /// Every `fn` in the production half of this file, paired with its source.
+    /// The body runs to the next `fn` line, which is enough to attribute the
+    /// lines the scans below look for.
+    fn function_bodies() -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        for line in production_src().lines() {
+            let trimmed = line.trim_start();
+            if !trimmed.starts_with("//") {
+                if let Some(name) = fn_name(trimmed) {
+                    out.push((name, String::new()));
+                }
+            }
+            if let Some((_, body)) = out.last_mut() {
+                body.push_str(line);
+                body.push('\n');
+            }
+        }
+        out
+    }
+
+    fn body_of(name: &str) -> String {
+        function_bodies()
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("{name} is defined in this file"))
+            .1
+    }
+
+    /// MAPPS-435 recurrence gate, and the invariant sweep in code: a request
+    /// that carries the agent bearer renews a spent token BEFORE it sends, and
+    /// treats the 401 it may still earn as a session event rather than page
+    /// copy. Derived from the shape of the code (an `Authorization` header)
+    /// rather than from the list of helpers that existed when this was
+    /// written, so the next helper added has to classify itself.
+    #[test]
+    fn every_agent_bearer_sender_renews_and_recovers() {
+        let mut checked = 0;
+        for (name, body) in function_bodies() {
+            if !body.contains(".header(\"Authorization\"") {
+                continue;
+            }
+            if PORTAL_BEARER_SENDERS.contains(&name.as_str()) {
+                assert!(
+                    !body.contains("note_agent_unauthorized"),
+                    "{name} sends the portal session token; its 401 must leave the agent \
+                     session alone"
+                );
+                continue;
+            }
+            checked += 1;
+            assert!(
+                body.contains("ensure_fresh_access_token") || body.contains("agent_lane_bearer"),
+                "{name} sends the agent bearer without renewing a spent one first: a tab \
+                 restored after a suspend would send a token it already knows is dead"
+            );
+            assert!(
+                body.contains("note_agent_unauthorized"),
+                "{name} sends the agent bearer but leaves its 401 as page copy: nothing \
+                 refreshes, nothing signs out, and the screen sits on the error"
+            );
+        }
+        assert!(
+            checked >= 13,
+            "the scan found only {checked} agent-bearer senders; it used to find 13, so it \
+             has stopped matching the code it polices"
+        );
+    }
+
+    /// The other half of the boundary: a helper that sends no bearer, or the
+    /// portal one, never reaches the agent sign-out path. The portal wrappers
+    /// delegate to `get_with_auth` / `post_with_auth`, whose recovery is gated
+    /// on the token being the one in the agent holder (`is_agent_bearer`), so
+    /// the portal token passes straight through it.
+    #[test]
+    fn the_portal_and_unauthenticated_helpers_never_end_the_agent_session() {
+        for name in UNAUTHENTICATED_HELPERS
+            .iter()
+            .chain(PORTAL_BEARER_SENDERS)
+            .chain(["get_portal_authed", "post_portal_authed"].iter())
+        {
+            let body = body_of(name);
+            assert!(
+                !body.contains("note_agent_unauthorized"),
+                "{name} must not end the agent session: a 401 there means wrong password, \
+                 an expired link, or a portal identity"
+            );
+        }
     }
 
     #[test]
