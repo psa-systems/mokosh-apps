@@ -81,6 +81,11 @@ jobs:
       - name: Class-omission guard
         run: bash scripts/check-class-omissions.sh
 
+      # MAPPS-440: no DaisyUI class names, every full-screen auth surface on
+      # AuthLayout, and the file-input class recipe only in FileField.
+      - name: Kit-adoption guard
+        run: bash scripts/check-kit-adoption.sh
+
       - name: Check formatting
         run: cargo fmt --all --check
 

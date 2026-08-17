@@ -1270,14 +1270,21 @@ fn PortalUserMenu() -> Element {
 /// Auth layout (login, signup, password reset)
 #[derive(Props, Clone, PartialEq)]
 pub struct AuthLayoutProps {
+    /// Card width class (MAPPS-440). The public request form renders a whole
+    /// form here and needs the wider card; every other auth page keeps the
+    /// default. Applied to the wordmark, the card and the footer together so
+    /// the three stay aligned.
+    #[props(default = "sm:max-w-md".to_string())]
+    max_w: String,
     children: Element,
 }
 
 #[component]
 pub fn AuthLayout(props: AuthLayoutProps) -> Element {
+    let width = format!("sm:mx-auto sm:w-full {}", props.max_w);
     rsx! {
         div { class: "min-h-screen flex flex-col justify-center py-12 sm:px-6 lg:px-8 bg-app",
-            div { class: "sm:mx-auto sm:w-full sm:max-w-md",
+            div { class: "{width}",
                 // Logo
                 div { class: "flex flex-col items-center gap-3",
                     img {
@@ -1291,13 +1298,13 @@ pub fn AuthLayout(props: AuthLayoutProps) -> Element {
                 }
             }
 
-            div { class: "mt-8 sm:mx-auto sm:w-full sm:max-w-md",
+            div { class: "mt-8 {width}",
                 div { class: "bg-surface py-8 px-4 shadow sm:rounded-lg sm:px-10",
                     {props.children}
                 }
             }
 
-            div { class: "mt-6 sm:mx-auto sm:w-full sm:max-w-md",
+            div { class: "mt-6 {width}",
                 VersionFooter {}
             }
         }

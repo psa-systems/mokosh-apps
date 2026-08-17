@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::components::{
-    use_page_title, AlertType, Button, ButtonVariant, Card, PageHeader, Table, TableBody,
+    use_page_title, AlertType, Button, ButtonVariant, Card, Input, PageHeader, Table, TableBody,
     TableCell, TableHead, TableHeader, TableRow,
 };
 use crate::utils::Paginated;
@@ -408,69 +408,67 @@ fn render_widget_editor_cell(
         div { key: "{key}", style: "{style}",
             Card { title: title.to_string(),
                 div { class: "grid grid-cols-2 gap-2 text-sm",
-                    label { class: "flex items-center gap-2",
-                        span { class: "w-16 text-muted", "Col" }
-                        input {
-                            r#type: "number", min: "1", max: "12",
-                            class: "input input-bordered w-full",
-                            value: "{w.grid_col}",
-                            oninput: move |e| {
-                                if let Ok(v) = e.value().parse::<u32>() {
-                                    if let Some(s) = draft.write().widgets.get_mut(idx) {
-                                        s.grid_col = v.max(1);
-                                    }
-                                    dirty.set(true);
+                    Input {
+                        name: "{key}-col",
+                        label: "Col",
+                        r#type: "number",
+                        min: "1",
+                        max: "12",
+                        value: "{w.grid_col}",
+                        oninput: move |e: FormEvent| {
+                            if let Ok(v) = e.value().parse::<u32>() {
+                                if let Some(s) = draft.write().widgets.get_mut(idx) {
+                                    s.grid_col = v.max(1);
                                 }
-                            },
-                        }
+                                dirty.set(true);
+                            }
+                        },
                     }
-                    label { class: "flex items-center gap-2",
-                        span { class: "w-16 text-muted", "Row" }
-                        input {
-                            r#type: "number", min: "1",
-                            class: "input input-bordered w-full",
-                            value: "{w.grid_row}",
-                            oninput: move |e| {
-                                if let Ok(v) = e.value().parse::<u32>() {
-                                    if let Some(s) = draft.write().widgets.get_mut(idx) {
-                                        s.grid_row = v.max(1);
-                                    }
-                                    dirty.set(true);
+                    Input {
+                        name: "{key}-row",
+                        label: "Row",
+                        r#type: "number",
+                        min: "1",
+                        value: "{w.grid_row}",
+                        oninput: move |e: FormEvent| {
+                            if let Ok(v) = e.value().parse::<u32>() {
+                                if let Some(s) = draft.write().widgets.get_mut(idx) {
+                                    s.grid_row = v.max(1);
                                 }
-                            },
-                        }
+                                dirty.set(true);
+                            }
+                        },
                     }
-                    label { class: "flex items-center gap-2",
-                        span { class: "w-16 text-muted", "W" }
-                        input {
-                            r#type: "number", min: "1", max: "12",
-                            class: "input input-bordered w-full",
-                            value: "{w.grid_col_span}",
-                            oninput: move |e| {
-                                if let Ok(v) = e.value().parse::<u32>() {
-                                    if let Some(s) = draft.write().widgets.get_mut(idx) {
-                                        s.grid_col_span = v.clamp(1, 12);
-                                    }
-                                    dirty.set(true);
+                    Input {
+                        name: "{key}-w",
+                        label: "Width",
+                        r#type: "number",
+                        min: "1",
+                        max: "12",
+                        value: "{w.grid_col_span}",
+                        oninput: move |e: FormEvent| {
+                            if let Ok(v) = e.value().parse::<u32>() {
+                                if let Some(s) = draft.write().widgets.get_mut(idx) {
+                                    s.grid_col_span = v.clamp(1, 12);
                                 }
-                            },
-                        }
+                                dirty.set(true);
+                            }
+                        },
                     }
-                    label { class: "flex items-center gap-2",
-                        span { class: "w-16 text-muted", "H" }
-                        input {
-                            r#type: "number", min: "1",
-                            class: "input input-bordered w-full",
-                            value: "{w.grid_row_span}",
-                            oninput: move |e| {
-                                if let Ok(v) = e.value().parse::<u32>() {
-                                    if let Some(s) = draft.write().widgets.get_mut(idx) {
-                                        s.grid_row_span = v.max(1);
-                                    }
-                                    dirty.set(true);
+                    Input {
+                        name: "{key}-h",
+                        label: "Height",
+                        r#type: "number",
+                        min: "1",
+                        value: "{w.grid_row_span}",
+                        oninput: move |e: FormEvent| {
+                            if let Ok(v) = e.value().parse::<u32>() {
+                                if let Some(s) = draft.write().widgets.get_mut(idx) {
+                                    s.grid_row_span = v.max(1);
                                 }
-                            },
-                        }
+                                dirty.set(true);
+                            }
+                        },
                     }
                 }
                 div { class: "flex justify-end mt-3",
