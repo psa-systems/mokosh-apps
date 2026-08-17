@@ -2066,7 +2066,19 @@ fn WorkTypesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 4,
-                        message: "No work types yet. Click New Work Type to add one.".to_string(),
+                        title: "No work types yet".to_string(),
+                        description: "Work types are the billable categories you pick when logging a time entry.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(WorkTypeFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Work Type"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -2414,7 +2426,19 @@ fn TaskStatusesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 3,
-                        message: "No task statuses yet. Click New Status to add one.".to_string(),
+                        title: "No task statuses yet".to_string(),
+                        description: "Task statuses are the workflow states a project task moves through.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(TaskStatusFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Status"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -2735,7 +2759,19 @@ fn AssetTypesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 3,
-                        message: "No asset types yet. Click New Asset Type to add one.".to_string(),
+                        title: "No asset types yet".to_string(),
+                        description: "Asset types categorize the equipment you track for each company.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(AssetTypeFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Asset Type"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -3054,7 +3090,19 @@ fn CompanyIndustriesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 2,
-                        message: "No industries yet. Click New Industry to add one.".to_string(),
+                        title: "No industries yet".to_string(),
+                        description: "Industries are the suggestions offered when you categorize a company.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(CompanyIndustryFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Industry"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -3337,7 +3385,19 @@ fn ProjectTypesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 3,
-                        message: "No project types yet. Click New Project Type to add one.".to_string(),
+                        title: "No project types yet".to_string(),
+                        description: "Project types classify projects, for example client work against internal work.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(ProjectTypeFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Project Type"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -3667,7 +3727,19 @@ fn PaymentTermsSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 3,
-                        message: "No payment terms yet. Click New Payment Term to add one.".to_string(),
+                        title: "No payment terms yet".to_string(),
+                        description: "Payment terms fill the terms dropdown when you build an invoice.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(PaymentTermFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Payment Term"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -3979,7 +4051,19 @@ fn TicketStatusesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 4,
-                        message: "No ticket statuses yet. Click New Status to add one.".to_string(),
+                        title: "No ticket statuses yet".to_string(),
+                        description: "Ticket statuses are the workflow states a ticket moves through.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(TicketStatusFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Status"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -4315,7 +4399,19 @@ fn TicketPrioritiesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 4,
-                        message: "No ticket priorities yet. Click New Priority to add one.".to_string(),
+                        title: "No ticket priorities yet".to_string(),
+                        description: "Priorities rank tickets and set the SLA multiplier applied to each one.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(TicketPriorityFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Priority"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -4665,7 +4761,19 @@ fn TicketTypesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 3,
-                        message: "No ticket types yet. Click New Type to add one.".to_string(),
+                        title: "No ticket types yet".to_string(),
+                        description: "Ticket types describe the kind of work a ticket represents.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(TicketTypeFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Type"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -4987,7 +5095,19 @@ fn TicketQueuesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 3,
-                        message: "No ticket queues yet. Click New Queue to add one.".to_string(),
+                        title: "No ticket queues yet".to_string(),
+                        description: "Queues are where incoming tickets are routed for a team to pick up.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(TicketQueueFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Queue"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -5357,7 +5477,19 @@ fn TicketCategoriesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 3,
-                        message: "No ticket categories yet. Click New Category to add one.".to_string(),
+                        title: "No ticket categories yet".to_string(),
+                        description: "Categories classify tickets into a hierarchy for routing and reporting.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(TicketCategoryFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Category"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -5774,7 +5906,19 @@ fn RmmConnectionsSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 5,
-                        message: "No RMM connections yet. Click New Connection to add one.".to_string(),
+                        title: "No RMM connections yet".to_string(),
+                        description: "Connect a remote monitoring provider to pull its devices and alerts into the workspace.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same unreachable guard as the header button.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't do this while the server is unreachable".to_string()),
+                                onclick: move |_| editing.set(Some(RmmConnectionFormState::new())),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Connection"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -6328,7 +6472,24 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 5,
-                        message: "No device mappings yet. Click New Mapping to add one.".to_string(),
+                        title: "No device mappings yet".to_string(),
+                        description: "Mappings tie a monitored RMM device to the asset and company it belongs to.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same guards as the header button.
+                                disabled: no_connections || !can_mutate,
+                                title: if !can_mutate {
+                                    Some("Can't do this while the server is unreachable".to_string())
+                                } else {
+                                    no_connections
+                                        .then(|| "Add an RMM connection first, then map its devices here.".to_string())
+                                },
+                                onclick: move |_| creating.set(true),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Mapping"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
@@ -6773,7 +6934,24 @@ fn RmmAlertRulesSettingsBody() -> Element {
                 } else if rows.is_empty() && !fetch_failed {
                     TableEmpty {
                         columns: 5,
-                        message: "No alert rules yet. Click New Alert Rule to add one.".to_string(),
+                        title: "No alert rules yet".to_string(),
+                        description: "Alert rules turn incoming RMM alerts into tickets automatically.".to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                // MAPPS-357: same guards as the header button.
+                                disabled: no_connections || !can_mutate,
+                                title: if !can_mutate {
+                                    Some("Can't do this while the server is unreachable".to_string())
+                                } else {
+                                    no_connections
+                                        .then(|| "Add an RMM connection first, then define alert rules for it.".to_string())
+                                },
+                                onclick: move |_| creating.set(true),
+                                PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                "New Alert Rule"
+                            }
+                        },
                     }
                 } else {
                     TableBody {
