@@ -26,8 +26,8 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{
-    use_page_title, Button, ButtonVariant, Card, ErrorBanner, Input, Modal, ModalSize, PageHeader,
-    Select, SelectOption,
+    use_page_title, BannerTone, Button, ButtonVariant, Card, ErrorBanner, Input, Modal, ModalSize,
+    PageHeader, Select, SelectOption, StatusBanner,
 };
 use crate::utils::datetime::{format_user_datetime, preset_label, token_warnings, PRESET_FORMATS};
 use crate::utils::prefs;
@@ -444,9 +444,7 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
                     ErrorBanner { "{error}" }
                 }
                 if saved() {
-                    div { class: "rounded-md bg-green-50 dark:bg-green-900/40 p-3 text-sm text-green-700 dark:text-green-300",
-                        "Profile saved."
-                    }
+                    StatusBanner { tone: BannerTone::Success, "Profile saved." }
                 }
 
                 div { class: "grid gap-4 sm:grid-cols-2",
@@ -763,7 +761,7 @@ fn TokenGroupRow(group: &'static TokenGroup, draft: Signal<String>) -> Element {
                         rsx! {
                             button {
                                 key: "{group.label}-{token}-{descriptor}",
-                                class: "inline-flex items-center gap-1 rounded border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/40 px-2 py-1 text-xs text-blue-700 dark:text-blue-200 hover:bg-blue-100 dark:hover:bg-blue-900/60",
+                                class: "inline-flex items-center gap-1 rounded border border-accent-200 dark:border-accent-700 bg-accent-50 dark:bg-accent-900/40 px-2 py-1 text-xs text-accent-700 dark:text-accent-300 hover:bg-accent-100 dark:hover:bg-accent-900/60",
                                 title: "Token: {token}",
                                 onclick: move |_| {
                                     let mut cur = draft();
@@ -771,7 +769,7 @@ fn TokenGroupRow(group: &'static TokenGroup, draft: Signal<String>) -> Element {
                                     draft.set(cur);
                                 },
                                 span { class: "font-mono font-medium", "{rendered}" }
-                                span { class: "text-blue-500 dark:text-blue-300", "{descriptor}" }
+                                span { class: "text-accent-500 dark:text-accent-400", "{descriptor}" }
                             }
                         }
                     }

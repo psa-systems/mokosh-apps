@@ -103,6 +103,15 @@ jobs:
           bash scripts/check-empty-state.sh --self-test
           bash scripts/check-empty-state.sh
 
+      # MAPPS-439: every inline status banner renders StatusBanner, and all
+      # four BannerTone recipes stay in components/error_banner.rs. MAPPS-418
+      # extracted the red one only, so the other three states drifted into six
+      # hand-rolled recipes that all compile and render.
+      - name: Status-banner guard
+        run: |
+          bash scripts/check-status-banner.sh --self-test
+          bash scripts/check-status-banner.sh
+
       - name: Check formatting
         run: cargo fmt --all --check
 

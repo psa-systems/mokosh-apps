@@ -47,7 +47,7 @@ pre-commit: css-build
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-web check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state
+check: check-web check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner
 
 # Check web/WASM compilation
 [group: 'check']
@@ -107,6 +107,12 @@ check-ellipsis-glyph:
 check-empty-state:
     bash scripts/check-empty-state.sh --self-test
     bash scripts/check-empty-state.sh
+
+# MAPPS-439: keep every inline status banner on StatusBanner, and keep all four BannerTone recipes in components/error_banner.rs. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-status-banner:
+    bash scripts/check-status-banner.sh --self-test
+    bash scripts/check-status-banner.sh
 
 # Run clippy lints
 [group: 'check']
