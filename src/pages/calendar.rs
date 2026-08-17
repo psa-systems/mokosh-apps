@@ -685,7 +685,7 @@ fn use_templates_resource(kind: Option<&'static str>) -> Resource<Vec<Scheduling
 /// `GET /api/v1/auth/users` is server-gated to Admin / Manager (see
 /// `src/modules/auth/routes.rs::list_users`), so signed-in users with
 /// lower roles would get a 403. Skip the fetch for them: the dropdown
-/// just shows the "Select technician..." placeholder and the user can
+/// just shows the "Select technician…" placeholder and the user can
 /// only self-assign anyway. Saves a noisy console error per page load.
 fn use_users_resource() -> Resource<Vec<RemoteUser>> {
     let auth = crate::hooks::use_auth();

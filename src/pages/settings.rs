@@ -1040,7 +1040,7 @@ fn OrganizationSettingsBody() -> Element {
                     disabled: logo_busy() || !can_mutate,
                     // PMS-758: an upload starts on selection and takes as long as
                     // it takes; without this the page said nothing at all.
-                    status: if logo_busy() { "Uploading..." } else { "" },
+                    status: if logo_busy() { "Uploading…" } else { "" },
                     error: logo_error(),
                     help: "Optional. PNG, JPEG, WebP or GIF, up to 1 MB. Shown to clients at the top of the request forms you send and the email that carries them.",
                     preview: rsx! {

@@ -759,7 +759,7 @@ fn Home() -> Element {
 /// `/login` is the explicit sign-in entry point. Bookmarks, the homepage CTA,
 /// and the navbar "Sign in" link all land here. Kick off the OIDC code+PKCE
 /// flow against the configured issuer (bunyip-api post-cutover) and show a
-/// "Signing in..." placeholder while the browser navigates to
+/// "Signing you in…" placeholder while the browser navigates to
 /// `/oauth2/authorize`.
 ///
 /// This is the same kickoff `AuthGuard` does when an unauthenticated user

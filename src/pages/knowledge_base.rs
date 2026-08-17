@@ -1466,7 +1466,7 @@ fn MeasuredDurationCard(article_id: String) -> Element {
         Card { title: "Measured duration",
             match &*snap {
                 None => rsx! {
-                    p { class: "text-sm text-muted", "Loading..." }
+                    p { class: "text-sm text-muted", "Loading…" }
                 },
                 // A failed fetch is not "no data": saying "no time measured
                 // yet" when the request simply failed would be a confident

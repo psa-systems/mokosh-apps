@@ -86,6 +86,15 @@ jobs:
       - name: Kit-adoption guard
         run: bash scripts/check-kit-adoption.sh
 
+      # MAPPS-445: rendered text uses U+2026, never three ASCII periods. The
+      # two spellings look alike in a diff, so the ASCII one kept coming back
+      # after MAPPS-410 standardized on the glyph. --self-test proves the guard
+      # still rejects it.
+      - name: Ellipsis-glyph guard
+        run: |
+          bash scripts/check-ellipsis-glyph.sh --self-test
+          bash scripts/check-ellipsis-glyph.sh
+
       - name: Check formatting
         run: cargo fmt --all --check
 

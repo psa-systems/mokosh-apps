@@ -296,7 +296,7 @@ pub fn RequestFormPage(token: String) -> Element {
                     }
                 },
                 None if loading() => rsx! {
-                    p { class: "text-center text-sm text-content", "Loading your form..." }
+                    p { class: "text-center text-sm text-content", "Loading your form…" }
                 },
                 None => match form() {
                     None => rsx! {
@@ -314,7 +314,7 @@ pub fn RequestFormPage(token: String) -> Element {
                             field_errors,
                             form_error: form_error(),
                             disabled: submitting(),
-                            submit_label: (if submitting() { "Sending..." } else { "Send request" }).to_string(),
+                            loading: submitting(),
                             onsubmit: move |_| handle_submit(()),
                         }
                     },
@@ -343,7 +343,7 @@ pub(crate) fn RequestFormBody(
     field_errors: Signal<HashMap<String, String>>,
     form_error: String,
     disabled: bool,
-    submit_label: String,
+    loading: bool,
     onsubmit: EventHandler<()>,
 ) -> Element {
     rsx! {
@@ -393,12 +393,16 @@ pub(crate) fn RequestFormBody(
                 }
             }
 
+            // MAPPS-445: the spinner is the busy signal, so the label stays
+            // put. A swapped label on a greyed-out button reads as a dead
+            // control on the slow upload it is meant to explain.
             Button {
                 variant: ButtonVariant::Primary,
                 r#type: "submit".to_string(),
                 disabled,
+                loading,
                 class: "w-full".to_string(),
-                "{submit_label}"
+                "Send request"
             }
         }
 
@@ -666,5 +670,57 @@ mod tests {
             blank.get("employee_name").is_none(),
             "a whitespace-only answer is omitted, matching the server's own trim"
         );
+    }
+
+    #[component]
+    fn Body(loading: bool) -> Element {
+        let answers = use_signal(HashMap::new);
+        let field_errors = use_signal(HashMap::new);
+        rsx! {
+            RequestFormBody {
+                def: form(),
+                answers,
+                field_errors,
+                form_error: String::new(),
+                disabled: loading,
+                loading,
+                onsubmit: move |_| {},
+            }
+        }
+    }
+
+    fn render(loading: bool) -> String {
+        let mut dom = VirtualDom::new_with_props(Body, BodyProps { loading });
+        dom.rebuild_in_place();
+        dioxus_ssr::render(&dom)
+    }
+
+    /// MAPPS-445 regression: the submit used to swap its own label
+    /// ("Send request" -> "Sending...") and render no spinner, so a slow
+    /// upload showed a client nothing but a greyed-out button with different
+    /// words on it. The label is stable and the shared `Spinner` is the busy
+    /// signal, as it is on every other submit in the app.
+    #[test]
+    fn the_submit_button_spins_while_a_submission_is_in_flight() {
+        let busy = render(true);
+        assert!(
+            busy.contains("animate-spin"),
+            "a submission in flight renders the shared Spinner; got: {busy}"
+        );
+        assert!(
+            busy.contains("Send request"),
+            "and keeps its label rather than swapping it; got: {busy}"
+        );
+        assert!(
+            busy.contains("disabled"),
+            "and the control is disabled against a double-submit; got: {busy}"
+        );
+
+        let idle = render(false);
+        assert!(
+            !idle.contains("animate-spin"),
+            "an idle form shows no spinner; got: {idle}"
+        );
+        assert!(idle.contains("Send request"));
     }
 }
