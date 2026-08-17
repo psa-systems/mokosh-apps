@@ -47,7 +47,7 @@ pre-commit: css-build
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-web check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive
+check: check-web check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-keyboard-activation
 
 # Check web/WASM compilation
 [group: 'check']
@@ -83,6 +83,11 @@ check-auth-error-prose:
 [group: 'check']
 check-confirm-destructive:
     bash scripts/check-confirm-destructive.sh
+
+# MAPPS-443: keep every element that announces itself as a button a real button, so Enter and Space activate it
+[group: 'check']
+check-keyboard-activation:
+    bash scripts/check-keyboard-activation.sh
 
 # Run clippy lints
 [group: 'check']

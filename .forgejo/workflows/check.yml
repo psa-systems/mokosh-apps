@@ -71,6 +71,12 @@ jobs:
       - name: Destructive-confirm guard
         run: bash scripts/check-confirm-destructive.sh
 
+      # MAPPS-443: a div with role="button" and tabindex="0" is announced as a
+      # button and reachable by Tab, but Enter and Space do nothing on it. Only
+      # a real button element gets keyboard activation.
+      - name: Keyboard-activation guard
+        run: bash scripts/check-keyboard-activation.sh
+
       - name: Check formatting
         run: cargo fmt --all --check
 

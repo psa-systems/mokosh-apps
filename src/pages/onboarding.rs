@@ -342,11 +342,14 @@ pub fn Onboarding() -> Element {
                                     });
                                 },
                             }
+                            // MAPPS-443: `role="alert"` and the settings help
+                            // copy verbatim, so the same field reads and
+                            // announces the same on both pages.
                             if !logo_error().is_empty() {
-                                p { class: "text-xs text-red-600 dark:text-red-400", "{logo_error}" }
+                                p { class: "text-xs text-red-600 dark:text-red-400", role: "alert", "{logo_error}" }
                             } else {
                                 p { class: "text-xs text-muted",
-                                    "PNG, JPEG, WebP or GIF, up to 1 MB. Shown to clients on the forms you send."
+                                    "Optional. PNG, JPEG, WebP or GIF, up to 1 MB. Shown to clients at the top of the request forms you send and the email that carries them."
                                 }
                             }
                         }
@@ -370,6 +373,70 @@ pub fn Onboarding() -> Element {
                     p { class: "mt-6 text-center text-xs text-muted",
                         "Your name comes from the account you signed in with. Other settings (timezone, preferences) can be edited later from Profile."
                     }
+        }
+    }
+}
+
+#[cfg(test)]
+mod logo_field_tests {
+    /// A file's source minus its test module, so the assertions below can name
+    /// the very strings they pin without matching themselves.
+    fn production(src: &'static str) -> &'static str {
+        src.split_once("#[cfg(test)]")
+            .map(|(before, _)| before)
+            .unwrap_or(src)
+    }
+
+    fn onboarding() -> &'static str {
+        production(include_str!("onboarding.rs"))
+    }
+
+    fn settings() -> &'static str {
+        production(include_str!("settings.rs"))
+    }
+
+    /// The string literal holding the logo field's help copy.
+    fn help_copy(src: &'static str) -> &'static str {
+        let start = src
+            .find("PNG, JPEG, WebP or GIF")
+            .expect("the logo field describes its accepted formats");
+        let open = src[..start]
+            .rfind('"')
+            .expect("the help copy is a string literal");
+        let rest = &src[open + 1..];
+        let end = rest.find('"').expect("the literal is terminated");
+        &rest[..end]
+    }
+
+    /// MAPPS-443: onboarding and settings render the same organization-logo
+    /// field, and the copy had drifted: onboarding dropped "Optional" from an
+    /// optional field and never mentioned the email the logo also appears on.
+    #[test]
+    fn both_logo_fields_describe_themselves_identically() {
+        assert_eq!(help_copy(onboarding()), help_copy(settings()));
+        assert!(help_copy(onboarding()).starts_with("Optional."));
+    }
+
+    /// MAPPS-443: a read failure is rendered in place of the help text. Without
+    /// `role="alert"` a screen-reader user gets no notification at all, which
+    /// is what onboarding shipped while settings announced correctly.
+    #[test]
+    fn the_logo_read_error_announces_itself_on_both_pages() {
+        for (page, src) in [("onboarding.rs", onboarding()), ("settings.rs", settings())] {
+            let mut seen = 0;
+            for (idx, _) in src.match_indices("\"{logo_error}\"") {
+                seen += 1;
+                let open = src[..idx]
+                    .rfind('{')
+                    .expect("the error text sits inside an element");
+                // rsx puts every attribute ahead of the children, so the
+                // element's attributes are exactly what precedes the text.
+                assert!(
+                    src[open..idx].contains("role: \"alert\""),
+                    "{page}: the logo error must carry role=\"alert\""
+                );
+            }
+            assert_eq!(seen, 1, "{page}: renders the logo error exactly once");
         }
     }
 }

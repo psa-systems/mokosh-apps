@@ -1098,16 +1098,22 @@ fn MonthDayCell(props: MonthDayCellProps) -> Element {
 
     rsx! {
         // MAPPS-319: the whole cell is clickable; the click opens the
-        // New Appointment modal pre-filled with this day. Appointment
-        // chips below stop propagation so their own onpick fires instead.
-        div {
-            class: "min-h-24 p-2 cursor-pointer {bg_class}",
-            role: "button",
-            tabindex: "0",
-            aria_label: "Create appointment on this day",
-            onclick: move |_| props.oncreate.call(cell_date),
-            span { class: "text-sm {text_class}", "{props.day}" }
-            div { class: "mt-1 space-y-1",
+        // New Appointment modal pre-filled with this day.
+        div { class: "relative min-h-24 p-2 {bg_class}",
+            // MAPPS-443: a real button, so Enter and Space activate it for
+            // free. It covers the cell instead of wrapping it because the
+            // appointment chips are buttons, and a button cannot nest one.
+            // The chips sit above it and take their own clicks; everything
+            // else in the cell is click-through so the whole area still
+            // opens New Appointment.
+            button {
+                r#type: "button",
+                class: "absolute inset-0 w-full cursor-pointer",
+                aria_label: "Create appointment on this day",
+                onclick: move |_| props.oncreate.call(cell_date),
+            }
+            span { class: "relative pointer-events-none text-sm {text_class}", "{props.day}" }
+            div { class: "relative pointer-events-none mt-1 space-y-1",
                 for (i, appt) in props.appointments.iter().enumerate() {
                     if i < 3 {
                         {
@@ -1120,7 +1126,7 @@ fn MonthDayCell(props: MonthDayCellProps) -> Element {
                                 button {
                                     key: "{appt.id}",
                                     r#type: "button",
-                                    class: "w-full text-left text-xs truncate px-1 py-0.5 rounded {chip} {past} hover:opacity-80",
+                                    class: "pointer-events-auto w-full text-left text-xs truncate px-1 py-0.5 rounded {chip} {past} hover:opacity-80",
                                     title: "{type_label} - {label}",
                                     onclick: move |e: MouseEvent| {
                                         e.stop_propagation();
@@ -1265,16 +1271,22 @@ fn DayColumn(props: DayColumnProps) -> Element {
     let rows = (GRID_END_HOUR - GRID_START_HOUR) as usize;
     let day = props.day;
     rsx! {
-        // MAPPS-319: column-level onclick opens New Appointment pre-
-        // filled with this day. Appointment blocks below stop
-        // propagation so their own onpick (edit) fires instead.
+        // MAPPS-319: clicking the column opens New Appointment pre-filled
+        // with this day.
         div {
-            class: "relative border-l border-line cursor-pointer",
+            class: "relative border-l border-line",
             style: "height: {rows as f64 * 3.0}rem;",
-            role: "button",
-            tabindex: "0",
-            aria_label: "Create appointment on this day",
-            onclick: move |_| props.oncreate.call(day),
+            // MAPPS-443: a real button, so Enter and Space activate it for
+            // free. It covers the column rather than wrapping it because
+            // the appointment blocks are buttons, and a button cannot nest
+            // one. The blocks are positioned and come later, so they paint
+            // above this overlay and keep their own clicks.
+            button {
+                r#type: "button",
+                class: "absolute inset-0 w-full cursor-pointer",
+                aria_label: "Create appointment on this day",
+                onclick: move |_| props.oncreate.call(day),
+            }
             // Hour grid lines; out-of-hours rows are muted, not struck
             // through, and remain selectable (MAPPS-387).
             for hour in GRID_START_HOUR..GRID_END_HOUR {
@@ -1493,14 +1505,19 @@ fn DayGrid(props: DayGridProps) -> Element {
                 }
             }
             // Single positioned column (taller rows than the week view).
-            // MAPPS-319: column-level onclick opens New Appointment.
+            // MAPPS-319: clicking the column opens New Appointment.
             div {
-                class: "relative border-l border-line cursor-pointer",
+                class: "relative border-l border-line",
                 style: "height: {rows as f64 * 4.0}rem;",
-                role: "button",
-                tabindex: "0",
-                aria_label: "Create appointment on this day",
-                onclick: move |_| props.oncreate.call(day),
+                // MAPPS-443: same overlay button as the week column, for the
+                // same reason: the appointment blocks are buttons and cannot
+                // be nested inside one.
+                button {
+                    r#type: "button",
+                    class: "absolute inset-0 w-full cursor-pointer",
+                    aria_label: "Create appointment on this day",
+                    onclick: move |_| props.oncreate.call(day),
+                }
                 for hour in GRID_START_HOUR..GRID_END_HOUR {
                     div { class: "h-16 border-b border-line {hour_shade_class(hour)}" }
                 }
@@ -3766,5 +3783,67 @@ mod grid_geometry_tests {
         assert_eq!(hour_shade_class(9), "");
         assert_eq!(hour_shade_class(2), "bg-surface-2");
         assert_eq!(hour_shade_class(22), "bg-surface-2");
+    }
+}
+
+#[cfg(test)]
+mod create_target_a11y_tests {
+    /// This file's source minus its test modules, so the assertions can name
+    /// the attributes they forbid without matching themselves.
+    fn production_src() -> &'static str {
+        const CALENDAR_SRC: &str = include_str!("calendar.rs");
+        CALENDAR_SRC
+            .split_once("#[cfg(test)]")
+            .map(|(before, _)| before)
+            .expect("this file has test modules")
+    }
+
+    const CREATE_LABEL: &str = "aria_label: \"Create appointment on this day\"";
+
+    /// MAPPS-443: the month cell, the week column and the day column each
+    /// carried `role="button"` and `tabindex="0"` on a div whose only handler
+    /// was `onclick`. A keyboard user reached the control, heard it announced
+    /// as a button, and could not activate it: a div gets no implicit Enter or
+    /// Space activation. A real button does, which is why it has to stay one.
+    #[test]
+    fn every_create_target_is_a_real_button() {
+        let src = production_src();
+        assert!(
+            !src.contains("role: \"button\""),
+            "a div dressed as a button is not keyboard-operable"
+        );
+        assert!(
+            !src.contains("tabindex"),
+            "no tabindex override: a button is in the tab order already"
+        );
+
+        let mut targets = 0;
+        for (idx, _) in src.match_indices(CREATE_LABEL) {
+            targets += 1;
+            let open = src[..idx]
+                .rfind('{')
+                .expect("the label sits inside an element");
+            assert!(
+                src[..open].trim_end().ends_with("button"),
+                "the create target must be a button element"
+            );
+            // rsx puts every attribute ahead of the children, and this element
+            // has none, so the whole element is `open..` up to its close.
+            let body = &src[open..];
+            let end = body.find('}').expect("the element is closed");
+            let body = &body[..end];
+            assert!(
+                body.contains("r#type: \"button\""),
+                "an explicit type keeps it out of the enclosing form's submit"
+            );
+            assert!(
+                body.contains("oncreate.call"),
+                "click and key activation run the same handler"
+            );
+        }
+        assert_eq!(
+            targets, 3,
+            "month cell, week column and day column each offer create-on-this-day"
+        );
     }
 }
