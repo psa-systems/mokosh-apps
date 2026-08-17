@@ -72,6 +72,9 @@ pub fn FormsBuilderPage() -> Element {
     let mut sent_reload = use_signal(|| 0u32);
     // PMS-744: the client's view of a saved definition, opened from its row.
     let mut previewing = use_signal(|| None::<PublicForm>);
+    // MAPPS-436: (draft id, label) of the draft the Discard dialog is asking
+    // about. Set by the row button; the DELETE fires from `onconfirm`.
+    let mut pending_draft_discard = use_signal(|| None::<(String, String)>);
 
     let snap = forms.read_unchecked();
     let is_loading = snap.is_none();
@@ -98,6 +101,8 @@ pub fn FormsBuilderPage() -> Element {
             crate::components::ContentUnavailable { title: "Request Forms".to_string() }
         };
     }
+
+    let pending_discard = pending_draft_discard.read().clone();
 
     rsx! {
         PageHeader { title: "Request Forms".to_string(),
@@ -166,6 +171,7 @@ pub fn FormsBuilderPage() -> Element {
                                 .as_ref()
                                 .and_then(|id| rows.iter().find(|f| f.id.to_string() == *id).cloned());
                             let delete_id = draft.id.clone();
+                            let delete_label = draft.label();
                             rsx! {
                                 li { key: "{key}",
                                     class: "flex items-center justify-between gap-3 rounded border border-line bg-surface px-3 py-2",
@@ -204,18 +210,11 @@ pub fn FormsBuilderPage() -> Element {
                                         Button {
                                             variant: ButtonVariant::Link,
                                             disabled: !can_mutate,
+                                            // MAPPS-436: opens the dialog; the DELETE fires from
+                                            // its `onconfirm` below.
                                             onclick: move |_| {
-                                                let id = delete_id.clone();
-                                                spawn(async move {
-                                                    if crate::hooks::fetch::api::delete_authed(
-                                                        &format!("/forms/drafts/{id}"),
-                                                    )
-                                                    .await
-                                                    .is_ok()
-                                                    {
-                                                        drafts.restart();
-                                                    }
-                                                });
+                                                pending_draft_discard
+                                                    .set(Some((delete_id.clone(), delete_label.clone())));
                                             },
                                             "Discard"
                                         }
@@ -225,6 +224,36 @@ pub fn FormsBuilderPage() -> Element {
                         }
                     }
                 }
+            }
+        }
+
+        // MAPPS-436: the DELETE fires from `onconfirm` only.
+        if let Some((discard_id, discard_label)) = pending_discard {
+            crate::components::ConfirmDialog {
+                open: true,
+                title: "Discard draft".to_string(),
+                message: format!("Discard the unfinished draft \"{discard_label}\"? It cannot be recovered."),
+                confirm_text: "Discard".to_string(),
+                cancel_text: "Cancel".to_string(),
+                destructive: true,
+                onconfirm: move |_| {
+                    let id = discard_id.clone();
+                    pending_draft_discard.set(None);
+                    spawn(async move {
+                        match crate::hooks::fetch::api::delete_authed(&format!("/forms/drafts/{id}"))
+                            .await
+                        {
+                            Ok(()) => drafts.restart(),
+                            // MAPPS-436: a failed discard used to leave the row
+                            // in place with no explanation.
+                            Err(err) => crate::hooks::push_toast(
+                                crate::components::AlertType::Error,
+                                format!("Could not discard the draft: {err}"),
+                            ),
+                        }
+                    });
+                },
+                oncancel: move |_| pending_draft_discard.set(None),
             }
         }
 
@@ -1312,6 +1341,42 @@ fn FormEditorModal(
     let draft_key_for_close = draft_key.clone();
     let draft_key_for_discard = draft_key.clone();
     let saved_for_discard = saved.clone();
+    // MAPPS-436: Discard draft throws away restored work and deletes the
+    // server-side copy, so it opens the dialog and mutates only on confirm.
+    let mut confirming_draft_discard = use_signal(|| false);
+    let discard_restored_draft = move |_: ()| {
+        confirming_draft_discard.set(false);
+        let base = saved_for_discard.clone();
+        name.set(base.name.clone());
+        slug.set(base.slug.clone());
+        description.set(base.description.clone());
+        contact_info.set(base.contact_info.clone());
+        kb_article_id.set(base.kb_article_id.clone());
+        is_active.set(base.is_active);
+        fields.set(base.fields.clone());
+        rules.set(base.rules.clone());
+        field_errors.set(Vec::new());
+        problems.set(ProblemCounts::default());
+        crate::utils::prefs::clear(&draft_key_for_discard);
+        draft_restored.set(false);
+        // PMS-759: and the server's copy, or the next open on any machine
+        // restores exactly what was just discarded.
+        if let Some(id) = server_draft_id() {
+            server_draft_id.set(None);
+            spawn(async move {
+                if let Err(err) =
+                    crate::hooks::fetch::api::delete_authed(&format!("/forms/drafts/{id}")).await
+                {
+                    // The local state is already reverted; say so rather than
+                    // leave a server draft that reappears on the next open.
+                    crate::hooks::push_toast(
+                        crate::components::AlertType::Error,
+                        format!("Could not discard the saved draft: {err}"),
+                    );
+                }
+            });
+        }
+    };
     // PMS-748: see `FormsBuilderPage`; the preview must name the MSP the
     // client's own page will name.
     let (tenant_name, tenant_logo) = use_org_identity();
@@ -1703,36 +1768,22 @@ fn FormEditorModal(
                         }
                         Button {
                             variant: ButtonVariant::Link,
-                            onclick: move |_| {
-                                let base = saved_for_discard.clone();
-                                name.set(base.name.clone());
-                                slug.set(base.slug.clone());
-                                description.set(base.description.clone());
-                                contact_info.set(base.contact_info.clone());
-                                kb_article_id.set(base.kb_article_id.clone());
-                                is_active.set(base.is_active);
-                                fields.set(base.fields.clone());
-                                rules.set(base.rules.clone());
-                                field_errors.set(Vec::new());
-                                problems.set(ProblemCounts::default());
-                                crate::utils::prefs::clear(&draft_key_for_discard);
-                                draft_restored.set(false);
-                                // PMS-759: and the server's copy, or the next
-                                // open on any machine restores exactly what was
-                                // just discarded.
-                                if let Some(id) = server_draft_id() {
-                                    server_draft_id.set(None);
-                                    spawn(async move {
-                                        let _ = crate::hooks::fetch::api::delete_authed(
-                                            &format!("/forms/drafts/{id}"),
-                                        )
-                                        .await;
-                                    });
-                                }
-                            },
+                            onclick: move |_| confirming_draft_discard.set(true),
                             "Discard draft"
                         }
                     }
+                }
+                // MAPPS-436: the revert and the DELETE fire from `onconfirm` only.
+                crate::components::ConfirmDialog {
+                    open: confirming_draft_discard(),
+                    title: "Discard draft".to_string(),
+                    message: "Discard the restored draft and go back to the saved form? The unsaved changes are gone for good."
+                        .to_string(),
+                    confirm_text: "Discard".to_string(),
+                    cancel_text: "Keep draft".to_string(),
+                    destructive: true,
+                    onconfirm: discard_restored_draft,
+                    oncancel: move |_| confirming_draft_discard.set(false),
                 }
 
                 // Above the tab bar on purpose: it is the one surface that can

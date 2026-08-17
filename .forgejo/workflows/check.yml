@@ -65,6 +65,12 @@ jobs:
       - name: Auth-error-prose guard
         run: bash scripts/check-auth-error-prose.sh
 
+      # MAPPS-436: a Delete/Remove button only opens ConfirmDialog. MAPPS-189
+      # wired the dialog app-wide; row Deletes added later shipped with no
+      # confirmation at all, so the rule is enforced rather than documented.
+      - name: Destructive-confirm guard
+        run: bash scripts/check-confirm-destructive.sh
+
       - name: Check formatting
         run: cargo fmt --all --check
 
