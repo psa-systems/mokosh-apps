@@ -47,7 +47,7 @@ pre-commit: css-build
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-web check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner
+check: check-web check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows
 
 # Check web/WASM compilation
 [group: 'check']
@@ -113,6 +113,12 @@ check-empty-state:
 check-status-banner:
     bash scripts/check-status-banner.sh --self-test
     bash scripts/check-status-banner.sh
+
+# MAPPS-438: keep every list page rendering only rows the backend returned, never a seeded demo fallback. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-no-demo-rows:
+    bash scripts/check-no-demo-rows.sh --self-test
+    bash scripts/check-no-demo-rows.sh
 
 # Run clippy lints
 [group: 'check']

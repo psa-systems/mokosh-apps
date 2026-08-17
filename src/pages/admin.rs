@@ -5,8 +5,8 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, BannerTone, DataTable, PageHeader, StatCard, StatusBanner,
-    Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+    use_page_title, Badge, BadgeVariant, DataTable, ErrorBanner, PageHeader, StatCard, Table,
+    TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 
 /// Subset of mokosh-server's `TenantResponse` we render in the admin
@@ -29,13 +29,6 @@ struct RemoteTenant {
 #[derive(Clone, Debug, Deserialize)]
 struct PaginatedTenants {
     data: Vec<RemoteTenant>,
-}
-
-#[cfg(feature = "multi-tenant")]
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum TenantSource {
-    Backend,
-    Demo,
 }
 
 #[cfg(feature = "multi-tenant")]
@@ -86,40 +79,37 @@ fn format_created(when: chrono::DateTime<chrono::Utc>) -> String {
 #[component]
 pub fn TenantManagementPage() -> Element {
     use_page_title("Tenant Management");
-    // Try the live tenants endpoint first; fall back to seeded demo
-    // rows so the page stays demoable for envs without a live backend.
+    // MAPPS-438: `None` is a failed load, exactly like the other list pages.
+    // The roster renders only what the backend returned.
     let tenants_resource = use_resource(|| async {
         // F1: re-fetch on org switch / token swap so the roster reflects
         // the active scope instead of the prior tenant's cached rows.
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        // MAPPS-351: also refetch on reconnect so the roster drops the demo
-        // fallback once the real backend answers again.
+        // MAPPS-351: also refetch on reconnect so the roster fills in once the
+        // real backend answers again.
         let _reachable = crate::hooks::use_server_reachable();
-        let token = match crate::hooks::fetch::api::current_access_token() {
-            Some(t) => t,
-            None => return (Vec::<RemoteTenant>::new(), TenantSource::Demo),
-        };
-        match crate::hooks::fetch::api::get_with_auth::<PaginatedTenants>("/tenants", &token).await
-        {
-            Ok(page) => (page.data, TenantSource::Backend),
-            Err(_) => (Vec::new(), TenantSource::Demo),
-        }
+        let token = crate::hooks::fetch::api::current_access_token()?;
+        crate::hooks::fetch::api::get_with_auth::<PaginatedTenants>("/tenants", &token)
+            .await
+            .ok()
+            .map(|page| page.data)
     });
 
     let resource_snapshot = tenants_resource.read_unchecked();
     let is_loading = resource_snapshot.is_none();
-    let (remote_tenants, source) = match &*resource_snapshot {
-        Some((rows, source)) => (rows.clone(), *source),
-        None => (Vec::new(), TenantSource::Demo),
+    let fetch_failed = matches!(*resource_snapshot, Some(None));
+    let remote_tenants: Vec<RemoteTenant> = match &*resource_snapshot {
+        Some(Some(rows)) => rows.clone(),
+        _ => Vec::new(),
     };
 
-    // MAPPS-351: this page intentionally falls back to demo rows when the
-    // backend errors, so it stays demoable. But when the server is flagged
-    // DOWN, those demo rows would masquerade as real data during an outage -
-    // show the honest unavailable state instead. Gated on the reachability
-    // flag so a reachable no-token / 4xx keeps the demo fallback. Clears on
-    // reconnect (the resource subscribes to reachability above).
-    if !crate::hooks::use_server_reachable() && source == TenantSource::Demo && !is_loading {
+    // MAPPS-351: a failed load while the server is flagged DOWN is an outage,
+    // not an empty roster - show the honest unavailable state instead of an
+    // empty table. A reachable no-token / 4xx keeps the inline error banner
+    // below. Clears on reconnect (the resource subscribes to reachability
+    // above).
+    let reachable = crate::hooks::use_server_reachable();
+    if fetch_failed && !reachable {
         return rsx! {
             crate::components::ContentUnavailable { title: "Tenant Management".to_string() }
         };
@@ -127,25 +117,20 @@ pub fn TenantManagementPage() -> Element {
 
     // Stat-card counts are derived from the same data the table renders,
     // so they stay in sync with the roster instead of the old hardcoded
-    // 42/38/4 literals. In demo mode they match the four seeded rows
-    // below. MRR has no source field on the tenants API (per-row MRR is
-    // "-" too), so it is shown as "-" rather than a fabricated dollar
+    // 42/38/4 literals. MRR has no source field on the tenants API (per-row
+    // MRR is "-" too), so it is shown as "-" rather than a fabricated dollar
     // figure.
-    let (total_tenants, active_count, trial_count) = if source == TenantSource::Backend {
-        (
-            remote_tenants.len(),
-            remote_tenants
-                .iter()
-                .filter(|t| humanize_tenant_status(&t.status) == "Active")
-                .count(),
-            remote_tenants
-                .iter()
-                .filter(|t| humanize_plan(&t.subscription_plan) == "Trial")
-                .count(),
-        )
-    } else {
-        (4, 3, 1)
-    };
+    let (total_tenants, active_count, trial_count) = (
+        remote_tenants.len(),
+        remote_tenants
+            .iter()
+            .filter(|t| humanize_tenant_status(&t.status) == "Active")
+            .count(),
+        remote_tenants
+            .iter()
+            .filter(|t| humanize_plan(&t.subscription_plan) == "Trial")
+            .count(),
+    );
     let stat = |n: usize| -> String {
         if is_loading {
             "-".to_string()
@@ -176,17 +161,13 @@ pub fn TenantManagementPage() -> Element {
             StatCard { label: "MRR", value: "-" }
         }
 
-        if source == TenantSource::Demo && !is_loading {
-            StatusBanner {
-                tone: BannerTone::Warning,
-                class: "mb-3",
-                "Backend tenants API not reachable - showing demo rows."
-            }
+        if fetch_failed {
+            ErrorBanner { class: "mb-3", "Could not load tenants. Refresh the page to retry." }
         }
 
         DataTable {
             loading: is_loading,
-            total_items: if source == TenantSource::Backend { remote_tenants.len() } else { 4 },
+            total_items: remote_tenants.len(),
             current_page: 1,
             per_page: 25,
             columns: 6,
@@ -203,7 +184,7 @@ pub fn TenantManagementPage() -> Element {
                 }
                 if is_loading {
                     TableLoading { columns: 6, rows: 4 }
-                } else if source == TenantSource::Backend && remote_tenants.is_empty() {
+                } else if remote_tenants.is_empty() {
                     TableEmpty {
                         columns: 6,
                         title: "No tenants yet".to_string(),
@@ -211,55 +192,16 @@ pub fn TenantManagementPage() -> Element {
                     }
                 } else {
                     TableBody {
-                        if source == TenantSource::Backend {
-                            for tenant in remote_tenants.iter().cloned() {
-                                TenantRow {
-                                    key: "{tenant.id}",
-                                    name: tenant.name.clone(),
-                                    domain: tenant.slug.clone(),
-                                    plan: humanize_plan(&tenant.subscription_plan),
-                                    users: 0,
-                                    mrr: "-".to_string(),
-                                    status: humanize_tenant_status(&tenant.status),
-                                    created: format_created(tenant.created_at),
-                                }
-                            }
-                        } else {
+                        for tenant in remote_tenants.iter().cloned() {
                             TenantRow {
-                                name: "Acme MSP",
-                                domain: "acme-msp",
-                                plan: "Professional",
-                                users: 8,
-                                mrr: "$299",
-                                status: "Active",
-                                created: "Jan 15, 2024",
-                            }
-                            TenantRow {
-                                name: "TechPro Services",
-                                domain: "techpro",
-                                plan: "Enterprise",
-                                users: 25,
-                                mrr: "$599",
-                                status: "Active",
-                                created: "Mar 1, 2024",
-                            }
-                            TenantRow {
-                                name: "IT Solutions Co",
-                                domain: "itsolutions",
-                                plan: "Professional",
-                                users: 5,
-                                mrr: "$299",
-                                status: "Active",
-                                created: "Jun 15, 2024",
-                            }
-                            TenantRow {
-                                name: "New MSP Trial",
-                                domain: "newmsp-trial",
-                                plan: "Trial",
-                                users: 2,
-                                mrr: "$0",
-                                status: "Trial",
-                                created: "Jan 10, 2025",
+                                key: "{tenant.id}",
+                                name: tenant.name.clone(),
+                                domain: tenant.slug.clone(),
+                                plan: humanize_plan(&tenant.subscription_plan),
+                                users: 0,
+                                mrr: "-".to_string(),
+                                status: humanize_tenant_status(&tenant.status),
+                                created: format_created(tenant.created_at),
                             }
                         }
                     }

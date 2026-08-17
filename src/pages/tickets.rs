@@ -6,11 +6,10 @@ use serde::Deserialize;
 
 use crate::components::{
     clear_selection, ticket_status_badge, use_bulk_selection, use_page_title, AlertType, Badge,
-    BadgeVariant, BannerTone, BulkActionsBar, BulkSelection, Button, ButtonVariant, Card,
-    ClockIcon, DataTable, ErrorBanner, IconSize, Modal, PageHeader, PencilIcon, PlusIcon,
-    SearchInput, Select, SelectAllHeader, SelectOption, SelectRowCell, SortDirection, StatusBanner,
-    Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
-    Textarea, UserCircleIcon,
+    BadgeVariant, BulkActionsBar, BulkSelection, Button, ButtonVariant, Card, ClockIcon, DataTable,
+    ErrorBanner, IconSize, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select,
+    SelectAllHeader, SelectOption, SelectRowCell, SortDirection, Table, TableBody, TableCell,
+    TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea, UserCircleIcon,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
@@ -38,9 +37,8 @@ struct RemoteTicket {
 struct RemoteSummary {
     /// Server-side `TicketStatusSummary` / `TicketPrioritySummary` always
     /// carry an `id`; the field is optional here only because legacy code
-    /// paths and the demo-data fallback may omit it. PMS-359 reads it as
-    /// the canonical "currently saved" selection for the inline editors
-    /// on the ticket detail page.
+    /// paths may omit it. PMS-359 reads it as the canonical "currently
+    /// saved" selection for the inline editors on the ticket detail page.
     #[serde(default)]
     id: Option<uuid::Uuid>,
     #[serde(default)]
@@ -263,14 +261,6 @@ fn format_sla_due(due: DateTime<Utc>) -> String {
         format!("{} days left", secs / 86_400)
     };
     format!("{absolute} ({hint})")
-}
-
-/// Source of the rows currently on screen. Mirrors the companies-page
-/// pattern: backend if the fetch returned rows, demo otherwise.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum TicketSource {
-    Backend,
-    Demo,
 }
 
 /// Render a `DateTime<Utc>` as a coarse "X ago" string. Good enough
@@ -512,50 +502,41 @@ pub fn TicketListPage() -> Element {
             .unwrap_or_default()
     });
 
-    // Same progressive-enablement pattern as the companies page: try
-    // the live backend first, fall back to the seeded demo rows so the
-    // page stays demoable when the route isn't deployed yet or the
-    // user is signed out.
+    // MAPPS-438: `None` is a failed load, exactly like the other list pages.
+    // The page renders only what the backend returned.
     // MAPPS-249: a company context card's "View All" lands here with
     // `?company_id=<uuid>`. When present, scope the fetch to that company so the
     // list shows only its tickets and every row stays inside the same company.
     let mut tickets_resource = use_resource(|| async {
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
         // instant the server returns, and so a failed load stays distinguishable
-        // from an empty one (the third tuple element records the failure).
+        // from an empty one.
         let _reachable = crate::hooks::use_server_reachable();
-        let token = match crate::hooks::fetch::api::current_access_token() {
-            Some(t) => t,
-            None => return (Vec::<RemoteTicket>::new(), TicketSource::Demo, false),
-        };
+        let token = crate::hooks::fetch::api::current_access_token()?;
         let mut path = String::from("/tickets");
         if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
             path.push_str(&format!("?company_id={company_id}"));
         }
-        match crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteTicket>>(&path, &token)
+        crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteTicket>>(&path, &token)
             .await
-        {
-            Ok(page) => (page.data, TicketSource::Backend, false),
-            // MAPPS-357: keep the demo fallback for a 4xx while reachable, but
-            // flag the failure so an outage (failed while unreachable) can render
-            // ContentUnavailable below instead of a misleading demo list.
-            Err(_) => (Vec::new(), TicketSource::Demo, true),
-        }
+            .ok()
+            .map(|page| page.data)
     });
 
     let resource_snapshot = tickets_resource.read_unchecked();
     let is_loading = resource_snapshot.is_none();
-    let (remote_tickets, source, fetch_failed) = match &*resource_snapshot {
-        Some((rows, source, failed)) => (rows.clone(), *source, *failed),
-        None => (Vec::new(), TicketSource::Demo, false),
+    let fetch_failed = matches!(*resource_snapshot, Some(None));
+    let remote_tickets: Vec<RemoteTicket> = match &*resource_snapshot {
+        Some(Some(rows)) => rows.clone(),
+        _ => Vec::new(),
     };
 
     // MAPPS-357: the ticket list is this page's PRIMARY resource. A failed load
-    // while the server is flagged down is an outage, not an empty/demo list, so
+    // while the server is flagged down is an outage, not an empty list, so
     // render the honest unavailable state (which keeps the nav + banner) instead
-    // of demo rows. A fetch that fails while the server is still reachable (a
-    // 4xx) keeps the demo-rows fallback below. Writes are blocked while down;
-    // `can_mutate` disables the bulk-delete control.
+    // of an empty table. A fetch that fails while the server is still reachable
+    // (a 4xx) keeps the inline error banner below. Writes are blocked while
+    // down; `can_mutate` disables the bulk-delete control.
     let reachable = crate::hooks::use_server_reachable();
     let can_mutate = crate::hooks::use_can_mutate();
     if fetch_failed && !reachable {
@@ -703,12 +684,8 @@ pub fn TicketListPage() -> Element {
             }
         }
 
-        if source == TicketSource::Demo && !is_loading {
-            StatusBanner {
-                tone: BannerTone::Warning,
-                class: "mb-3",
-                "Backend tickets API not reachable - showing demo rows."
-            }
+        if fetch_failed {
+            ErrorBanner { class: "mb-3", "Could not load tickets. Refresh the page to retry." }
         }
 
         // MAPPS-290: bulk actions bar. Renders only when at least one
@@ -804,7 +781,7 @@ pub fn TicketListPage() -> Element {
         // Ticket table
         DataTable {
             loading: is_loading,
-            total_items: if source == TicketSource::Backend { filtered_tickets.len() } else { 5 },
+            total_items: filtered_tickets.len(),
             current_page: 1,
             per_page: 25,
             columns: 6,
@@ -862,7 +839,7 @@ pub fn TicketListPage() -> Element {
                 }
                 if is_loading {
                     TableLoading { columns: 6, rows: 5 }
-                } else if source == TicketSource::Backend && filtered_tickets.is_empty() {
+                } else if filtered_tickets.is_empty() {
                     if remote_tickets.is_empty() {
                         // PMS-354: helpful empty state with a primary CTA,
                         // matching the Contracts reference pattern.
@@ -907,77 +884,24 @@ pub fn TicketListPage() -> Element {
                     }
                 } else {
                     TableBody {
-                        if source == TicketSource::Backend {
-                            for ticket in filtered_tickets.iter().cloned() {
-                                TicketRow {
-                                    key: "{ticket.id}",
-                                    id: ticket.id.to_string(),
-                                    number: ticket.ticket_number,
-                                    title: ticket.title,
-                                    company: ticket.company_name,
-                                    status: humanize_ticket_status(&ticket.status.name),
-                                    priority: humanize_priority(&ticket.priority.name),
-                                    assigned_to: ticket.assigned_to_name.unwrap_or_else(|| "Unassigned".to_string()),
-                                    updated: relative_time(ticket.updated_at),
-                                    updated_iso: Some(ticket.updated_at.to_rfc3339()),
-                                    updated_title: Some(fmt_datetime(ticket.updated_at)),
-                                    // MAPPS-290: hand the page-scoped
-                                    // selection signal down so each
-                                    // row's first cell renders a
-                                    // checkbox bound to it.
-                                    selection: Some(selection),
-                                }
-                            }
-                        } else {
+                        for ticket in filtered_tickets.iter().cloned() {
                             TicketRow {
-                                id: "1",
-                                number: "TKT-1234",
-                                title: "Email server not responding",
-                                company: "Acme Corp",
-                                status: "Open",
-                                priority: "High",
-                                assigned_to: "John Smith",
-                                updated: "5 min ago",
-                            }
-                            TicketRow {
-                                id: "2",
-                                number: "TKT-1233",
-                                title: "New user setup request",
-                                company: "TechStart Inc",
-                                status: "In Progress",
-                                priority: "Medium",
-                                assigned_to: "Jane Doe",
-                                updated: "1 hour ago",
-                            }
-                            TicketRow {
-                                id: "3",
-                                number: "TKT-1232",
-                                title: "Printer configuration for new office",
-                                company: "Global Widgets",
-                                status: "Pending",
-                                priority: "Low",
-                                assigned_to: "Unassigned",
-                                updated: "2 hours ago",
-                            }
-                            TicketRow {
-                                id: "4",
-                                number: "TKT-1231",
-                                title: "VPN connection issues for remote workers",
-                                company: "Acme Corp",
-                                status: "Open",
-                                priority: "Critical",
-                                assigned_to: "John Smith",
-                                updated: "3 hours ago",
-                            }
-                            TicketRow {
-                                id: "5",
-                                number: "TKT-1230",
-                                title: "Software license renewal required",
-                                company: "TechStart Inc",
-                                status: "Resolved",
-                                priority: "Medium",
-                                assigned_to: "Jane Doe",
-                                updated: "1 day ago",
+                                key: "{ticket.id}",
+                                id: ticket.id.to_string(),
+                                number: ticket.ticket_number,
+                                title: ticket.title,
+                                company: ticket.company_name,
+                                status: humanize_ticket_status(&ticket.status.name),
+                                priority: humanize_priority(&ticket.priority.name),
+                                assigned_to: ticket.assigned_to_name.unwrap_or_else(|| "Unassigned".to_string()),
+                                updated: relative_time(ticket.updated_at),
+                                updated_iso: ticket.updated_at.to_rfc3339(),
+                                updated_title: fmt_datetime(ticket.updated_at),
+                                // MAPPS-290: hand the page-scoped
+                                // selection signal down so each
+                                // row's first cell renders a
+                                // checkbox bound to it.
+                                selection,
                             }
                         }
                     }
@@ -998,18 +922,12 @@ struct TicketRowProps {
     assigned_to: String,
     updated: String,
     /// MAPPS-409: RFC3339 form of `updated_at` for the `<time datetime>`
-    /// wrapper, plus the absolute-time string for its hover title. `None`
-    /// on demo/fallback rows (no source instant to wrap; not fabricated).
-    #[props(default)]
-    updated_iso: Option<String>,
-    #[props(default)]
-    updated_title: Option<String>,
-    /// MAPPS-290: optional bulk-selection signal. When `Some`, the row
-    /// renders a `SelectRowCell` as its first cell wired to this signal;
-    /// the demo rows pass `None` so the no-backend fallback table still
-    /// fits the same column shape via a hidden first cell.
-    #[props(default)]
-    selection: Option<BulkSelection>,
+    /// wrapper, plus the absolute-time string for its hover title.
+    updated_iso: String,
+    updated_title: String,
+    /// MAPPS-290: the page-scoped bulk-selection signal the row's first
+    /// cell binds its checkbox to.
+    selection: BulkSelection,
 }
 
 #[component]
@@ -1027,11 +945,6 @@ fn TicketRow(props: TicketRowProps) -> Element {
     let navigator = use_navigator();
     let id = props.id.clone();
 
-    // MAPPS-409: machine-readable "updated" timestamp. Present only on
-    // backend rows; demo rows fall back to bare relative text.
-    let updated_iso = props.updated_iso.clone();
-    let updated_title = props.updated_title.clone().unwrap_or_default();
-
     rsx! {
         TableRow {
             clickable: true,
@@ -1039,13 +952,7 @@ fn TicketRow(props: TicketRowProps) -> Element {
             // MAPPS-290: per-row checkbox in the first column. The cell
             // stops propagation so toggling the checkbox doesn't also
             // navigate to the detail page.
-            if let Some(selection) = props.selection {
-                SelectRowCell { selection, id: props.id.clone() }
-            } else {
-                // Demo rows: keep the column shape consistent with the
-                // header by rendering an inert cell.
-                TableCell { class: "w-10", "" }
-            }
+            SelectRowCell { selection: props.selection, id: props.id.clone() }
             TableCell {
                 div {
                     Link {
@@ -1071,9 +978,9 @@ fn TicketRow(props: TicketRowProps) -> Element {
                 }
             }
             TableCell { class: "text-muted",
-                if let Some(iso) = updated_iso {
-                    time { datetime: "{iso}", title: "{updated_title}", "{props.updated}" }
-                } else {
+                time {
+                    datetime: "{props.updated_iso}",
+                    title: "{props.updated_title}",
                     "{props.updated}"
                 }
             }

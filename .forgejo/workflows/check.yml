@@ -112,6 +112,15 @@ jobs:
           bash scripts/check-status-banner.sh --self-test
           bash scripts/check-status-banner.sh
 
+      # MAPPS-438: a failed list fetch renders ErrorBanner over an empty table.
+      # Tickets and Tenants invented rows instead (TKT-1234 / "Acme Corp",
+      # four seeded tenants), on a path only a 4xx reaches, so the fabrication
+      # never showed up in review or in a normal run.
+      - name: Demo-row guard
+        run: |
+          bash scripts/check-no-demo-rows.sh --self-test
+          bash scripts/check-no-demo-rows.sh
+
       - name: Check formatting
         run: cargo fmt --all --check
 
