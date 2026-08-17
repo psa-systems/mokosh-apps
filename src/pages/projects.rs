@@ -1580,7 +1580,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                     }
                                     div { class: "flex justify-between",
                                         span { class: "text-sm text-muted", "Spent" }
-                                        span { class: "font-medium text-green-600", "{format_money_f64(p.actual_amount)}" }
+                                        span { class: "font-medium text-green-600 dark:text-green-400", "{format_money_f64(p.actual_amount)}" }
                                     }
                                     div { class: "flex justify-between",
                                         span { class: "text-sm text-muted", "Remaining" }

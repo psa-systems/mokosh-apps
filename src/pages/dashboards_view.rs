@@ -595,7 +595,7 @@ fn WidgetSlaAtRisk() -> Element {
             span { class: "font-medium", "{r.sla_warnings}" }
         }
         div { class: "flex justify-between text-sm mt-1",
-            span { class: "text-red-700", "Breached" }
+            span { class: "text-red-700 dark:text-red-400", "Breached" }
             span { class: "font-medium", "{r.sla_breached}" }
         }
     }
