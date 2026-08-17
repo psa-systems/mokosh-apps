@@ -51,8 +51,12 @@ jobs:
       # MAPPS-433: a colour name input.css never defined emits no CSS at all,
       # so the mistake is invisible in the browser and passes the theme-token
       # guard, which hunts the opposite mistake.
+      # MAPPS-437: --self-test proves the guard still rejects an undefined name.
+      # A guard that silently stopped guarding reports "clean" forever.
       - name: Defined-colour guard
-        run: bash scripts/check-defined-colors.sh
+        run: |
+          bash scripts/check-defined-colors.sh --self-test
+          bash scripts/check-defined-colors.sh
 
       # MAPPS-423: pin Cancel destinations for shared create/edit forms and
       # keep the base-layer pointer-cursor rule that compensates for Tailwind

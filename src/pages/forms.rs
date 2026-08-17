@@ -1666,10 +1666,9 @@ fn FormEditorModal(
         // hundred pixels above the viewport and looked like a dead button.
         if problems().total() > 0 {
             span {
-                // PMS-760: `text-danger` is not a utility this build defines
-                // (input.css has no danger token), so this message rendered in
-                // body colour and read as ordinary text. The state colours are
-                // the red/green/yellow scale, which the theme guard allows.
+                // PMS-760: this named a danger colour token input.css never
+                // defined, so it emitted no CSS and read as ordinary text. The
+                // red/green/yellow state scale is what the theme guard allows.
                 class: "mr-auto self-center text-sm text-red-600 dark:text-red-400",
                 role: "alert",
                 if problems().total() == 1 {
@@ -2413,9 +2412,9 @@ fn FieldRowEditor(
         drag_armed.set(false);
     };
 
-    // A row with a problem is outlined in the state colour. `border-default`
-    // was never a utility this build defines, so the rows had no visible
-    // border at all before this: part of why the list read as one wall.
+    // A row with a problem is outlined in the state colour. This named a
+    // border token input.css never defined, so rows drew no border at all
+    // before PMS-760: part of why the list read as one wall.
     let border_class = if has_problem {
         "border-red-300 dark:border-red-600"
     } else if is_drop_target {

@@ -59,9 +59,10 @@ check-web:
 check-theme-tokens:
     bash scripts/check-theme-tokens.sh
 
-# MAPPS-433: fail on colour classes input.css does not define (they render as nothing)
+# MAPPS-433: fail on colour classes input.css does not define (they render as nothing). MAPPS-437: --self-test first, so a guard that stopped guarding fails loudly instead of reporting clean.
 [group: 'check']
 check-defined-colors:
+    bash scripts/check-defined-colors.sh --self-test
     bash scripts/check-defined-colors.sh
 
 # MAPPS-398: keep check.yml on the dev runner label and free of run-time package installs

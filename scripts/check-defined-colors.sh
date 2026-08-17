@@ -31,8 +31,47 @@
 # class while explaining why it is dead - which is also why this reads whole
 # lines rather than `grep -o` matches: the match alone cannot tell you it came
 # out of a sentence.
+#
+# Usage: check-defined-colors.sh [ROOT | --self-test]
+#   ROOT defaults to `src`. `--self-test` (MAPPS-437) re-runs the guard over
+#   generated fixtures to prove it still rejects an undefined name and still
+#   accepts the defined ones, so a future edit cannot quietly neuter it.
 set -u
 cd "$(dirname "$0")/.." || exit 2
+
+if [ "${1:-}" = "--self-test" ]; then
+  fixtures=$(mktemp -d) || exit 2
+  trap 'rm -rf "$fixtures"' EXIT
+  status=0
+
+  printf '    class: "mr-auto text-sm text-danger border-default divide-border",\n' \
+    > "$fixtures/undefined.rs"
+  out=$("$0" "$fixtures" 2>&1) && rc=0 || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    echo "self-test: FAIL (an undefined colour name did not fail the guard)"
+    printf '%s\n' "$out"
+    status=1
+  else
+    echo "self-test: an undefined colour name fails the guard (exit $rc)"
+  fi
+  rm -f "$fixtures/undefined.rs"
+
+  printf '    class: "text-sm text-red-600 text-content border-line divide-line",\n' \
+    > "$fixtures/defined.rs"
+  out=$("$0" "$fixtures" 2>&1) && rc=0 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "self-test: FAIL (defined tokens and palette shades were rejected)"
+    printf '%s\n' "$out"
+    status=1
+  else
+    echo "self-test: defined tokens and palette shades pass the guard"
+  fi
+
+  [ "$status" -eq 0 ] && echo "defined-colour guard self-test: clean"
+  exit "$status"
+fi
+
+root="${1:-src}"
 
 # Non-colour values these prefixes legitimately take, plus the two palette
 # colours that carry no shade. Names with a digit never reach here, so
@@ -62,7 +101,7 @@ prefixes='bg|text|border|ring|divide|fill|stroke|outline|placeholder|caret|decor
 # offset, so those come off before the name is judged.
 sides='offset|l|t|r|b|x|y|s|e'
 
-hits=$(grep -rnE "($prefixes)-[a-z]" src --include='*.rs' \
+hits=$(grep -rnE "($prefixes)-[a-z]" "$root" --include='*.rs' \
   | awk -v pat="($prefixes)-[a-z][a-z0-9-]*" \
         -v defined="^($defined_pattern)$" \
         -v keywords="^($KEYWORDS)$" \
