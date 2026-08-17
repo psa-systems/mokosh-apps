@@ -518,6 +518,74 @@ pub fn Checkbox(props: CheckboxProps) -> Element {
     }
 }
 
+/// File input props (MAPPS-440). The one input type `form.rs` had no component
+/// for, so its 130-character `file:` class recipe sat copied verbatim across the
+/// onboarding logo field, the settings logo field and the JSON import picker,
+/// with nothing keeping the three in step.
+#[derive(Props, Clone, PartialEq)]
+pub struct FileFieldProps {
+    /// Used for both `id` and `name`, so the label's `for` associates.
+    name: String,
+    #[props(default)]
+    label: String,
+    /// `accept` attribute (e.g. `image/png,image/jpeg`). Omitted when empty.
+    #[props(default)]
+    accept: String,
+    #[props(default = false)]
+    disabled: bool,
+    /// Help text, shown when `error` is empty.
+    #[props(default)]
+    help: String,
+    /// Error message. Wins over `help` and carries `role="alert"`.
+    #[props(default)]
+    error: String,
+    /// Rendered in the help slot ahead of `error` and `help`, for the state an
+    /// upload-on-selection field is in while the request is in flight.
+    #[props(default)]
+    status: String,
+    /// Optional content between the label and the input (e.g. the current
+    /// logo and its Remove button).
+    preview: Option<Element>,
+    #[props(default)]
+    onchange: EventHandler<FormEvent>,
+}
+
+/// The single file input used across the app (MAPPS-440). Mirrors [`Input`]'s
+/// label + help + error structure and owns the `file:` class recipe.
+#[component]
+pub fn FileField(props: FileFieldProps) -> Element {
+    rsx! {
+        div { class: "space-y-1",
+            if !props.label.is_empty() {
+                label {
+                    r#for: "{props.name}",
+                    class: "block text-sm font-medium text-content",
+                    "{props.label}"
+                }
+            }
+            if let Some(preview) = props.preview {
+                {preview}
+            }
+            input {
+                id: "{props.name}",
+                name: "{props.name}",
+                r#type: "file",
+                accept: if props.accept.is_empty() { None } else { Some(props.accept.clone()) },
+                disabled: props.disabled,
+                class: "block w-full text-sm text-content file:mr-3 file:rounded-md file:border-0 file:bg-surface-2 file:px-3 file:py-1.5 file:text-sm file:font-medium",
+                onchange: move |e| props.onchange.call(e),
+            }
+            if !props.status.is_empty() {
+                p { class: "text-xs text-muted", "{props.status}" }
+            } else if !props.error.is_empty() {
+                p { class: "text-xs text-red-600 dark:text-red-400", role: "alert", "{props.error}" }
+            } else if !props.help.is_empty() {
+                p { class: "text-xs text-muted", "{props.help}" }
+            }
+        }
+    }
+}
+
 /// Search input with icon
 #[derive(Props, Clone, PartialEq)]
 pub struct SearchInputProps {

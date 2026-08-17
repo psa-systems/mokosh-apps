@@ -15,7 +15,7 @@
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::components::{Button, ButtonVariant, Input};
+use crate::components::{AuthLayout, Button, ButtonVariant, Input};
 use crate::Route;
 
 /// Request body for `POST /api/v1/portal/auth/login`, matching
@@ -105,76 +105,72 @@ pub fn PortalLoginPage() -> Element {
     };
 
     rsx! {
-        div { class: "min-h-screen bg-app flex items-center justify-center px-4",
-            div { class: "max-w-md w-full",
-                div { class: "bg-surface rounded-lg shadow-lg p-8",
-                    div { class: "text-center mb-6",
-                        h1 { class: "text-2xl font-semibold text-content", "Sign in to the Client Portal" }
-                        p { class: "mt-2 text-sm text-content",
-                            "Use the email your account team set up for you."
-                        }
-                    }
+        AuthLayout {
+            div { class: "text-center mb-6",
+                h1 { class: "text-2xl font-semibold text-content", "Sign in to the Client Portal" }
+                p { class: "mt-2 text-sm text-content",
+                    "Use the email your account team set up for you."
+                }
+            }
 
-                    form {
-                        class: "space-y-4",
-                        onsubmit: move |evt: Event<FormData>| {
-                            evt.prevent_default();
-                            handle_submit(());
-                        },
+            form {
+                class: "space-y-4",
+                onsubmit: move |evt: Event<FormData>| {
+                    evt.prevent_default();
+                    handle_submit(());
+                },
 
-                        Input {
-                            name: "tenant_slug",
-                            label: "Account name",
-                            r#type: "text".to_string(),
-                            value: tenant(),
-                            required: true,
-                            disabled: saving(),
-                            oninput: move |e: FormEvent| {
-                                error.set(String::new());
-                                tenant.set(e.value());
-                            },
-                        }
+                Input {
+                    name: "tenant_slug",
+                    label: "Account name",
+                    r#type: "text".to_string(),
+                    value: tenant(),
+                    required: true,
+                    disabled: saving(),
+                    oninput: move |e: FormEvent| {
+                        error.set(String::new());
+                        tenant.set(e.value());
+                    },
+                }
 
-                        Input {
-                            name: "email",
-                            label: "Email",
-                            r#type: "email".to_string(),
-                            value: email(),
-                            required: true,
-                            disabled: saving(),
-                            oninput: move |e: FormEvent| {
-                                error.set(String::new());
-                                email.set(e.value());
-                            },
-                        }
+                Input {
+                    name: "email",
+                    label: "Email",
+                    r#type: "email".to_string(),
+                    value: email(),
+                    required: true,
+                    disabled: saving(),
+                    oninput: move |e: FormEvent| {
+                        error.set(String::new());
+                        email.set(e.value());
+                    },
+                }
 
-                        Input {
-                            name: "password",
-                            label: "Password",
-                            r#type: "password".to_string(),
-                            value: password(),
-                            required: true,
-                            disabled: saving(),
-                            oninput: move |e: FormEvent| {
-                                error.set(String::new());
-                                password.set(e.value());
-                            },
-                        }
+                Input {
+                    name: "password",
+                    label: "Password",
+                    r#type: "password".to_string(),
+                    value: password(),
+                    required: true,
+                    disabled: saving(),
+                    oninput: move |e: FormEvent| {
+                        error.set(String::new());
+                        password.set(e.value());
+                    },
+                }
 
-                        if !error().is_empty() {
-                            p { class: "text-sm text-red-600 dark:text-red-400", role: "alert", "{error}" }
-                        }
+                if !error().is_empty() {
+                    p { class: "text-sm text-red-600 dark:text-red-400", role: "alert", "{error}" }
+                }
 
-                        div { class: "pt-2",
-                            Button {
-                                variant: ButtonVariant::Primary,
-                                disabled: saving(),
-                                loading: saving(),
-                                r#type: "submit".to_string(),
-                                class: "w-full".to_string(),
-                                "Sign in"
-                            }
-                        }
+                div { class: "pt-2",
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        disabled: saving(),
+                        loading: saving(),
+                        r#type: "submit".to_string(),
+                        class: "w-full".to_string(),
+                        "Sign in"
                     }
                 }
             }

@@ -27,7 +27,7 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{
-    Button, ButtonVariant, Checkbox, DateField, Input, Select, SelectOption, Textarea,
+    AuthLayout, Button, ButtonVariant, Checkbox, DateField, Input, Select, SelectOption, Textarea,
 };
 
 /// One field of the form, mirroring mokosh-server's `PublicFormField`.
@@ -266,62 +266,59 @@ pub fn RequestFormPage(token: String) -> Element {
     };
 
     rsx! {
-        div { class: "min-h-screen bg-app flex items-center justify-center px-4 py-10",
-            div { class: "max-w-xl w-full",
-                div { class: "bg-surface rounded-lg shadow-lg p-8",
-                    match terminal() {
-                        Some(Terminal::Submitted(number)) => rsx! {
-                            div { class: "text-center", role: "status", aria_live: "polite",
-                                h1 { class: "text-2xl font-semibold text-content", "Request received" }
-                                p { class: "mt-2 text-sm text-content",
-                                    "Thanks. Your request is with us as ticket "
-                                    span { class: "font-mono font-medium", "{number}" }
-                                    ". Quote that number if you need to follow it up."
-                                }
-                            }
-                        },
-                        Some(Terminal::AlreadySubmitted) => rsx! {
-                            div { class: "text-center", role: "status", aria_live: "polite",
-                                h1 { class: "text-2xl font-semibold text-content", "Already submitted" }
-                                p { class: "mt-2 text-sm text-content",
-                                    "This link has already been used, so your request is with us. Ask your account team if you need to send another."
-                                }
-                            }
-                        },
-                        Some(Terminal::Unusable) => rsx! {
-                            div { class: "text-center", role: "status", aria_live: "polite",
-                                h1 { class: "text-2xl font-semibold text-content", "Link expired" }
-                                p { class: "mt-2 text-sm text-content",
-                                    "This link is expired or invalid. Ask your account team for a new one."
-                                }
-                            }
-                        },
-                        None if loading() => rsx! {
-                            p { class: "text-center text-sm text-content", "Loading your form..." }
-                        },
-                        None => match form() {
-                            None => rsx! {
-                                div { class: "text-center",
-                                    h1 { class: "text-2xl font-semibold text-content", "Something went wrong" }
-                                    p { class: "mt-2 text-sm text-content",
-                                        "We could not load your form. Check your connection and reload the page."
-                                    }
-                                }
-                            },
-                            Some(def) => rsx! {
-                                RequestFormBody {
-                                    def: def.clone(),
-                                    answers,
-                                    field_errors,
-                                    form_error: form_error(),
-                                    disabled: submitting(),
-                                    submit_label: (if submitting() { "Sending..." } else { "Send request" }).to_string(),
-                                    onsubmit: move |_| handle_submit(()),
-                                }
-                            },
-                        },
+        AuthLayout {
+            max_w: "sm:max-w-xl",
+            match terminal() {
+                Some(Terminal::Submitted(number)) => rsx! {
+                    div { class: "text-center", role: "status", aria_live: "polite",
+                        h1 { class: "text-2xl font-semibold text-content", "Request received" }
+                        p { class: "mt-2 text-sm text-content",
+                            "Thanks. Your request is with us as ticket "
+                            span { class: "font-mono font-medium", "{number}" }
+                            ". Quote that number if you need to follow it up."
+                        }
                     }
-                }
+                },
+                Some(Terminal::AlreadySubmitted) => rsx! {
+                    div { class: "text-center", role: "status", aria_live: "polite",
+                        h1 { class: "text-2xl font-semibold text-content", "Already submitted" }
+                        p { class: "mt-2 text-sm text-content",
+                            "This link has already been used, so your request is with us. Ask your account team if you need to send another."
+                        }
+                    }
+                },
+                Some(Terminal::Unusable) => rsx! {
+                    div { class: "text-center", role: "status", aria_live: "polite",
+                        h1 { class: "text-2xl font-semibold text-content", "Link expired" }
+                        p { class: "mt-2 text-sm text-content",
+                            "This link is expired or invalid. Ask your account team for a new one."
+                        }
+                    }
+                },
+                None if loading() => rsx! {
+                    p { class: "text-center text-sm text-content", "Loading your form..." }
+                },
+                None => match form() {
+                    None => rsx! {
+                        div { class: "text-center",
+                            h1 { class: "text-2xl font-semibold text-content", "Something went wrong" }
+                            p { class: "mt-2 text-sm text-content",
+                                "We could not load your form. Check your connection and reload the page."
+                            }
+                        }
+                    },
+                    Some(def) => rsx! {
+                        RequestFormBody {
+                            def: def.clone(),
+                            answers,
+                            field_errors,
+                            form_error: form_error(),
+                            disabled: submitting(),
+                            submit_label: (if submitting() { "Sending..." } else { "Send request" }).to_string(),
+                            onsubmit: move |_| handle_submit(()),
+                        }
+                    },
+                },
             }
         }
     }

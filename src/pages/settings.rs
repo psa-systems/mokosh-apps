@@ -32,9 +32,9 @@ use uuid::Uuid;
 
 use crate::components::{
     use_page_title, Badge, BadgeVariant, BreadcrumbItem, Breadcrumbs, Button, ButtonVariant, Card,
-    Checkbox, DataTable, ErrorBanner, IconSize, Input, PageHeader, PlusIcon, SearchInput, Select,
-    SelectOption, SettingFormModal, Table, TableBody, TableCell, TableEmpty, TableHead,
-    TableHeader, TableLoading, TableRow, ThemePicker,
+    Checkbox, DataTable, ErrorBanner, FileField, IconSize, Input, PageHeader, PlusIcon,
+    SearchInput, Select, SelectOption, SettingFormModal, Table, TableBody, TableCell, TableEmpty,
+    TableHead, TableHeader, TableLoading, TableRow, ThemePicker,
 };
 use crate::utils::money::format_money_str;
 use crate::utils::Paginated;
@@ -1033,78 +1033,78 @@ fn OrganizationSettingsBody() -> Element {
                 // It is a separate request either way (multipart, not JSON), and
                 // a file input whose effect waits for a Save button is one people
                 // forget to press.
-                div { class: "space-y-1",
-                    label {
-                        r#for: "org_logo",
-                        class: "block text-sm font-medium text-content",
-                        "Logo"
-                    }
-                    if let Some(src) = logo_url.read().clone() {
-                        div { class: "flex items-center gap-3",
-                            if !logo_broken() {
-                                img {
-                                    src: "{crate::hooks::fetch::api::api_origin()}{src}",
-                                    alt: "Current organization logo",
-                                    class: "max-h-14 max-w-56 rounded border border-line bg-surface p-1",
-                                    onerror: move |_| logo_broken.set(true),
-                                }
-                            } else {
-                                span { class: "text-sm text-muted",
-                                    "A logo is set but could not be loaded."
-                                }
-                            }
-                            Button {
-                                // MAPPS-436: Remove is destructive, so it takes the
-                                // Danger variant per docs/button-variants.md.
-                                variant: ButtonVariant::Danger,
-                                disabled: logo_busy() || !can_mutate,
-                                onclick: move |_| confirming_logo_remove.set(true),
-                                "Remove"
-                            }
-                        }
-                    }
-                    crate::components::ConfirmDialog {
-                        open: confirming_logo_remove(),
-                        title: "Remove logo".to_string(),
-                        message: "Remove the organization logo?".to_string(),
-                        confirm_text: "Remove".to_string(),
-                        cancel_text: "Cancel".to_string(),
-                        destructive: true,
-                        loading: logo_busy(),
-                        onconfirm: move |_| {
-                            if logo_busy() {
-                                return;
-                            }
-                            logo_busy.set(true);
-                            logo_error.set(String::new());
-                            spawn(async move {
-                                #[cfg(feature = "web")]
-                                {
-                                    match crate::hooks::fetch::api::delete_authed(TENANT_LOGO_PATH).await {
-                                        Ok(()) => {
-                                            logo_url.set(None);
-                                            logo_broken.set(false);
-                                        }
-                                        Err(e) => logo_error.set(format!("Could not remove the logo: {e}")),
+                FileField {
+                    name: "org_logo",
+                    label: "Logo",
+                    accept: "image/png,image/jpeg,image/webp,image/gif",
+                    disabled: logo_busy() || !can_mutate,
+                    // PMS-758: an upload starts on selection and takes as long as
+                    // it takes; without this the page said nothing at all.
+                    status: if logo_busy() { "Uploading..." } else { "" },
+                    error: logo_error(),
+                    help: "Optional. PNG, JPEG, WebP or GIF, up to 1 MB. Shown to clients at the top of the request forms you send and the email that carries them.",
+                    preview: rsx! {
+                        if let Some(src) = logo_url.read().clone() {
+                            div { class: "flex items-center gap-3",
+                                if !logo_broken() {
+                                    img {
+                                        src: "{crate::hooks::fetch::api::api_origin()}{src}",
+                                        alt: "Current organization logo",
+                                        class: "max-h-14 max-w-56 rounded border border-line bg-surface p-1",
+                                        onerror: move |_| logo_broken.set(true),
+                                    }
+                                } else {
+                                    span { class: "text-sm text-muted",
+                                        "A logo is set but could not be loaded."
                                     }
                                 }
-                                logo_busy.set(false);
-                                confirming_logo_remove.set(false);
-                            });
-                        },
-                        oncancel: move |_| {
-                            if !logo_busy() {
-                                confirming_logo_remove.set(false);
+                                Button {
+                                    // MAPPS-436: Remove is destructive, so it takes the
+                                    // Danger variant per docs/button-variants.md.
+                                    variant: ButtonVariant::Danger,
+                                    disabled: logo_busy() || !can_mutate,
+                                    onclick: move |_| confirming_logo_remove.set(true),
+                                    "Remove"
+                                }
                             }
-                        },
-                    }
-                    input {
-                        id: "org_logo",
-                        r#type: "file",
-                        accept: "image/png,image/jpeg,image/webp,image/gif",
-                        disabled: logo_busy() || !can_mutate,
-                        class: "block w-full text-sm text-content file:mr-3 file:rounded-md file:border-0 file:bg-surface-2 file:px-3 file:py-1.5 file:text-sm file:font-medium",
-                        onchange: move |evt: FormEvent| {
+                        }
+                        crate::components::ConfirmDialog {
+                            open: confirming_logo_remove(),
+                            title: "Remove logo".to_string(),
+                            message: "Remove the organization logo?".to_string(),
+                            confirm_text: "Remove".to_string(),
+                            cancel_text: "Cancel".to_string(),
+                            destructive: true,
+                            loading: logo_busy(),
+                            onconfirm: move |_| {
+                                if logo_busy() {
+                                    return;
+                                }
+                                logo_busy.set(true);
+                                logo_error.set(String::new());
+                                spawn(async move {
+                                    #[cfg(feature = "web")]
+                                    {
+                                        match crate::hooks::fetch::api::delete_authed(TENANT_LOGO_PATH).await {
+                                            Ok(()) => {
+                                                logo_url.set(None);
+                                                logo_broken.set(false);
+                                            }
+                                            Err(e) => logo_error.set(format!("Could not remove the logo: {e}")),
+                                        }
+                                    }
+                                    logo_busy.set(false);
+                                    confirming_logo_remove.set(false);
+                                });
+                            },
+                            oncancel: move |_| {
+                                if !logo_busy() {
+                                    confirming_logo_remove.set(false);
+                                }
+                            },
+                        }
+                    },
+                    onchange: move |evt: FormEvent| {
                             logo_error.set(String::new());
                             let Some(file) = evt.files().into_iter().next() else {
                                 return;
@@ -1139,19 +1139,7 @@ fn OrganizationSettingsBody() -> Element {
                                 }
                                 logo_busy.set(false);
                             });
-                        },
-                    }
-                    // PMS-758: an upload starts on selection and takes as long as
-                    // it takes; without this the page said nothing at all.
-                    if logo_busy() {
-                        p { class: "text-xs text-muted", "Uploading..." }
-                    } else if !logo_error().is_empty() {
-                        p { class: "text-xs text-red-600 dark:text-red-400", role: "alert", "{logo_error}" }
-                    } else {
-                        p { class: "text-xs text-muted",
-                            "Optional. PNG, JPEG, WebP or GIF, up to 1 MB. Shown to clients at the top of the request forms you send and the email that carries them."
-                        }
-                    }
+                    },
                 }
 
                 div { class: "flex justify-end",
@@ -1352,37 +1340,31 @@ fn ImportPanel(tenant_name: String) -> Element {
                     " Importing wipes every existing record and restores from the uploaded file. This cannot be undone. Export a fresh snapshot first."
                 }
 
-                div { class: "space-y-1",
-                    label {
-                        r#for: "import_file",
-                        class: "block text-sm font-medium text-content",
-                        "Import file"
-                    }
-                    input {
-                        id: "import_file",
-                        r#type: "file",
-                        accept: "application/json,.json",
-                        class: "block w-full text-sm text-content file:mr-3 file:rounded-md file:border-0 file:bg-surface-2 file:px-3 file:py-1.5 file:text-sm file:font-medium",
-                        onchange: move |evt: FormEvent| {
-                            error.set(String::new());
-                            summary.set(None);
-                            let Some(file) = evt.files().into_iter().next() else {
-                                return;
-                            };
-                            file_name.set(file.name());
-                            spawn(async move {
-                                match file.read_string().await {
-                                    Ok(text) => file_text.set(Some(text)),
-                                    Err(_) => {
-                                        error.set("Could not read the selected file.".to_string())
-                                    }
+                FileField {
+                    name: "import_file",
+                    label: "Import file",
+                    accept: "application/json,.json",
+                    help: if file_name.read().is_empty() {
+                        String::new()
+                    } else {
+                        format!("Selected: {}", file_name.read())
+                    },
+                    onchange: move |evt: FormEvent| {
+                        error.set(String::new());
+                        summary.set(None);
+                        let Some(file) = evt.files().into_iter().next() else {
+                            return;
+                        };
+                        file_name.set(file.name());
+                        spawn(async move {
+                            match file.read_string().await {
+                                Ok(text) => file_text.set(Some(text)),
+                                Err(_) => {
+                                    error.set("Could not read the selected file.".to_string())
                                 }
-                            });
-                        },
-                    }
-                    if !file_name.read().is_empty() {
-                        p { class: "text-xs text-muted", "Selected: {file_name.read()}" }
-                    }
+                            }
+                        });
+                    },
                 }
 
                 crate::components::Input {

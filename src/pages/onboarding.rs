@@ -36,7 +36,7 @@
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::components::{AuthLayout, Button, ButtonVariant, Input};
+use crate::components::{AuthLayout, Button, ButtonVariant, FileField, Input};
 use crate::utils::{FormGuard, Rule};
 use crate::Route;
 
@@ -309,19 +309,14 @@ pub fn Onboarding() -> Element {
                         // than uploaded on selection: nothing else on this
                         // screen has been saved yet, and a logo attached to a
                         // tenant whose details were never submitted is litter.
-                        div { class: "space-y-1",
-                            label {
-                                r#for: "org_logo",
-                                class: "block text-sm font-medium text-content",
-                                "Logo (optional)"
-                            }
-                            input {
-                                id: "org_logo",
-                                r#type: "file",
-                                accept: "image/png,image/jpeg,image/webp,image/gif",
-                                disabled: saving(),
-                                class: "block w-full text-sm text-content file:mr-3 file:rounded-md file:border-0 file:bg-surface-2 file:px-3 file:py-1.5 file:text-sm file:font-medium",
-                                onchange: move |evt: FormEvent| {
+                        FileField {
+                            name: "org_logo",
+                            label: "Logo (optional)",
+                            accept: "image/png,image/jpeg,image/webp,image/gif",
+                            disabled: saving(),
+                            error: logo_error(),
+                            help: "PNG, JPEG, WebP or GIF, up to 1 MB. Shown to clients on the forms you send.",
+                            onchange: move |evt: FormEvent| {
                                     logo_error.set(String::new());
                                     let Some(file) = evt.files().into_iter().next() else {
                                         logo.set(None);
@@ -340,15 +335,7 @@ pub fn Onboarding() -> Element {
                                             }
                                         }
                                     });
-                                },
-                            }
-                            if !logo_error().is_empty() {
-                                p { class: "text-xs text-red-600 dark:text-red-400", "{logo_error}" }
-                            } else {
-                                p { class: "text-xs text-muted",
-                                    "PNG, JPEG, WebP or GIF, up to 1 MB. Shown to clients on the forms you send."
-                                }
-                            }
+                            },
                         }
 
                         if !error().is_empty() {

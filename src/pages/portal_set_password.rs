@@ -14,7 +14,7 @@
 use dioxus::prelude::*;
 use serde::Serialize;
 
-use crate::components::{Button, ButtonVariant, Input};
+use crate::components::{AuthLayout, Button, ButtonVariant, Input};
 use crate::Route;
 
 /// Client-side floor, mirroring the server's `length(min = 8)` on
@@ -115,79 +115,75 @@ pub fn PortalSetPasswordPage() -> Element {
     };
 
     rsx! {
-        div { class: "min-h-screen bg-app flex items-center justify-center px-4",
-            div { class: "max-w-md w-full",
-                div { class: "bg-surface rounded-lg shadow-lg p-8",
-                    if done() {
-                        div { class: "text-center", role: "status", aria_live: "polite",
-                            h1 { class: "text-2xl font-semibold text-content", "Password set" }
-                            p { class: "mt-2 text-sm text-content",
-                                "You can now sign in to the Client Portal with your email and this password."
-                            }
-                            // MAPPS-395: the portal sign-in page, which mints
-                            // the `typ: "portal_access"` token every portal
-                            // page needs.
-                            Link {
-                                to: Route::PortalLogin {},
-                                class: "mt-6 inline-flex items-center justify-center rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:opacity-90",
-                                "Sign in to the Client Portal"
-                            }
-                        }
-                    } else {
-                        div { class: "text-center mb-6",
-                            h1 { class: "text-2xl font-semibold text-content", "Set your portal password" }
-                            p { class: "mt-2 text-sm text-content",
-                                "Choose a password for the Client Portal. It must be at least {MIN_PASSWORD_LEN} characters."
-                            }
-                        }
+        AuthLayout {
+            if done() {
+                div { class: "text-center", role: "status", aria_live: "polite",
+                    h1 { class: "text-2xl font-semibold text-content", "Password set" }
+                    p { class: "mt-2 text-sm text-content",
+                        "You can now sign in to the Client Portal with your email and this password."
+                    }
+                    // MAPPS-395: the portal sign-in page, which mints
+                    // the `typ: "portal_access"` token every portal
+                    // page needs.
+                    Link {
+                        to: Route::PortalLogin {},
+                        class: "mt-6 inline-flex items-center justify-center rounded-md bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:opacity-90",
+                        "Sign in to the Client Portal"
+                    }
+                }
+            } else {
+                div { class: "text-center mb-6",
+                    h1 { class: "text-2xl font-semibold text-content", "Set your portal password" }
+                    p { class: "mt-2 text-sm text-content",
+                        "Choose a password for the Client Portal. It must be at least {MIN_PASSWORD_LEN} characters."
+                    }
+                }
 
-                        form {
-                            class: "space-y-4",
-                            onsubmit: move |evt: Event<FormData>| {
-                                evt.prevent_default();
-                                handle_submit(());
-                            },
+                form {
+                    class: "space-y-4",
+                    onsubmit: move |evt: Event<FormData>| {
+                        evt.prevent_default();
+                        handle_submit(());
+                    },
 
-                            Input {
-                                name: "password",
-                                label: "New password",
-                                r#type: "password".to_string(),
-                                value: password(),
-                                required: true,
-                                disabled: saving(),
-                                oninput: move |e: FormEvent| {
-                                    error.set(String::new());
-                                    password.set(e.value());
-                                },
-                            }
+                    Input {
+                        name: "password",
+                        label: "New password",
+                        r#type: "password".to_string(),
+                        value: password(),
+                        required: true,
+                        disabled: saving(),
+                        oninput: move |e: FormEvent| {
+                            error.set(String::new());
+                            password.set(e.value());
+                        },
+                    }
 
-                            Input {
-                                name: "confirm_password",
-                                label: "Confirm password",
-                                r#type: "password".to_string(),
-                                value: confirm(),
-                                required: true,
-                                disabled: saving(),
-                                oninput: move |e: FormEvent| {
-                                    error.set(String::new());
-                                    confirm.set(e.value());
-                                },
-                            }
+                    Input {
+                        name: "confirm_password",
+                        label: "Confirm password",
+                        r#type: "password".to_string(),
+                        value: confirm(),
+                        required: true,
+                        disabled: saving(),
+                        oninput: move |e: FormEvent| {
+                            error.set(String::new());
+                            confirm.set(e.value());
+                        },
+                    }
 
-                            if !error().is_empty() {
-                                p { class: "text-sm text-red-600 dark:text-red-400", role: "alert", "{error}" }
-                            }
+                    if !error().is_empty() {
+                        p { class: "text-sm text-red-600 dark:text-red-400", role: "alert", "{error}" }
+                    }
 
-                            div { class: "pt-2",
-                                Button {
-                                    variant: ButtonVariant::Primary,
-                                    disabled: saving(),
-                                    loading: saving(),
-                                    r#type: "submit".to_string(),
-                                    class: "w-full".to_string(),
-                                    "Set password"
-                                }
-                            }
+                    div { class: "pt-2",
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            disabled: saving(),
+                            loading: saving(),
+                            r#type: "submit".to_string(),
+                            class: "w-full".to_string(),
+                            "Set password"
                         }
                     }
                 }

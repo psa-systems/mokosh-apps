@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::components::{
-    use_page_title, AlertType, Button, ButtonVariant, Card, Modal, PageHeader, Table, TableBody,
-    TableCell, TableHead, TableHeader, TableRow,
+    use_page_title, AlertType, Button, ButtonVariant, Card, Checkbox, Input, Modal, PageHeader,
+    Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableRow,
 };
 use crate::Route;
 
@@ -208,8 +208,32 @@ pub fn SavedDashboardsPage() -> Element {
                     crate::components::TableLoading { columns: 4 }
                 }
             } else if rows.is_empty() {
-                div { class: "p-6 text-center text-muted",
-                    "No saved dashboards yet. Click 'New dashboard' to create your first."
+                // MAPPS-440: the empty state belongs inside the table, as the
+                // shared row every other list uses, not as a bare div beside it.
+                Table {
+                    TableHead {
+                        TableRow {
+                            TableHeader { "Name" }
+                            TableHeader { "Default" }
+                            TableHeader { "Updated" }
+                            TableHeader { class: "text-right".to_string(), "Actions" }
+                        }
+                    }
+                    TableEmpty {
+                        columns: 4,
+                        title: "No saved dashboards yet".to_string(),
+                        description: "Create one to pin as your post-login landing page."
+                            .to_string(),
+                        actions: rsx! {
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't create a dashboard while the server is unreachable".to_string()),
+                                onclick: move |_| show_create.set(true),
+                                "New dashboard"
+                            }
+                        },
+                    }
                 }
             } else {
                 Table {
@@ -286,22 +310,17 @@ pub fn SavedDashboardsPage() -> Element {
             title: "New dashboard".to_string(),
             onclose: move |_| show_create.set(false),
             div { class: "space-y-4",
-                div {
-                    label { class: "block text-sm font-medium mb-1", "Name" }
-                    input {
-                        class: "input input-bordered w-full",
-                        r#type: "text",
-                        value: "{new_name}",
-                        oninput: move |e| new_name.set(e.value()),
-                    }
+                Input {
+                    name: "dashboard_name",
+                    label: "Name",
+                    value: "{new_name}",
+                    oninput: move |e: FormEvent| new_name.set(e.value()),
                 }
-                label { class: "flex items-center gap-2",
-                    input {
-                        r#type: "checkbox",
-                        checked: *new_is_default.read(),
-                        oninput: move |e| new_is_default.set(e.value() == "true"),
-                    }
-                    span { class: "text-sm", "Pin as my default dashboard" }
+                Checkbox {
+                    name: "dashboard_is_default",
+                    label: "Pin as my default dashboard",
+                    checked: *new_is_default.read(),
+                    onchange: move |e: FormEvent| new_is_default.set(e.checked()),
                 }
                 div { class: "flex justify-end gap-2 pt-2",
                     Button {

@@ -47,7 +47,7 @@ pre-commit: css-build
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-web check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions
+check: check-web check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption
 
 # Check web/WASM compilation
 [group: 'check']
@@ -89,6 +89,11 @@ check-confirm-destructive:
 [group: 'check']
 check-class-omissions:
     bash scripts/check-class-omissions.sh
+
+# MAPPS-440: keep the DaisyUI classes out, the auth shells on AuthLayout, and the file-input recipe in FileField
+[group: 'check']
+check-kit-adoption:
+    bash scripts/check-kit-adoption.sh
 
 # Run clippy lints
 [group: 'check']
