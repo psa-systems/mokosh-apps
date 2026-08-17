@@ -47,7 +47,7 @@ pre-commit: css-build
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-web check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption check-ellipsis-glyph
+check: check-web check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state
 
 # Check web/WASM compilation
 [group: 'check']
@@ -101,6 +101,12 @@ check-kit-adoption:
 check-ellipsis-glyph:
     bash scripts/check-ellipsis-glyph.sh --self-test
     bash scripts/check-ellipsis-glyph.sh
+
+# MAPPS-442: keep every settings list page on the rich three-part EmptyState (title, description, "New <thing>" button), never the bare-message mode. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-empty-state:
+    bash scripts/check-empty-state.sh --self-test
+    bash scripts/check-empty-state.sh
 
 # Run clippy lints
 [group: 'check']

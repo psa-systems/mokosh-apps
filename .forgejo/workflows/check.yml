@@ -95,6 +95,14 @@ jobs:
           bash scripts/check-ellipsis-glyph.sh --self-test
           bash scripts/check-ellipsis-glyph.sh
 
+      # MAPPS-442: every settings list page renders the rich three-part
+      # EmptyState with its "New <thing>" button as the CTA. The bare-message
+      # mode compiles just as well, so the prose CTA is kept out by the guard.
+      - name: Empty-state guard
+        run: |
+          bash scripts/check-empty-state.sh --self-test
+          bash scripts/check-empty-state.sh
+
       - name: Check formatting
         run: cargo fmt --all --check
 
