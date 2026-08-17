@@ -16,10 +16,11 @@ use crate::components::{Button, ButtonVariant, Input};
 use crate::Route;
 
 /// Request body for `POST /api/v1/portal/auth/forgot-password`,
-/// matching mokosh-server's `PortalForgotPasswordRequest`. `tenant_slug`
-/// is omitted on portal hosts (server resolves from Host header per
-/// PMS-729); the SPA drops it via `skip_serializing_if` for the same
-/// reason `PortalLoginBody` does.
+/// matching mokosh-server's `PortalForgotPasswordRequest`. Every
+/// deploy hosts a client's portal at `{slug}.<portal_host_suffix>`,
+/// so the server resolves the tenant from the Host header; the
+/// SPA always sends `tenant_slug` empty and `skip_serializing_if`
+/// drops it from the wire.
 #[derive(Serialize)]
 struct ForgotPasswordBody {
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -30,34 +31,25 @@ struct ForgotPasswordBody {
 #[component]
 pub fn PortalForgotPasswordPage() -> Element {
     let mut email = use_signal(String::new);
-    let mut tenant =
-        use_signal(|| crate::utils::url::current_query_param("tenant").unwrap_or_default());
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
     let mut sent = use_signal(|| false);
 
     // Kick the branding fetch on mount so the copy can address the MSP
-    // by name if the SPA is on a portal host (PMS-729 phase 2 §6). Idempotent.
+    // by name once the /portal/host round-trip lands. Idempotent.
     #[cfg(feature = "web")]
     use_hook(crate::hooks::portal_branding::ensure_portal_branding_fetch);
-    // PMS-729 phase 2 §6 slice 3: same portal theme on the reset flow.
     #[cfg(feature = "web")]
     crate::hooks::portal_theme::use_apply_portal_theme();
     let hint_snapshot = crate::hooks::portal_branding::use_portal_host_hint();
-    let host_derived = hint_snapshot.is_some();
 
     let mut handle_submit = move |_| {
         if saving() {
             return;
         }
         let em = email.read().trim().to_string();
-        let slug = tenant.read().trim().to_string();
         if em.is_empty() {
             error.set("Enter your email address.".to_string());
-            return;
-        }
-        if !host_derived && slug.is_empty() {
-            error.set("Enter your account name and email.".to_string());
             return;
         }
         saving.set(true);
@@ -67,11 +59,8 @@ pub fn PortalForgotPasswordPage() -> Element {
             #[cfg(feature = "web")]
             {
                 let body = ForgotPasswordBody {
-                    tenant_slug: if host_derived {
-                        String::new()
-                    } else {
-                        slug.clone()
-                    },
+                    // Always empty: server resolves tenant from Host.
+                    tenant_slug: String::new(),
                     email: em.clone(),
                 };
                 // 204 on success regardless of whether the email is
@@ -89,7 +78,7 @@ pub fn PortalForgotPasswordPage() -> Element {
             }
             #[cfg(not(feature = "web"))]
             {
-                let _ = (em, slug);
+                let _ = em;
             }
             saving.set(false);
         });
@@ -153,22 +142,6 @@ pub fn PortalForgotPasswordPage() -> Element {
                                 evt.prevent_default();
                                 handle_submit(());
                             },
-
-                            // Legacy body-slug field for non-portal hosts.
-                            if hint_snapshot.is_none() {
-                                Input {
-                                    name: "tenant_slug",
-                                    label: "Account name",
-                                    r#type: "text".to_string(),
-                                    value: tenant(),
-                                    required: true,
-                                    disabled: saving(),
-                                    oninput: move |e: FormEvent| {
-                                        error.set(String::new());
-                                        tenant.set(e.value());
-                                    },
-                                }
-                            }
 
                             Input {
                                 name: "email",
