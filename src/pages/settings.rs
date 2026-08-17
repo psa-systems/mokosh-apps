@@ -858,6 +858,8 @@ fn OrganizationSettingsBody() -> Element {
     // rather than left as the browser's broken-image box, which is how this
     // page looked while the URL was wrong.
     let mut logo_broken = use_signal(|| false);
+    // MAPPS-436: Remove opens the dialog; the DELETE fires from `onconfirm`.
+    let mut confirming_logo_remove = use_signal(|| false);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
     let mut name_error = use_signal(String::new);
@@ -1052,28 +1054,49 @@ fn OrganizationSettingsBody() -> Element {
                                 }
                             }
                             Button {
-                                variant: ButtonVariant::Secondary,
+                                // MAPPS-436: Remove is destructive, so it takes the
+                                // Danger variant per docs/button-variants.md.
+                                variant: ButtonVariant::Danger,
                                 disabled: logo_busy() || !can_mutate,
-                                onclick: move |_| {
-                                    logo_busy.set(true);
-                                    logo_error.set(String::new());
-                                    spawn(async move {
-                                        #[cfg(feature = "web")]
-                                        {
-                                            match crate::hooks::fetch::api::delete_authed(TENANT_LOGO_PATH).await {
-                                                Ok(()) => {
-                                                    logo_url.set(None);
-                                                    logo_broken.set(false);
-                                                }
-                                                Err(e) => logo_error.set(format!("Could not remove the logo: {e}")),
-                                            }
-                                        }
-                                        logo_busy.set(false);
-                                    });
-                                },
+                                onclick: move |_| confirming_logo_remove.set(true),
                                 "Remove"
                             }
                         }
+                    }
+                    crate::components::ConfirmDialog {
+                        open: confirming_logo_remove(),
+                        title: "Remove logo".to_string(),
+                        message: "Remove the organization logo?".to_string(),
+                        confirm_text: "Remove".to_string(),
+                        cancel_text: "Cancel".to_string(),
+                        destructive: true,
+                        loading: logo_busy(),
+                        onconfirm: move |_| {
+                            if logo_busy() {
+                                return;
+                            }
+                            logo_busy.set(true);
+                            logo_error.set(String::new());
+                            spawn(async move {
+                                #[cfg(feature = "web")]
+                                {
+                                    match crate::hooks::fetch::api::delete_authed(TENANT_LOGO_PATH).await {
+                                        Ok(()) => {
+                                            logo_url.set(None);
+                                            logo_broken.set(false);
+                                        }
+                                        Err(e) => logo_error.set(format!("Could not remove the logo: {e}")),
+                                    }
+                                }
+                                logo_busy.set(false);
+                                confirming_logo_remove.set(false);
+                            });
+                        },
+                        oncancel: move |_| {
+                            if !logo_busy() {
+                                confirming_logo_remove.set(false);
+                            }
+                        },
                     }
                     input {
                         id: "org_logo",
@@ -6185,6 +6208,9 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut creating = use_signal(|| false);
     let mut deleting_id = use_signal(|| None::<Uuid>);
+    // MAPPS-436: the row Delete only opens the dialog; it holds the id plus the
+    // device label so the message can name the row being destroyed.
+    let mut pending_delete = use_signal(|| None::<(Uuid, String)>);
     let mut row_error = use_signal(String::new);
     let current_page = (*page.read()).max(1);
 
@@ -6258,6 +6284,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
     };
 
     let no_connections = connections.is_empty();
+    let pending = pending_delete.read().clone();
 
     rsx! {
         PageHeader {
@@ -6355,23 +6382,15 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                                                 // MAPPS-357: block deletes while the server is unreachable.
                                                 disabled: !can_mutate,
                                                 title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
-                                                onclick: move |_| {
-                                                    if deleting_id.read().is_some() {
-                                                        return;
-                                                    }
-                                                    deleting_id.set(Some(rid));
-                                                    row_error.set(String::new());
-                                                    spawn(async move {
-                                                        #[cfg(feature = "web")]
-                                                        {
-                                                            match delete_lookup(&rid.to_string(), "/rmm/device-mappings").await {
-                                                                Ok(true) => resource.restart(),
-                                                                Ok(false) => {}
-                                                                Err(err) => row_error.set(format!("Could not delete mapping: {err}")),
-                                                            }
+                                                onclick: {
+                                                    let label = device_display.clone();
+                                                    move |_| {
+                                                        if deleting_id.read().is_some() {
+                                                            return;
                                                         }
-                                                        deleting_id.set(None);
-                                                    });
+                                                        row_error.set(String::new());
+                                                        pending_delete.set(Some((rid, label.clone())));
+                                                    }
                                                 },
                                                 "Delete"
                                             }
@@ -6392,6 +6411,43 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                 onsaved: move |_| {
                     creating.set(false);
                     resource.restart();
+                },
+            }
+        }
+
+        // MAPPS-436: the DELETE fires from `onconfirm` only.
+        if let Some((pid, label)) = pending {
+            crate::components::ConfirmDialog {
+                open: true,
+                title: "Delete device mapping".to_string(),
+                message: format!("Delete the device mapping for \"{label}\"?"),
+                confirm_text: "Delete".to_string(),
+                cancel_text: "Cancel".to_string(),
+                destructive: true,
+                loading: *deleting_id.read() == Some(pid),
+                onconfirm: move |_| {
+                    if deleting_id.read().is_some() {
+                        return;
+                    }
+                    deleting_id.set(Some(pid));
+                    row_error.set(String::new());
+                    spawn(async move {
+                        #[cfg(feature = "web")]
+                        {
+                            match delete_lookup(&pid.to_string(), "/rmm/device-mappings").await {
+                                Ok(true) => resource.restart(),
+                                Ok(false) => {}
+                                Err(err) => row_error.set(format!("Could not delete mapping: {err}")),
+                            }
+                        }
+                        deleting_id.set(None);
+                        pending_delete.set(None);
+                    });
+                },
+                oncancel: move |_| {
+                    if deleting_id.read().is_none() {
+                        pending_delete.set(None);
+                    }
                 },
             }
         }
@@ -6599,6 +6655,9 @@ fn RmmAlertRulesSettingsBody() -> Element {
     let mut page = use_signal(|| 1usize);
     let mut creating = use_signal(|| false);
     let mut deleting_id = use_signal(|| None::<Uuid>);
+    // MAPPS-436: the row Delete only opens the dialog; it holds the id plus the
+    // rule name so the message can name the row being destroyed.
+    let mut pending_delete = use_signal(|| None::<(Uuid, String)>);
     let mut row_error = use_signal(String::new);
     let current_page = (*page.read()).max(1);
 
@@ -6670,6 +6729,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
     };
 
     let no_connections = connections.is_empty();
+    let pending = pending_delete.read().clone();
 
     rsx! {
         PageHeader {
@@ -6771,23 +6831,15 @@ fn RmmAlertRulesSettingsBody() -> Element {
                                                 // MAPPS-357: block deletes while the server is unreachable.
                                                 disabled: !can_mutate,
                                                 title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
-                                                onclick: move |_| {
-                                                    if deleting_id.read().is_some() {
-                                                        return;
-                                                    }
-                                                    deleting_id.set(Some(rid));
-                                                    row_error.set(String::new());
-                                                    spawn(async move {
-                                                        #[cfg(feature = "web")]
-                                                        {
-                                                            match delete_lookup(&rid.to_string(), "/rmm/alert-rules").await {
-                                                                Ok(true) => resource.restart(),
-                                                                Ok(false) => {}
-                                                                Err(err) => row_error.set(format!("Could not delete rule: {err}")),
-                                                            }
+                                                onclick: {
+                                                    let label = name.clone();
+                                                    move |_| {
+                                                        if deleting_id.read().is_some() {
+                                                            return;
                                                         }
-                                                        deleting_id.set(None);
-                                                    });
+                                                        row_error.set(String::new());
+                                                        pending_delete.set(Some((rid, label.clone())));
+                                                    }
                                                 },
                                                 "Delete"
                                             }
@@ -6808,6 +6860,43 @@ fn RmmAlertRulesSettingsBody() -> Element {
                 onsaved: move |_| {
                     creating.set(false);
                     resource.restart();
+                },
+            }
+        }
+
+        // MAPPS-436: the DELETE fires from `onconfirm` only.
+        if let Some((pid, label)) = pending {
+            crate::components::ConfirmDialog {
+                open: true,
+                title: "Delete alert rule".to_string(),
+                message: format!("Delete the alert rule \"{label}\"?"),
+                confirm_text: "Delete".to_string(),
+                cancel_text: "Cancel".to_string(),
+                destructive: true,
+                loading: *deleting_id.read() == Some(pid),
+                onconfirm: move |_| {
+                    if deleting_id.read().is_some() {
+                        return;
+                    }
+                    deleting_id.set(Some(pid));
+                    row_error.set(String::new());
+                    spawn(async move {
+                        #[cfg(feature = "web")]
+                        {
+                            match delete_lookup(&pid.to_string(), "/rmm/alert-rules").await {
+                                Ok(true) => resource.restart(),
+                                Ok(false) => {}
+                                Err(err) => row_error.set(format!("Could not delete rule: {err}")),
+                            }
+                        }
+                        deleting_id.set(None);
+                        pending_delete.set(None);
+                    });
+                },
+                oncancel: move |_| {
+                    if deleting_id.read().is_none() {
+                        pending_delete.set(None);
+                    }
                 },
             }
         }

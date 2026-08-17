@@ -65,6 +65,10 @@ pub fn SavedDashboardsPage() -> Element {
     let mut show_create = use_signal(|| false);
     let mut new_name = use_signal(String::new);
     let mut new_is_default = use_signal(|| false);
+    // MAPPS-436: the row Delete only opens the dialog; it holds the id plus the
+    // dashboard name so the message can name the row being destroyed.
+    let mut pending_delete = use_signal(|| None::<(Uuid, String)>);
+    let mut deleting = use_signal(|| false);
 
     // MAPPS-357: writes (create / pin default / delete) are blocked while the
     // server is unreachable; `can_mutate` disables their buttons below.
@@ -108,7 +112,15 @@ pub fn SavedDashboardsPage() -> Element {
         });
     };
 
-    let on_delete = move |id: Uuid| {
+    // MAPPS-436: the DELETE fires from the ConfirmDialog's `onconfirm` only.
+    let on_confirm_delete = move |_: ()| {
+        let Some((id, _)) = pending_delete.read().clone() else {
+            return;
+        };
+        if *deleting.read() {
+            return;
+        }
+        deleting.set(true);
         spawn(async move {
             match crate::hooks::fetch::api::delete_authed(&format!("/dashboards/{id}")).await {
                 Ok(_) => {
@@ -122,6 +134,8 @@ pub fn SavedDashboardsPage() -> Element {
                     );
                 }
             }
+            deleting.set(false);
+            pending_delete.set(None);
         });
     };
 
@@ -157,6 +171,8 @@ pub fn SavedDashboardsPage() -> Element {
             }
         });
     };
+
+    let pending = pending_delete.read().clone();
 
     rsx! {
         PageHeader {
@@ -213,7 +229,7 @@ pub fn SavedDashboardsPage() -> Element {
                                 let row_name = row.name.clone();
                                 let updated = row.updated_at.format("%Y-%m-%d %H:%M UTC").to_string();
                                 let on_pin = on_pin_default;
-                                let on_del = on_delete;
+                                let del_label = row_name.clone();
                                 rsx! {
                                     TableRow { key: "{id}",
                                         TableCell { "{row_name}" }
@@ -249,7 +265,9 @@ pub fn SavedDashboardsPage() -> Element {
                                                     // MAPPS-357: block delete while down.
                                                     disabled: !can_mutate,
                                                     title: (!can_mutate).then(|| "Can't delete while the server is unreachable".to_string()),
-                                                    onclick: move |_| on_del(id),
+                                                    onclick: move |_| {
+                                                        pending_delete.set(Some((id, del_label.clone())));
+                                                    },
                                                     "Delete"
                                                 }
                                             }
@@ -300,6 +318,24 @@ pub fn SavedDashboardsPage() -> Element {
                         "Create"
                     }
                 }
+            }
+        }
+
+        if let Some((_, del_name)) = pending {
+            crate::components::ConfirmDialog {
+                open: true,
+                title: "Delete dashboard".to_string(),
+                message: format!("Delete the saved dashboard \"{del_name}\"?"),
+                confirm_text: "Delete".to_string(),
+                cancel_text: "Cancel".to_string(),
+                destructive: true,
+                loading: *deleting.read(),
+                onconfirm: on_confirm_delete,
+                oncancel: move |_| {
+                    if !*deleting.read() {
+                        pending_delete.set(None);
+                    }
+                },
             }
         }
     }

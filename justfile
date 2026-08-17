@@ -47,7 +47,7 @@ pre-commit: css-build
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-web check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose
+check: check-web check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive
 
 # Check web/WASM compilation
 [group: 'check']
@@ -78,6 +78,11 @@ check-cancel-routes:
 [group: 'check']
 check-auth-error-prose:
     bash scripts/check-auth-error-prose.sh
+
+# MAPPS-436: keep every destructive mutation behind ConfirmDialog, never straight from a button onclick
+[group: 'check']
+check-confirm-destructive:
+    bash scripts/check-confirm-destructive.sh
 
 # Run clippy lints
 [group: 'check']

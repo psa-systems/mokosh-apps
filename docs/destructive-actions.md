@@ -40,9 +40,11 @@ different entity's name never carries over an enabled state.
 
 `ConfirmDialog` is wired across tickets, contacts, projects, assets, contracts
 (incl. line items), billing, SLA (the "Remove" the review flagged), knowledge
-base, team (Revoke), settings, calendar, and time. The one cascading delete -
-delete company - uses the type-to-confirm gate. There is no tenant-delete in
-the SPA today (the admin tenant page is a read-only roster).
+base, team (Revoke), settings (incl. the RMM device-mapping and alert-rule rows
+and the organization logo Remove), calendar, time, dashboards, request forms
+(draft Discard), and quotes (Cancel quote). The one cascading delete - delete
+company - uses the type-to-confirm gate. There is no tenant-delete in the SPA
+today (the admin tenant page is a read-only roster).
 
 ## Testing
 
@@ -51,3 +53,11 @@ by the host-side `cargo test --lib` harness (no wasm/browser test runner is set
 up). The testable risk - the type-to-confirm gate - is covered by unit tests on
 `confirm_phrase_satisfied`. If a wasm-bindgen-test + headless-browser harness is
 added later, assert the open-before-DELETE flow there.
+
+The wiring rule itself is enforced statically instead:
+`scripts/check-confirm-destructive.sh` (MAPPS-436, run by `just check` and by
+the Forgejo check job) fails on any `onclick:` handler that reaches
+`delete_authed` / `delete_authed_typed` / `delete_lookup`, directly or through
+a same-file helper. A delete that fires from `onconfirm` is invisible to it by
+construction. That is what stops MAPPS-189's fix regressing again: three row
+Deletes added after it shipped with no confirmation at all.

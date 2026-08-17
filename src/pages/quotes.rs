@@ -404,6 +404,9 @@ fn QuoteDetailBody(id: String) -> Element {
     let action_error = use_signal(String::new);
     let busy = use_signal(|| false);
     let mut show_convert = use_signal(|| false);
+    // MAPPS-436: Cancel quote is destructive and has no undo, so the button
+    // only opens the dialog and the DELETE fires from `onconfirm`.
+    let mut confirming_cancel = use_signal(|| false);
 
     let id_for_fetch = id.clone();
     let quote_resource = use_resource(move || {
@@ -649,13 +652,29 @@ fn QuoteDetailBody(id: String) -> Element {
                                         Button {
                                             variant: ButtonVariant::Danger,
                                             disabled: !can_mutate || *busy.read(),
-                                            onclick: {
+                                            onclick: move |_| confirming_cancel.set(true),
+                                            "Cancel quote"
+                                        }
+                                        // MAPPS-436: the DELETE fires from `onconfirm` only.
+                                        crate::components::ConfirmDialog {
+                                            open: confirming_cancel(),
+                                            title: "Cancel quote".to_string(),
+                                            message: format!("Cancel quote {header_title}? The client can no longer accept it and this cannot be undone."),
+                                            confirm_text: "Cancel quote".to_string(),
+                                            cancel_text: "Keep quote".to_string(),
+                                            destructive: true,
+                                            loading: *busy.read(),
+                                            onconfirm: {
                                                 let qid = quote_id.clone();
                                                 move |_| {
+                                                    if *busy.read() {
+                                                        return;
+                                                    }
+                                                    confirming_cancel.set(false);
                                                     cancel_quote(qid.clone(), version, busy, action_error);
                                                 }
                                             },
-                                            "Cancel quote"
+                                            oncancel: move |_| confirming_cancel.set(false),
                                         }
                                     }
                                 }
