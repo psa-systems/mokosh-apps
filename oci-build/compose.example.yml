@@ -40,6 +40,14 @@ services:
       # your apex (e.g. https://example.com). Optional: leave unset
       # to fall through to compile-time defaults.
       MOKOSH_HUB_BASE_URL: https://example.com
+
+      # Suffix each tenant's client portal is served under. Every
+      # tenant provisioned on the paired mokosh-server gets a portal
+      # at `{tenant.slug}<suffix>` (e.g. acme.client.example.com).
+      # MUST match the paired mokosh-server's `PORTAL_HOST_SUFFIX`
+      # env var byte-for-byte. Requires a DNS wildcard record + a
+      # TLS certificate whose SAN covers the same wildcard.
+      # MOKOSH_PORTAL_HOST_SUFFIX: .client.example.com
     ports:
       # Loopback bind by default. Front the container with your own
       # TLS reverse proxy (Caddy / Traefik / nginx) so cookies set by

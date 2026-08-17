@@ -92,8 +92,9 @@ impl PortalHostHint {
 }
 
 /// The current portal-host branding hint, shared across pages. `None`
-/// before the fetch completes, on a legacy host (the endpoint 404s),
-/// and on any transport error. `Some(hint)` on a successful resolve.
+/// before the fetch completes, on a non-portal host (the SPA on the
+/// agent origin, where /portal/host 404s), and on any transport
+/// error. `Some(hint)` on a successful resolve.
 #[cfg(feature = "web")]
 pub static PORTAL_HOST_HINT: GlobalSignal<Option<PortalHostHint>> = Signal::global(|| None);
 

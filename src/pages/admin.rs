@@ -412,7 +412,29 @@ fn TenantRow(props: TenantRowProps) -> Element {
                     }
                     div {
                         span { class: "font-medium text-content", "{props.name}" }
-                        p { class: "text-sm text-muted", "{props.domain}.mokosh.app" }
+                        // Render the tenant's real client portal URL, not
+                        // a hardcoded `{slug}.mokosh.app` that was never
+                        // the actual portal host. Falls back to just the
+                        // slug on a legacy deploy that has no
+                        // PORTAL_HOST_SUFFIX configured (nothing to link
+                        // to; a bare slug still identifies the tenant).
+                        {
+                            let portal_url = crate::modules::runtime_config::portal_url_for_slug(&props.domain);
+                            match portal_url {
+                                Some(url) => rsx! {
+                                    a {
+                                        class: "text-sm text-muted hover:text-accent break-all",
+                                        href: "{url}",
+                                        target: "_blank",
+                                        rel: "noopener",
+                                        "{url}"
+                                    }
+                                },
+                                None => rsx! {
+                                    p { class: "text-sm text-muted font-mono", "{props.domain}" }
+                                },
+                            }
+                        }
                     }
                 }
             }

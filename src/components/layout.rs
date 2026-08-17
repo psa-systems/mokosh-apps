@@ -1101,10 +1101,10 @@ pub struct PortalLayoutProps {
 
 #[component]
 pub fn PortalLayout(props: PortalLayoutProps) -> Element {
-    // PMS-729: nudge the shared branding fetch on mount so a customer who
-    // lands on `/portal/tickets` directly (bypassing the login page) still
-    // sees the MSP name / logo in the header. Idempotent; on a legacy host
-    // (`on_portal_host()` false) it is a no-op.
+    // Nudge the shared branding fetch on mount so a customer who lands
+    // on `/portal/tickets` directly (bypassing the login page) still
+    // sees the MSP name / logo in the header. Idempotent; on a non-
+    // portal host (`on_portal_host()` false) it is a no-op.
     #[cfg(feature = "web")]
     use_hook(crate::hooks::portal_branding::ensure_portal_branding_fetch);
     let hint = crate::hooks::portal_branding::use_portal_host_hint();
@@ -1152,7 +1152,7 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
 
     // Prefer the tenant name in the wordmark; fall back to the generic
     // "Client Portal" copy when the branding hint has not landed yet
-    // (or the SPA is on a legacy host).
+    // (or the SPA is on a non-portal host).
     let brand_label = hint
         .as_ref()
         .map(|h| h.name.clone())

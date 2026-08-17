@@ -159,12 +159,13 @@ The image supports `linux/amd64` and `linux/arm64`; compose pulls the variant ma
 
 Runtime config is supplied via env vars on the container, so a single image works across staging, production, and self-host:
 
-| Env var                | Purpose                                                 |
-|------------------------|---------------------------------------------------------|
-| `MOKOSH_API_BASE`      | API base URL the SPA calls (`https://api.example.com/api/v1`). |
-| `MOKOSH_OIDC_ISSUER`   | OIDC issuer the SPA authenticates against.              |
-| `MOKOSH_OIDC_CLIENT_ID`| Public-client ID registered with mokosh-server.         |
-| `MOKOSH_HUB_BASE_URL`  | Origin of the Bunyip hub for legacy login bookmarks.    |
+| Env var                     | Purpose                                                 |
+|-----------------------------|---------------------------------------------------------|
+| `MOKOSH_API_BASE`           | API base URL the SPA calls (`https://api.example.com/api/v1`). |
+| `MOKOSH_OIDC_ISSUER`        | OIDC issuer the SPA authenticates against.              |
+| `MOKOSH_OIDC_CLIENT_ID`     | Public-client ID registered with mokosh-server.         |
+| `MOKOSH_HUB_BASE_URL`       | Origin of the Bunyip hub for legacy login bookmarks.    |
+| `MOKOSH_PORTAL_HOST_SUFFIX` | Suffix each tenant's client portal is served under (`.client.example.com`); MUST match the server's `PORTAL_HOST_SUFFIX`. Needs a DNS wildcard + TLS SAN covering the same suffix. |
 
 The container's entrypoint writes a tiny `/_mokosh_config.js` from these on each start; the SPA reads it before falling through to its compile-time defaults. Restart the container to pick up changed values.
 

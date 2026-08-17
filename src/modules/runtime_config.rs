@@ -76,9 +76,8 @@ pub fn portal_host_suffix() -> Option<String> {
 
 /// Build the URL a customer would use to sign in to the tenant's own
 /// client portal. Returns `None` when no portal-host suffix is
-/// configured (a legacy deploy where the portal is served alongside
-/// the agent app under `?tenant=`), so the caller can render a
-/// generic hint instead of a broken URL.
+/// configured (i.e. the portal is not served on this deploy), so
+/// the caller can render a generic hint instead of a broken URL.
 pub fn portal_url_for_slug(slug: &str) -> Option<String> {
     let suffix = portal_host_suffix()?;
     let slug = slug.trim().to_ascii_lowercase();

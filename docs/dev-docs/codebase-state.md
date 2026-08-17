@@ -1,5 +1,14 @@
 # Codebase state - mokosh-apps
 
+> **STALE - snapshot from 2026-05-06.** The portal was not implemented
+> at the time of this audit; almost every `/portal/*` row and every
+> "GET-leak P0" reference is out of date. The portal is now fully
+> shipped end-to-end (see `docs/mokosh-client-login/remaining.md` for
+> the current punch list). The agent-side rows are also drifting: a
+> lot of "501" / "stub" / "mock" entries below have shipped since. A
+> re-audit is a follow-up; do not use this as an authoritative map of
+> what does or doesn't work today.
+
 A practical reference for what the client UI looks like to a real
 user today. Derived from a 2026-05-06 audit that walked every route
 in the router via Chrome (MCP browser automation), clicking every
