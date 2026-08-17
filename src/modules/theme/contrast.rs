@@ -91,4 +91,49 @@ mod tests {
         let b = contrast_ratio("#ffffff", "#0f766e").unwrap();
         assert!((a - b).abs() < 1e-9);
     }
+
+    // MAPPS-444. The state hues are Tailwind palette shades, not accent tokens,
+    // so nothing above measures them. sRGB equivalents of the oklch values
+    // Tailwind v4.1 emits (`--color-red-400: oklch(70.4% 0.191 22.216)`, and so
+    // on); sRGB is the conservative reading, a P3 display renders them more
+    // saturated. Dark bases are the `.dark` block in input.css.
+    const DARK_SURFACE: &str = "#1e293b"; // --surface, --raised
+    const DARK_APP: &str = "#0f172a"; // --bg, --surface-2
+
+    #[test]
+    fn every_dark_mode_state_hue_meets_aa_on_both_dark_bases() {
+        // What a `dark:` pair is allowed to name. red-300 is ErrorBanner's.
+        let hues = [
+            ("red-300", "#ffa2a2"),
+            ("red-400", "#ff6467"),
+            ("green-400", "#05df72"),
+        ];
+        for (name, hex) in hues {
+            for (base_name, base) in [("--surface", DARK_SURFACE), ("--bg", DARK_APP)] {
+                let r = contrast_ratio(hex, base).unwrap();
+                assert!(
+                    r >= WCAG_AA_NORMAL,
+                    "{name} {hex} on dark {base_name} {base} is {r:.2}:1, under AA"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_light_mode_state_hues_are_why_the_dark_pair_is_required() {
+        // Deleting a `dark:` pair leaves one of these on the dark surface, so
+        // the guard in scripts/check-theme-tokens.sh has real work to do.
+        for (name, hex) in [
+            ("red-500", "#fb2c36"),
+            ("red-600", "#e7000b"),
+            ("red-700", "#c10007"),
+        ] {
+            let r = contrast_ratio(hex, DARK_SURFACE).unwrap();
+            assert!(
+                r < WCAG_AA_NORMAL,
+                "{name} {hex} now passes AA on the dark surface at {r:.2}:1; \
+                 re-check whether the pair is still needed"
+            );
+        }
+    }
 }
