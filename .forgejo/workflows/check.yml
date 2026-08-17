@@ -75,6 +75,12 @@ jobs:
       - name: Destructive-confirm guard
         run: bash scripts/check-confirm-destructive.sh
 
+      # MAPPS-446: three class omissions with no effect in the default theme
+      # (a heading with no weight, a form grid gated at md:, a name cell with
+      # no colour token), so review does not catch them coming back.
+      - name: Class-omission guard
+        run: bash scripts/check-class-omissions.sh
+
       - name: Check formatting
         run: cargo fmt --all --check
 

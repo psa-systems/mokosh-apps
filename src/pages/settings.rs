@@ -6367,7 +6367,7 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
                                 rsx! {
                                     TableRow { key: "{key}",
                                         TableCell {
-                                            span { class: "font-medium", "{device_display}" }
+                                            span { class: "font-medium text-content", "{device_display}" }
                                         }
                                         TableCell {
                                             span { class: "font-mono text-xs text-muted break-all", "{device_id}" }
@@ -6812,7 +6812,7 @@ fn RmmAlertRulesSettingsBody() -> Element {
                                 rsx! {
                                     TableRow { key: "{key}",
                                         TableCell {
-                                            span { class: "font-medium", "{name}" }
+                                            span { class: "font-medium text-content", "{name}" }
                                         }
                                         TableCell { "{connection}" }
                                         TableCell { "{alert_type_display}" }

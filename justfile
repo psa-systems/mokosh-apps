@@ -47,7 +47,7 @@ pre-commit: css-build
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-web check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive
+check: check-web check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions
 
 # Check web/WASM compilation
 [group: 'check']
@@ -84,6 +84,11 @@ check-auth-error-prose:
 [group: 'check']
 check-confirm-destructive:
     bash scripts/check-confirm-destructive.sh
+
+# MAPPS-446: keep headings declaring a weight, two-up form grids on sm:, and table name cells naming their colour token
+[group: 'check']
+check-class-omissions:
+    bash scripts/check-class-omissions.sh
 
 # Run clippy lints
 [group: 'check']
