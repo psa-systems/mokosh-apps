@@ -32,9 +32,9 @@ use dioxus::prelude::*;
 use crate::utils::datetime::{user_timezone, user_today};
 
 use crate::components::{
-    use_page_title, Button, ButtonVariant, Card, ChevronRightIcon, EmptyState, ErrorBanner,
-    IconSize, Input, Modal, ModalSize, PageHeader, PencilIcon, PlusIcon, Select, SelectOption,
-    SwatchIcon, Textarea,
+    use_page_title, BannerTone, Button, ButtonVariant, Card, ChevronRightIcon, EmptyState,
+    ErrorBanner, IconSize, Input, Modal, ModalSize, PageHeader, PencilIcon, PlusIcon, Select,
+    SelectOption, StatusBanner, SwatchIcon, Textarea,
 };
 use crate::modules::calendar::{
     AppointmentResponse, CreateAppointmentRequest, CreateSchedulingTemplateRequest,
@@ -2074,8 +2074,8 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
             footer,
             div { class: "space-y-4",
                 if is_recurring_instance {
-                    div {
-                        class: "text-sm text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
+                    StatusBanner {
+                        tone: BannerTone::Warning,
                         "This is an occurrence of a recurring series. Editing individual occurrences isn't supported yet; edit the series from its first appointment."
                     }
                 }
@@ -2086,8 +2086,8 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                 // (create mode only; MAPPS-253). Hidden when editing an
                 // existing appointment, where a template does not apply.
                 if !is_edit {
-                    div {
-                        class: "text-sm text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900 rounded-md px-3 py-2",
+                    StatusBanner {
+                        tone: BannerTone::Info,
                         "You are scheduling an appointment now. To save a reusable shape (type, duration, title) for next time, create a template on the Scheduling Templates page instead."
                     }
                     Select {
@@ -2651,9 +2651,9 @@ struct OnCallBannerProps {
 #[component]
 fn OnCallBanner(props: OnCallBannerProps) -> Element {
     rsx! {
-        div { class: "mb-4 rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 px-4 py-3",
-            p { class: "text-sm font-medium text-amber-800 dark:text-amber-300 mb-1", "On call now" }
-            div { class: "flex flex-wrap gap-x-6 gap-y-1 text-sm text-amber-700 dark:text-amber-300",
+        StatusBanner { tone: BannerTone::Warning, class: "mb-4",
+            p { class: "font-medium mb-1", "On call now" }
+            div { class: "flex flex-wrap gap-x-6 gap-y-1",
                 for entry in props.on_call.iter() {
                     {
                         let who = entry

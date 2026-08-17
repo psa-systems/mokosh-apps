@@ -31,10 +31,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, BreadcrumbItem, Breadcrumbs, Button, ButtonVariant, Card,
-    Checkbox, DataTable, ErrorBanner, FileField, IconSize, Input, PageHeader, PlusIcon,
-    SearchInput, Select, SelectOption, SettingFormModal, Table, TableBody, TableCell, TableEmpty,
-    TableHead, TableHeader, TableLoading, TableRow, ThemePicker,
+    use_page_title, Badge, BadgeVariant, BannerTone, BreadcrumbItem, Breadcrumbs, Button,
+    ButtonVariant, Card, Checkbox, DataTable, ErrorBanner, FileField, IconSize, Input, PageHeader,
+    PlusIcon, SearchInput, Select, SelectOption, SettingFormModal, StatusBanner, Table, TableBody,
+    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, ThemePicker,
 };
 use crate::utils::money::format_money_str;
 use crate::utils::Paginated;
@@ -1334,8 +1334,7 @@ fn ImportPanel(tenant_name: String) -> Element {
         Card {
             div { class: "space-y-4",
                 h3 { class: "text-base font-semibold text-content", "Import" }
-                div {
-                    class: "text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 rounded-md px-3 py-2",
+                ErrorBanner {
                     strong { "This replaces all current data for this tenant." }
                     " Importing wipes every existing record and restores from the uploaded file. This cannot be undone. Export a fresh snapshot first."
                 }
@@ -1385,8 +1384,9 @@ fn ImportPanel(tenant_name: String) -> Element {
                 }
 
                 if let Some(s) = summary.read().clone() {
-                    div {
-                        class: "text-sm text-green-800 dark:text-green-300 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-900 rounded-md px-3 py-2 space-y-2",
+                    StatusBanner {
+                        tone: BannerTone::Success,
+                        class: "space-y-2",
                         p { class: "font-medium", "Import complete." }
                         ul { class: "list-disc pl-5",
                             for (table , count) in s.imported.iter() {
@@ -1478,15 +1478,9 @@ fn SeedDemoPanel() -> Element {
                 }
                 if let Some(r) = result.read().clone() {
                     if r.seeded {
-                        div {
-                            class: "text-sm text-green-800 dark:text-green-300 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-900 rounded-md px-3 py-2",
-                            "{r.message}"
-                        }
+                        StatusBanner { tone: BannerTone::Success, "{r.message}" }
                     } else {
-                        div {
-                            class: "text-sm text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
-                            "{r.message}"
-                        }
+                        StatusBanner { tone: BannerTone::Warning, "{r.message}" }
                     }
                 }
                 Button {

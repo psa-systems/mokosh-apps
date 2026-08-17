@@ -5,10 +5,10 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, Checkbox,
-    ChevronRightIcon, DataTable, ErrorBanner, IconSize, Modal, PageHeader, PlusIcon, Select,
-    SelectOption, StatCard, Table, TableAlign, TableBody, TableCell, TableEmptyRow, TableHead,
-    TableHeader, TableRow,
+    use_page_title, Badge, BadgeVariant, BannerTone, Button, ButtonSize, ButtonVariant, Card,
+    Checkbox, ChevronRightIcon, DataTable, ErrorBanner, IconSize, Modal, PageHeader, PlusIcon,
+    Select, SelectOption, StatCard, StatusBanner, Table, TableAlign, TableBody, TableCell,
+    TableEmptyRow, TableHead, TableHeader, TableRow,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
@@ -1256,9 +1256,7 @@ pub fn TimesheetsPage() -> Element {
         }
 
         if !msg.is_empty() {
-            div { class: "mb-4 rounded-md bg-green-50 dark:bg-green-900/20 p-3",
-                p { class: "text-sm text-green-700 dark:text-green-400", "{msg}" }
-            }
+            StatusBanner { tone: BannerTone::Success, class: "mb-4", "{msg}" }
         }
         if !err.is_empty() {
             ErrorBanner { class: "mb-4", "{err}" }
@@ -1919,9 +1917,7 @@ pub fn TimesheetApprovalsPage() -> Element {
         }
 
         if !msg.is_empty() {
-            div { class: "mb-4 rounded-md bg-green-50 dark:bg-green-900/20 p-3",
-                p { class: "text-sm text-green-700 dark:text-green-400", "{msg}" }
-            }
+            StatusBanner { tone: BannerTone::Success, class: "mb-4", "{msg}" }
         }
         if !err.is_empty() {
             ErrorBanner { class: "mb-4", "{err}" }

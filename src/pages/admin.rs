@@ -5,8 +5,8 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, DataTable, PageHeader, StatCard, Table, TableBody,
-    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+    use_page_title, Badge, BadgeVariant, BannerTone, DataTable, PageHeader, StatCard, StatusBanner,
+    Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 
 /// Subset of mokosh-server's `TenantResponse` we render in the admin
@@ -177,8 +177,9 @@ pub fn TenantManagementPage() -> Element {
         }
 
         if source == TenantSource::Demo && !is_loading {
-            div {
-                class: "mb-3 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
+            StatusBanner {
+                tone: BannerTone::Warning,
+                class: "mb-3",
                 "Backend tenants API not reachable - showing demo rows."
             }
         }

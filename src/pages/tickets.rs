@@ -6,10 +6,11 @@ use serde::Deserialize;
 
 use crate::components::{
     clear_selection, ticket_status_badge, use_bulk_selection, use_page_title, AlertType, Badge,
-    BadgeVariant, BulkActionsBar, BulkSelection, Button, ButtonVariant, Card, ClockIcon, DataTable,
-    ErrorBanner, IconSize, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select,
-    SelectAllHeader, SelectOption, SelectRowCell, SortDirection, Table, TableBody, TableCell,
-    TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea, UserCircleIcon,
+    BadgeVariant, BannerTone, BulkActionsBar, BulkSelection, Button, ButtonVariant, Card,
+    ClockIcon, DataTable, ErrorBanner, IconSize, Modal, PageHeader, PencilIcon, PlusIcon,
+    SearchInput, Select, SelectAllHeader, SelectOption, SelectRowCell, SortDirection, StatusBanner,
+    Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+    Textarea, UserCircleIcon,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
@@ -703,8 +704,9 @@ pub fn TicketListPage() -> Element {
         }
 
         if source == TicketSource::Demo && !is_loading {
-            div {
-                class: "mb-3 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
+            StatusBanner {
+                tone: BannerTone::Warning,
+                class: "mb-3",
                 "Backend tickets API not reachable - showing demo rows."
             }
         }
