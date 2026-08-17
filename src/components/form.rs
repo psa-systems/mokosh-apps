@@ -109,7 +109,7 @@ pub fn Input(props: InputProps) -> Element {
                     class: "block text-sm font-medium text-content",
                     "{props.label}"
                     if props.required {
-                        span { class: "text-red-500 ml-1", aria_label: "required", role: "img", "*" }
+                        span { class: "text-red-500 dark:text-red-400 ml-1", aria_label: "required", role: "img", "*" }
                     }
                 }
             }
@@ -284,7 +284,7 @@ pub fn Textarea(props: TextareaProps) -> Element {
                     class: "block text-sm font-medium text-content",
                     "{props.label}"
                     if props.required {
-                        span { class: "text-red-500 ml-1", aria_label: "required", role: "img", "*" }
+                        span { class: "text-red-500 dark:text-red-400 ml-1", aria_label: "required", role: "img", "*" }
                     }
                 }
             }
@@ -395,7 +395,7 @@ pub fn Select(props: SelectProps) -> Element {
                     class: "block text-sm font-medium text-content",
                     "{props.label}"
                     if props.required {
-                        span { class: "text-red-500 ml-1", aria_label: "required", role: "img", "*" }
+                        span { class: "text-red-500 dark:text-red-400 ml-1", aria_label: "required", role: "img", "*" }
                     }
                 }
             }

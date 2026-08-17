@@ -965,7 +965,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                     }
                                     div { class: "flex justify-between",
                                         span { class: "text-muted", "Paid" }
-                                        span { class: "font-medium text-green-600", "{amount_paid}" }
+                                        span { class: "font-medium text-green-600 dark:text-green-400", "{amount_paid}" }
                                     }
                                     div { class: "flex justify-between",
                                         span { class: "text-muted", "Balance Due" }
@@ -1828,7 +1828,7 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
                     "{props.reference}"
                 }
             }
-            TableCell { class: "text-right font-medium text-green-600", "{props.amount}" }
+            TableCell { class: "text-right font-medium text-green-600 dark:text-green-400", "{props.amount}" }
             TableCell { class: "text-right",
                 div { class: "inline-flex gap-2",
                     Button {
@@ -1852,7 +1852,7 @@ fn PaymentRow(props: PaymentRowProps) -> Element {
                     }
                 }
                 if !error.read().is_empty() {
-                    p { class: "mt-1 text-xs text-red-600", "{error.read()}" }
+                    p { class: "mt-1 text-xs text-red-600 dark:text-red-400", "{error.read()}" }
                 }
             }
             crate::components::ConfirmDialog {

@@ -333,7 +333,9 @@ impl AlertType {
             ),
             AlertType::Success => (
                 "bg-green-50 dark:bg-green-900/20",
-                "text-green-400",
+                // MAPPS-444: decorative icon, and 400 already clears AA on the
+                // dark surface, so it needs no dark pair.
+                "text-green-400", // theme-guard-allow
                 "text-green-700 dark:text-green-300",
             ),
             AlertType::Warning => (
@@ -343,7 +345,9 @@ impl AlertType {
             ),
             AlertType::Error => (
                 "bg-red-50 dark:bg-red-900/20",
-                "text-red-400",
+                // MAPPS-444: decorative icon, and 400 already clears AA on the
+                // dark surface, so it needs no dark pair.
+                "text-red-400", // theme-guard-allow
                 "text-red-700 dark:text-red-300",
             ),
         }

@@ -629,7 +629,7 @@ fn CategoryCard(props: CategoryCardProps) -> Element {
                 }
                 button {
                     r#type: "button",
-                    class: "p-1 rounded text-subtle hover:text-red-600 hover:bg-surface-2",
+                    class: "p-1 rounded text-subtle hover:text-red-600 dark:hover:text-red-400 hover:bg-surface-2",
                     title: "Delete category",
                     "aria-label": "Delete category",
                     // MAPPS-357: block delete while the server is unreachable.
@@ -2557,15 +2557,15 @@ fn RatingBar(
 
     // Active state classes: green for helpful, red for not_helpful, neutral otherwise.
     let helpful_class = if active_vote.as_deref() == Some("helpful") {
-        "flex items-center gap-1 text-green-600 font-semibold disabled:opacity-50"
+        "flex items-center gap-1 text-green-600 dark:text-green-400 font-semibold disabled:opacity-50"
     } else {
-        "flex items-center gap-1 text-content hover:text-green-600 \
+        "flex items-center gap-1 text-content hover:text-green-600 dark:hover:text-green-400 \
          disabled:opacity-50"
     };
     let not_helpful_class = if active_vote.as_deref() == Some("not_helpful") {
-        "flex items-center gap-1 text-red-600 font-semibold disabled:opacity-50"
+        "flex items-center gap-1 text-red-600 dark:text-red-400 font-semibold disabled:opacity-50"
     } else {
-        "flex items-center gap-1 text-content hover:text-red-600 \
+        "flex items-center gap-1 text-content hover:text-red-600 dark:hover:text-red-400 \
          disabled:opacity-50"
     };
 

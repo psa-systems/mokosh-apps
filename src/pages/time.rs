@@ -1340,7 +1340,7 @@ pub fn TimesheetsPage() -> Element {
                         }
                     } else if load_failed {
                         TableRow {
-                            TableCell { colspan: Some(9), class: "text-center text-red-500",
+                            TableCell { colspan: Some(9), class: "text-center text-red-500 dark:text-red-400",
                                 "Could not load timesheet. The time-tracking service may be unavailable."
                             }
                         }
@@ -2069,7 +2069,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                         }
                     } else if load_failed {
                         TableRow {
-                            TableCell { class: "text-red-500",
+                            TableCell { class: "text-red-500 dark:text-red-400",
                                 "Could not load timesheets. The time-tracking service may be unavailable."
                             }
                         }
@@ -2123,7 +2123,7 @@ pub fn TimesheetApprovalsPage() -> Element {
                                         TableCell { class: "text-muted", "{week_label_row}" }
                                         TableCell { Badge { variant: status_variant, "{status_label}" } }
                                         TableCell { "{total}" }
-                                        TableCell { class: "text-green-600", "{billable}" }
+                                        TableCell { class: "text-green-600 dark:text-green-400", "{billable}" }
                                         TableCell { class: "text-xs text-muted",
                                             if row_pending {
                                                 "-"

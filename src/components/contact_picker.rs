@@ -19,7 +19,7 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    Button, ButtonSize, ButtonVariant, IconSize, Input, Modal, ModalSize, PlusIcon,
+    Button, ButtonSize, ButtonVariant, ErrorBanner, IconSize, Input, Modal, ModalSize, PlusIcon,
 };
 use crate::utils::url::urlencoding_minimal;
 
@@ -173,7 +173,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                     label { class: "block text-sm font-medium text-content",
                         "{props.label}"
                         if props.required {
-                            span { class: "text-red-500 ml-0.5", "*" }
+                            span { class: "text-red-500 dark:text-red-400 ml-0.5", "*" }
                         }
                     }
                     div {
@@ -231,7 +231,10 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                             div { class: "px-3 py-2 text-sm text-muted", "Searching…" }
                         },
                         Some(None) => rsx! {
-                            div { class: "px-3 py-2 text-sm text-red-600", "Could not load contacts." }
+                            // MAPPS-444: the only signal the list failed, so it
+                            // takes the shared banner (paired hues, role="alert").
+                            // `m-1` keeps its border off the dropdown's own edge.
+                            ErrorBanner { class: "m-1", "Could not load contacts." }
                         },
                         Some(Some(rows)) if rows.is_empty() => {
                             let query_for_seed = query_text.clone();

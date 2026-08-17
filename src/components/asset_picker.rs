@@ -17,7 +17,7 @@
 use dioxus::prelude::*;
 use serde::Deserialize;
 
-use crate::components::{Button, ButtonSize, ButtonVariant, Input};
+use crate::components::{Button, ButtonSize, ButtonVariant, ErrorBanner, Input};
 use crate::utils::url::urlencoding_minimal;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -113,7 +113,7 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                         label { class: "block text-sm font-medium text-content",
                             "{props.label}"
                             if props.required {
-                                span { class: "text-red-500 ml-0.5", "*" }
+                                span { class: "text-red-500 dark:text-red-400 ml-0.5", "*" }
                             }
                         }
                     }
@@ -145,7 +145,7 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                             // asset_id = null on a ticket inline editor).
                             button {
                                 r#type: "button",
-                                class: "text-xs text-muted hover:text-red-600 px-2 py-1",
+                                class: "text-xs text-muted hover:text-red-600 dark:hover:text-red-400 px-2 py-1",
                                 onclick: move |_| {
                                     onclear.call(());
                                     query.set(String::new());
@@ -193,7 +193,10 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                             div { class: "px-3 py-2 text-sm text-muted", "Searching…" }
                         },
                         Some(None) => rsx! {
-                            div { class: "px-3 py-2 text-sm text-red-600", "Could not load assets." }
+                            // MAPPS-444: the only signal the list failed, so it
+                            // takes the shared banner (paired hues, role="alert").
+                            // `m-1` keeps its border off the dropdown's own edge.
+                            ErrorBanner { class: "m-1", "Could not load assets." }
                         },
                         Some(Some(rows)) if rows.is_empty() => rsx! {
                             div { class: "px-3 py-2 text-sm text-muted",

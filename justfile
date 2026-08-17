@@ -54,9 +54,10 @@ check: check-web check-clippy check-fmt check-theme-tokens check-defined-colors 
 check-web:
     cargo check --target wasm32-unknown-unknown
 
-# MAPPS-259: fail on hardcoded neutral/brand color classes (use tokens)
+# MAPPS-259: fail on hardcoded neutral/brand color classes (use tokens). MAPPS-444: and on a red/green text class with no dark: pair. --self-test first, so a guard that stopped guarding fails loudly.
 [group: 'check']
 check-theme-tokens:
+    bash scripts/check-theme-tokens.sh --self-test
     bash scripts/check-theme-tokens.sh
 
 # MAPPS-433: fail on colour classes input.css does not define (they render as nothing). MAPPS-437: --self-test first, so a guard that stopped guarding fails loudly instead of reporting clean.

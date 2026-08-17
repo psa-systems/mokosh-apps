@@ -716,7 +716,7 @@ fn CustomReportBuilder() -> Element {
     rsx! {
         if load_err {
             Card {
-                p { class: "text-sm text-red-600",
+                p { class: "text-sm text-red-600 dark:text-red-400",
                     "Could not load the report catalog. The reports service may be unavailable."
                 }
             }
@@ -858,7 +858,7 @@ fn CustomReportBuilder() -> Element {
                                 }
                             },
                             Some(Err(e)) => rsx! {
-                                p { class: "text-sm text-red-600", "Report failed: {e}" }
+                                p { class: "text-sm text-red-600 dark:text-red-400", "Report failed: {e}" }
                             },
                             Some(Ok(r)) if r.rows.is_empty() => rsx! {
                                 p { class: "text-sm text-subtle italic", "No rows for this selection." }
