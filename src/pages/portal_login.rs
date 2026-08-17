@@ -8,9 +8,12 @@
 //! this page posts to; the result lands in the portal-only holder in
 //! `src/hooks/fetch.rs` that the `_portal_authed` fetch helpers read.
 //!
-//! `tenant_slug` is part of the credential (the same email can be a contact of
-//! more than one MSP), so it is a form field, prefilled from `?tenant=` when
-//! the customer arrives from a tenant-specific link.
+//! Every deploy hosts a client's portal at a per-tenant subdomain
+//! (`{slug}.client.<apex>`), so the server resolves the tenant from
+//! the Host header on every request. The customer sees only Email +
+//! Password fields; the legacy `?tenant=` slug fallback that used to
+//! render an "Account name" input is gone (a customer who arrived at
+//! a bare host has the wrong URL, not a missing account name).
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -19,14 +22,13 @@ use crate::components::{Button, ButtonVariant, Input};
 use crate::Route;
 
 /// Request body for `POST /api/v1/portal/auth/login`, matching
-/// mokosh-server's `PortalLoginRequest`.
-///
-/// PMS-729: `tenant_slug` is now optional server-side. When the SPA is
-/// served on `{slug}.client.<apex>` the server resolves the slug from
-/// Host and this field can be omitted; when the SPA is served on a
-/// legacy host (`?tenant=` link) the field carries the slug the user
-/// typed. `#[serde(skip_serializing_if = "String::is_empty")]` keeps the
-/// wire small on the host-derived path.
+/// mokosh-server's `PortalLoginRequest`. `tenant_slug` is always
+/// empty on the wire: every portal deploy is per-tenant subdomain,
+/// so the server resolves the tenant from Host and
+/// `#[serde(skip_serializing_if = "String::is_empty")]` drops the
+/// field entirely. Kept as a serialised field only because the
+/// server-side DTO still declares it (a wire-shape rename would
+/// need coordinated releases).
 #[derive(Serialize)]
 struct PortalLoginBody {
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -71,8 +73,11 @@ struct PortalLoginResp {
 pub fn PortalLoginPage() -> Element {
     let nav = use_navigator();
 
-    let mut tenant =
-        use_signal(|| crate::utils::url::current_query_param("tenant").unwrap_or_default());
+    // Every portal deploy is per-tenant subdomain, so the server
+    // resolves the tenant from Host. The legacy `?tenant=` slug fallback
+    // is gone; a bare-host visit renders the shell without a slug
+    // input and the server returns a wrong-password envelope on any
+    // login attempt (no leak of "which tenant this was").
     let mut email = use_signal(String::new);
     let mut password = use_signal(String::new);
     let mut saving = use_signal(|| false);
@@ -129,16 +134,10 @@ pub fn PortalLoginPage() -> Element {
     // background loop flips the flag, without a route change.
     let session_expired = crate::hooks::portal_auth::portal_session_expired_flag();
 
-    let host_derived_for_submit = hint_snapshot.is_some();
     let mut handle_submit = move |_| {
         if saving() {
             return;
         }
-        // PMS-729: when the SPA is on a portal host, the server resolves
-        // the slug from Host; the user does not need to type one and the
-        // slug field is hidden. On a legacy host the slug is required.
-        let host_derived = host_derived_for_submit;
-        let slug = tenant.read().trim().to_string();
         let em = email.read().trim().to_string();
         let pw = password.read().clone();
         let code = mfa_code.read().trim().to_string();
@@ -148,10 +147,6 @@ pub fn PortalLoginPage() -> Element {
         let recovery_mode = use_recovery();
         if em.is_empty() || pw.is_empty() {
             error.set("Enter your email and password.".to_string());
-            return;
-        }
-        if !host_derived && slug.is_empty() {
-            error.set("Enter your account name, email, and password.".to_string());
             return;
         }
         if is_mfa_stage && recovery_mode && rec.is_empty() {
@@ -177,11 +172,10 @@ pub fn PortalLoginPage() -> Element {
             {
                 use crate::hooks::fetch::api::ApiError;
                 let body = PortalLoginBody {
-                    tenant_slug: if host_derived {
-                        String::new()
-                    } else {
-                        slug.clone()
-                    },
+                    // Empty: server resolves the tenant from Host.
+                    // `#[serde(skip_serializing_if = "String::is_empty")]`
+                    // drops the field from the wire entirely.
+                    tenant_slug: String::new(),
                     email: em.clone(),
                     password: pw.clone(),
                     // Only one of mfa_code / recovery_code goes on the
@@ -269,7 +263,7 @@ pub fn PortalLoginPage() -> Element {
                         }
                     }
                     Err(ApiError::Status { code: 401, .. }) => {
-                        error.set("Invalid account name, email, or password.".to_string());
+                        error.set("Invalid email or password.".to_string());
                     }
                     Err(ApiError::Status { code: 429, .. }) => {
                         error.set(
@@ -282,7 +276,7 @@ pub fn PortalLoginPage() -> Element {
             }
             #[cfg(not(feature = "web"))]
             {
-                let _ = (slug, em, pw, code, rec, cap);
+                let _ = (em, pw, code, rec, cap);
             }
             saving.set(false);
         });
@@ -425,26 +419,14 @@ pub fn PortalLoginPage() -> Element {
                                 }
                             }
                         } else {
-                            // PMS-729: the slug field only renders on legacy
-                            // hosts. On {slug}.client.<apex>, the server
-                            // resolves the tenant from Host and the input is
-                            // hidden (the branding block above already tells
-                            // the user which MSP they are signing in to).
-                            if hint_snapshot.is_none() {
-                                Input {
-                                    name: "tenant_slug",
-                                    label: "Account name",
-                                    r#type: "text".to_string(),
-                                    value: tenant(),
-                                    required: true,
-                                    disabled: saving(),
-                                    oninput: move |e: FormEvent| {
-                                        error.set(String::new());
-                                        tenant.set(e.value());
-                                    },
-                                }
-                            }
-
+                            // Every deploy hosts a client's portal at a
+                            // per-tenant subdomain (`{slug}.client.<apex>`
+                            // in prod, `{slug}.client.localhost:PORT` in
+                            // dev), so the server resolves the tenant
+                            // from the Host header. The slug is never
+                            // typed by a customer; a bare-host visit
+                            // means the URL is wrong, not that they
+                            // need to type an account name.
                             Input {
                                 name: "email",
                                 label: "Email",
