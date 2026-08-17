@@ -1165,7 +1165,7 @@ fn QuoteEditor(props: QuoteEditorProps) -> Element {
         }
 
         Card { class: "mb-6", title: "Details",
-            div { class: "grid grid-cols-1 md:grid-cols-2 gap-4",
+            div { class: "grid grid-cols-1 sm:grid-cols-2 gap-4",
                 div {
                     // The client cannot change after creation: the
                     // quote's identity as "for this customer" is what
