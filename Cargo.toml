@@ -233,3 +233,13 @@ debug = 0
 codegen-units = 256
 debug-assertions = false
 overflow-checks = false
+# `panic = "abort"` drops the unwind tables rustc otherwise generates
+# for every monomorphized function in the crate + its deps. On a
+# Dioxus 132-route crate the unwind IR is the last chunk holding
+# rustc's peak RSS over the earlyoom ceiling; abort saves ~200-400 MB
+# on the final lib link phase. Trade: a Rust panic in wasm calls
+# `wasm-unreachable` instead of unwinding through the stack, so a
+# `catch_unwind` in dev is inert. The SPA has no `catch_unwind`
+# callers, and browser panic-hook reporting (console_error_panic_hook)
+# still fires because it hooks the panic handler before abort runs.
+panic = "abort"
