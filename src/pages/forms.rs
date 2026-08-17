@@ -2276,7 +2276,7 @@ fn ClientPreviewModal(def: PublicForm, unsaved: bool, onclose: EventHandler<()>)
                                 field_errors,
                                 form_error: String::new(),
                                 disabled: true,
-                                submit_label: "Send request".to_string(),
+                                loading: false,
                                 onsubmit: move |_| {},
                             }
                         }

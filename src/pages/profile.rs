@@ -492,7 +492,7 @@ fn PersonalInfoForm(props: PersonalInfoFormProps) -> Element {
 }
 
 /// PMS-253: date/time format picker that sits next to the timezone
-/// dropdown. Ships the preset list + a "Custom..." button that opens
+/// dropdown. Ships the preset list + a "Custom…" button that opens
 /// the [`CustomFormatBuilder`] modal (PMS-254). The matching token
 /// grammar + renderer live in [`crate::utils::datetime`].
 #[component]
@@ -618,7 +618,7 @@ const TOKEN_GROUPS: &[TokenGroup] = &[
 
 /// PMS-254: free-form custom date/time format builder.
 ///
-/// Opens in a modal triggered by the "Custom..." button under the
+/// Opens in a modal triggered by the "Custom…" button under the
 /// preset dropdown. The user picks tokens via the pill grid or types
 /// directly into the format string input; either path keeps the live
 /// preview at the top in sync. Unrecognized alphabetic runs (e.g. a

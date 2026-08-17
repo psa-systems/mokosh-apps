@@ -1447,7 +1447,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     let asset_count = paginated_total(&assets_resource);
 
     let company_snapshot = company_resource.read_unchecked();
-    // MAPPS-278: while the record is loading, show "Loading..." instead
+    // MAPPS-278: while the record is loading, show "Loading…" instead
     // of the generic entity type ("Company"). The previous fallback
     // briefly flashed a generic header until the resource resolved,
     // which read as the wrong company before settling. A loading label
@@ -4239,7 +4239,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     });
 
     let snap = contact.read_unchecked();
-    // MAPPS-278: prefer an honest "Loading..." over the generic entity
+    // MAPPS-278: prefer an honest "Loading…" over the generic entity
     // type while the fetch is in flight; reserve a distinct "Contact not
     // found" for a confirmed-empty resource so the user does not see a
     // blank "Contact" header that briefly looked correct.

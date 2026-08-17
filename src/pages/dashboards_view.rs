@@ -124,7 +124,7 @@ pub fn SavedDashboardViewPage(id: String) -> Element {
     // MAPPS-357: the saved dashboard row is this page's PRIMARY resource - if
     // it fails to load, there is nothing meaningful to render. Move to
     // `use_remote_resource` so an outage surfaces the honest unavailable state
-    // instead of a perpetual "Loading...". The fetcher returns the raw
+    // instead of a perpetual "Loading…". The fetcher returns the raw
     // `Result` (no `.ok()`); the `version` subscription stays inside the
     // closure so a Save still refetches, and the hook adds the
     // reachability + tenant-generation deps itself.
@@ -150,7 +150,7 @@ pub fn SavedDashboardViewPage(id: String) -> Element {
         };
     }
     // `into_ready()` keeps the Loading (None) vs Ready (Some) distinction the
-    // old `.flatten()` provided, so a still-loading page keeps its "Loading..."
+    // old `.flatten()` provided, so a still-loading page keeps its "Loading…"
     // header rather than flashing an empty editor.
     let row = row_resource.into_ready();
 

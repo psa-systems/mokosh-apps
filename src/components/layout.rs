@@ -44,7 +44,7 @@ pub fn use_current_page_title() -> Signal<PageTitle> {
 /// `AppLayout { title: "..." }` prop: the persistent shell reads the same
 /// signal for the top bar and `document.title`. Writes only when the value
 /// changes so it never loops on the render it runs in; a page that swaps a
-/// "Loading..." placeholder for the real record name just calls it again with
+/// "Loading…" placeholder for the real record name just calls it again with
 /// the new value.
 pub fn use_page_title(title: impl Into<String>) {
     let mut sig = use_context::<Signal<PageTitle>>();
@@ -642,14 +642,15 @@ pub fn TopBar(props: TopBarProps) -> Element {
     // the Outlet/page - so a page and its ContentUnavailable / PermissionRequired
     // branch can both call use_page_title without fighting into a render loop.
     let title = use_current_page_title().read().0.clone();
-    // MAPPS-287: keep document.title in sync. Both loading placeholders
-    // ("Loading…" U+2026 and ASCII "Loading...") read as "no title yet" so the
-    // tab shows a clean "Mokosh Platform" until the real title arrives.
+    // MAPPS-287: keep document.title in sync. The loading placeholder
+    // ("Loading…", U+2026) reads as "no title yet" so the tab shows a clean
+    // "Mokosh Platform" until the real title arrives. MAPPS-445 dropped the
+    // ASCII spelling; scripts/check-ellipsis-glyph.sh keeps it gone.
     #[cfg(feature = "web")]
     {
         if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
             let t = title.trim();
-            let next = if t.is_empty() || t == "Loading…" || t == "Loading..." {
+            let next = if t.is_empty() || t == "Loading…" {
                 "Mokosh Platform".to_string()
             } else {
                 format!("{} | Mokosh Platform", t)
