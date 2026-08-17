@@ -52,3 +52,45 @@ pub fn get(_field: &str) -> Option<String> {
 pub fn flag_enabled(field: &str) -> bool {
     get(field).is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
 }
+
+/// Resolve the portal host suffix for the running deploy, checking (in
+/// order) the container-emitted `window.__MOKOSH_CONFIG__.portal_host_suffix`
+/// and the compile-time `MOKOSH_PORTAL_HOST_SUFFIX` env fallback. Returns
+/// `None` when neither is set (dev without env baked in, or a legacy
+/// deploy that never hosted the portal on its own suffix).
+///
+/// Public so the agent-side "Create tenant" flow can preview the
+/// portal URL a new tenant will inherit; the api module uses a
+/// private mirror for its host derivation (see `hooks::fetch::api`).
+/// Always includes the leading dot, e.g. `.client.a8n.systems`.
+pub fn portal_host_suffix() -> Option<String> {
+    if let Some(v) = get("portal_host_suffix") {
+        if !v.is_empty() {
+            return Some(v);
+        }
+    }
+    option_env!("MOKOSH_PORTAL_HOST_SUFFIX")
+        .map(str::to_string)
+        .filter(|s| !s.is_empty())
+}
+
+/// Build the URL a customer would use to sign in to the tenant's own
+/// client portal. Returns `None` when no portal-host suffix is
+/// configured (a legacy deploy where the portal is served alongside
+/// the agent app under `?tenant=`), so the caller can render a
+/// generic hint instead of a broken URL.
+pub fn portal_url_for_slug(slug: &str) -> Option<String> {
+    let suffix = portal_host_suffix()?;
+    let slug = slug.trim().to_ascii_lowercase();
+    if slug.is_empty() {
+        return None;
+    }
+    // Prefer https for real deploys; dev's `.client.localhost:PORT`
+    // suffix stays on http.
+    let scheme = if suffix.contains("localhost") {
+        "http"
+    } else {
+        "https"
+    };
+    Some(format!("{scheme}://{slug}{suffix}"))
+}

@@ -548,6 +548,14 @@ fn CreateTenantModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> El
     let mut favicon_url = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // Post-create success dialog: renders once the server returns the
+    // fresh tenant id, before the list refreshes and the modal closes.
+    // Surfaces the portal URL the super-admin needs to give the new
+    // tenant's admin (also stated in the admin welcome email, but the
+    // super-admin sees it here immediately without having to ask
+    // their tenant to check their inbox).
+    let mut created_slug = use_signal(String::new);
+    let mut created_admin_email = use_signal(String::new);
 
     let submit = move |_| {
         if saving() {
@@ -562,8 +570,8 @@ fn CreateTenantModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> El
         }
         let body = CreateTenantBody {
             name: n,
-            slug: s,
-            admin_email: ae,
+            slug: s.clone(),
+            admin_email: ae.clone(),
             admin_first_name: admin_first.read().trim().to_string(),
             admin_last_name: admin_last.read().trim().to_string(),
             billing_email: opt(&billing_email.read()),
@@ -587,7 +595,10 @@ fn CreateTenantModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> El
                 match crate::hooks::fetch::api::post_authed_typed::<TenantId, _>("/tenants", &body)
                     .await
                 {
-                    Ok(_) => onsaved.call(()),
+                    Ok(_) => {
+                        created_slug.set(s);
+                        created_admin_email.set(ae);
+                    }
                     Err(e) => error.set(e.user_message()),
                 }
             }
@@ -599,33 +610,94 @@ fn CreateTenantModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> El
         });
     };
 
+    // While the customer is typing the slug, show a live preview of
+    // the portal URL. Returns None on a legacy deploy that has no
+    // configured portal host suffix; the modal then hides the hint
+    // block entirely rather than promise a URL that would 404.
+    let slug_preview = slug.read().trim().to_ascii_lowercase();
+    let portal_preview = crate::modules::runtime_config::portal_url_for_slug(&slug_preview);
+
+    // Post-create success view. Renders once the server has returned
+    // the fresh tenant id; the create form is hidden so the super-
+    // admin sees the portal URL prominently and can copy it before
+    // dismissing.
+    let created_slug_str = created_slug.read().clone();
+    let is_created = !created_slug_str.is_empty();
+    let created_portal_url = crate::modules::runtime_config::portal_url_for_slug(&created_slug_str);
+    let created_admin_email_str = created_admin_email.read().clone();
+
+    let modal_title = if is_created {
+        "Tenant created".to_string()
+    } else {
+        "Create tenant".to_string()
+    };
+    let modal_footer = if is_created {
+        rsx! {
+            Button {
+                variant: ButtonVariant::Primary,
+                onclick: move |_| onsaved.call(()),
+                "Done"
+            }
+        }
+    } else {
+        rsx! {
+            Button {
+                variant: ButtonVariant::Secondary,
+                onclick: move |_| {
+                    if !saving() {
+                        onclose.call(());
+                    }
+                },
+                "Cancel"
+            }
+            Button {
+                variant: ButtonVariant::Primary,
+                loading: saving(),
+                onclick: submit,
+                "Create"
+            }
+        }
+    };
+
     rsx! {
         Modal {
             open: true,
-            title: "Create tenant".to_string(),
+            title: modal_title,
             onclose: move |_| {
                 if !saving() {
-                    onclose.call(());
+                    if is_created {
+                        onsaved.call(());
+                    } else {
+                        onclose.call(());
+                    }
                 }
             },
-            footer: rsx! {
-                Button {
-                    variant: ButtonVariant::Secondary,
-                    onclick: move |_| {
-                        if !saving() {
-                            onclose.call(());
+            footer: modal_footer,
+            if is_created {
+                div { class: "space-y-4",
+                    p { class: "text-sm text-content",
+                        "The tenant is provisioned and its admin has been emailed a setup link."
+                    }
+                    if let Some(url) = created_portal_url.as_ref() {
+                        div { class: "rounded-md border border-line bg-surface-2 p-3",
+                            p { class: "text-xs uppercase text-muted mb-1", "Client portal URL" }
+                            p { class: "font-mono text-sm text-content break-all", "{url}" }
+                            p { class: "mt-2 text-xs text-muted",
+                                "Send this to the tenant's admin. Their clients will sign in here with the accounts the admin creates."
+                            }
                         }
-                    },
-                    "Cancel"
+                    }
+                    if !created_admin_email_str.is_empty() {
+                        div { class: "rounded-md border border-line bg-surface-2 p-3",
+                            p { class: "text-xs uppercase text-muted mb-1", "Admin welcome sent to" }
+                            p { class: "font-mono text-sm text-content break-all", "{created_admin_email_str}" }
+                            p { class: "mt-2 text-xs text-muted",
+                                "The admin has 7 days to open the emailed link and set their password. If they miss the window, they can use Forgot password."
+                            }
+                        }
+                    }
                 }
-                Button {
-                    variant: ButtonVariant::Primary,
-                    loading: saving(),
-                    onclick: submit,
-                    "Create"
-                }
-            },
-            div { class: "space-y-3",
+            } else { div { class: "space-y-3",
                 if !error.read().is_empty() {
                     p { class: "text-sm text-red-600 dark:text-red-400", "{error}" }
                 }
@@ -646,6 +718,20 @@ fn CreateTenantModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> El
                     required: true,
                     disabled: saving(),
                     oninput: move |e: FormEvent| { error.set(String::new()); slug.set(e.value()); },
+                }
+                // Live preview of the portal URL the new tenant will
+                // inherit. Hidden entirely on a legacy deploy that
+                // has no configured PORTAL_HOST_SUFFIX so the modal
+                // never promises a URL that would 404.
+                if let Some(url) = portal_preview.as_ref() {
+                    p { class: "-mt-2 text-xs text-muted",
+                        "Client portal will be at "
+                        span { class: "font-mono text-content", "{url}" }
+                    }
+                } else if !slug_preview.is_empty() {
+                    p { class: "-mt-2 text-xs text-muted",
+                        "The client portal URL cannot be previewed on this deploy (PORTAL_HOST_SUFFIX not configured)."
+                    }
                 }
                 div { class: "grid grid-cols-1 sm:grid-cols-2 gap-3",
                     Input {
@@ -719,7 +805,7 @@ fn CreateTenantModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> El
                         oninput: move |e: FormEvent| { favicon_url.set(e.value()); },
                     }
                 }
-            }
+            } }
         }
     }
 }
