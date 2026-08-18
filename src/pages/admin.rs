@@ -849,6 +849,35 @@ fn EditTenantModal(
     let mut favicon_url = use_signal(|| tenant.branding.favicon_url.clone().unwrap_or_default());
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-448: super-admin re-issues the tenant admin's setup email
+    // when the original went missing or the setup link expired. Server
+    // 409s when the admin has already redeemed - the error surfaces
+    // via a toast so a stale button click is self-explaining, not
+    // silent.
+    let mut resending = use_signal(|| false);
+    let resend_welcome = move |_| {
+        if resending() || saving() {
+            return;
+        }
+        resending.set(true);
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                let path = format!("/tenants/{tenant_id}/admin/resend-welcome");
+                match crate::hooks::fetch::api::post_authed_no_content(&path).await {
+                    Ok(_) => crate::hooks::toast::push_toast(
+                        crate::components::AlertType::Success,
+                        "Welcome email re-sent to the tenant admin.",
+                    ),
+                    Err(msg) => crate::hooks::toast::push_toast(
+                        crate::components::AlertType::Warning,
+                        msg,
+                    ),
+                }
+            }
+            resending.set(false);
+        });
+    };
 
     let submit = move |_| {
         if saving() {
@@ -982,6 +1011,26 @@ fn EditTenantModal(
                         value: favicon_url(),
                         disabled: saving(),
                         oninput: move |e: FormEvent| { favicon_url.set(e.value()); },
+                    }
+                }
+                // MAPPS-448: super-admin re-issues the tenant admin's setup
+                // email. Server rejects with 409 if the admin has already
+                // redeemed (surfaced as a toast). Deliberately placed at the
+                // bottom of the modal so the primary field edits sit above
+                // the tenant-lifecycle actions.
+                div { class: "border-t border-line pt-3",
+                    p { class: "text-sm font-medium text-content mb-1",
+                        "Admin welcome email"
+                    }
+                    p { class: "text-xs text-muted mb-2",
+                        "Re-send the initial setup email if the tenant admin never received it or the setup link expired. The old link stops working after this."
+                    }
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        loading: resending(),
+                        disabled: resending() || saving(),
+                        onclick: resend_welcome,
+                        "Resend welcome email"
                     }
                 }
             }
