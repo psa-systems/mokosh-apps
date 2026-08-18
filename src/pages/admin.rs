@@ -273,6 +273,14 @@ pub fn TenantManagementPage() -> Element {
                                     created: format_created(tenant.created_at),
                                     logo_url: tenant.branding.logo_url.clone(),
                                     editable: true,
+                                    // MAPPS-451: pass the id + resource
+                                    // restart hook so the row can wire
+                                    // suspend / reactivate without
+                                    // hoisting the fetch back to the
+                                    // parent.
+                                    tenant_id: Some(tenant.id),
+                                    can_mutate,
+                                    on_lifecycle_changed: move |_| tenants_resource.restart(),
                                     on_edit: {
                                         let row = tenant.clone();
                                         move |_| edit_target.set(Some(row.clone()))
@@ -371,6 +379,22 @@ struct TenantRowProps {
     editable: bool,
     #[props(default)]
     on_edit: Option<EventHandler<()>>,
+    /// MAPPS-451: backend tenant id, needed by the suspend / reactivate
+    /// lifecycle action to POST at `/tenants/{id}/suspend|activate`.
+    /// Demo rows leave it `None`, so the lifecycle affordance is hidden.
+    #[props(default)]
+    tenant_id: Option<uuid::Uuid>,
+    /// MAPPS-451: parent hook fired after a suspend / reactivate call
+    /// commits, so the roster resource can be `.restart()`-ed and the
+    /// row's status badge picks up the new value without a manual
+    /// refresh.
+    #[props(default)]
+    on_lifecycle_changed: Option<EventHandler<()>>,
+    /// MAPPS-451: matches the parent page's `use_can_mutate()` gate so
+    /// the lifecycle action is disabled when the server is unreachable
+    /// (same posture the Create tenant button uses).
+    #[props(default = true)]
+    can_mutate: bool,
 }
 
 #[cfg(feature = "multi-tenant")]
@@ -445,15 +469,102 @@ fn TenantRow(props: TenantRowProps) -> Element {
             TableCell { class: "text-muted", "{props.created}" }
             TableCell { class: "text-right",
                 if props.editable {
-                    button {
-                        r#type: "button",
-                        class: "text-sm text-accent hover:opacity-80",
-                        onclick: move |_| {
-                            if let Some(ref h) = props.on_edit {
-                                h.call(());
+                    div { class: "inline-flex items-center gap-3 justify-end",
+                        {
+                            // MAPPS-451: lifecycle action is hidden on
+                            // demo rows (no tenant_id) and rendered as a
+                            // muted text link matching Edit. Two labels
+                            // gate on the current status: suspended rows
+                            // get "Reactivate"; active / trial get
+                            // "Suspend". Any other value (unknown future
+                            // status) hides the affordance.
+                            let action = match props.status.as_str() {
+                                "Active" | "Trial" => Some(("Suspend", true)),
+                                "Suspended" => Some(("Reactivate", false)),
+                                _ => None,
+                            };
+                            let disabled = !props.can_mutate;
+                            let id = props.tenant_id;
+                            let on_changed = props.on_lifecycle_changed;
+                            let name = props.name.clone();
+                            match (action, id) {
+                                (Some((label, suspend)), Some(tid)) => rsx! {
+                                    button {
+                                        r#type: "button",
+                                        class: if disabled {
+                                            "text-sm text-muted opacity-60 cursor-not-allowed"
+                                        } else {
+                                            "text-sm text-accent hover:opacity-80"
+                                        },
+                                        disabled,
+                                        onclick: move |_| {
+                                            #[cfg(feature = "web")]
+                                            {
+                                                let msg = if suspend {
+                                                    format!(
+                                                        "Suspend tenant \"{name}\"? Signed-in users will be forced out on their next request and the tenant's portal will stop resolving.",
+                                                    )
+                                                } else {
+                                                    format!(
+                                                        "Reactivate tenant \"{name}\"? The tenant will resume normal access on their next request.",
+                                                    )
+                                                };
+                                                let confirmed = web_sys::window()
+                                                    .and_then(|w| w.confirm_with_message(&msg).ok())
+                                                    .unwrap_or(false);
+                                                if !confirmed {
+                                                    return;
+                                                }
+                                                let name = name.clone();
+                                                spawn(async move {
+                                                    let path = if suspend {
+                                                        format!("/tenants/{tid}/suspend")
+                                                    } else {
+                                                        format!("/tenants/{tid}/activate")
+                                                    };
+                                                    match crate::hooks::fetch::api::post_authed_no_content(&path).await {
+                                                        Ok(_) => {
+                                                            let toast = if suspend {
+                                                                format!("Tenant \"{name}\" suspended.")
+                                                            } else {
+                                                                format!("Tenant \"{name}\" reactivated.")
+                                                            };
+                                                            crate::hooks::toast::push_toast(
+                                                                crate::components::AlertType::Success,
+                                                                toast,
+                                                            );
+                                                            if let Some(h) = on_changed {
+                                                                h.call(());
+                                                            }
+                                                        }
+                                                        Err(msg) => crate::hooks::toast::push_toast(
+                                                            crate::components::AlertType::Warning,
+                                                            msg,
+                                                        ),
+                                                    }
+                                                });
+                                            }
+                                            #[cfg(not(feature = "web"))]
+                                            {
+                                                let _ = (tid, suspend);
+                                            }
+                                        },
+                                        "{label}"
+                                    }
+                                },
+                                _ => rsx! {},
                             }
-                        },
-                        "Edit"
+                        }
+                        button {
+                            r#type: "button",
+                            class: "text-sm text-accent hover:opacity-80",
+                            onclick: move |_| {
+                                if let Some(ref h) = props.on_edit {
+                                    h.call(());
+                                }
+                            },
+                            "Edit"
+                        }
                     }
                 } else {
                     span { class: "text-xs text-muted", "-" }
