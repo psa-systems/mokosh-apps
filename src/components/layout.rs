@@ -5,6 +5,7 @@ use dioxus::prelude::*;
 use super::global_search::GlobalSearch;
 use super::icons::*;
 use super::theme_picker::ThemePickerButton;
+use crate::modules::auth::UserRole;
 use crate::modules::theme::SectionColor;
 use crate::Route;
 
@@ -273,6 +274,16 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
         .as_ref()
         .map(|u| u.role.can_manage_users())
         .unwrap_or(false);
+    // MAPPS-447: Tenants nav is super-admin-only. `is_admin` above covers both
+    // admin AND super_admin, but `POST /api/v1/tenants` is `RequireSuperAdmin`
+    // server-side; a plain admin clicking through would land on a page whose
+    // Create button 403s. Mirror the server gate here.
+    let is_super_admin = auth
+        .read()
+        .user
+        .as_ref()
+        .map(|u| u.role == UserRole::SuperAdmin)
+        .unwrap_or(false);
 
     // MAPPS-203: App-root-owned scroll offset that survives the
     // AppLayout re-mount on each navigation. Only the persistent desktop
@@ -375,6 +386,13 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
 
             if is_admin {
                 NavSection { title: "Admin", rail_collapsed: collapsed, color: SectionColor::Violet,
+                    // MAPPS-447: super-admins get a shortcut to the tenant
+                    // roster + Create-tenant modal. Rendered at the top of
+                    // the Admin section so tenant management visually
+                    // anchors the group. The helper is a no-op stub on
+                    // single-tenant builds where `Route::TenantManagement`
+                    // does not exist.
+                    TenantsNavItem { visible: is_super_admin, collapsed }
                     // MAPPS-329: Team nav is hidden by default and only
                     // renders when the operator sets
                     // `MOKOSH_TEAM_ENABLED=true` (or `=1`) on the
@@ -616,6 +634,41 @@ fn NavItem(props: NavItemProps) -> Element {
             "{props.label}"
         }
     }
+}
+
+/// MAPPS-447: sidebar entry that opens the tenant roster (and its
+/// Create-tenant modal). Hoisted into its own component so it can be
+/// cfg-gated on `multi-tenant`: `Route::TenantManagement` only exists
+/// in that build, and referencing it from the always-compiled sidebar
+/// would break the `single-tenant` binary. The stub at the bottom of
+/// this pair keeps the call site identical across features.
+#[derive(Props, Clone, PartialEq)]
+struct TenantsNavItemProps {
+    visible: bool,
+    collapsed: bool,
+}
+
+#[cfg(feature = "multi-tenant")]
+#[component]
+fn TenantsNavItem(props: TenantsNavItemProps) -> Element {
+    if !props.visible {
+        return rsx! {};
+    }
+    rsx! {
+        NavItem {
+            to: Route::TenantManagement {},
+            icon: rsx!(BuildingIcon {}),
+            label: "Tenants",
+            collapsed: props.collapsed,
+        }
+    }
+}
+
+#[cfg(not(feature = "multi-tenant"))]
+#[component]
+fn TenantsNavItem(props: TenantsNavItemProps) -> Element {
+    let _ = props;
+    rsx! {}
 }
 
 /// Persistent top bar.
