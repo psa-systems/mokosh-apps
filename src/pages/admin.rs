@@ -509,6 +509,10 @@ struct CreateTenantBody {
 struct UpdateTenantBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
+    /// MAPPS-449: renames the tenant's portal subdomain. Server
+    /// slugifies + re-checks uniqueness. Old slug immediately 404s.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    slug: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     branding: Option<TenantBrandingWire>,
 }
@@ -841,6 +845,12 @@ fn EditTenantModal(
 ) -> Element {
     let tenant_id = tenant.id;
     let mut name = use_signal(|| tenant.name.clone());
+    // MAPPS-449: the super-admin can rename the tenant's portal subdomain.
+    // Original slug pinned so the submit can detect a change and surface
+    // the "old URL now 404s" warning banner only when it actually flipped.
+    let original_slug = tenant.slug.clone();
+    let mut slug = use_signal(|| tenant.slug.clone());
+    let mut slug_changed_warning = use_signal(|| false);
     let mut logo_url = use_signal(|| tenant.branding.logo_url.clone().unwrap_or_default());
     let mut primary_color =
         use_signal(|| tenant.branding.primary_color.clone().unwrap_or_default());
@@ -888,8 +898,20 @@ fn EditTenantModal(
             error.set("Tenant name is required.".to_string());
             return;
         }
+        // MAPPS-449: only send `slug` when the operator actually changed
+        // it (trim + lowercase mirror server-side slugify's rough shape).
+        // Sending the unchanged slug would still succeed server-side
+        // (idempotent probe), but omitting it keeps the request payload
+        // honest and avoids a spurious "old URL 404s" banner.
+        let s_raw = slug.read().trim().to_string();
+        if s_raw.is_empty() {
+            error.set("Slug is required.".to_string());
+            return;
+        }
+        let s_changed = s_raw.to_ascii_lowercase() != original_slug.to_ascii_lowercase();
         let body = UpdateTenantBody {
             name: Some(n),
+            slug: if s_changed { Some(s_raw) } else { None },
             branding: collect_branding(
                 &logo_url.read(),
                 &primary_color.read(),
@@ -910,7 +932,17 @@ fn EditTenantModal(
                 }
                 match crate::hooks::fetch::api::put_authed_typed::<TenantId, _>(&path, &body).await
                 {
-                    Ok(_) => onsaved.call(()),
+                    Ok(_) => {
+                        // MAPPS-449: hoist the "old URL now 404s" warning
+                        // banner before dismissing the modal via onsaved
+                        // so the operator sees it. Skipped when the slug
+                        // was not changed to keep no-op saves quiet.
+                        if s_changed {
+                            slug_changed_warning.set(true);
+                        } else {
+                            onsaved.call(());
+                        }
+                    }
                     Err(e) => error.set(e.user_message()),
                 }
             }
@@ -961,8 +993,52 @@ fn EditTenantModal(
                     disabled: saving(),
                     oninput: move |e: FormEvent| { error.set(String::new()); name.set(e.value()); },
                 }
-                p { class: "text-xs text-muted",
-                    "Slug (URL) cannot be changed after creation."
+                // MAPPS-449: slug (URL) is editable. Server slugifies +
+                // re-checks uniqueness; a collision returns 409 and lands
+                // in the `error` banner above. Live URL preview under the
+                // input catches typos before the save round-trip.
+                Input {
+                    name: "tenant_slug",
+                    label: "Slug (URL)",
+                    r#type: "text".to_string(),
+                    value: slug(),
+                    required: true,
+                    disabled: saving(),
+                    oninput: move |e: FormEvent| { error.set(String::new()); slug.set(e.value()); },
+                }
+                {
+                    let s = slug.read().trim().to_ascii_lowercase();
+                    if s.is_empty() {
+                        rsx! {}
+                    } else if let Some(url) = crate::modules::runtime_config::portal_url_for_slug(&s) {
+                        rsx! {
+                            p { class: "text-xs text-muted",
+                                "Portal URL: "
+                                span { class: "font-mono text-content", "{url}" }
+                            }
+                        }
+                    } else {
+                        rsx! {
+                            p { class: "text-xs text-muted",
+                                "Portal URL cannot be previewed on this deploy (PORTAL_HOST_SUFFIX not configured)."
+                            }
+                        }
+                    }
+                }
+                if slug_changed_warning() {
+                    div { class: "rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-xs text-amber-800 dark:text-amber-200 space-y-2",
+                        p {
+                            "The tenant's portal URL has changed. The old URL now returns 404. Any pending portal-invite emails carrying the old slug will not work; re-send them from Contacts."
+                        }
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            onclick: move |_| {
+                                slug_changed_warning.set(false);
+                                onsaved.call(());
+                            },
+                            "Got it"
+                        }
+                    }
                 }
                 div { class: "border-t border-line pt-3",
                     p { class: "text-sm font-medium text-content mb-2", "Branding" }
