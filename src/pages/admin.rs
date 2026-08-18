@@ -517,6 +517,40 @@ struct UpdateTenantBody {
     branding: Option<TenantBrandingWire>,
 }
 
+/// MAPPS-450: mirror of `mokosh_types::tenants::TenantAdminInfo`. Read
+/// via `GET /tenants/{id}/admin` when the modal opens so the SPA knows
+/// whether the email input should be editable (pending) or disabled
+/// (active).
+#[cfg(feature = "multi-tenant")]
+#[derive(Clone, Debug, Deserialize)]
+struct TenantAdminInfo {
+    #[allow(dead_code)]
+    user_id: uuid::Uuid,
+    email: String,
+    first_name: String,
+    last_name: String,
+    /// Raw `users.status` column. `pending` allows email edits + welcome
+    /// resends; anything else disables the email input and hides the
+    /// resend checkbox.
+    status: String,
+}
+
+/// MAPPS-450: PUT body for `/tenants/{id}/admin`. Every field is optional
+/// so the SPA sends only what changed; `resend_welcome` piggybacks on the
+/// same call so an email-change common case is a single round-trip.
+#[cfg(feature = "multi-tenant")]
+#[derive(Serialize)]
+struct UpdateTenantAdminBody {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_name: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    resend_welcome: bool,
+}
+
 /// Normalize a text field: trim + return `None` on empty so the request
 /// omits the field rather than sending an empty string the server
 /// would either persist as an empty column or reject at validation.
@@ -859,6 +893,34 @@ fn EditTenantModal(
     let mut favicon_url = use_signal(|| tenant.branding.favicon_url.clone().unwrap_or_default());
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-450: super-admin edits the tenant admin's email + name pair.
+    // Fields hydrate from a `GET /tenants/{id}/admin` fetch when the
+    // modal opens; before hydration the inputs render disabled so a
+    // save mid-load cannot overwrite the loaded values with blanks.
+    let mut admin_email = use_signal(String::new);
+    let mut admin_first_name = use_signal(String::new);
+    let mut admin_last_name = use_signal(String::new);
+    // Snapshot of the loaded row: original strings for change-detection
+    // and status for the email-editable gate.
+    let mut admin_snapshot: Signal<Option<TenantAdminInfo>> = use_signal(|| None);
+    // MAPPS-450: default the "re-send welcome" checkbox to ON when the
+    // email is dirty. Rendered only when admin is `pending` AND email
+    // changed, so a stale ON on a name-only edit does nothing.
+    let mut admin_resend_on_save = use_signal(|| true);
+    #[cfg(feature = "web")]
+    use_hook(move || {
+        spawn(async move {
+            let path = format!("/tenants/{tenant_id}/admin");
+            if let Ok(info) =
+                crate::hooks::fetch::api::get_authed_typed::<TenantAdminInfo>(&path).await
+            {
+                admin_email.set(info.email.clone());
+                admin_first_name.set(info.first_name.clone());
+                admin_last_name.set(info.last_name.clone());
+                admin_snapshot.set(Some(info));
+            }
+        });
+    });
     // MAPPS-448: super-admin re-issues the tenant admin's setup email
     // when the original went missing or the setup link expired. Server
     // 409s when the admin has already redeemed - the error surfaces
@@ -921,6 +983,38 @@ fn EditTenantModal(
         };
         saving.set(true);
         error.set(String::new());
+        // MAPPS-450: diff the admin fields against the loaded snapshot
+        // and build a PATCH body of ONLY the changed fields. The whole
+        // block short-circuits when the snapshot never hydrated (offline
+        // load) or when nothing differs, so a branding-only edit stays a
+        // single request.
+        let admin_body = {
+            let snap = admin_snapshot.read().clone();
+            snap.and_then(|s| {
+                let email_new = admin_email.read().trim().to_string();
+                let first_new = admin_first_name.read().trim().to_string();
+                let last_new = admin_last_name.read().trim().to_string();
+                let email_changed = !email_new.eq_ignore_ascii_case(&s.email)
+                    && !email_new.is_empty();
+                let first_changed = first_new != s.first_name.trim();
+                let last_changed = last_new != s.last_name.trim();
+                if !email_changed && !first_changed && !last_changed {
+                    None
+                } else {
+                    Some((
+                        UpdateTenantAdminBody {
+                            email: email_changed.then_some(email_new),
+                            first_name: first_changed.then_some(first_new),
+                            last_name: last_changed.then_some(last_new),
+                            resend_welcome: email_changed
+                                && s.status == "pending"
+                                && admin_resend_on_save(),
+                        },
+                        s.status,
+                    ))
+                }
+            })
+        };
         spawn(async move {
             #[cfg(feature = "web")]
             {
@@ -930,9 +1024,48 @@ fn EditTenantModal(
                     #[allow(dead_code)]
                     id: uuid::Uuid,
                 }
-                match crate::hooks::fetch::api::put_authed_typed::<TenantId, _>(&path, &body).await
+                let tenant_ok = match crate::hooks::fetch::api::put_authed_typed::<TenantId, _>(
+                    &path, &body,
+                )
+                .await
                 {
-                    Ok(_) => {
+                    Ok(_) => true,
+                    Err(e) => {
+                        error.set(e.user_message());
+                        false
+                    }
+                };
+                if tenant_ok {
+                    // MAPPS-450: chase the tenant PUT with the admin PUT
+                    // when any admin field is dirty. A 409 here (email
+                    // change on already-activated admin) rewinds to the
+                    // error banner; the tenant edit is not rolled back
+                    // (they are separate scopes) but the modal stays open
+                    // so the operator can undo the email edit.
+                    let admin_ok = if let Some((abody, _status)) = admin_body.as_ref() {
+                        let apath = format!("/tenants/{tenant_id}/admin");
+                        match crate::hooks::fetch::api::put_authed_typed::<
+                            TenantAdminInfo,
+                            _,
+                        >(&apath, abody)
+                        .await
+                        {
+                            Ok(info) => {
+                                admin_email.set(info.email.clone());
+                                admin_first_name.set(info.first_name.clone());
+                                admin_last_name.set(info.last_name.clone());
+                                admin_snapshot.set(Some(info));
+                                true
+                            }
+                            Err(e) => {
+                                error.set(e.user_message());
+                                false
+                            }
+                        }
+                    } else {
+                        true
+                    };
+                    if admin_ok {
                         // MAPPS-449: hoist the "old URL now 404s" warning
                         // banner before dismissing the modal via onsaved
                         // so the operator sees it. Skipped when the slug
@@ -943,12 +1076,12 @@ fn EditTenantModal(
                             onsaved.call(());
                         }
                     }
-                    Err(e) => error.set(e.user_message()),
                 }
             }
             #[cfg(not(feature = "web"))]
             {
                 let _ = &body;
+                let _ = &admin_body;
             }
             saving.set(false);
         });
@@ -1087,6 +1220,83 @@ fn EditTenantModal(
                         value: favicon_url(),
                         disabled: saving(),
                         oninput: move |e: FormEvent| { favicon_url.set(e.value()); },
+                    }
+                }
+                // MAPPS-450: tenant admin contact fields. Rendered only
+                // once the admin fetch resolves so the operator does not
+                // race a save against a mid-load blank. Email input is
+                // disabled when admin.status != 'pending' with a tooltip
+                // explaining why (mirrors the server-side 409 guard).
+                {
+                    let snap = admin_snapshot.read().clone();
+                    let is_pending = snap.as_ref().map(|s| s.status == "pending").unwrap_or(false);
+                    let email_dirty = snap
+                        .as_ref()
+                        .map(|s| !admin_email.read().trim().eq_ignore_ascii_case(&s.email))
+                        .unwrap_or(false);
+                    let email_disabled_reason = if snap.is_none() {
+                        Some("Loading admin details…".to_string())
+                    } else if !is_pending {
+                        Some(
+                            "This tenant admin has already activated their account; they must change their own email from Settings.".to_string(),
+                        )
+                    } else {
+                        None
+                    };
+                    rsx! {
+                        div { class: "border-t border-line pt-3 space-y-2",
+                            p { class: "text-sm font-medium text-content", "Admin contact" }
+                            if snap.is_none() {
+                                p { class: "text-xs text-muted", "Loading admin details…" }
+                            } else {
+                                Input {
+                                    name: "admin_email",
+                                    label: "Admin email",
+                                    r#type: "email".to_string(),
+                                    value: admin_email(),
+                                    disabled: saving() || email_disabled_reason.is_some(),
+                                    oninput: move |e: FormEvent| { error.set(String::new()); admin_email.set(e.value()); },
+                                }
+                                if let Some(ref reason) = email_disabled_reason {
+                                    p { class: "text-xs text-muted", "{reason}" }
+                                }
+                                div { class: "grid grid-cols-1 sm:grid-cols-2 gap-3",
+                                    Input {
+                                        name: "admin_first_name",
+                                        label: "First name",
+                                        r#type: "text".to_string(),
+                                        value: admin_first_name(),
+                                        disabled: saving(),
+                                        oninput: move |e: FormEvent| { error.set(String::new()); admin_first_name.set(e.value()); },
+                                    }
+                                    Input {
+                                        name: "admin_last_name",
+                                        label: "Last name",
+                                        r#type: "text".to_string(),
+                                        value: admin_last_name(),
+                                        disabled: saving(),
+                                        oninput: move |e: FormEvent| { error.set(String::new()); admin_last_name.set(e.value()); },
+                                    }
+                                }
+                                // Re-send welcome checkbox is only meaningful when
+                                // the email is dirty AND the admin is still
+                                // pending. Off-check the flag if the operator
+                                // reverts the email so the state stays honest.
+                                if email_dirty && is_pending {
+                                    label { class: "flex items-center gap-2 text-xs text-muted",
+                                        input {
+                                            r#type: "checkbox",
+                                            checked: admin_resend_on_save(),
+                                            disabled: saving(),
+                                            onchange: move |e: FormEvent| {
+                                                admin_resend_on_save.set(e.value() == "true");
+                                            },
+                                        }
+                                        "Re-send welcome email to the new address after saving."
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 // MAPPS-448: super-admin re-issues the tenant admin's setup
