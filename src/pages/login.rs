@@ -102,15 +102,20 @@ pub fn StandaloneLogin() -> Element {
         let appr = approval_code.read().trim().to_string();
         let approval = if appr.is_empty() { None } else { Some(appr) };
         // MAPPS-396: normalize the slug to lowercase (matches
-        // `tenants.slug` writes, which are also lowercase) and drop
-        // blank input so the request omits the field rather than
-        // sending an empty string the server would reject.
+        // `tenants.slug` writes, which are also lowercase). PMS-728
+        // AC1: the server now rejects a local-password login without
+        // an explicit tenant identifier, so the standalone login form
+        // treats the slug field as required; a blank submission is
+        // caught here rather than sent as an empty string the server
+        // would 401 (which reads to the operator as bad credentials).
         let slug_raw = tenant_slug.read().trim().to_ascii_lowercase();
-        let slug = if slug_raw.is_empty() {
-            None
-        } else {
-            Some(slug_raw)
-        };
+        if slug_raw.is_empty() {
+            error.set(
+                "Enter your account slug (the leftmost label of your Mokosh URL).".to_string(),
+            );
+            return;
+        }
+        let slug = Some(slug_raw);
         saving.set(true);
         error.set(String::new());
 
@@ -258,10 +263,10 @@ pub fn StandaloneLogin() -> Element {
                         // default tenant, matching pre-MAPPS-396 behavior.
                         Input {
                             name: "tenant_slug",
-                            label: "Tenant (optional)",
+                            label: "Account slug",
                             r#type: "text".to_string(),
                             value: tenant_slug(),
-                            required: false,
+                            required: true,
                             disabled: saving(),
                             oninput: move |e: FormEvent| {
                                 error.set(String::new());
