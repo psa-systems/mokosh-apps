@@ -43,6 +43,7 @@ pub mod request_links;
 pub mod settings;
 pub mod sla;
 pub mod system_status;
-pub mod team;
+pub mod invitations;
+pub mod teams;
 pub mod tickets;
 pub mod time;

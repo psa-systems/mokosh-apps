@@ -57,6 +57,34 @@ impl AuthContext {
         self.user.as_ref().is_some_and(|u| u.role == role)
     }
 
+    /// PMS-791 / MAPPS-462: shorthand for "current user has admin
+    /// privileges" (admin OR super_admin). Mirrors the pattern used by
+    /// every existing admin-gated page (audit_log.rs, sla.rs, settings.rs)
+    /// that manually walks `.user.as_ref().map(|u| u.role.is_admin())`.
+    pub fn is_admin(&self) -> bool {
+        self.user.as_ref().is_some_and(|u| u.role.is_admin())
+    }
+
+    /// PMS-791 / MAPPS-462: true when the caller's tenant is a
+    /// multi-user org tenant. Empty tenant_kind (older server) reads as
+    /// org (fail-open UI; server still gates the actual endpoints).
+    pub fn is_org_tenant(&self) -> bool {
+        let kind = self
+            .user
+            .as_ref()
+            .map(|u| u.tenant_kind.as_str())
+            .unwrap_or("");
+        matches!(kind, "org" | "")
+    }
+
+    /// PMS-791 / MAPPS-462: strict "personal tenant" check — only true
+    /// when tenant_kind is explicitly "personal".
+    pub fn is_personal_tenant(&self) -> bool {
+        self.user
+            .as_ref()
+            .is_some_and(|u| u.tenant_kind == "personal")
+    }
+
     /// Return the membership matching `active_tenant_id` so callers can
     /// pull a display-ready tenant name or role for the current scope
     /// without re-walking the membership list. None before sign-in or

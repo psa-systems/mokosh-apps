@@ -638,8 +638,18 @@ pub enum Route {
     FormsBuilder {},
     #[route("/admin/sla")]
     SlaManagement {},
+    // PMS-791 phase 2: retired the old "team" nav name; the page was
+    // always invitations. `/admin/team` still routes here for one release
+    // via TeamLegacyRedirect below so bookmarks do not break.
+    #[route("/admin/invitations")]
+    Invitations {},
     #[route("/admin/team")]
-    Team {},
+    TeamLegacyRedirect {},
+    // PMS-791 phase 2: the actual teams management page (list + create +
+    // edit + membership).
+    #[cfg(feature = "multi-tenant")]
+    #[route("/admin/teams")]
+    Teams {},
 
     // Admin (multi-tenant only)
     #[cfg(feature = "multi-tenant")]
@@ -1382,8 +1392,32 @@ fn SlaManagement() -> Element {
 }
 
 #[component]
-fn Team() -> Element {
-    rsx! { team::TeamPage {} }
+fn Invitations() -> Element {
+    rsx! { invitations::InvitationsPage {} }
+}
+
+/// PMS-791 phase 2: legacy bookmarks for `/admin/team` land here and
+/// bounce to the new `/admin/invitations` route. Delete after the
+/// release after this one; the redirect is only there so a customer with
+/// a saved link does not hit a 404 the day this ships.
+#[component]
+fn TeamLegacyRedirect() -> Element {
+    #[cfg(feature = "web")]
+    {
+        let nav = use_navigator();
+        nav.replace(Route::Invitations {});
+    }
+    rsx! {
+        div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
+            "Redirecting to Invitations…"
+        }
+    }
+}
+
+#[cfg(feature = "multi-tenant")]
+#[component]
+fn Teams() -> Element {
+    rsx! { teams::TeamsPage {} }
 }
 
 #[cfg(feature = "multi-tenant")]

@@ -284,6 +284,11 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
         .as_ref()
         .map(|u| u.role == UserRole::SuperAdmin)
         .unwrap_or(false);
+    // PMS-791 phase 2 / MAPPS-463: Teams nav is org-tenants-only per Q4
+    // default. Personal tenants (`kind='personal'`, single owner) hide
+    // the item entirely; a personal tenant hitting /admin/teams directly
+    // sees a ContentUnavailable page.
+    let is_org_tenant = auth.read().is_org_tenant();
 
     // MAPPS-203: App-root-owned scroll offset that survives the
     // AppLayout re-mount on each navigation. Only the persistent desktop
@@ -393,16 +398,13 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                     // single-tenant builds where `Route::TenantManagement`
                     // does not exist.
                     TenantsNavItem { visible: is_super_admin, collapsed }
-                    // MAPPS-329: Team nav is hidden by default and only
-                    // renders when the operator sets
-                    // `MOKOSH_TEAM_ENABLED=true` (or `=1`) on the
-                    // mokosh-www container. `Route::Team`, the page, and
-                    // its API are intentionally left intact - typing
-                    // `/team` still works - so flipping the flag is a
-                    // zero-code unlock when the feature is ready.
-                    if crate::modules::runtime_config::flag_enabled("team_enabled") {
-                        NavItem { to: Route::Team {}, icon: rsx!(UserGroupIcon {}), label: "Team", collapsed }
-                    }
+                    // PMS-791 phase 2: Teams (was "Team", which was
+                    // actually the invitations page — see the
+                    // Invitations item below). Org tenants only per Q4
+                    // default = A. The `team_enabled` runtime flag was
+                    // retired: Teams is now core, not a preview.
+                    TeamsNavItem { visible: is_org_tenant, collapsed }
+                    NavItem { to: Route::Invitations {}, icon: rsx!(UserGroupIcon {}), label: "Invitations", collapsed }
                     NavItem { to: Route::AuditLog {}, icon: rsx!(ClipboardDocumentListIcon {}), label: "Audit Log", collapsed }
                     NavItem { to: Route::FormsBuilder {}, icon: rsx!(ClipboardDocumentListIcon {}), label: "Request Forms", collapsed }
                     NavItem { to: Route::SlaManagement {}, icon: rsx!(ShieldCheckIcon {}), label: "SLA Management", collapsed }
@@ -667,6 +669,38 @@ fn TenantsNavItem(props: TenantsNavItemProps) -> Element {
 #[cfg(not(feature = "multi-tenant"))]
 #[component]
 fn TenantsNavItem(props: TenantsNavItemProps) -> Element {
+    let _ = props;
+    rsx! {}
+}
+
+/// PMS-791 phase 2 / MAPPS-463: Teams nav item. Uses the same cfg-gated
+/// pattern as TenantsNavItem so `single-tenant` builds do not need to
+/// know Route::Teams exists.
+#[derive(Props, Clone, PartialEq)]
+struct TeamsNavItemProps {
+    visible: bool,
+    collapsed: bool,
+}
+
+#[cfg(feature = "multi-tenant")]
+#[component]
+fn TeamsNavItem(props: TeamsNavItemProps) -> Element {
+    if !props.visible {
+        return rsx! {};
+    }
+    rsx! {
+        NavItem {
+            to: Route::Teams {},
+            icon: rsx!(UserGroupIcon {}),
+            label: "Teams",
+            collapsed: props.collapsed,
+        }
+    }
+}
+
+#[cfg(not(feature = "multi-tenant"))]
+#[component]
+fn TeamsNavItem(props: TeamsNavItemProps) -> Element {
     let _ = props;
     rsx! {}
 }

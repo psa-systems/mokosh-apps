@@ -41,8 +41,8 @@ struct PaginatedInvitations {
 const ROLE_ASSIGNMENT_ENABLED: bool = false;
 
 #[component]
-pub fn TeamPage() -> Element {
-    use_page_title("Team");
+pub fn InvitationsPage() -> Element {
+    use_page_title("Invitations");
     let auth = use_auth();
     let is_admin = {
         let a = auth.read();
