@@ -235,6 +235,12 @@ struct RemoteContact {
     // still shown on the contact detail page, which decodes its own struct.
     #[serde(default)]
     contact_type: Option<String>,
+    /// MAPPS-456: whether the contact can sign in to the client portal.
+    /// Server always sends this on `ContactResponse` (mokosh-types
+    /// contacts::ContactResponse). Default false keeps decoding safe if
+    /// an older server variant ever omits it.
+    #[serde(default)]
+    is_portal_user: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1598,6 +1604,16 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                 company_name: company.name.clone(),
                                 contacts_resource,
                             }
+                            // MAPPS-456: company-level entry point for
+                            // enabling portal access on multiple contacts
+                            // from one screen (previously required drilling
+                            // into each contact detail page). Fetches its
+                            // own uncapped list so the roster reflects
+                            // every contact, not just the first 5 the
+                            // Contacts card shows.
+                            CompanyPortalAccessCard {
+                                company_id: company_id_str.clone(),
+                            }
                             // Sites
                             CompanySitesCard {
                                 company_id: company_id_str.clone(),
@@ -2062,6 +2078,172 @@ fn CompanyContactsCard(
                     show_add.set(false);
                     contacts_resource.restart();
                 },
+            }
+        }
+    }
+}
+
+/// MAPPS-456: company-level entry point for granting / revoking client-portal
+/// access. Lists every contact under the company with a per-row toggle so an
+/// admin onboarding a customer with several employees does not need to drill
+/// into each contact detail page in turn. Both grant and revoke fire the same
+/// `PUT /contacts/contacts/{id}` the per-contact card at
+/// [`ContactPortalCard`] uses (`{"is_portal_user": bool}`); no new endpoints.
+///
+/// Fetches its own uncapped roster (per_page=200) rather than sharing the
+/// [`CompanyContactsCard`] resource, which is capped at 5 for preview purposes.
+/// Companies with more than ~20 contacts are rare; the ceiling is a soft cap
+/// to keep the roster inline.
+#[component]
+fn CompanyPortalAccessCard(company_id: String) -> Element {
+    let id_for_resource = company_id.clone();
+    let mut roster = use_resource(move || {
+        let id = id_for_resource.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
+            crate::hooks::fetch::api::get_authed::<PaginatedContacts>(&format!(
+                "/contacts/companies/{id}/contacts?per_page=200"
+            ))
+            .await
+            .ok()
+        }
+    });
+    let can_mutate = crate::hooks::use_can_mutate();
+    // Per-row spinner tracking: whichever contact is mid-toggle disables its
+    // own button rather than freezing the whole card. Uuid keys the map.
+    let mut toggling: Signal<std::collections::HashSet<uuid::Uuid>> =
+        use_signal(std::collections::HashSet::new);
+    let snap = roster.read_unchecked();
+    let count = match &*snap {
+        Some(Some(page)) => Some(page.meta.total),
+        _ => None,
+    };
+    rsx! {
+        CollapsibleCard {
+            title: "Portal Access",
+            count,
+            padding: false,
+            Table {
+                TableHead {
+                    TableRow {
+                        TableHeader { "Contact" }
+                        TableHeader { "Email" }
+                        TableHeader { "Status" }
+                        TableHeader { span { class: "sr-only", "Action" } }
+                    }
+                }
+                match &*snap {
+                    None => rsx! { TableLoading { columns: 4, rows: 3 } },
+                    Some(None) => rsx! { TableEmpty { columns: 4, message: "Could not load contacts.".to_string() } },
+                    Some(Some(page)) if page.data.is_empty() => rsx! {
+                        TableEmpty { columns: 4, message: "No contacts at this company yet. Add one to grant portal access.".to_string() }
+                    },
+                    Some(Some(page)) => {
+                        let rows: Vec<_> = page.data.iter().cloned().collect();
+                        rsx! {
+                            TableBody {
+                                for contact in rows.into_iter() {
+                                    {
+                                        let contact_id = contact.id;
+                                        let contact_id_str = contact_id.to_string();
+                                        let name = format!("{} {}", contact.first_name, contact.last_name).trim().to_string();
+                                        let email = contact.email.clone().unwrap_or_default();
+                                        let has_email = !email.trim().is_empty();
+                                        let is_portal_user = contact.is_portal_user;
+                                        let is_toggling = toggling.read().contains(&contact_id);
+                                        rsx! {
+                                            TableRow { key: "{contact_id_str}",
+                                                TableCell {
+                                                    Link {
+                                                        to: Route::ContactDetail { id: contact_id_str.clone() },
+                                                        class: "font-medium text-accent hover:opacity-90",
+                                                        "{name}"
+                                                    }
+                                                }
+                                                TableCell { "{email}" }
+                                                TableCell {
+                                                    if is_portal_user {
+                                                        Badge { variant: BadgeVariant::Green, "Granted" }
+                                                    } else {
+                                                        Badge { variant: BadgeVariant::Gray, "Not granted" }
+                                                    }
+                                                }
+                                                TableCell { class: "text-right w-32",
+                                                    if is_portal_user {
+                                                        Button {
+                                                            variant: ButtonVariant::Secondary,
+                                                            loading: is_toggling,
+                                                            disabled: is_toggling || !can_mutate,
+                                                            onclick: move |_| {
+                                                                let path = format!("/contacts/contacts/{contact_id_str}");
+                                                                toggling.write().insert(contact_id);
+                                                                spawn(async move {
+                                                                    let body = serde_json::json!({ "is_portal_user": false });
+                                                                    match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await {
+                                                                        Ok(_) => {
+                                                                            crate::hooks::toast::push_toast(
+                                                                                crate::components::AlertType::Success,
+                                                                                "Portal access revoked.",
+                                                                            );
+                                                                            roster.restart();
+                                                                        }
+                                                                        Err(err) => crate::hooks::toast::push_toast(
+                                                                            crate::components::AlertType::Error,
+                                                                            format!("Could not revoke portal access: {err}"),
+                                                                        ),
+                                                                    }
+                                                                    toggling.write().remove(&contact_id);
+                                                                });
+                                                            },
+                                                            "Revoke"
+                                                        }
+                                                    } else if !has_email {
+                                                        // Mirror the per-contact card's guard: no email = no
+                                                        // portal grant, because the setup link has nowhere to go.
+                                                        Button {
+                                                            variant: ButtonVariant::Secondary,
+                                                            disabled: true,
+                                                            "Grant"
+                                                        }
+                                                    } else {
+                                                        Button {
+                                                            variant: ButtonVariant::Primary,
+                                                            loading: is_toggling,
+                                                            disabled: is_toggling || !can_mutate,
+                                                            onclick: move |_| {
+                                                                let path = format!("/contacts/contacts/{contact_id_str}");
+                                                                toggling.write().insert(contact_id);
+                                                                spawn(async move {
+                                                                    let body = serde_json::json!({ "is_portal_user": true });
+                                                                    match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await {
+                                                                        Ok(_) => {
+                                                                            crate::hooks::toast::push_toast(
+                                                                                crate::components::AlertType::Success,
+                                                                                "Portal access granted. A setup email is on its way.",
+                                                                            );
+                                                                            roster.restart();
+                                                                        }
+                                                                        Err(err) => crate::hooks::toast::push_toast(
+                                                                            crate::components::AlertType::Error,
+                                                                            format!("Could not grant portal access: {err}"),
+                                                                        ),
+                                                                    }
+                                                                    toggling.write().remove(&contact_id);
+                                                                });
+                                                            },
+                                                            "Grant"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
             }
         }
     }
