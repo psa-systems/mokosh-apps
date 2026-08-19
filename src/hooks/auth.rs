@@ -214,6 +214,10 @@ fn rehydrate_from_storage() -> Option<AuthContext> {
             // The id_token has no own-company claim; the post-rehydrate
             // /me fetch (use_current_user_loader) fills it in within a tick.
             own_company_id: None,
+            // PMS-791 / MAPPS-462: no tenant_kind claim in the id_token
+            // either; the post-rehydrate /me fetch fills it. Default
+            // empty; is_org_tenant() treats "" as org (fail-open).
+            tenant_kind: String::new(),
         }),
         is_loading: false,
         error: None,
@@ -636,6 +640,12 @@ async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
         // General / overhead time entry. `None` on a pre-backfill tenant.
         #[serde(default)]
         own_company_id: Option<uuid::Uuid>,
+        // PMS-791 / MAPPS-462: owning tenant's `kind` column
+        // ("org" | "personal"). Empty string on older server responses
+        // that predate the field; AuthState::is_org_tenant() treats
+        // empty as org (fail-open UI).
+        #[serde(default)]
+        tenant_kind: String,
     }
     fn default_true_me() -> bool {
         true
@@ -691,6 +701,9 @@ async fn refresh_user_from_me(auth: &mut Signal<AuthContext>) {
         u.profile_completed = me.profile_completed;
         u.date_format_string = me.date_format_string;
         u.own_company_id = me.own_company_id;
+        // PMS-791 / MAPPS-462: reconcile tenant_kind from /me so Teams
+        // nav visibility flips off within a tick on personal tenants.
+        u.tenant_kind = me.tenant_kind;
     }
     // MAPPS-317: flip the gate so AuthGuard's onboarding-redirect
     // check now trusts profile_completed. Must run AFTER the user

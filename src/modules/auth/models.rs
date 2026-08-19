@@ -92,6 +92,32 @@ impl AuthState {
     pub fn is_admin(&self) -> bool {
         self.user.as_ref().is_some_and(|u| u.role.is_admin())
     }
+
+    /// PMS-791 / MAPPS-462: `true` when the caller's tenant is a
+    /// multi-user org tenant. Used to gate org-only surfaces (Teams
+    /// nav item, etc.). Empty string on the DTO (older server that did
+    /// not carry the field, or the default for tests) reads as `true`
+    /// so a missing field never wrongly hides a feature — server-side
+    /// authorization still gates the actual endpoints.
+    pub fn is_org_tenant(&self) -> bool {
+        let kind = self
+            .user
+            .as_ref()
+            .map(|u| u.tenant_kind.as_str())
+            .unwrap_or("");
+        matches!(kind, "org" | "")
+    }
+
+    /// PMS-791 / MAPPS-462: strict "personal tenant" check — only true
+    /// when the tenant is explicitly `kind='personal'`. Complements
+    /// [`Self::is_org_tenant`] for surfaces that need to positively
+    /// identify personal tenants (e.g. the "Teams are for organizations"
+    /// ContentUnavailable copy).
+    pub fn is_personal_tenant(&self) -> bool {
+        self.user
+            .as_ref()
+            .is_some_and(|u| u.tenant_kind == "personal")
+    }
 }
 
 // `CurrentUser` (struct + `full_name` / `initials`) is re-exported from
@@ -155,6 +181,11 @@ impl User {
             // own-company column; the live value reaches the SPA via the
             // `/auth/me` payload (see `MeBody` in hooks/auth.rs).
             own_company_id: None,
+            // PMS-791 / MAPPS-462: legacy `User` snapshot carries no
+            // tenant_kind either; the live value reaches the SPA via the
+            // /auth/me payload. Default to empty string; is_org_tenant()
+            // treats empty as "org" (fail-open UI; server still gates).
+            tenant_kind: String::new(),
         }
     }
 }
@@ -317,6 +348,7 @@ mod tests {
             theme_base_mode: None,
             theme_accent_id: None,
             own_company_id: None,
+            tenant_kind: String::new(),
         };
         let tenant_id = user.tenant_id;
 
@@ -342,6 +374,7 @@ mod tests {
             theme_base_mode: None,
             theme_accent_id: None,
             own_company_id: None,
+            tenant_kind: String::new(),
         };
         let tenant_id = user.tenant_id;
         let state = AuthState::authenticated(user, tenant_id);
@@ -367,6 +400,7 @@ mod tests {
             theme_base_mode: None,
             theme_accent_id: None,
             own_company_id: None,
+            tenant_kind: String::new(),
         };
 
         assert_eq!(user.full_name(), "John Doe");
@@ -388,6 +422,7 @@ mod tests {
             theme_base_mode: None,
             theme_accent_id: None,
             own_company_id: None,
+            tenant_kind: String::new(),
         };
 
         assert_eq!(user.initials(), "JD");
@@ -412,6 +447,7 @@ mod tests {
             theme_base_mode: None,
             theme_accent_id: None,
             own_company_id: None,
+            tenant_kind: String::new(),
         };
         let tenant_id = user.tenant_id;
         let auth_state = AuthState::authenticated(user, tenant_id);
@@ -437,10 +473,71 @@ mod tests {
             theme_base_mode: None,
             theme_accent_id: None,
             own_company_id: None,
+            tenant_kind: String::new(),
         };
         let tenant_id = user.tenant_id;
         let auth_state = AuthState::authenticated(user, tenant_id);
         assert!(auth_state.require_tenant().is_ok());
         assert_eq!(auth_state.require_tenant().unwrap(), tenant_id);
+    }
+
+    // PMS-791 / MAPPS-462 helpers for the Teams nav gate.
+
+    fn user_with_kind(kind: &str) -> CurrentUser {
+        CurrentUser {
+            id: Uuid::new_v4(),
+            tenant_id: Uuid::new_v4(),
+            email: "e@example.com".to_string(),
+            first_name: "F".to_string(),
+            last_name: "L".to_string(),
+            role: UserRole::Admin,
+            timezone: "UTC".to_string(),
+            avatar_url: None,
+            profile_completed: true,
+            date_format_string: None,
+            theme_base_mode: None,
+            theme_accent_id: None,
+            own_company_id: None,
+            tenant_kind: kind.to_string(),
+        }
+    }
+
+    #[test]
+    fn is_org_tenant_true_for_kind_org() {
+        let u = user_with_kind("org");
+        let t = u.tenant_id;
+        let s = AuthState::authenticated(u, t);
+        assert!(s.is_org_tenant());
+        assert!(!s.is_personal_tenant());
+    }
+
+    #[test]
+    fn is_org_tenant_defaults_true_on_missing_field() {
+        // MAPPS-462: an empty tenant_kind (older server that did not
+        // populate the field, or a legacy fixture) should default to
+        // treating the tenant as org — safe: server-side auth still gates.
+        let u = user_with_kind("");
+        let t = u.tenant_id;
+        let s = AuthState::authenticated(u, t);
+        assert!(s.is_org_tenant());
+        assert!(!s.is_personal_tenant());
+    }
+
+    #[test]
+    fn is_personal_tenant_when_kind_is_personal() {
+        let u = user_with_kind("personal");
+        let t = u.tenant_id;
+        let s = AuthState::authenticated(u, t);
+        assert!(!s.is_org_tenant());
+        assert!(s.is_personal_tenant());
+    }
+
+    #[test]
+    fn is_org_tenant_false_when_no_user() {
+        let s = AuthState::default();
+        // No user at all: matches!("") -> true via the unwrap_or fallback,
+        // preserving fail-open behavior when the field is unknown.
+        assert!(s.is_org_tenant());
+        assert!(!s.is_personal_tenant());
     }
 }

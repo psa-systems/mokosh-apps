@@ -120,6 +120,11 @@ pub fn AuthCallbackPage() -> Element {
                         // The id_token carries no own-company claim; the
                         // post-login /me fetch fills it within a tick.
                         own_company_id: None,
+                        // PMS-791 / MAPPS-462: no tenant_kind claim on
+                        // the id_token; /me reconciles within a tick.
+                        // Empty default reads as org via
+                        // AuthState::is_org_tenant (fail-open UI).
+                        tenant_kind: String::new(),
                     });
                     a.is_loading = false;
                     a.error = None;
