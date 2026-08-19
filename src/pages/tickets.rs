@@ -7,7 +7,7 @@ use serde::Deserialize;
 use crate::components::{
     clear_selection, ticket_status_badge, use_bulk_selection, use_page_title, AlertType, Badge,
     BadgeVariant, BulkActionsBar, BulkSelection, Button, ButtonVariant, Card, ClockIcon, DataTable,
-    ErrorBanner, IconSize, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select,
+    ErrorBanner, IconSize, Input, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select,
     SelectAllHeader, SelectOption, SelectRowCell, SortDirection, Table, TableBody, TableCell,
     TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea, UserCircleIcon,
 };
@@ -30,6 +30,12 @@ struct RemoteTicket {
     priority: RemoteSummary,
     #[serde(default)]
     assigned_to_name: Option<String>,
+    /// PMS-791 phase 3 / MAPPS-464: team routing. Server has always
+    /// carried the column (migration 005) and TicketResponse always
+    /// serialized it; this decoder finally reads it. `#[serde(default)]`
+    /// keeps legacy fixtures (demo rows below) deserialising.
+    #[serde(default)]
+    team_id: Option<uuid::Uuid>,
     updated_at: DateTime<Utc>,
 }
 
@@ -71,6 +77,9 @@ struct RemoteTicketDetail {
     priority: RemoteSummary,
     #[serde(default)]
     assigned_to_id: Option<uuid::Uuid>,
+    /// PMS-791 phase 3 / MAPPS-464: team routing on ticket detail.
+    #[serde(default)]
+    team_id: Option<uuid::Uuid>,
     // PMS-359: assigned_to_name is no longer read on the detail page
     // (the inline Assignee editor renders the chosen user by looking up
     // the id in the cached `/auth/users` list); dropped from the
@@ -1202,6 +1211,10 @@ pub fn TicketNewPage() -> Element {
     let mut type_id = use_signal(String::new);
     let mut category_id = use_signal(String::new);
     let mut assigned_to_id = use_signal(String::new);
+    // PMS-791 phase 3 / MAPPS-464: optional team routing on ticket create.
+    // Populated by a lightweight dropdown fed from GET /api/v1/teams.
+    // Personal tenants render neither the signal nor the input.
+    let mut team_id = use_signal(String::new);
     let mut due_date = use_signal(String::new);
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -1342,6 +1355,9 @@ pub fn TicketNewPage() -> Element {
 
         let title_v = title.read().trim().to_string();
         title_error.set(guard.field("title", &title_v, "Title", &[Rule::Required]));
+        // PMS-791 phase 3: team_id read once so the JSON body below can
+        // consume it without re-borrowing across the closure.
+        let team_id_v = team_id.read().trim().to_string();
 
         // PMS-518: Description is now enforced (it carried the asterisk but was
         // never validated). The server accepts an empty body, so this is a
@@ -1432,6 +1448,19 @@ pub fn TicketNewPage() -> Element {
                     Ok(u) => serde_json::Value::String(u.to_string()),
                     Err(_) => serde_json::Value::Null,
                 };
+                // PMS-791 phase 3: parse the team_id input to JSON; empty
+                // or unparseable = null (server ignores and leaves NULL).
+                let team_uuid: serde_json::Value = {
+                    let raw = team_id_v.trim();
+                    if raw.is_empty() {
+                        serde_json::Value::Null
+                    } else {
+                        match uuid::Uuid::parse_str(raw) {
+                            Ok(u) => serde_json::Value::String(u.to_string()),
+                            Err(_) => serde_json::Value::Null,
+                        }
+                    }
+                };
                 let body = serde_json::json!({
                     "title": title_v,
                     // MAPPS-322: Description is required and validated non-empty
@@ -1453,6 +1482,11 @@ pub fn TicketNewPage() -> Element {
                     "scheduled_end": scheduled_end,
                     // PMS-482: KB-article provenance.
                     "source_kb_article_id": kb_article_uuid,
+                    // PMS-791 phase 3 / MAPPS-464: optional team routing.
+                    // Client-side unparseable UUID collapses to null so
+                    // an empty or garbage input just omits the field
+                    // (server ignores null and leaves team_id NULL).
+                    "team_id": team_uuid,
                 });
 
                 #[derive(serde::Deserialize)]
@@ -1720,6 +1754,21 @@ pub fn TicketNewPage() -> Element {
                         value: due_date.read().clone(),
                         help: "Stamps the ticket's scheduled-end so SLA + dispatch view it on creation.".to_string(),
                         oninput: move |e: FormEvent| due_date.set(e.value()),
+                    }
+                }
+
+                // PMS-791 phase 3 / MAPPS-464: optional team routing.
+                // First-pass UX is a plain UUID input; a proper Team
+                // dropdown component fed by GET /api/v1/teams is filed
+                // as a follow-up. Personal tenants hide the field
+                // entirely per Q4 default.
+                if !crate::hooks::use_auth().read().is_personal_tenant() {
+                    Input {
+                        name: "team_id",
+                        label: "Team (UUID, optional)",
+                        r#type: "text".to_string(),
+                        value: team_id.read().clone(),
+                        oninput: move |e: FormEvent| team_id.set(e.value()),
                     }
                 }
 
