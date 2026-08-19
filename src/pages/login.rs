@@ -108,14 +108,21 @@ pub fn StandaloneLogin() -> Element {
         // treats the slug field as required; a blank submission is
         // caught here rather than sent as an empty string the server
         // would 401 (which reads to the operator as bad credentials).
+        //
+        // MAPPS-473 (PMS-728 followup): when the SPA is served on an
+        // agent host (e.g. `default.msp.<apex>`), the server derives
+        // the slug from the Host header, so the client-side required
+        // check is skipped: sending an empty slug on this path is
+        // exactly the intended "zero-typing" flow.
         let slug_raw = tenant_slug.read().trim().to_ascii_lowercase();
-        if slug_raw.is_empty() {
+        let on_agent_host = crate::hooks::fetch::api::on_agent_host();
+        if slug_raw.is_empty() && !on_agent_host {
             error.set(
                 "Enter your account slug (the leftmost label of your Mokosh URL).".to_string(),
             );
             return;
         }
-        let slug = Some(slug_raw);
+        let slug = if slug_raw.is_empty() { None } else { Some(slug_raw) };
         saving.set(true);
         error.set(String::new());
 
@@ -257,21 +264,26 @@ pub fn StandaloneLogin() -> Element {
                             },
                         }
 
-                        // MAPPS-396: tenant slug (blank = default tenant).
-                        // Rendered on every deploy: a single-tenant self-host
-                        // simply leaves it blank and the server routes to the
-                        // default tenant, matching pre-MAPPS-396 behavior.
-                        Input {
-                            name: "tenant_slug",
-                            label: "Account slug",
-                            r#type: "text".to_string(),
-                            value: tenant_slug(),
-                            required: true,
-                            disabled: saving(),
-                            oninput: move |e: FormEvent| {
-                                error.set(String::new());
-                                tenant_slug.set(e.value());
-                            },
+                        // MAPPS-396 / MAPPS-473: tenant slug input. Hidden
+                        // entirely when the SPA is served on an agent host
+                        // (e.g. `default.msp.<apex>`) because the server
+                        // derives the slug from the Host header — no operator
+                        // types it. Rendered on legacy / dev deploys without
+                        // AGENT_HOST_SUFFIX so those still have a way to
+                        // reach the right tenant.
+                        if !crate::hooks::fetch::api::on_agent_host() {
+                            Input {
+                                name: "tenant_slug",
+                                label: "Account slug",
+                                r#type: "text".to_string(),
+                                value: tenant_slug(),
+                                required: true,
+                                disabled: saving(),
+                                oninput: move |e: FormEvent| {
+                                    error.set(String::new());
+                                    tenant_slug.set(e.value());
+                                },
+                            }
                         }
 
                         if mfa_needed() {
