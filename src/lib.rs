@@ -912,11 +912,22 @@ fn CreateOrg() -> Element {
 
 #[component]
 fn ForgotPassword() -> Element {
+    // MAPPS-510: standalone deploys have no bunyip hub to redirect to;
+    // render the local form and POST to mokosh-server directly.
+    if crate::modules::oidc::is_standalone() {
+        return rsx! { crate::pages::forgot_password::StandaloneForgotPassword {} };
+    }
     rsx! { HubRedirect { target: "/forgot-password".to_string(), label: "password reset" } }
 }
 
 #[component]
 fn ResetPassword(token: String) -> Element {
+    // MAPPS-510: standalone deploys own the reset flow locally (the
+    // token was minted by mokosh-server's `AuthService::reset_password`
+    // path, and no bunyip is running to redeem it).
+    if crate::modules::oidc::is_standalone() {
+        return rsx! { crate::pages::reset_password::StandaloneResetPassword { token } };
+    }
     rsx! { HubRedirect { target: format!("/reset-password/{token}"), label: "password reset" } }
 }
 
