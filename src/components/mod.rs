@@ -30,6 +30,7 @@ mod skeleton;
 mod status_badge;
 mod suggest_input;
 mod table;
+mod tenant_switcher;
 mod theme_picker;
 mod update_banner;
 
@@ -61,5 +62,6 @@ pub use skeleton::*;
 pub use status_badge::*;
 pub use suggest_input::*;
 pub use table::*;
+pub use tenant_switcher::*;
 pub use theme_picker::*;
 pub use update_banner::*;

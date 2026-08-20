@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 
 use super::global_search::GlobalSearch;
 use super::icons::*;
+use super::tenant_switcher::TenantSwitcher;
 use super::theme_picker::ThemePickerButton;
 use crate::modules::auth::UserRole;
 use crate::modules::theme::SectionColor;
@@ -803,6 +804,11 @@ pub fn TopBar(props: TopBarProps) -> Element {
                 // `/approvals/pending` and renders a count badge that
                 // links to the standalone /approvals queue.
                 ApprovalsBadge {}
+
+                // MAPPS-494 (MAPPS-474 phase 5): tenant switcher.
+                // Dropdown listing every membership the identity holds
+                // + a "Create new organization" action.
+                TenantSwitcher {}
 
                 // User menu (P3-26 avatar dropdown)
                 UserMenu {}
