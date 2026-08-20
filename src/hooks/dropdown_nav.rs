@@ -264,13 +264,11 @@ impl DropdownNav {
     fn scroll_row_into_view(&self, index: usize, align_top: bool) {
         #[cfg(feature = "web")]
         {
-            let id = self.row_id(index);
-            if let Some(el) = web_sys::window()
-                .and_then(|w| w.document())
-                .and_then(|d| d.get_element_by_id(&id))
-            {
-                el.scroll_into_view_with_bool(align_top);
-            }
+            // MAPPS-504: through the platform boundary, not `web_sys`
+            // directly. `feature = "web"` is the app-runtime gate and is
+            // on for the desktop build too, so a direct browser call here
+            // would not compile against the wasm-only bindings.
+            crate::platform::dom::scroll_into_view(&self.row_id(index), align_top);
         }
         #[cfg(not(feature = "web"))]
         {

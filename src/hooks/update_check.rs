@@ -45,10 +45,14 @@
 //! Skips the whole machinery when the compile-time `GIT_HASH` is empty
 //! or `"unknown"` (dev builds), so `cargo run --features web` does not
 //! reload itself out from under a developer iterating on the SPA.
+//!
+//! MAPPS-504: inert on the desktop build, and deliberately so. The
+//! problem it solves is a browser tab pinned to the bundle it loaded;
+//! a desktop binary is not served a bundle and updates through its
+//! installer, so `fetch_live_build_sha` reports nothing there and
+//! `UPDATE_PENDING` never flips.
 
 use dioxus::prelude::*;
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::JsCast;
 
 /// How long to wait between background polls.
 const POLL_INTERVAL_SECS: u64 = 5 * 60;
@@ -59,7 +63,9 @@ const POLL_INTERVAL_SECS: u64 = 5 * 60;
 /// who never leave the tab still eventually pick up the new build.
 const MAX_DEFERRED_SECS: u64 = 30 * 60;
 
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
 const BUILD_SHA_FIELD: &str = "build_sha";
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
 const CONFIG_JS_PATH: &str = "/_mokosh_config.js";
 
 /// MAPPS-428: app-wide "the bundle this tab is running is out of date"
@@ -139,9 +145,9 @@ fn baseline_sha() -> Option<String> {
 /// own that contract. Sticking to the existing format (a single
 /// `window.__MOKOSH_CONFIG__ = { ... }` assignment) means we do not
 /// add a second source of truth for the build hash.
-#[cfg(feature = "web")]
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
 async fn fetch_live_build_sha() -> Option<String> {
-    use gloo_net::http::Request;
+    use crate::platform::http::Request;
     use wasm_bindgen::JsValue;
 
     let resp = Request::get(CONFIG_JS_PATH).send().await.ok()?;
@@ -162,7 +168,11 @@ async fn fetch_live_build_sha() -> Option<String> {
     val.as_string().filter(|s| !s.is_empty())
 }
 
-#[cfg(not(feature = "web"))]
+/// MAPPS-504: there is nothing to detect on the desktop. The whole
+/// mechanism exists because an open browser tab is pinned to the bundle
+/// it loaded; a desktop binary is not a bundle a server can replace
+/// underneath it, and it updates through its installer.
+#[cfg(any(not(feature = "web"), not(target_arch = "wasm32")))]
 async fn fetch_live_build_sha() -> Option<String> {
     None
 }
@@ -172,12 +182,16 @@ async fn fetch_live_build_sha() -> Option<String> {
 /// performs exactly the same reload the automatic path does.
 #[cfg(feature = "web")]
 pub(crate) fn reload_now() {
-    if let Some(win) = web_sys::window() {
-        // `location.reload()` issues a normal reload (re-validates
-        // index.html against the no-cache directive, picks up the new
-        // bundle filenames). No need for the deprecated reload(true)
-        // hard-reload argument.
-        let _ = win.location().reload();
+    // `location.reload()` issues a normal reload (re-validates
+    // index.html against the no-cache directive, picks up the new
+    // bundle filenames). No need for the deprecated reload(true)
+    // hard-reload argument.
+    //
+    // MAPPS-504: unreachable on the desktop, where nothing ever flips
+    // `UPDATE_PENDING`. Logged rather than ignored so that if it ever
+    // does get called there, it does not fail in silence.
+    if !crate::platform::location::reload() {
+        tracing::warn!("asked to reload for a new build, but this host cannot reload");
     }
 }
 
@@ -249,7 +263,7 @@ pub fn use_update_check() {
                 return;
             };
             loop {
-                gloo_timers::future::TimeoutFuture::new(POLL_INTERVAL_SECS as u32 * 1000).await;
+                crate::platform::timer::sleep_ms(POLL_INTERVAL_SECS as u32 * 1000).await;
                 if *UPDATE_PENDING.peek() {
                     // Already flagged; the visibilitychange listener
                     // fires the reload at the next hidden boundary.
@@ -312,49 +326,73 @@ pub fn use_update_check() {
     // case so users probe immediately on return).
     use_effect(move || {
         // Dev build (no baseline): register no visibilitychange listener.
-        if baseline.is_none() {
-            return;
+        if baseline.is_some() {
+            #[cfg(target_arch = "wasm32")]
+            subscribe_to_visibility_change();
         }
-        let Some(win) = web_sys::window() else {
-            return;
-        };
-        let Some(doc) = win.document() else {
-            return;
-        };
-        let cb = Closure::wrap(Box::new(move |_: web_sys::Event| {
-            let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
-                return;
-            };
-            let hidden = doc.hidden();
-            if *UPDATE_PENDING.peek() {
-                if hidden {
-                    // User switched away. Reload while they are not
-                    // looking; when they come back the new bundle is
-                    // already loaded.
-                    reload_now();
-                } else if deferred_cap_elapsed() {
-                    // Foregrounded with a pending reload. Stay polite
-                    // unless we have been holding the reload for too
-                    // long; then bite the bullet and reload anyway so
-                    // users who never leave the tab still update.
-                    reload_now();
-                }
-            }
-        }) as Box<dyn FnMut(web_sys::Event)>);
-        let _ =
-            doc.add_event_listener_with_callback("visibilitychange", cb.as_ref().unchecked_ref());
-        // Lives for the lifetime of the app; nothing else removes it.
-        cb.forget();
     });
+}
+
+/// Reload when the tab goes hidden after a pending update, or when it
+/// comes back visible and has not yet caught up (which covers the "tab
+/// was backgrounded across a deploy" case, so users probe immediately on
+/// return).
+///
+/// MAPPS-504: browser-only, and not because of the bindings - a desktop
+/// window has no tab to background and no bundle to swap.
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+fn subscribe_to_visibility_change() {
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen::JsCast;
+
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    let cb = Closure::wrap(Box::new(move |_: web_sys::Event| {
+        let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+            return;
+        };
+        let hidden = doc.hidden();
+        if *UPDATE_PENDING.peek() {
+            if hidden {
+                // User switched away. Reload while they are not
+                // looking; when they come back the new bundle is
+                // already loaded.
+                reload_now();
+            } else if deferred_cap_elapsed() {
+                // Foregrounded with a pending reload. Stay polite
+                // unless we have been holding the reload for too
+                // long; then bite the bullet and reload anyway so
+                // users who never leave the tab still update.
+                reload_now();
+            }
+        }
+    }) as Box<dyn FnMut(web_sys::Event)>);
+    if doc
+        .add_event_listener_with_callback("visibilitychange", cb.as_ref().unchecked_ref())
+        .is_err()
+    {
+        // Without this listener a detected update never reaches its
+        // reload boundary, so the tab stays on the old bundle forever.
+        tracing::error!("could not subscribe to visibilitychange; auto-update will not reload");
+        return;
+    }
+    // Lives for the lifetime of the app; nothing else removes it.
+    cb.forget();
 }
 
 #[cfg(not(feature = "web"))]
 pub fn use_update_check() {}
 
+/// Seconds on a clock that only has to be consistent with itself: the
+/// only use is the elapsed time since a detection was recorded.
+///
+/// MAPPS-504: was `performance.now()`; now the shared wall clock, which
+/// both targets have. `Option` is kept because the callers already
+/// branch on it.
 #[cfg(feature = "web")]
 fn performance_now_secs() -> Option<f64> {
-    let perf = web_sys::window()?.performance()?;
-    Some(perf.now() / 1000.0)
+    Some(crate::platform::clock::now_ms() as f64 / 1000.0)
 }
 
 /// MAPPS-428 recurrence gates. The hook itself needs a browser to run, so
@@ -405,7 +443,7 @@ mod tests {
     fn deferred_cap_is_checked_from_the_polling_loop() {
         let src = production_src();
         let after_sleep = src
-            .split_once("TimeoutFuture::new(POLL_INTERVAL_SECS")
+            .split_once("sleep_ms(POLL_INTERVAL_SECS")
             .expect("polling loop still sleeps on POLL_INTERVAL_SECS")
             .1;
         let loop_body = after_sleep

@@ -1233,12 +1233,16 @@ pub fn ImportExportSettingsPage() -> Element {
 fn ExportPanel() -> Element {
     let mut downloading = use_signal(|| false);
     let mut error = use_signal(String::new);
+    // MAPPS-504: where the export was written, on a host that picks the
+    // destination itself. Empty on the web, where the browser says so.
+    let mut saved_to = use_signal(String::new);
 
     let on_download = move |_| {
         if *downloading.read() {
             return;
         }
         error.set(String::new());
+        saved_to.set(String::new());
         downloading.set(true);
         spawn(async move {
             #[cfg(feature = "web")]
@@ -1246,8 +1250,17 @@ fn ExportPanel() -> Element {
                 match crate::hooks::fetch::api::get_authed_bytes("/data/export").await {
                     Ok((bytes, filename)) => {
                         let name = filename.unwrap_or_else(|| "mokosh-export.json".to_string());
-                        if let Err(e) = crate::utils::download::save_bytes_as_file(&bytes, &name) {
-                            error.set(format!("Fetched the export but could not save it: {e}"));
+                        match crate::utils::download::save_bytes_as_file(&bytes, &name) {
+                            // MAPPS-504: a browser shows its own download
+                            // shelf, so `None` needs no message from us. The
+                            // desktop build chose the destination itself, and
+                            // a file that lands somewhere the user cannot
+                            // find has not been delivered.
+                            Ok(Some(path)) => saved_to.set(path),
+                            Ok(None) => {}
+                            Err(e) => {
+                                error.set(format!("Fetched the export but could not save it: {e}"))
+                            }
                         }
                     }
                     Err(e) => error.set(format!("Could not export: {e}")),
@@ -1266,6 +1279,12 @@ fn ExportPanel() -> Element {
                 }
                 if !error.read().is_empty() {
                     ErrorBanner { "{error.read()}" }
+                }
+                if !saved_to.read().is_empty() {
+                    StatusBanner {
+                        tone: BannerTone::Success,
+                        p { "Saved to {saved_to.read()}" }
+                    }
                 }
                 Button {
                     variant: ButtonVariant::Primary,
@@ -1399,9 +1418,14 @@ fn ImportPanel(tenant_name: String) -> Element {
                         Button {
                             variant: ButtonVariant::Secondary,
                             onclick: move |_| {
-                                #[cfg(feature = "web")]
-                                if let Some(w) = web_sys::window() {
-                                    let _ = w.location().reload();
+                                // MAPPS-504: a browser reloads the document. A
+                                // desktop window has none, so it re-drives every
+                                // resource subscribed to the tenant generation
+                                // instead - the same mechanism an org switch
+                                // uses - rather than leaving a dead button after
+                                // a destructive import.
+                                if !crate::platform::location::reload() {
+                                    crate::hooks::fetch::bump_tenant_generation();
                                 }
                             },
                             "Reload the app"

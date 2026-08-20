@@ -16,9 +16,21 @@ path = "src/main.rs"
 [features]
 default = [
     "web",
+    "web-renderer",
     "multi-tenant",
 ]
+# MAPPS-504: `web` is the APP-RUNTIME gate, not a browser gate. It turns on
+# the `api` module, the app-wide GlobalSignals, and page logic, none of which
+# is browser-specific, and it stays on for the desktop build too. Browser-only
+# code lives behind `src/platform/`, split on `target_arch`. Renaming this to
+# `app` is MAPPS-507.
 web = []
+# The renderer is selected separately from the runtime so a desktop build can
+# turn the web renderer OFF. Enabling both `dioxus/web` and `dioxus/desktop`
+# does pick desktop (dioxus documents that priority), but it also links
+# dioxus-web and its wasm-bindgen stubs into a native binary for nothing.
+web-renderer = ["dioxus/web"]
+desktop = ["dioxus/desktop"]
 multi-tenant = []
 single-tenant = []
 server = []
@@ -37,15 +49,7 @@ path = "src/lib.rs"
 serde_json = "1.0"
 thiserror = "2"
 tracing = "0.1"
-gloo-net = "0.6"
 futures-util = "0.3"
-wasm-bindgen = "0.2"
-js-sys = "0.3"
-# MAPPS-299: forward Rust panics in the wasm runtime to console.error with
-# a readable message + stack trace. Without this a panic surfaces as an
-# opaque `RuntimeError: unreachable` at a hex offset (e.g. wasm:0x352c4f)
-# the user has no way to act on. The hook is install-once at startup.
-console_error_panic_hook = "0.1"
 sha2 = "0.10"
 base64 = "0.22"
 rand = "0.9"
@@ -63,7 +67,6 @@ git = "https://dev.a8n.run/psa-systems/mokosh-server.git"
 version = "0.7.7"
 features = [
     "router",
-    "web",
 ]
 
 [dependencies.serde]
@@ -78,10 +81,6 @@ features = [
     "serde",
     "js",
 ]
-
-[dependencies.getrandom]
-version = "0.3"
-features = ["wasm_js"]
 
 [dependencies.chrono]
 version = "0.4"
@@ -101,11 +100,31 @@ features = ["serde"]
 version = "0.19"
 features = ["derive"]
 
-[dependencies.gloo-timers]
+# MAPPS-504: the browser bindings. Reachable ONLY from the wasm half of
+# `src/platform/`; a `web_sys` / `js_sys` / `gloo_*` path anywhere else now
+# fails to resolve on the native build instead of compiling to a binding that
+# panics at run time.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-net = "0.6"
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+# MAPPS-299: forward Rust panics in the wasm runtime to console.error with
+# a readable message + stack trace. Without this a panic surfaces as an
+# opaque `RuntimeError: unreachable` at a hex offset (e.g. wasm:0x352c4f)
+# the user has no way to act on. The hook is install-once at startup. The
+# desktop build has no console to forward to and keeps the default Rust
+# panic handler, which already writes a backtrace to stderr.
+console_error_panic_hook = "0.1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.getrandom]
+version = "0.3"
+features = ["wasm_js"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.gloo-timers]
 version = "0.3"
 features = ["futures"]
 
-[dependencies.web-sys]
+[target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
 version = "0.3"
 features = [
     "Window",
@@ -147,6 +166,34 @@ features = [
     # restarts the login flow, so the suppressed error leaves a record.
     "console",
 ]
+
+# MAPPS-504: the native half of `src/platform/`. `reqwest` replaces browser
+# `fetch`, `tokio` replaces `gloo_timers`, `iana-time-zone` replaces
+# `Intl.DateTimeFormat().resolvedOptions().timeZone`, and `dirs` locates the
+# per-user config and download directories.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+dirs = "6"
+iana-time-zone = "0.1"
+# Hands a URL to the OS default browser. The desktop window is the app,
+# not a document to navigate away from, so the destinations that were
+# `location.replace` on the web (the OP logout endpoint, the Bunyip hub)
+# belong in the user's real browser.
+open = "5"
+
+# rustls, not the platform TLS stack: one behaviour on every desktop OS, and
+# no OpenSSL headers needed to build.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.reqwest]
+version = "0.12"
+default-features = false
+features = [
+    "json",
+    "rustls-tls",
+    "multipart",
+]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.tokio]
+version = "1"
+features = ["time"]
 
 [dev-dependencies]
 # MAPPS-388: render components to an HTML string in unit tests so layout

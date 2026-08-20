@@ -5,9 +5,9 @@ use mokosh_apps::components::use_page_title_provider;
 use mokosh_apps::hooks::{
     use_active_org_loader, use_apply_theme, use_auth_heartbeat, use_auth_provider,
     use_bfcache_invalidator, use_current_user_loader, use_server_status_monitor,
-    use_sidebar_collapsed_provider, use_sidebar_provider, use_sidebar_scroll_provider,
-    use_standalone_token_refresh, use_theme_sync, use_token_refresh, use_update_check,
-    use_version_cache_provider,
+    use_session_end_watch, use_sidebar_collapsed_provider, use_sidebar_provider,
+    use_sidebar_scroll_provider, use_standalone_token_refresh, use_theme_sync, use_token_refresh,
+    use_update_check, use_version_cache_provider,
 };
 use mokosh_apps::Route;
 
@@ -29,7 +29,50 @@ fn main() {
     // sees what the OP actually sent.
     mokosh_apps::modules::oidc::snapshot_initial_search();
 
+    launch();
+}
+
+/// Start the app on the web renderer.
+#[cfg(not(feature = "desktop"))]
+fn launch() {
     dioxus::launch(App);
+}
+
+/// MAPPS-504: start the app in a native window.
+///
+/// The window is sized for the layout the SPA was designed around: the
+/// persistent sidebar plus a content column. The minimum stops the user
+/// dragging it narrower than the point where the sidebar rail and the
+/// table columns start colliding.
+#[cfg(feature = "desktop")]
+fn launch() {
+    use dioxus::desktop::{Config, LogicalSize, WindowBuilder};
+
+    let mut window = WindowBuilder::new()
+        .with_title("Mokosh Platform")
+        .with_inner_size(LogicalSize::new(1440.0, 900.0))
+        .with_min_inner_size(LogicalSize::new(1024.0, 680.0));
+
+    match window_icon() {
+        Ok(icon) => window = window.with_window_icon(Some(icon)),
+        // Not fatal - the window opens with the toolkit default - but it
+        // is a packaging mistake worth seeing rather than a blank icon
+        // nobody can explain.
+        Err(e) => tracing::error!("could not load the window icon: {e}"),
+    }
+
+    dioxus::LaunchBuilder::desktop()
+        .with_cfg(Config::new().with_window(window))
+        .launch(App);
+}
+
+/// Decode the 128x128 PNG that `Dioxus.toml`'s `[bundle]` block also
+/// ships, so a `cargo run --features desktop` window carries the same
+/// icon a bundled install does.
+#[cfg(feature = "desktop")]
+fn window_icon() -> Result<dioxus::desktop::tao::window::Icon, String> {
+    const ICON_PNG: &[u8] = include_bytes!("../assets/icons/128x128.png");
+    dioxus::desktop::icon_from_memory(ICON_PNG).map_err(|e| e.to_string())
 }
 
 #[component]
@@ -82,6 +125,11 @@ fn App() -> Element {
     // the dashboard's prior JS state (including populated auth) from
     // the cache.
     use_bfcache_invalidator();
+    // MAPPS-504: put the user on the login screen when the fetch layer
+    // ends a session from outside the component tree. The browser does
+    // that with a full reload; a desktop window has none, so it watches
+    // the signal and clears the auth context instead. No-op on wasm.
+    use_session_end_watch();
     // Apply the persisted theme preference on boot and follow system
     // dark-mode changes for `Theme::System` users.
     use_apply_theme();

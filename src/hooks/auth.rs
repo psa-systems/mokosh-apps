@@ -1,7 +1,6 @@
 //! Authentication hooks
 
 use dioxus::prelude::*;
-use wasm_bindgen::JsCast;
 
 use crate::modules::auth::{CurrentUser, UserRole};
 use crate::modules::oidc::Tokens;
@@ -368,7 +367,7 @@ pub fn use_token_refresh() {
             // sessionStorage held for the first 30 seconds, however dead, and
             // every page that mounted in that window 401'd.
             #[cfg(feature = "web")]
-            gloo_timers::future::TimeoutFuture::new(30_000).await;
+            crate::platform::timer::sleep_ms(30_000).await;
         }
     });
 }
@@ -431,15 +430,7 @@ async fn oidc_refresh_tick(auth: &mut Signal<AuthContext>) {
             }
             crate::hooks::fetch::api::set_access_token(None);
             crate::modules::oidc::storage::clear_auth();
-            // Hard redirect (see note on the hook above): we are outside the
-            // Router subtree, so use_navigator is unavailable.
-            // window.location.set_href works regardless and triggers a full
-            // page reload, which is appropriate after a forced sign-out.
-            if let Some(win) = web_sys::window() {
-                if let Err(e) = win.location().set_href("/login") {
-                    tracing::warn!("redirect to /login after sign-out failed: {e:?}");
-                }
-            }
+            redirect_to_login();
         }
     }
 }
@@ -466,7 +457,7 @@ pub fn use_standalone_token_refresh() {
             standalone_refresh_tick(&mut auth).await;
             // MAPPS-435: sleep LAST, for the reason given on the OIDC loop.
             #[cfg(feature = "web")]
-            gloo_timers::future::TimeoutFuture::new(30_000).await;
+            crate::platform::timer::sleep_ms(30_000).await;
         }
     });
 }
@@ -507,13 +498,7 @@ async fn standalone_refresh_tick(auth: &mut Signal<AuthContext>) {
         }
         crate::modules::oidc::storage::clear_standalone();
         crate::hooks::fetch::api::set_access_token(None);
-        // Hard redirect (mirrors use_token_refresh): this hook is mounted
-        // above the Router, so use_navigator is unavailable.
-        if let Some(win) = web_sys::window() {
-            if let Err(e) = win.location().set_href("/login") {
-                tracing::warn!("redirect to /login after sign-out failed: {e:?}");
-            }
-        }
+        redirect_to_login();
     }
 }
 
@@ -545,7 +530,7 @@ pub fn use_auth_heartbeat() {
             heartbeat_tick().await;
             // MAPPS-435: sleep LAST, for the reason given on the OIDC loop.
             #[cfg(feature = "web")]
-            gloo_timers::future::TimeoutFuture::new(30_000).await;
+            crate::platform::timer::sleep_ms(30_000).await;
         }
     });
 }
@@ -572,22 +557,36 @@ async fn heartbeat_tick() {
     }
 }
 
-/// Read `document.visibilityState`. Returns `true` when the tab is hidden
-/// (backgrounded, minimised, on another tab), so the heartbeat above skips
-/// its request. Non-`web` builds report the tab as visible so the same
-/// call site type-checks under `cargo check` without the `web` feature.
+/// True when the app is out of sight, so the heartbeat above skips its
+/// request. In the browser that is `document.visibilityState`; a desktop
+/// window always reports itself visible (see
+/// [`crate::platform::dom::window_hidden`]). Non-`web` builds report
+/// visible too, so the call site type-checks under `cargo check` without
+/// the `web` feature.
 #[cfg(feature = "web")]
 fn tab_is_hidden() -> bool {
-    web_sys::window()
-        .and_then(|w| w.document())
-        .map(|d| d.visibility_state() == web_sys::VisibilityState::Hidden)
-        .unwrap_or(false)
+    crate::platform::dom::window_hidden()
 }
 
 #[cfg(not(feature = "web"))]
 #[allow(dead_code)]
 fn tab_is_hidden() -> bool {
     false
+}
+
+/// Put a signed-out user back on the login screen.
+///
+/// Every caller has already cleared `AuthContext` and the persisted
+/// session, so the route guard would land them there on the next render
+/// regardless. In a browser the hard navigation is still worth doing: it
+/// reloads the document and drops every other piece of in-memory state
+/// with it. MAPPS-504: a desktop window has no document to replace, and
+/// the cleared context is what moves it.
+fn redirect_to_login() {
+    #[cfg(target_arch = "wasm32")]
+    if let Err(e) = crate::platform::location::set_href("/login") {
+        tracing::warn!("redirect to /login after sign-out failed: {e}");
+    }
 }
 
 /// Pull the authoritative current user from mokosh-server
@@ -720,7 +719,14 @@ pub fn use_current_user_loader() {
 /// fires for bfcache restores, not normal loads) and force a full
 /// reload, which reruns `initial_auth_context()` and drops the user
 /// onto `/login` if they have no live session.
+///
+/// MAPPS-504: browser-only by nature. There is no back-forward cache on
+/// the desktop because there is no navigation away from the document to
+/// be restored from.
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
 pub fn use_bfcache_invalidator() {
+    use wasm_bindgen::JsCast;
+
     use_effect(move || {
         let win = match web_sys::window() {
             Some(w) => w,
@@ -736,9 +742,7 @@ pub fn use_bfcache_invalidator() {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
             if persisted {
-                if let Some(w) = web_sys::window() {
-                    let _ = w.location().reload();
-                }
+                crate::platform::location::reload();
             }
         })
             as Box<dyn FnMut(web_sys::Event)>);
@@ -747,6 +751,42 @@ pub fn use_bfcache_invalidator() {
         handler.forget();
     });
 }
+
+#[cfg(any(not(feature = "web"), not(target_arch = "wasm32")))]
+pub fn use_bfcache_invalidator() {}
+
+/// MAPPS-504: watch [`crate::hooks::fetch::SESSION_ENDED`] and clear the
+/// auth context when the fetch layer ends a session from outside the
+/// component tree.
+///
+/// In a browser that path finishes with `location.set_href("/login")`,
+/// and the reload wipes `AuthContext` on the way. A desktop window has
+/// no reload, so without this the user would keep looking at a populated
+/// dashboard whose every request 401s. Clearing the context is enough:
+/// the route guard reads it and moves them to the login screen.
+///
+/// Mounted once at the app root, alongside the refresh loops.
+#[cfg(all(feature = "web", not(target_arch = "wasm32")))]
+pub fn use_session_end_watch() {
+    let mut auth = use_auth();
+    use_effect(move || {
+        if !*crate::hooks::fetch::SESSION_ENDED.read() {
+            return;
+        }
+        {
+            let mut a = auth.write();
+            a.user = None;
+            a.tokens = None;
+        }
+        // One-shot: lower it so a later sign-in is not torn down by a
+        // flag left raised from the previous session.
+        *crate::hooks::fetch::SESSION_ENDED.write() = false;
+    });
+}
+
+/// The browser reloads instead, which is what clears the context there.
+#[cfg(any(not(feature = "web"), target_arch = "wasm32"))]
+pub fn use_session_end_watch() {}
 
 #[cfg(test)]
 mod tests {
@@ -802,7 +842,7 @@ mod tests {
                 .find(|l| !l.is_empty() && !l.starts_with("//"))
                 .unwrap_or_default();
             assert!(
-                !first.contains("TimeoutFuture") && !first.starts_with("#[cfg"),
+                !first.contains("sleep_ms") && !first.starts_with("#[cfg"),
                 "this loop sleeps before it evaluates anything: {first}"
             );
         }

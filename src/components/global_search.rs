@@ -12,15 +12,13 @@
 //! and the dropdown render. See `mokosh-server/src/modules/search/`
 //! for the SQL.
 
-use dioxus::prelude::*;
-use serde::Deserialize;
 #[cfg(feature = "web")]
-use wasm_bindgen::JsCast;
-
 use crate::components::{ErrorBanner, Input};
 use crate::hooks::{use_dropdown_nav, NavAction};
 use crate::utils::url::urlencoding_minimal;
 use crate::Route;
+use dioxus::prelude::*;
+use serde::Deserialize;
 
 /// Mirror of the server's `SearchResponse` envelope.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -80,18 +78,10 @@ pub fn GlobalSearch() -> Element {
     #[cfg(feature = "web")]
     use_effect(move || {
         if expanded() {
-            if let Some(el) = web_sys::window()
-                .and_then(|w| w.document())
-                .and_then(|d| d.get_element_by_id("global_search"))
-            {
-                if let Ok(input) = el.dyn_into::<web_sys::HtmlElement>() {
-                    // MAPPS-503: a dropped focus failure left the expanded
-                    // entry unusable with no record of why.
-                    if let Err(e) = input.focus() {
-                        tracing::warn!("focusing the global search entry failed: {e:?}");
-                    }
-                }
-            }
+            // MAPPS-503 made this failure loud; MAPPS-504 moved the call
+            // itself behind the platform boundary, which is where the
+            // logging now lives so every focus site gets it.
+            crate::platform::dom::focus_by_id("global_search");
         }
     });
 

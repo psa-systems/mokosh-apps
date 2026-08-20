@@ -159,10 +159,11 @@ pub struct PendingFlow {
 /// flow older than that would fail the code-redemption side anyway.
 pub const PENDING_FLOW_TTL_MS: u64 = 10 * 60 * 1000;
 
-/// MAPPS-338: current epoch milliseconds. Wraps `js_sys::Date::now`
-/// because chrono in WASM does not give us a monotonic-friendly handle.
+/// MAPPS-338: current epoch milliseconds, via
+/// [`crate::platform::clock`] so the same reading works in a browser and
+/// on the desktop.
 fn now_ms() -> u64 {
-    js_sys::Date::now() as u64
+    crate::platform::clock::now_ms()
 }
 
 pub fn save_pending(flow: &mut PendingFlow) -> Result<(), String> {
@@ -197,10 +198,9 @@ pub fn take_pending() -> Result<PendingFlow, String> {
     Ok(flow)
 }
 
-fn session_storage() -> Result<web_sys::Storage, String> {
-    web_sys::window()
-        .ok_or_else(|| "no window".to_string())?
-        .session_storage()
-        .map_err(|_| "no sessionStorage handle".to_string())?
-        .ok_or_else(|| "sessionStorage disabled".to_string())
+/// MAPPS-504: `sessionStorage` in the browser, an in-process map on the
+/// desktop, where the window IS the session. Same lifetime either way:
+/// nothing here survives the app closing.
+fn session_storage() -> Result<crate::platform::store::Store, String> {
+    crate::platform::store::session()
 }

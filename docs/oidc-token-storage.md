@@ -6,9 +6,11 @@ This records a deliberate security tradeoff and the decision taken, so it is exp
 
 ## What we store, and where
 
-mokosh-apps is a Dioxus WASM **public** OIDC client (Authorization Code + PKCE against the bunyip OP). After a successful login the token bundle is written to `sessionStorage`:
+mokosh-apps is a Dioxus WASM **public** OIDC client (Authorization Code + PKCE against the bunyip OP). After a successful login the token bundle is written to the session store:
 
 - `StoredTokens { access_token, id_token, refresh_token, expires_at, scope }` under key `mokosh_auth_bundle_v1` (`src/modules/oidc/storage.rs`). `sessionStorage`, not `localStorage`: the bundle is tab-scoped and cleared when the tab closes, which matches the OP session-cookie lifetime and avoids the cross-tab leak `localStorage` would add.
+
+  MAPPS-504 put that behind `crate::platform::store`, which is `sessionStorage` in the browser and an in-process map on the desktop build. The property this decision rests on is unchanged on either host: the bundle does not outlive the session, and it is never written to disk. Everything below is about the browser, which is where the risk lives; a desktop window has no other origin script to defend against.
 - The short-lived code-flow state (`PendingFlow`: PKCE verifier + state + nonce + `return_to`) is written under `mokosh_oidc_flow_v1` only between `start_login` and `complete_login`.
 - The ID token is decoded **without signature verification** in the browser (`IdTokenClaims::parse_unverified`, `src/modules/oidc/tokens.rs:59`) purely to read display claims. This is an accepted SPA pattern: the token arrives over TLS directly from the issuer, and the backend independently re-validates the access token on every API call, so the browser never trusts the ID token for authorization.
 

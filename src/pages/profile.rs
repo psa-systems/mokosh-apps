@@ -140,30 +140,12 @@ const COMMON_TIMEZONES: &[(&str, &str)] = &[
 ];
 
 /// Browser-detected IANA timezone via
-/// `Intl.DateTimeFormat().resolvedOptions().timeZone`. Returns `None`
-/// when the API is unavailable (older browser, non-web build, or some
-/// hardened environment without Intl). The fallback is the form's
-/// own initial value, which is whatever mokosh-server gave us.
-#[cfg(feature = "web")]
+/// `Intl.DateTimeFormat().resolvedOptions().timeZone` in the browser,
+/// the OS zone on the desktop (MAPPS-504, `crate::platform::tz`).
+/// Returns `None` when the host will not say, and the fallback is the
+/// form's own initial value, which is whatever mokosh-server gave us.
 fn browser_timezone() -> Option<String> {
-    use wasm_bindgen::{JsCast, JsValue};
-    let intl = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("Intl")).ok()?;
-    let dtf_ctor = js_sys::Reflect::get(&intl, &JsValue::from_str("DateTimeFormat")).ok()?;
-    let dtf_fn = dtf_ctor.dyn_into::<js_sys::Function>().ok()?;
-    let dtf = js_sys::Reflect::construct(&dtf_fn, &js_sys::Array::new()).ok()?;
-    let resolved_options_fn = js_sys::Reflect::get(&dtf, &JsValue::from_str("resolvedOptions"))
-        .ok()?
-        .dyn_into::<js_sys::Function>()
-        .ok()?;
-    let resolved = resolved_options_fn.call0(&dtf).ok()?;
-    js_sys::Reflect::get(&resolved, &JsValue::from_str("timeZone"))
-        .ok()?
-        .as_string()
-}
-
-#[cfg(not(feature = "web"))]
-fn browser_timezone() -> Option<String> {
-    None
+    crate::platform::tz::local_iana()
 }
 
 /// Build the option list, prepending the currently-stored value if it

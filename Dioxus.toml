@@ -48,8 +48,17 @@ backend = "http://server:8080/api/"
 # Build configuration
 target_dir = "target"
 
+# MAPPS-504: consumed by `just desktop-bundle` (`dx bundle --platform desktop`).
+# The paths are repo-relative and the files are the ones that exist; before
+# MAPPS-504 they pointed at an `icons/` directory at the repo root, which has
+# never been where the icons live.
 [bundle]
-# Desktop bundle configuration (if building native apps)
 identifier = "com.mokosh.platform"
 publisher = "Mokosh Platform"
-icon = ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
+icon = [
+    "assets/icons/32x32.png",
+    "assets/icons/128x128.png",
+    "assets/icons/128x128@2x.png",
+    "assets/icons/icon.icns",
+    "assets/icons/icon.ico",
+]

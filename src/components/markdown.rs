@@ -58,32 +58,15 @@ pub fn Markdown(props: MarkdownProps) -> Element {
             if !interactive {
                 return;
             }
-            use wasm_bindgen::closure::Closure;
-            use wasm_bindgen::JsCast;
-            let Some(container) = web_sys::window()
-                .and_then(|w| w.document())
-                .and_then(|d| d.get_element_by_id(&dom_id))
-            else {
-                return;
-            };
-            let cb = Closure::wrap(Box::new(move |evt: web_sys::Event| {
-                let Some(el) = evt
-                    .target()
-                    .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-                else {
-                    return;
-                };
-                if let Some(idx) = el
-                    .get_attribute("data-ti")
-                    .and_then(|s| s.parse::<usize>().ok())
-                {
-                    on_toggle.call(idx);
-                }
-            }) as Box<dyn FnMut(web_sys::Event)>);
-            let _ =
-                container.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref());
-            // Lives for the container's lifetime; the page unmount drops the DOM.
-            cb.forget();
+            // MAPPS-504: the rendered markdown is raw HTML, so the
+            // checkbox clicks are caught by one delegated listener rather
+            // than per-element Dioxus handlers - and installing that
+            // listener needs the DOM in-process. On the desktop the
+            // checkboxes render but do not toggle. Tracked in MAPPS-511.
+            #[cfg(target_arch = "wasm32")]
+            install_toggle_listener(dom_id.clone(), on_toggle);
+            #[cfg(not(target_arch = "wasm32"))]
+            let _ = (&dom_id, on_toggle);
         });
     }
 
@@ -94,4 +77,43 @@ pub fn Markdown(props: MarkdownProps) -> Element {
             dangerous_inner_html: html,
         }
     }
+}
+
+/// Install a delegated `click` listener on the rendered markdown
+/// container so a task-list checkbox reports its index back to the
+/// caller.
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+fn install_toggle_listener(dom_id: String, on_toggle: EventHandler<usize>) {
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen::JsCast;
+    let Some(container) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(&dom_id))
+    else {
+        return;
+    };
+    let cb = Closure::wrap(Box::new(move |evt: web_sys::Event| {
+        let Some(el) = evt
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+        else {
+            return;
+        };
+        if let Some(idx) = el
+            .get_attribute("data-ti")
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            on_toggle.call(idx);
+        }
+    }) as Box<dyn FnMut(web_sys::Event)>);
+    if container
+        .add_event_listener_with_callback("click", cb.as_ref().unchecked_ref())
+        .is_err()
+    {
+        // The checkboxes would render and then do nothing when clicked.
+        tracing::error!("could not attach the markdown task-list click listener");
+        return;
+    }
+    // Lives for the container's lifetime; the page unmount drops the DOM.
+    cb.forget();
 }

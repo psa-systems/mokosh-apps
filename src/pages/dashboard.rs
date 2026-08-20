@@ -434,7 +434,7 @@ pub fn DashboardTvPage() -> Element {
         loop {
             #[cfg(feature = "web")]
             {
-                gloo_timers::future::TimeoutFuture::new(30_000).await;
+                crate::platform::timer::sleep_ms(30_000).await;
                 tick += 1;
             }
             #[cfg(not(feature = "web"))]

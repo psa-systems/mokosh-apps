@@ -85,21 +85,11 @@ fn hour_shade_class(hour: u32) -> &'static str {
 /// MAPPS-387: on first mount, scroll a grid container so the working-hours
 /// window is in view rather than midnight. `vertical` selects scrollTop
 /// (day/week grids) vs scrollLeft (the horizontal dispatch timeline).
-/// No-op off the web build and when the element is not (yet) in the DOM.
+/// No-op when the element is not (yet) in the DOM.
 #[cfg(feature = "web")]
 fn scroll_grid_to_work_hours(id: &str, vertical: bool) {
-    let Some(el) = web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.get_element_by_id(id))
-    else {
-        return;
-    };
-    let frac = WORK_START_HOUR as f64 / GRID_TOTAL_HOURS;
-    if vertical {
-        el.set_scroll_top((el.scroll_height() as f64 * frac).round() as i32);
-    } else {
-        el.set_scroll_left((el.scroll_width() as f64 * frac).round() as i32);
-    }
+    let frac = f64::from(WORK_START_HOUR) / GRID_TOTAL_HOURS;
+    crate::platform::dom::scroll_to_fraction(id, vertical, frac);
 }
 
 /// Which calendar layout is active. Month is the default; Week and Day

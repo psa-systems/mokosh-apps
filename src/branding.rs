@@ -15,9 +15,11 @@
 //! Mokosh.
 //!
 //! The pure `*_for` / `default_*` halves exist so the fallback path is
-//! unit-testable on the host: `runtime_config::get` reaches for
-//! `window.__MOKOSH_CONFIG__` whenever the `web` feature is on, which
-//! traps outside wasm.
+//! unit-testable without a host to configure. Since MAPPS-504
+//! `runtime_config::get` reads `window.__MOKOSH_CONFIG__` in the browser
+//! and a `config.json` on the desktop, so the same three keys brand a
+//! desktop install; on the host test build it simply finds nothing and
+//! the fallbacks below are what render.
 
 use dioxus::prelude::*;
 

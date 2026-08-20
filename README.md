@@ -1,11 +1,11 @@
 # Mokosh Client
 
-Cross-platform Dioxus client for the Mokosh Platform. Compiles to WebAssembly and runs in the browser.
+Cross-platform Dioxus client for the Mokosh Platform. It builds two ways from one source tree: a WebAssembly SPA that runs in the browser, and a native desktop application. See [docs/desktop.md](docs/desktop.md) for the desktop build.
 
 ## Tech stack
 
-- **Dioxus 0.7** (Rust UI framework, `web` + `router` features)
-- **wasm32-unknown-unknown** target
+- **Dioxus 0.7** (Rust UI framework, `router` feature, plus `web` or `desktop` for the renderer)
+- **wasm32-unknown-unknown** target for the SPA; the host target for the desktop app
 - **Tailwind CSS v4** via Bun (`bun x @tailwindcss/cli`)
 - **just** task runner
 - **Docker Compose** for the dev server
@@ -22,7 +22,7 @@ Install on the host:
 - [Docker](https://docs.docker.com/engine/install/) with the Compose plugin
 - [Nushell 0.112.2](https://www.nushell.sh/) (used by the `dev` and `create-release` recipes)
 
-The dev server itself runs inside Docker, so the host does not need `dioxus-cli` installed.
+The dev server itself runs inside Docker, so the host does not need `dioxus-cli` installed. The desktop build does need it, along with a system webview; see [docs/desktop.md](docs/desktop.md).
 
 ## Quick start
 
@@ -54,13 +54,17 @@ just                  # list recipes
 just dev              # run the dev server in Docker (see above)
 just css-build        # one-shot Tailwind build
 just css-watch        # Tailwind watch mode
-just check            # check-web, check-clippy, check-fmt
+just check            # check-web, check-desktop, check-clippy, check-fmt, and the guard scripts
 just check-web        # cargo check --target wasm32-unknown-unknown
+just check-desktop    # cargo check for the native desktop build
 just check-clippy     # cargo clippy --all-targets
 just check-fmt        # cargo fmt --all --check
 just fmt              # cargo fmt --all
 just test             # cargo test
 just build            # release WASM bundle (dx build --release)
+just desktop-run      # run the desktop app (see docs/desktop.md)
+just desktop-build    # build the desktop binary
+just desktop-bundle   # build an installable desktop bundle
 just check-docker     # build the production OCI image as :check
 just build-docker     # build the production OCI image as :local
 just create-release   # cut a release branch and bump versions (see below)
@@ -70,12 +74,13 @@ just create-release   # cut a release branch and bump versions (see below)
 
 ```
 src/
-  main.rs           # WASM entry point
+  main.rs           # entry point for both targets; picks the renderer
   lib.rs
   components/       # button, card, form, icons, layout, modal, table
   hooks/
   modules/          # auth, contacts, tenants, tickets
   pages/            # admin, billing, calendar, contracts, dashboard, ...
+  platform/         # the host boundary: HTTP, storage, DOM, timers, ...
   utils/
 
 assets/             # built CSS and static assets (styles.css is generated)

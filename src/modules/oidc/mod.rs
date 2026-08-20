@@ -41,11 +41,11 @@ pub fn is_standalone() -> bool {
     !OidcConfig::for_current_origin().has_issuer()
 }
 
-/// MAPPS-432: one console line for an auth-flow failure the user is not shown.
+/// MAPPS-432: one line for an auth-flow failure the user is not shown.
 /// The WASM build wires no `tracing` subscriber, so the browser console is the
-/// only place an operator can read it.
+/// only place an operator can read it there.
 pub fn log_auth_error(msg: &str) {
-    web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(msg));
+    crate::platform::log::error(msg);
 }
 
 pub use flow::{
