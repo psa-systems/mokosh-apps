@@ -1016,6 +1016,54 @@ enum EditorSection {
     Rules,
 }
 
+impl EditorSection {
+    /// The caption, used for both the tab and the "Next: ..." button so the
+    /// two cannot drift apart.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Details => "Details",
+            Self::Fields => "Fields",
+            Self::Rules => "Rules",
+        }
+    }
+
+    /// The next section in presentation order; `None` on the last one.
+    fn next(self) -> Option<Self> {
+        match self {
+            Self::Details => Some(Self::Fields),
+            Self::Fields => Some(Self::Rules),
+            Self::Rules => None,
+        }
+    }
+}
+
+/// What the footer's Primary does from where the operator is standing.
+///
+/// MAPPS-478: mid-build the Primary read as "continue" and submitted a
+/// half-built definition, so while creating it carries the operator forward
+/// and only the last section submits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PrimaryAction {
+    /// Creating is a sequence, so the Primary carries the operator forward.
+    Advance(EditorSection),
+    Save,
+}
+
+fn primary_action(section: EditorSection, is_edit: bool) -> PrimaryAction {
+    match (is_edit, section.next()) {
+        (false, Some(next)) => PrimaryAction::Advance(next),
+        _ => PrimaryAction::Save,
+    }
+}
+
+fn primary_label(action: PrimaryAction, is_edit: bool) -> String {
+    match action {
+        PrimaryAction::Advance(next) => format!("Next: {}", next.label()),
+        PrimaryAction::Save if is_edit => "Save Changes".to_string(),
+        PrimaryAction::Save => "Create Form".to_string(),
+    }
+}
+
 /// How many problems the last save attempt found, per section.
 ///
 /// PMS-747 put a count in the pinned footer because the footer is the only
@@ -1688,13 +1736,28 @@ fn FormEditorModal(
             "Preview"
         }
         Button { variant: ButtonVariant::Secondary, onclick: move |_| request_close.call(()), "Cancel" }
-        Button {
-            variant: ButtonVariant::Primary,
-            loading: saving(),
-            disabled: !can_mutate,
-            title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
-            onclick: move |_| handle_save.call(()),
-            if is_edit { "Save Changes" } else { "Create Form" }
+        // MAPPS-478: while creating, the Primary moves to the next section.
+        // Moving between tabs is local, so it stays live while the server is
+        // unreachable, and it does not validate: a Next that refused to move
+        // would trap an operator who wants to fill Details last.
+        match primary_action(section(), is_edit) {
+            PrimaryAction::Advance(next) => rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    onclick: move |_| section.set(next),
+                    {primary_label(PrimaryAction::Advance(next), is_edit)}
+                }
+            },
+            PrimaryAction::Save => rsx! {
+                Button {
+                    variant: ButtonVariant::Primary,
+                    loading: saving(),
+                    disabled: !can_mutate,
+                    title: (!can_mutate).then(|| "Can't save while the server is unreachable".to_string()),
+                    onclick: move |_| handle_save.call(()),
+                    {primary_label(PrimaryAction::Save, is_edit)}
+                }
+            },
         }
     };
 
@@ -1722,21 +1785,21 @@ fn FormEditorModal(
     let section_tabs = rsx! {
         nav { class: "-mb-px flex gap-6", role: "tablist", aria_label: "Form sections",
             EditorTabButton {
-                label: "Details",
+                label: EditorSection::Details.label().to_string(),
                 count: None,
                 problems: problems().details,
                 active: section() == EditorSection::Details,
                 onclick: move |_| section.set(EditorSection::Details),
             }
             EditorTabButton {
-                label: "Fields",
+                label: EditorSection::Fields.label().to_string(),
                 count: Some(fields.read().len()),
                 problems: problems().fields,
                 active: section() == EditorSection::Fields,
                 onclick: move |_| section.set(EditorSection::Fields),
             }
             EditorTabButton {
-                label: "Rules",
+                label: EditorSection::Rules.label().to_string(),
                 count: Some(rules.read().len()),
                 problems: problems().rules,
                 active: section() == EditorSection::Rules,
@@ -3338,6 +3401,64 @@ mod tests {
             6,
             "the footer total must be the sum of what the tabs report, or one of them is lying"
         );
+    }
+
+    /// MAPPS-478: the Primary is the strongest affordance on the screen, so
+    /// while creating it must carry the operator through the sections and only
+    /// submit on the last one.
+    #[test]
+    fn the_sections_run_in_presentation_order() {
+        assert_eq!(EditorSection::Details.next(), Some(EditorSection::Fields));
+        assert_eq!(EditorSection::Fields.next(), Some(EditorSection::Rules));
+        assert_eq!(
+            EditorSection::Rules.next(),
+            None,
+            "Rules is the last section, so there is nothing to advance to"
+        );
+    }
+
+    #[test]
+    fn creating_advances_until_the_last_section_then_saves() {
+        assert_eq!(
+            primary_action(EditorSection::Details, false),
+            PrimaryAction::Advance(EditorSection::Fields)
+        );
+        assert_eq!(
+            primary_action(EditorSection::Fields, false),
+            PrimaryAction::Advance(EditorSection::Rules)
+        );
+        assert_eq!(
+            primary_action(EditorSection::Rules, false),
+            PrimaryAction::Save,
+            "the last section is where a half-built definition stops being half-built"
+        );
+    }
+
+    /// Editing is not a sequence: an operator who opened one field must not be
+    /// walked through the tabs to save it.
+    #[test]
+    fn editing_saves_from_every_section() {
+        for section in [
+            EditorSection::Details,
+            EditorSection::Fields,
+            EditorSection::Rules,
+        ] {
+            assert_eq!(primary_action(section, true), PrimaryAction::Save);
+        }
+    }
+
+    #[test]
+    fn the_primary_says_what_it_will_do() {
+        assert_eq!(
+            primary_label(PrimaryAction::Advance(EditorSection::Fields), false),
+            "Next: Fields"
+        );
+        assert_eq!(
+            primary_label(PrimaryAction::Advance(EditorSection::Rules), false),
+            "Next: Rules"
+        );
+        assert_eq!(primary_label(PrimaryAction::Save, false), "Create Form");
+        assert_eq!(primary_label(PrimaryAction::Save, true), "Save Changes");
     }
 
     /// Expansion is keyed by position, so reordering has to carry it along.
