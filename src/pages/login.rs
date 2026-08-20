@@ -7,13 +7,20 @@
 //! session so a page reload survives. Deployments that DO configure an issuer
 //! never reach this page; they use the bunyip OIDC redirect exactly as before.
 //!
-//! Two second-step challenges share the endpoint and the re-POST shape: the
-//! MFA code (`mfa_required`) and the emailed sign-in approval code
+//! Second-step challenges share the endpoint and the re-POST shape: the MFA
+//! code (`mfa_required`) and the emailed sign-in approval code
 //! (`approval_required`, PMS-658 / MAPPS-397).
+//!
+//! MAPPS-492 (MAPPS-474 phase 3): email-only login. The tenant-slug input is
+//! GONE; the SPA sends `{email, password}` and the server either auto-scopes
+//! (single membership), returns a `needs_selection` picker payload, or a
+//! `needs_setup` payload. The picker and the needs-setup screen render
+//! in-place in this component rather than as separate routes so the
+//! identity_token + memberships never need cross-page persistence.
 //!
 //! Deferred (follow-ups, called out in the PR): silent token refresh via
 //! `POST /api/v1/auth/refresh` (standalone sessions currently last the
-//! access-token TTL, ~1h).
+//! access-token TTL, ~1h); MFA anti-replay watermark at the identity level.
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -24,32 +31,43 @@ use crate::CurrentUser;
 use crate::Route;
 
 /// Request body for `POST /api/v1/auth/login`, a subset of mokosh-server's
-/// `LoginRequest` (the server defaults the omitted optional fields).
+/// `LoginRequest`. MAPPS-492 phase 3: `tenant_slug` is no longer sent by
+/// the SPA (the server derives tenant from the identity's memberships).
 #[derive(Serialize)]
 struct LoginBody {
     email: String,
     password: String,
     remember_me: bool,
-    /// MAPPS-368: the TOTP / recovery code, sent on the second step after a
-    /// first attempt reported `mfa_required`. Omitted otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     mfa_code: Option<String>,
-    /// MAPPS-397: the emailed single-use approval code, sent on the re-POST
-    /// after a first attempt reported `approval_required`. Omitted otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     approval_code: Option<String>,
-    /// MAPPS-396: tenant slug the operator types into the form. The
-    /// server resolves it against `tenants.slug WHERE status = 'active'`
-    /// before running the email/password lookup, so a non-default
-    /// tenant's user (e.g. `agent@acme.example` under `acme`) can sign
-    /// in from the standalone form. Omitted (`None`) falls back to
-    /// the default tenant server-side, matching pre-MAPPS-396 behavior.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tenant_slug: Option<String>,
 }
 
-/// The fields of mokosh-server's `LoginResponse` this SPA consumes. Unknown
-/// fields are ignored by serde.
+/// MAPPS-492 phase 3: request body for `POST /api/v1/auth/select-tenant`.
+#[derive(Serialize)]
+struct SelectTenantBody {
+    identity_token: String,
+    tenant_id: String,
+}
+
+/// MAPPS-492 phase 3: one entry in the picker list.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct MembershipItem {
+    tenant_id: String,
+    tenant_name: String,
+    #[serde(default)]
+    tenant_slug: String,
+    #[serde(default)]
+    tenant_kind: String,
+    role: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    is_active: bool,
+}
+
+/// The fields of mokosh-server's `LoginResponse` this SPA consumes.
 #[derive(Deserialize)]
 struct LoginResp {
     access_token: String,
@@ -60,10 +78,17 @@ struct LoginResp {
     user: Option<CurrentUser>,
     #[serde(default)]
     mfa_required: bool,
-    /// PMS-658: the suspicious-login gate emailed a code and withheld the
-    /// tokens. Defaulted so a server that predates the field still decodes.
     #[serde(default)]
     approval_required: bool,
+    // MAPPS-492 (MAPPS-474 phase 3):
+    #[serde(default)]
+    needs_selection: bool,
+    #[serde(default)]
+    needs_setup: bool,
+    #[serde(default)]
+    identity_token: Option<String>,
+    #[serde(default)]
+    memberships: Option<Vec<MembershipItem>>,
 }
 
 #[component]
@@ -75,17 +100,47 @@ pub fn StandaloneLogin() -> Element {
     let mut password = use_signal(String::new);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
-    // MAPPS-368: the TOTP field + prompt are revealed after the first attempt
-    // reports `mfa_required`; the second submit resends with the code.
     let mut mfa_code = use_signal(String::new);
     let mut mfa_needed = use_signal(|| false);
-    // MAPPS-397: same two-step shape for the emailed sign-in approval code.
     let mut approval_code = use_signal(String::new);
     let mut approval_needed = use_signal(|| false);
-    // MAPPS-396: tenant slug (e.g. `acme`), typed by the operator. Blank =
-    // fall back to the default tenant server-side. The field is always
-    // rendered; a self-hosted single-tenant deployment can just ignore it.
-    let mut tenant_slug = use_signal(String::new);
+
+    // MAPPS-492 (phase 3) in-page picker state. Populated from the login
+    // response when `needs_selection` is true; rendered inline so no
+    // cross-page state handoff is needed. `needs_setup` uses the same
+    // pattern with `identity_token` and a simple "no orgs yet" panel.
+    let mut identity_token = use_signal(|| None::<String>);
+    let mut memberships = use_signal(Vec::<MembershipItem>::new);
+    let mut needs_selection = use_signal(|| false);
+    let mut needs_setup = use_signal(|| false);
+
+    // MAPPS-492: installs the auth context + persists the standalone
+    // session, then routes to Dashboard. Shared by the auto-scope
+    // branch of /auth/login and the /auth/select-tenant response.
+    let mut install_session = move |access_token: String,
+                                    refresh_token: Option<String>,
+                                    expires_at: chrono::DateTime<chrono::Utc>,
+                                    user: CurrentUser| {
+        crate::hooks::fetch::api::set_access_token(Some(access_token.clone()));
+        save_standalone(&StandaloneSession {
+            access_token,
+            refresh_token,
+            expires_at,
+            user: user.clone(),
+        });
+        let active_tenant_id = Some(user.tenant_id);
+        {
+            let mut a = auth.write();
+            a.user = Some(user);
+            a.is_loading = false;
+            a.error = None;
+            a.tokens = None;
+            a.active_tenant_id = active_tenant_id;
+            a.memberships = Vec::new();
+            a.server_loaded = false;
+        }
+        nav.replace(Route::Dashboard {});
+    };
 
     let mut handle_submit = move |_| {
         if saving() {
@@ -101,28 +156,6 @@ pub fn StandaloneLogin() -> Element {
         let mfa = if code.is_empty() { None } else { Some(code) };
         let appr = approval_code.read().trim().to_string();
         let approval = if appr.is_empty() { None } else { Some(appr) };
-        // MAPPS-396: normalize the slug to lowercase (matches
-        // `tenants.slug` writes, which are also lowercase). PMS-728
-        // AC1: the server now rejects a local-password login without
-        // an explicit tenant identifier, so the standalone login form
-        // treats the slug field as required; a blank submission is
-        // caught here rather than sent as an empty string the server
-        // would 401 (which reads to the operator as bad credentials).
-        //
-        // MAPPS-473 (PMS-728 followup): when the SPA is served on an
-        // agent host (e.g. `default.msp.<apex>`), the server derives
-        // the slug from the Host header, so the client-side required
-        // check is skipped: sending an empty slug on this path is
-        // exactly the intended "zero-typing" flow.
-        let slug_raw = tenant_slug.read().trim().to_ascii_lowercase();
-        let on_agent_host = crate::hooks::fetch::api::on_agent_host();
-        if slug_raw.is_empty() && !on_agent_host {
-            error.set(
-                "Enter your account slug (the leftmost label of your Mokosh URL).".to_string(),
-            );
-            return;
-        }
-        let slug = if slug_raw.is_empty() { None } else { Some(slug_raw) };
         saving.set(true);
         error.set(String::new());
 
@@ -136,56 +169,46 @@ pub fn StandaloneLogin() -> Element {
                     remember_me: false,
                     mfa_code: mfa.clone(),
                     approval_code: approval.clone(),
-                    tenant_slug: slug.clone(),
                 };
                 match crate::hooks::fetch::api::post_typed::<LoginResp, _>("/auth/login", &body)
                     .await
                 {
-                    // MAPPS-397: the sign-in was flagged and a single-use code
-                    // emailed; the tokens are empty and `user` is None, so this
-                    // must be handled before the `resp.user` match below or the
-                    // form shows "no account was returned" and locks the user
-                    // out. The next submit resends with `approval_code`.
+                    // MAPPS-397: approval-required challenge.
                     Ok(resp) if resp.approval_required => {
                         approval_needed.set(true);
                         error.set(
                             "Enter the code we emailed you to approve this sign-in.".to_string(),
                         );
                     }
-                    // MFA enrolled but no valid code yet: reveal the code field
-                    // and prompt. The next submit resends with `mfa_code`.
+                    // MFA challenge.
                     Ok(resp) if resp.mfa_required => {
                         mfa_needed.set(true);
                         error
                             .set("Enter the 6-digit code from your authenticator app.".to_string());
                     }
+                    // MAPPS-492: identity resolved but holds more than one
+                    // membership. Render the picker in-place.
+                    Ok(resp) if resp.needs_selection => {
+                        identity_token.set(resp.identity_token);
+                        memberships.set(resp.memberships.unwrap_or_default());
+                        needs_selection.set(true);
+                    }
+                    // MAPPS-492: identity resolved but holds zero
+                    // memberships. Render the setup landing.
+                    Ok(resp) if resp.needs_setup => {
+                        identity_token.set(resp.identity_token);
+                        needs_setup.set(true);
+                    }
+                    // Auto-scope / MFA-completed / approval-completed:
+                    // full session returned.
                     Ok(resp) => match resp.user {
                         Some(user) => {
-                            crate::hooks::fetch::api::set_access_token(Some(
-                                resp.access_token.clone(),
-                            ));
-                            save_standalone(&StandaloneSession {
-                                access_token: resp.access_token.clone(),
-                                refresh_token: resp.refresh_token.clone(),
-                                expires_at: resp.expires_at,
-                                user: user.clone(),
-                            });
-                            let active_tenant_id = Some(user.tenant_id);
-                            {
-                                let mut a = auth.write();
-                                a.user = Some(user);
-                                a.is_loading = false;
-                                a.error = None;
-                                // No OIDC tokens in a standalone session; the
-                                // refresh hook no-ops when `tokens` is None.
-                                a.tokens = None;
-                                a.active_tenant_id = active_tenant_id;
-                                a.memberships = Vec::new();
-                                // The post-login `/me` loader reconciles the
-                                // authoritative user within a tick.
-                                a.server_loaded = false;
-                            }
-                            nav.replace(Route::Dashboard {});
+                            install_session(
+                                resp.access_token,
+                                resp.refresh_token,
+                                resp.expires_at,
+                                user,
+                            );
                         }
                         None => {
                             error.set(
@@ -194,9 +217,6 @@ pub fn StandaloneLogin() -> Element {
                             );
                         }
                     },
-                    // MAPPS-397: past the approval challenge the password has
-                    // already passed, so a 401 means the emailed code was wrong
-                    // or expired, not bad credentials.
                     Err(ApiError::Status { code: 401, .. }) if approval_needed() => {
                         error.set(
                             "That code is not valid, check the email or try signing in again."
@@ -216,7 +236,69 @@ pub fn StandaloneLogin() -> Element {
             }
             #[cfg(not(feature = "web"))]
             {
-                let _ = (em, pw, mfa, approval, slug);
+                let _ = (em, pw, mfa, approval);
+            }
+            saving.set(false);
+        });
+    };
+
+    // MAPPS-492: the picker click. Trades the identity token + selected
+    // tenant_id for a full session at /auth/select-tenant, then routes.
+    let mut pick_tenant = move |tenant_id: String| {
+        if saving() {
+            return;
+        }
+        let Some(token) = identity_token.read().clone() else {
+            error.set("Sign in again to pick a workspace.".to_string());
+            needs_selection.set(false);
+            return;
+        };
+        saving.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                use crate::hooks::fetch::api::ApiError;
+                let body = SelectTenantBody {
+                    identity_token: token,
+                    tenant_id,
+                };
+                match crate::hooks::fetch::api::post_typed::<LoginResp, _>(
+                    "/auth/select-tenant",
+                    &body,
+                )
+                .await
+                {
+                    Ok(resp) => match resp.user {
+                        Some(user) => install_session(
+                            resp.access_token,
+                            resp.refresh_token,
+                            resp.expires_at,
+                            user,
+                        ),
+                        None => {
+                            error.set("Sign-in succeeded but no account was returned.".to_string());
+                        }
+                    },
+                    Err(ApiError::Status { code: 401, .. }) => {
+                        error.set(
+                            "Your sign-in session expired. Enter your email + password again."
+                                .to_string(),
+                        );
+                        needs_selection.set(false);
+                        identity_token.set(None);
+                    }
+                    Err(ApiError::Status { code: 404, .. }) => {
+                        error.set(
+                            "You do not have access to that workspace. Pick another.".to_string(),
+                        );
+                    }
+                    Err(e) => error.set(e.user_message()),
+                }
+            }
+            #[cfg(not(feature = "web"))]
+            {
+                let _ = tenant_id;
             }
             saving.set(false);
         });
@@ -224,111 +306,143 @@ pub fn StandaloneLogin() -> Element {
 
     rsx! {
         AuthLayout {
-                    div { class: "text-center mb-6",
-                        h1 { class: "text-2xl font-semibold text-content", "Sign in to Mokosh" }
-                        p { class: "mt-2 text-sm text-content",
-                            "Enter your account email and password."
-                        }
+            if needs_selection() {
+                div { class: "text-center mb-6",
+                    h1 { class: "text-2xl font-semibold text-content", "Choose a workspace" }
+                    p { class: "mt-2 text-sm text-content",
+                        "You belong to more than one Mokosh organization. Pick one to sign in to."
                     }
-
-                    form {
-                        class: "space-y-4",
-                        onsubmit: move |evt: Event<FormData>| {
-                            evt.prevent_default();
-                            handle_submit(());
+                }
+                ul { class: "space-y-2",
+                    {memberships.read().iter().cloned().map(|m| {
+                        let tenant_id = m.tenant_id.clone();
+                        let label_name = m.tenant_name.clone();
+                        let label_role = m.role.clone();
+                        rsx! {
+                            li { key: "{tenant_id}",
+                                button {
+                                    r#type: "button",
+                                    class: "w-full text-left px-4 py-3 rounded-md border border-border hover:bg-surface-hover focus:outline-none focus:ring-2 focus:ring-primary",
+                                    disabled: saving(),
+                                    onclick: {
+                                        let tenant_id = tenant_id.clone();
+                                        move |_| pick_tenant(tenant_id.clone())
+                                    },
+                                    div { class: "font-medium text-content", "{label_name}" }
+                                    div { class: "text-sm text-content-muted", "Role: {label_role}" }
+                                }
+                            }
+                        }
+                    })}
+                }
+                if !error().is_empty() {
+                    p { role: "alert", class: "mt-4 text-sm text-red-600 dark:text-red-400", "{error}" }
+                }
+            } else if needs_setup() {
+                div { class: "text-center mb-6",
+                    h1 { class: "text-2xl font-semibold text-content", "No organization yet" }
+                    p { class: "mt-2 text-sm text-content",
+                        "Your account is not a member of any Mokosh organization. Ask a super-admin to add you, or create your own (self-serve creation lands in a follow-up)."
+                    }
+                }
+                div { class: "pt-2",
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        r#type: "button".to_string(),
+                        class: "w-full".to_string(),
+                        onclick: move |_| {
+                            needs_setup.set(false);
+                            identity_token.set(None);
+                            error.set(String::new());
                         },
+                        "Back to sign in"
+                    }
+                }
+            } else {
+                div { class: "text-center mb-6",
+                    h1 { class: "text-2xl font-semibold text-content", "Sign in to Mokosh" }
+                    p { class: "mt-2 text-sm text-content",
+                        "Enter your account email and password."
+                    }
+                }
 
+                form {
+                    class: "space-y-4",
+                    onsubmit: move |evt: Event<FormData>| {
+                        evt.prevent_default();
+                        handle_submit(());
+                    },
+
+                    Input {
+                        name: "email",
+                        label: "Email",
+                        r#type: "email".to_string(),
+                        value: email(),
+                        required: true,
+                        disabled: saving(),
+                        oninput: move |e: FormEvent| {
+                            error.set(String::new());
+                            email.set(e.value());
+                        },
+                    }
+
+                    Input {
+                        name: "password",
+                        label: "Password",
+                        r#type: "password".to_string(),
+                        value: password(),
+                        required: true,
+                        disabled: saving(),
+                        oninput: move |e: FormEvent| {
+                            error.set(String::new());
+                            password.set(e.value());
+                        },
+                    }
+
+                    if mfa_needed() {
                         Input {
-                            name: "email",
-                            label: "Email",
-                            r#type: "email".to_string(),
-                            value: email(),
-                            required: true,
+                            name: "mfa_code",
+                            label: "Authentication code",
+                            r#type: "text".to_string(),
+                            value: mfa_code(),
                             disabled: saving(),
                             oninput: move |e: FormEvent| {
                                 error.set(String::new());
-                                email.set(e.value());
+                                mfa_code.set(e.value());
                             },
-                        }
-
-                        Input {
-                            name: "password",
-                            label: "Password",
-                            r#type: "password".to_string(),
-                            value: password(),
-                            required: true,
-                            disabled: saving(),
-                            oninput: move |e: FormEvent| {
-                                error.set(String::new());
-                                password.set(e.value());
-                            },
-                        }
-
-                        // MAPPS-396 / MAPPS-473: tenant slug input. Hidden
-                        // entirely when the SPA is served on an agent host
-                        // (e.g. `default.msp.<apex>`) because the server
-                        // derives the slug from the Host header — no operator
-                        // types it. Rendered on legacy / dev deploys without
-                        // AGENT_HOST_SUFFIX so those still have a way to
-                        // reach the right tenant.
-                        if !crate::hooks::fetch::api::on_agent_host() {
-                            Input {
-                                name: "tenant_slug",
-                                label: "Account slug",
-                                r#type: "text".to_string(),
-                                value: tenant_slug(),
-                                required: true,
-                                disabled: saving(),
-                                oninput: move |e: FormEvent| {
-                                    error.set(String::new());
-                                    tenant_slug.set(e.value());
-                                },
-                            }
-                        }
-
-                        if mfa_needed() {
-                            Input {
-                                name: "mfa_code",
-                                label: "Authentication code",
-                                r#type: "text".to_string(),
-                                value: mfa_code(),
-                                disabled: saving(),
-                                oninput: move |e: FormEvent| {
-                                    error.set(String::new());
-                                    mfa_code.set(e.value());
-                                },
-                            }
-                        }
-
-                        if approval_needed() {
-                            Input {
-                                name: "approval_code",
-                                label: "Approval code",
-                                r#type: "text".to_string(),
-                                value: approval_code(),
-                                disabled: saving(),
-                                oninput: move |e: FormEvent| {
-                                    error.set(String::new());
-                                    approval_code.set(e.value());
-                                },
-                            }
-                        }
-
-                        if !error().is_empty() {
-                            p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
-                        }
-
-                        div { class: "pt-2",
-                            Button {
-                                variant: ButtonVariant::Primary,
-                                disabled: saving(),
-                                loading: saving(),
-                                r#type: "submit".to_string(),
-                                class: "w-full".to_string(),
-                                "Sign in"
-                            }
                         }
                     }
+
+                    if approval_needed() {
+                        Input {
+                            name: "approval_code",
+                            label: "Approval code",
+                            r#type: "text".to_string(),
+                            value: approval_code(),
+                            disabled: saving(),
+                            oninput: move |e: FormEvent| {
+                                error.set(String::new());
+                                approval_code.set(e.value());
+                            },
+                        }
+                    }
+
+                    if !error().is_empty() {
+                        p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
+                    }
+
+                    div { class: "pt-2",
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            disabled: saving(),
+                            loading: saving(),
+                            r#type: "submit".to_string(),
+                            class: "w-full".to_string(),
+                            "Sign in"
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -341,11 +455,6 @@ mod tests {
     /// types. A field added to `mokosh_types::auth::LoginResponse` /
     /// `LoginRequest` fails this build instead of being silently dropped by
     /// serde, the way `approval_required` was.
-    ///
-    /// These are the shape checks that stand in for using the shared types
-    /// directly: `LoginResponse` derives only `Serialize` and `LoginRequest`
-    /// only `Deserialize`, so neither can be used on the client side of the
-    /// wire until mokosh-types derives both.
     #[allow(dead_code)]
     fn login_response_fields_are_all_read(resp: mokosh_types::auth::LoginResponse) {
         let mokosh_types::auth::LoginResponse {
@@ -355,15 +464,34 @@ mod tests {
             user,
             mfa_required,
             approval_required,
+            needs_selection,
+            needs_setup,
+            identity_token,
+            memberships,
         } = resp;
         let _ = LoginResp {
             access_token,
             refresh_token: Some(refresh_token),
             expires_at,
-            // The SPA still carries its own hand copy of the user payload.
             user: None,
             mfa_required,
             approval_required,
+            needs_selection,
+            needs_setup,
+            identity_token,
+            memberships: memberships.map(|v| {
+                v.into_iter()
+                    .map(|m| MembershipItem {
+                        tenant_id: m.tenant_id.to_string(),
+                        tenant_name: m.tenant_name,
+                        tenant_slug: m.tenant_slug,
+                        tenant_kind: m.tenant_kind,
+                        role: m.role,
+                        status: m.status,
+                        is_active: m.is_active,
+                    })
+                    .collect()
+            }),
         };
         let _: Option<mokosh_types::auth::CurrentUser> = user;
     }
@@ -387,12 +515,11 @@ mod tests {
             remember_me,
             mfa_code,
             approval_code,
-            tenant_slug,
         };
-        // Deliberately not sent by the standalone form: the MFA recovery code,
-        // the per-browser device id, and the hostname-derived tenant UUID hint
-        // (MAPPS-396 uses the sibling `tenant_slug` field instead).
-        let _ = (recovery_code, device_id, tenant_id);
+        // Deliberately not sent by the standalone form. MAPPS-492 phase 3:
+        // tenant_slug and tenant_id are gone from the SPA request; the
+        // server derives tenant from the identity's memberships.
+        let _ = (recovery_code, device_id, tenant_id, tenant_slug);
     }
 
     #[test]
@@ -413,50 +540,43 @@ mod tests {
             r#"{"access_token":"t","refresh_token":"r","expires_at":"2026-07-30T00:00:00Z",
                 "mfa_required":false}"#,
         )
-        .expect("legacy response decodes");
+        .expect("legacy no-approval-field decodes");
         assert!(!resp.approval_required);
     }
 
-    fn body(approval_code: Option<&str>) -> LoginBody {
-        LoginBody {
-            email: "user@example.com".to_string(),
-            password: "pw".to_string(),
-            remember_me: false,
-            mfa_code: None,
-            approval_code: approval_code.map(str::to_string),
-            tenant_slug: None,
-        }
-    }
-
-    /// MAPPS-396: `tenant_slug: None` omits the field entirely so a
-    /// server that predates the field decodes cleanly, and a
-    /// single-tenant self-host does not send a stray empty value.
+    /// MAPPS-492 phase 3: needs_selection payload decodes with the
+    /// picker list and identity_token, tokens empty, user absent.
     #[test]
-    fn tenant_slug_is_omitted_when_absent() {
-        let json = serde_json::to_string(&body(None)).expect("serializes");
-        assert!(!json.contains("tenant_slug"), "{json}");
-    }
-
-    /// MAPPS-396: when the operator types a slug the wire carries it
-    /// as an ordinary string field, unquoted / unencoded, so the
-    /// server's straight column lookup succeeds without extra parsing.
-    #[test]
-    fn tenant_slug_is_sent_when_present() {
-        let mut b = body(None);
-        b.tenant_slug = Some("acme".to_string());
-        let json = serde_json::to_string(&b).expect("serializes");
-        assert!(json.contains(r#""tenant_slug":"acme""#), "{json}");
+    fn decodes_needs_selection() {
+        let resp: LoginResp = serde_json::from_str(
+            r#"{"access_token":"","refresh_token":"","expires_at":"2026-07-30T00:00:00Z",
+                "mfa_required":false,"approval_required":false,
+                "needs_selection":true,"needs_setup":false,
+                "identity_token":"eyJfake",
+                "memberships":[{"tenant_id":"00000000-0000-0000-0000-000000000001",
+                                "tenant_name":"Default","tenant_slug":"default",
+                                "tenant_kind":"org","role":"super_admin",
+                                "status":"active","is_active":true}]}"#,
+        )
+        .expect("needs_selection decodes");
+        assert!(resp.needs_selection);
+        assert!(!resp.needs_setup);
+        assert_eq!(resp.identity_token.as_deref(), Some("eyJfake"));
+        let mems = resp.memberships.expect("memberships present");
+        assert_eq!(mems.len(), 1);
+        assert_eq!(mems[0].tenant_name, "Default");
     }
 
     #[test]
-    fn approval_code_is_omitted_when_absent() {
-        let json = serde_json::to_string(&body(None)).expect("serializes");
-        assert!(!json.contains("approval_code"), "{json}");
-    }
-
-    #[test]
-    fn approval_code_is_sent_when_present() {
-        let json = serde_json::to_string(&body(Some("123456"))).expect("serializes");
-        assert!(json.contains(r#""approval_code":"123456""#), "{json}");
+    fn decodes_needs_setup() {
+        let resp: LoginResp = serde_json::from_str(
+            r#"{"access_token":"","refresh_token":"","expires_at":"2026-07-30T00:00:00Z",
+                "mfa_required":false,"approval_required":false,
+                "needs_setup":true,"identity_token":"eyJfake"}"#,
+        )
+        .expect("needs_setup decodes");
+        assert!(resp.needs_setup);
+        assert!(!resp.needs_selection);
+        assert!(resp.memberships.is_none());
     }
 }
