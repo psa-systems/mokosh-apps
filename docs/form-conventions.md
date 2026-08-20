@@ -19,6 +19,10 @@ Use a plain `Select` for small, bounded lookups.
 | Asset (on a ticket) | `crate::components::AssetPicker` (autocomplete) | Assets can be numerous. |
 | Contact (attach to company) | `crate::components::ContactPicker` (autocomplete) | Contacts can be numerous. |
 
+Native `Select` popups are themed by element-level `option` / `optgroup` rules in
+`input.css` (MAPPS-479), so no call site adds option styling. Colors come from the
+semantic variables, so both base modes follow automatically.
+
 ### Company picker - every call site uses `CompanyPicker`
 
 Ticket, Contact, Asset, Contract (create), Project, Invoice, and the Record-Payment

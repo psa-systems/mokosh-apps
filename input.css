@@ -225,6 +225,24 @@
            sm:text-sm;
   }
 
+  /* MAPPS-479: native <select> popup rows. Chromium and Firefox paint the
+     option list from the element's own colors; left unstyled it falls back to
+     the OS palette and clashes with the themed control. */
+  select option,
+  select optgroup {
+    background-color: var(--raised);
+    color: var(--content);
+  }
+
+  select option:checked {
+    background-color: var(--accent);
+    color: var(--on-accent);
+  }
+
+  select option:disabled {
+    color: var(--subtle);
+  }
+
   /* Checkbox and radio styling */
   input[type="checkbox"],
   input[type="radio"] {
