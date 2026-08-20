@@ -657,6 +657,32 @@ pub fn PlusIcon(#[props(default)] size: IconSize, #[props(default)] class: Strin
     }
 }
 
+/// Envelope. Heroicons `envelope` (outline). MAPPS-482: marks a button whose
+/// click makes the server email someone, so an outbound message is not
+/// indistinguishable from an action that just writes a row. Decorative beside
+/// the button's own label, so it carries no accessible name of its own.
+#[component]
+pub fn MailIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75",
+            }
+        }
+    }
+}
+
 /// PMS-760: reordering an item in a list, as icon-only controls.
 ///
 /// Added for the request-form builder, where "Move up" / "Move down" as text

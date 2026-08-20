@@ -24,9 +24,9 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::components::{
-    Badge, BadgeVariant, Button, ButtonVariant, Card, CollapsibleCard, ErrorBanner, Input, Select,
-    SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
-    TableRow,
+    Badge, BadgeVariant, Button, ButtonVariant, Card, CollapsibleCard, ErrorBanner, IconSize,
+    Input, MailIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
+    TableHeader, TableLoading, TableRow,
 };
 use crate::modules::forms::{
     FormDefinition, IssueRequestLinkRequest, RequestLink, RequestLinkStatus,
@@ -464,8 +464,44 @@ pub(crate) fn SendRequestLinkModal(
     };
 
     let can_mutate = crate::hooks::use_can_mutate();
+
+    // MAPPS-482: what this form already knows about the message. The token,
+    // its link and the tenant's own identity only exist at send time, so they
+    // come back in `unresolved` and the modal shows them as filled in when
+    // sent rather than pretending to a value it does not have.
+    let preview_recipient = {
+        let typed = email.read().trim().to_string();
+        if typed.is_empty() {
+            let chosen = contact_id.read().trim().to_string();
+            contact_rows
+                .iter()
+                .find(|c| c.id.to_string() == chosen)
+                .and_then(|c| c.email.clone())
+                .unwrap_or_default()
+        } else {
+            typed
+        }
+    };
+    let preview_form_name = {
+        let chosen = form_id.read().trim().to_string();
+        form_options
+            .iter()
+            .find(|o| o.value == chosen)
+            .map(|o| o.label.clone())
+            .unwrap_or_default()
+    };
+    let preview_context = serde_json::json!({
+        "recipient_email": preview_recipient,
+        "company_name": company_name.clone(),
+        "form_name": preview_form_name,
+    });
+
     let footer = rsx! {
         Button { variant: ButtonVariant::Secondary, onclick: move |_| onclose.call(()), "Cancel" }
+        crate::components::EmailPreview {
+            event_type: "forms.request_link".to_string(),
+            context: preview_context,
+        }
         Button {
             variant: ButtonVariant::Primary,
             loading: saving(),
@@ -478,6 +514,7 @@ pub(crate) fn SendRequestLinkModal(
                 None
             },
             onclick: handle_send,
+            MailIcon { size: IconSize::Small, class: "mr-2".to_string() }
             "Send link"
         }
     };

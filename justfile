@@ -47,7 +47,7 @@ pre-commit: css-build
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-web check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows
+check: check-web check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance
 
 # Check web/WASM compilation
 [group: 'check']
@@ -120,6 +120,12 @@ check-status-banner:
 check-no-demo-rows:
     bash scripts/check-no-demo-rows.sh --self-test
     bash scripts/check-no-demo-rows.sh
+
+# MAPPS-482: keep every action that makes the server email someone marked with MailIcon and offering EmailPreview. The path list is maintained by hand (see docs/email-actions.md). --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-email-affordance:
+    bash scripts/check-email-affordance.sh --self-test
+    bash scripts/check-email-affordance.sh
 
 # Run clippy lints
 [group: 'check']
