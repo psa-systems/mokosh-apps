@@ -1,0 +1,157 @@
+//! MAPPS-513 stage A client side: platform super-admin login.
+//!
+//! Distinct URL (`/platform/login`), distinct credential store on the
+//! server (`platform_admins`), distinct JWT typ (`"platform"`). Nothing
+//! about this page touches the tenant identity plane. Store the
+//! returned bearer under a separate sessionStorage key so it can't
+//! collide with the regular AuthContext token.
+
+use dioxus::prelude::*;
+use serde::{Deserialize, Serialize};
+
+use crate::components::{AuthLayout, Button, ButtonVariant, Input};
+
+const PLATFORM_TOKEN_KEY: &str = "mokosh:platform_token";
+
+#[derive(Serialize)]
+struct PlatformLoginBody {
+    email: String,
+    password: String,
+}
+
+#[derive(Deserialize)]
+struct PlatformLoginResp {
+    access_token: String,
+    #[allow(dead_code)]
+    expires_at: chrono::DateTime<chrono::Utc>,
+    admin: PlatformAdminProfile,
+}
+
+#[derive(Deserialize)]
+struct PlatformAdminProfile {
+    email: String,
+    first_name: String,
+    last_name: String,
+}
+
+#[component]
+pub fn PlatformLoginPage() -> Element {
+    let mut email = use_signal(String::new);
+    let mut password = use_signal(String::new);
+    let mut error = use_signal(String::new);
+    let mut saving = use_signal(|| false);
+    let mut done_greeting = use_signal(String::new);
+
+    let mut submit = move |_| {
+        if saving() {
+            return;
+        }
+        let em = email.read().trim().to_string();
+        let pw = password.read().clone();
+        if em.is_empty() || pw.is_empty() {
+            error.set("Enter your platform admin email and password.".to_string());
+            return;
+        }
+        saving.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                use crate::hooks::fetch::api::ApiError;
+                let body = PlatformLoginBody {
+                    email: em,
+                    password: pw,
+                };
+                match crate::hooks::fetch::api::post_typed::<PlatformLoginResp, _>(
+                    "/platform/login",
+                    &body,
+                )
+                .await
+                {
+                    Ok(resp) => {
+                        // Stash the platform bearer under its own key.
+                        // The regular tenant AuthContext is untouched;
+                        // reloading the page rehydrates the tenant
+                        // session, and the platform token can be read
+                        // independently by any platform-scoped page
+                        // (e.g. a future /platform/tenants list).
+                        if let Some(win) = web_sys::window() {
+                            if let Ok(Some(store)) = win.session_storage() {
+                                let _ = store.set_item(PLATFORM_TOKEN_KEY, &resp.access_token);
+                            }
+                        }
+                        done_greeting.set(format!(
+                            "Signed in as {} {} ({}). Platform token stored in session; the tenant surface is unchanged.",
+                            resp.admin.first_name, resp.admin.last_name, resp.admin.email
+                        ));
+                    }
+                    Err(ApiError::Status { code: 401, .. }) => {
+                        error.set("Invalid email or password.".to_string());
+                    }
+                    Err(e) => error.set(e.user_message()),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
+    rsx! {
+        AuthLayout {
+            div { class: "text-center mb-6",
+                h1 { class: "text-2xl font-semibold text-content", "Platform sign-in" }
+                p { class: "mt-2 text-sm text-content",
+                    "This is the mokosh platform super-admin login (separate from tenant admin logins)."
+                }
+            }
+            if !done_greeting().is_empty() {
+                div { class: "rounded-md bg-surface-2 p-3 mb-4 text-sm text-content",
+                    "{done_greeting}"
+                }
+            }
+            form {
+                class: "space-y-4",
+                onsubmit: move |evt: Event<FormData>| {
+                    evt.prevent_default();
+                    submit(());
+                },
+                Input {
+                    name: "email",
+                    label: "Platform admin email",
+                    r#type: "email".to_string(),
+                    value: email(),
+                    required: true,
+                    disabled: saving(),
+                    oninput: move |e: FormEvent| {
+                        error.set(String::new());
+                        email.set(e.value());
+                    },
+                }
+                Input {
+                    name: "password",
+                    label: "Password",
+                    r#type: "password".to_string(),
+                    value: password(),
+                    required: true,
+                    disabled: saving(),
+                    oninput: move |e: FormEvent| {
+                        error.set(String::new());
+                        password.set(e.value());
+                    },
+                }
+                if !error().is_empty() {
+                    p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
+                }
+                div { class: "pt-2",
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        disabled: saving(),
+                        loading: saving(),
+                        r#type: "submit".to_string(),
+                        class: "w-full".to_string(),
+                        "Sign in"
+                    }
+                }
+            }
+        }
+    }
+}

@@ -258,6 +258,13 @@ pub enum Route {
     #[route("/login")]
     Login {},
 
+    // MAPPS-513 stage A: platform super-admin login. Distinct URL,
+    // distinct credential store (`platform_admins` on the server),
+    // distinct JWT typ so it never collides with the tenant identity
+    // plane. Public route (no AuthGuard).
+    #[route("/platform/login")]
+    PlatformLogin {},
+
     // MAPPS-497 item 6: dedicated intermediate routes for the
     // identity-first login flow. Both read cross-page state from the
     // `PENDING_LOGIN` global signal; empty state redirects them back
@@ -869,6 +876,13 @@ fn Home() -> Element {
 /// hits a protected route. The pre-cutover behaviour (HubRedirect to bunyip's
 /// `/login` directly) skipped the OIDC handshake entirely, which is why the
 /// user landed on bunyip's dashboard with no way back to msp.
+// MAPPS-513 stage A: route wrapper for the platform super-admin
+// login page. Public (no AuthGuard); distinct from tenant login.
+#[component]
+fn PlatformLogin() -> Element {
+    rsx! { crate::pages::platform_login::PlatformLoginPage {} }
+}
+
 #[component]
 fn Login() -> Element {
     // MAPPS-368: no OIDC issuer configured -> present the standalone

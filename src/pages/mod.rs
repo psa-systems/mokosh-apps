@@ -32,6 +32,7 @@ pub mod login;
 pub mod not_found;
 pub mod onboarding;
 pub mod pick_tenant;
+pub mod platform_login;
 pub mod portal;
 pub mod portal_forgot_password;
 pub mod portal_login;
