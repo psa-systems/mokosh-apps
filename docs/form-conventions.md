@@ -67,6 +67,33 @@ slots before returning, so submitting with both empty surfaces both errors. The
 broader effort to make `required` actually enforce across every form, and to unify
 the validation system, is the PMS-515 epic.
 
+## Website fields
+
+The company create/edit form's Website field (`validate_website_field` in
+`src/pages/contacts.rs`) is the single place the app validates a web address, and it
+normalizes rather than rejects (MAPPS-480):
+
+- A scheme-less value is treated as a bare host and saved as `https://<value>`, keeping
+  any path, query or fragment typed after it, so `DentalArtsPractice.com` is accepted.
+  The server's own deserializer applies the same rule (PMS-805), so the two agree.
+- `http://` and `https://` pass through unchanged. Every other scheme
+  (`javascript:`, `data:`, `vbscript:`, `mailto:`, ...) is still rejected, as is any
+  value carrying whitespace or control characters, because the stored value later
+  becomes an `href` (MAPPS-213). Scheme detection goes through `utils::url::scheme_of`,
+  so `java\tscript:` cannot slip past.
+- A host must have at least one dot with a non-empty label either side, so `localhost`
+  and `no-dot` do not become `https://` URLs.
+
+On blur an invalid value surfaces its message in the field's inline error slot instead
+of waiting for submit, and typing again clears it. A valid value is probed through
+`GET /contacts/companies/website-probe` (the contacts router is nested under
+`/contacts`), and what came back renders as help text under the field: in flight, the
+address that answered (replacing the field value with it), or the reason the site could
+not be reached together with the value that will be saved. The probe is **advisory**: it
+never gates validation, never blocks or delays submit, and a save with a probe still in
+flight uses whatever is in the field. Every failure path logs at `warn` before it
+renders the note.
+
 ## Modal vs full page
 
 The choice is **structural**, not stylistic:

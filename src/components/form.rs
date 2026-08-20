@@ -65,6 +65,13 @@ pub struct InputProps {
     /// Change handler
     #[props(default)]
     oninput: EventHandler<FormEvent>,
+    /// Blur passthrough (MAPPS-480). Called after the component's own
+    /// `touched` bookkeeping, so a call site can act on "the user finished
+    /// with this field" (the Website field probes the value it was given)
+    /// without taking over the validation state. Defaults to a no-op, so a
+    /// call site that does not need it is unaffected.
+    #[props(default)]
+    onblur: EventHandler<FocusEvent>,
     /// Stable selector for browser-automation tests (PMC-111).
     #[props(default)]
     data_testid: Option<String>,
@@ -138,7 +145,10 @@ pub fn Input(props: InputProps) -> Element {
                 disabled: props.disabled,
                 "data-testid": props.data_testid.as_deref(),
                 oninput: move |e| props.oninput.call(e),
-                onblur: move |_| touched.set(true),
+                onblur: move |e| {
+                    touched.set(true);
+                    props.onblur.call(e);
+                },
             }
             if !shown_error.is_empty() {
                 p { class: "text-sm leading-5 text-red-600 dark:text-red-400",
