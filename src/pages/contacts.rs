@@ -700,6 +700,11 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let mut website_err = use_signal(String::new);
     let mut phone_err = use_signal(String::new);
     let mut postal_err = use_signal(String::new);
+    // MAPPS-480: advisory note under the Website field carrying the background
+    // probe's state, and the value that probe was last fired for so tabbing
+    // through an unchanged field does not re-fire it.
+    let mut website_note = use_signal(String::new);
+    let mut website_probed = use_signal(String::new);
     // PMS-581: inline errors for the previously-unvalidated address text fields.
     let mut line1_err = use_signal(String::new);
     let mut line2_err = use_signal(String::new);
@@ -797,6 +802,67 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     let cancel_route = match &mode {
         CompanyFormMode::Create => Route::CompanyList {},
         CompanyFormMode::Edit { id } => Route::CompanyDetail { id: id.clone() },
+    };
+
+    // MAPPS-480: resolve what a typed domain actually serves, in the background,
+    // while the user finishes the rest of the form. Fired on blur only, so one
+    // completed value costs one request instead of one per keystroke. Advisory
+    // throughout: it never gates validation and never blocks or delays submit,
+    // which saves whatever is in the field at the time.
+    let mut probe_website = move || {
+        let typed = website.read().trim().to_string();
+        if typed.is_empty() || typed == website_probed() {
+            return;
+        }
+        let normalized = match validate_website_field(&typed) {
+            Ok(serde_json::Value::String(url)) => url,
+            // Blank returns above, so this arm is unreachable; it exists so
+            // the match is total rather than discarding the value.
+            Ok(_) => return,
+            // Nothing to probe, and the message is shown now rather than
+            // dropped and re-derived at submit. `oninput` clears it again as
+            // soon as the user resumes typing.
+            Err(msg) => {
+                website_err.set(msg);
+                website_note.set(String::new());
+                return;
+            }
+        };
+        website_probed.set(typed);
+        website_note.set(format!("Checking {}…", website_host(&normalized)));
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                // `/contacts` is where the server nests the contacts router
+                // (`api/router.rs`), so the probe sits beside the company
+                // create/edit calls above, not at a bare `/companies/...`.
+                let path = format!(
+                    "/contacts/companies/website-probe?url={}",
+                    urlencoding_minimal(&normalized)
+                );
+                match crate::hooks::fetch::api::get_authed::<WebsiteProbe>(&path).await {
+                    Ok(probe) => {
+                        // A site that answered replaces the value with the
+                        // address that actually answered; anything else keeps
+                        // the normalized value the user typed.
+                        if probe.reachable {
+                            if let Some(canonical) = probe.canonical_url.clone() {
+                                website.set(canonical.clone());
+                                website_probed.set(canonical);
+                            }
+                        }
+                        website_note.set(website_probe_note(&normalized, &probe));
+                    }
+                    Err(e) => {
+                        // Logged with the underlying cause before the note is
+                        // rendered, so a probe that failed is never a silent
+                        // no-op (error-visibility rule).
+                        tracing::warn!("website probe for {normalized} failed: {e}");
+                        website_note.set(website_unreachable_note(&normalized, "the check failed"));
+                    }
+                }
+            }
+        });
     };
 
     let handle_submit = move |e: FormEvent| {
@@ -1017,11 +1083,22 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                     crate::components::Input {
                         name: "website",
                         label: "Website",
-                        placeholder: "https://example.com",
+                        placeholder: "example.com",
                         maxlength: 255,
                         value: website.read().clone(),
                         error: website_err(),
-                        oninput: move |e: FormEvent| website.set(e.value()),
+                        // MAPPS-480: the probe's note. `Input` renders `help`
+                        // only when no error is showing, so an inline
+                        // validation error takes precedence with no extra
+                        // logic here.
+                        help: website_note(),
+                        oninput: move |e: FormEvent| {
+                            // Clear the blur-time message as soon as the value
+                            // is being corrected.
+                            website_err.set(String::new());
+                            website.set(e.value());
+                        },
+                        onblur: move |_| probe_website(),
                     }
                     crate::components::Input {
                         name: "phone",
@@ -1244,39 +1321,168 @@ fn validate_postal_field(raw: &str) -> Result<serde_json::Value, String> {
     }
 }
 
-/// Validate an optional Website URL. Blank -> `Ok(None)`. Otherwise the value
-/// must carry an explicit `http`/`https` scheme and a non-empty host. Dangerous
-/// schemes (`javascript:`, `data:`, `vbscript:`, anything else) and malformed
-/// URLs are rejected with an inline message *before* any request, so the user
-/// learns Website is the problem instead of hitting an opaque server 422
-/// (MAPPS-213). The scheme check reuses `utils::url::scheme_of`, the same
-/// whitespace-collapsing detection `safe_href` applies at render time, so
-/// `java\tscript:` cannot slip through.
+/// Validate an optional Website URL. Blank -> `Ok(None)`. An explicit
+/// `http`/`https` scheme passes through unchanged; a scheme-less value is
+/// treated as a bare host and normalized to `https://<value>` (MAPPS-480),
+/// which is what the server's own deserializer does (PMS-805). Any other
+/// scheme (`javascript:`, `data:`, `vbscript:`, `mailto:`, ...) and any value
+/// carrying whitespace or control characters is still rejected with an inline
+/// message *before* any request, so the user learns Website is the problem
+/// instead of hitting an opaque server 422 (MAPPS-213). The scheme check
+/// reuses `utils::url::scheme_of`, the same whitespace-collapsing detection
+/// `safe_href` applies at render time, so `java\tscript:` cannot slip through.
 fn validate_website_field(raw: &str) -> Result<serde_json::Value, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Ok(serde_json::Value::Null);
     }
-    const MSG: &str = "Website must be a valid http(s) URL (e.g. https://example.com).";
-    // Reject anything but an explicit http/https scheme (covers javascript:,
-    // data:, vbscript:, mailto:, scheme-less input, ...).
-    match crate::utils::url::scheme_of(trimmed).as_deref() {
-        Some("http") | Some("https") => {}
-        _ => return Err(MSG.to_string()),
-    }
-    // Require `scheme://host` with a non-empty host and no embedded whitespace
-    // so `http://`, `http:/x`, and `https://exa mple.com` are rejected.
-    let host = trimmed
-        .split_once("://")
-        .map(|(_, rest)| rest)
-        .unwrap_or("")
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or("");
-    if host.is_empty() || trimmed.chars().any(|c| c.is_whitespace()) {
+    const MSG: &str =
+        "Website must be a domain or http(s) URL (e.g. example.com or https://example.com).";
+    // Whitespace and control characters never belong in a URL whatever the
+    // scheme, and they are how `java\tscript:` disguises itself.
+    if trimmed
+        .chars()
+        .any(|c| c.is_whitespace() || (c as u32) < 0x20)
+    {
         return Err(MSG.to_string());
     }
-    Ok(serde_json::Value::String(trimmed.to_string()))
+    match crate::utils::url::scheme_of(trimmed).as_deref() {
+        // Require `scheme://host` with a non-empty host, so `http://` and
+        // `http:/x` are rejected.
+        Some("http") | Some("https") => {
+            let host = trimmed
+                .split_once("://")
+                .map(|(_, rest)| rest)
+                .unwrap_or("")
+                .split(['/', '?', '#'])
+                .next()
+                .unwrap_or("");
+            if host.is_empty() {
+                return Err(MSG.to_string());
+            }
+            Ok(serde_json::Value::String(trimmed.to_string()))
+        }
+        // Any other explicit scheme stays rejected.
+        Some(_) => Err(MSG.to_string()),
+        // Scheme-less: a bare host, so add the scheme the product wants and
+        // keep whatever path, query or fragment was typed after it.
+        None => {
+            let authority = trimmed.split(['/', '?', '#']).next().unwrap_or("");
+            if !is_host_like(authority) {
+                return Err(MSG.to_string());
+            }
+            Ok(serde_json::Value::String(format!("https://{trimmed}")))
+        }
+    }
+}
+
+/// Whether `host` can be the host of a public web address: host-legal
+/// characters only, and at least one dot with a non-empty label either side,
+/// so `localhost` and `no-dot` are not silently turned into `https://` URLs
+/// the server cannot resolve.
+///
+/// No port is accepted here, and none can reach this function: a `:` before
+/// the first `/` is what `scheme_of` reads as a scheme, so `example.com:8443`
+/// is rejected above as an unknown scheme. The server allows ports 80 and 443
+/// only, so nothing useful is lost.
+fn is_host_like(host: &str) -> bool {
+    if !host
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '.')
+    {
+        return false;
+    }
+    let labels: Vec<&str> = host.split('.').collect();
+    labels.len() >= 2 && labels.iter().all(|l| !l.is_empty())
+}
+
+/// The host of a normalized `https://...` value, for the probe note. The value
+/// always carries a scheme (it came out of [`validate_website_field`]), so the
+/// fallbacks below are unreachable rather than lossy.
+fn website_host(normalized: &str) -> String {
+    normalized
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(normalized)
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(normalized)
+        .to_string()
+}
+
+/// PMS-805 `GET /companies/website-probe` response. Only the fields the note
+/// below renders are deserialized; the rest of the body is ignored.
+///
+/// `redirect_truncated` is `#[serde(default)]` because the shipped server does
+/// not send it: PMS-805 specified the field but merged without it, and a chain
+/// still redirecting at the hop limit comes back as `reachable: false` with
+/// `unreachable_reason: "refused"` instead. The branch here is inert until the
+/// server adds the field, and is tracked in MAPPS-486.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct WebsiteProbe {
+    reachable: bool,
+    canonical_url: Option<String>,
+    #[serde(default)]
+    http_redirects_to_https: bool,
+    #[serde(default)]
+    www_change: String,
+    unreachable_reason: Option<String>,
+    #[serde(default)]
+    redirect_truncated: bool,
+}
+
+/// Human-readable note for a probe that answered, rendered under the field.
+/// `normalized` is the value the probe was given, so an unreachable site still
+/// tells the user exactly what will be saved.
+fn website_probe_note(normalized: &str, probe: &WebsiteProbe) -> String {
+    if !probe.reachable {
+        let reason = match probe.unreachable_reason.as_deref() {
+            Some("dns") => "no DNS record",
+            Some("timeout") => "timeout",
+            Some("tls") => "TLS error",
+            Some("refused") => "connection refused",
+            Some("blocked_host") => "address not reachable from the internet",
+            // A reason the client does not know is still shown, never dropped.
+            Some(other) => other,
+            None => "no reason given",
+        };
+        return website_unreachable_note(normalized, reason);
+    }
+    let Some(canonical) = probe.canonical_url.as_deref() else {
+        // Reachable with no canonical URL is not a shape the server produces;
+        // say so rather than presenting the probe as having settled anything.
+        return format!(
+            "{} answered but reported no address. Saving as {normalized}.",
+            website_host(normalized)
+        );
+    };
+    let mut changes: Vec<&str> = Vec::new();
+    if probe.http_redirects_to_https {
+        changes.push("http redirects to https");
+    }
+    match probe.www_change.as_str() {
+        "added" => changes.push("www added"),
+        "removed" => changes.push("www removed"),
+        _ => {}
+    }
+    if probe.redirect_truncated {
+        changes.push("site redirects again; not followed");
+    }
+    if changes.is_empty() {
+        format!("Resolved to {canonical}")
+    } else {
+        format!("Resolved to {canonical} ({})", changes.join(", "))
+    }
+}
+
+/// Note for a site the probe could not resolve, and for a probe request that
+/// failed outright. Names the value that will be saved either way, because the
+/// probe is advisory and never blocks the form.
+fn website_unreachable_note(normalized: &str, reason: &str) -> String {
+    format!(
+        "Could not reach {} ({reason}). Saving as {normalized}.",
+        website_host(normalized)
+    )
 }
 
 /// Validate an optional IANA time zone. Blank -> `Ok(None)`. A light client
@@ -4714,9 +4920,21 @@ mod company_type_tests {
 mod validation_tests {
     use super::{
         validate_country_field, validate_name_field, validate_phone_field, validate_postal_field,
-        validate_timezone_field, validate_website_field,
+        validate_timezone_field, validate_website_field, website_probe_note, WebsiteProbe,
     };
     use serde_json::Value;
+
+    /// A reachable probe of `canonical`, with every optional signal off.
+    fn reached(canonical: &str) -> WebsiteProbe {
+        WebsiteProbe {
+            reachable: true,
+            canonical_url: Some(canonical.to_string()),
+            http_redirects_to_https: false,
+            www_change: "none".to_string(),
+            unreachable_reason: None,
+            redirect_truncated: false,
+        }
+    }
 
     #[test]
     fn name_required_and_rejects_control_chars() {
@@ -4748,12 +4966,128 @@ mod validation_tests {
         assert!(validate_website_field("java\tscript:alert(1)").is_err());
         assert!(validate_website_field("data:text/html,<script>").is_err());
         assert!(validate_website_field("vbscript:msgbox(1)").is_err());
-        // Non-http schemes and scheme-less input are rejected.
+        // Non-http schemes are rejected; a scheme-less host is accepted and
+        // normalized (MAPPS-480).
         assert!(validate_website_field("mailto:a@example.com").is_err());
-        assert!(validate_website_field("example.com").is_err());
+        assert_eq!(
+            validate_website_field("example.com").unwrap(),
+            Value::String("https://example.com".into())
+        );
         // Malformed http(s) URLs are rejected.
         assert!(validate_website_field("http://").is_err());
         assert!(validate_website_field("https://exa mple.com").is_err());
+        // Whitespace and control characters are rejected whatever the scheme.
+        assert!(validate_website_field("exa mple.com").is_err());
+        assert!(validate_website_field("example\u{0007}.com").is_err());
+    }
+
+    #[test]
+    fn website_normalizes_a_scheme_less_host() {
+        // MAPPS-480: a bare domain gets the scheme the product wants.
+        assert_eq!(
+            validate_website_field("DentalArtsPractice.com").unwrap(),
+            Value::String("https://DentalArtsPractice.com".into())
+        );
+        // Path, query and fragment survive normalization.
+        assert_eq!(
+            validate_website_field("example.com/path?q=1").unwrap(),
+            Value::String("https://example.com/path?q=1".into())
+        );
+        assert_eq!(
+            validate_website_field("example.com/a#frag").unwrap(),
+            Value::String("https://example.com/a#frag".into())
+        );
+        // Trimmed before normalization, so surrounding space is not baked in.
+        assert_eq!(
+            validate_website_field("  example.com  ").unwrap(),
+            Value::String("https://example.com".into())
+        );
+        // A single-label host is not a public website address.
+        assert!(validate_website_field("localhost").is_err());
+        assert!(validate_website_field("no-dot").is_err());
+        // Empty labels and non-host characters in the authority are rejected.
+        assert!(validate_website_field("example.").is_err());
+        assert!(validate_website_field(".com").is_err());
+        assert!(validate_website_field("user@example.com").is_err());
+        // A `:` before the first `/` reads as a scheme, so a scheme-less
+        // host:port is rejected rather than guessed at.
+        assert!(validate_website_field("example.com:8443").is_err());
+    }
+
+    #[test]
+    fn website_probe_note_reports_every_state() {
+        // Nothing changed: just the address that answered.
+        assert_eq!(
+            website_probe_note("https://example.com", &reached("https://example.com/")),
+            "Resolved to https://example.com/"
+        );
+        // What changed is named, so a rewritten value is never silent.
+        let mut probe = reached("https://www.example.com/");
+        probe.http_redirects_to_https = true;
+        probe.www_change = "added".to_string();
+        assert_eq!(
+            website_probe_note("https://example.com", &probe),
+            "Resolved to https://www.example.com/ (http redirects to https, www added)"
+        );
+        let mut probe = reached("https://example.com/");
+        probe.www_change = "removed".to_string();
+        assert_eq!(
+            website_probe_note("https://www.example.com", &probe),
+            "Resolved to https://example.com/ (www removed)"
+        );
+        // A chain the server stopped following is reported as unsettled
+        // rather than presented as canonical (MAPPS-486).
+        let mut probe = reached("https://www.example.com/");
+        probe.redirect_truncated = true;
+        assert_eq!(
+            website_probe_note("https://example.com", &probe),
+            "Resolved to https://www.example.com/ (site redirects again; not followed)"
+        );
+        // Unreachable names the cause and the value that will be saved.
+        let probe = WebsiteProbe {
+            reachable: false,
+            canonical_url: None,
+            http_redirects_to_https: false,
+            www_change: "none".to_string(),
+            unreachable_reason: Some("timeout".to_string()),
+            redirect_truncated: false,
+        };
+        assert_eq!(
+            website_probe_note("https://example.com", &probe),
+            "Could not reach example.com (timeout). Saving as https://example.com."
+        );
+        // An unknown reason is passed through, never dropped.
+        let probe = WebsiteProbe {
+            unreachable_reason: Some("teapot".to_string()),
+            ..probe
+        };
+        assert_eq!(
+            website_probe_note("https://example.com/x", &probe),
+            "Could not reach example.com (teapot). Saving as https://example.com/x."
+        );
+    }
+
+    #[test]
+    fn website_probe_body_deserializes_without_redirect_truncated() {
+        // The shipped server (PMS-805) omits `redirect_truncated`; the client
+        // must still read the body it actually sends (MAPPS-486).
+        let body = serde_json::json!({
+            "input": "example.com",
+            "reachable": true,
+            "canonical_url": "https://www.example.com/",
+            "https_ok": true,
+            "http_ok": true,
+            "http_redirects_to_https": true,
+            "www_change": "added",
+            "final_status": 200,
+            "unreachable_reason": null
+        });
+        let probe: WebsiteProbe = serde_json::from_value(body).unwrap();
+        assert!(!probe.redirect_truncated);
+        assert_eq!(
+            website_probe_note("https://example.com", &probe),
+            "Resolved to https://www.example.com/ (http redirects to https, www added)"
+        );
     }
 
     #[test]
