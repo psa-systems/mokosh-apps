@@ -79,6 +79,16 @@ if ! {
     # Team item under the Admin nav section. Route::Team and its API stay
     # reachable by direct URL regardless of the flag.
     emit_field team_enabled "${MOKOSH_TEAM_ENABLED:-}"
+    # MAPPS-509: operator branding. Unset means the SPA keeps its built-in
+    # name and artwork, so a deployment that sets none of these renders
+    # exactly as before. The logo and hero URLs must resolve on the SPA
+    # origin (mount the file into /usr/share/caddy) or on the API origin:
+    # the Caddyfile CSP is `img-src 'self' data: {API origin}`. Everything
+    # outside /assets/* and /wasm/* is served no-cache, so a remounted
+    # file propagates on the next load. See docs/deployment-branding.md.
+    emit_field brand_name "${MOKOSH_BRAND_NAME:-}"
+    emit_field brand_logo_url "${MOKOSH_BRAND_LOGO_URL:-}"
+    emit_field brand_hero_url "${MOKOSH_BRAND_HERO_URL:-}"
     # build_sha is the git revision the WASM bundle was built from.
     # Baked into the image at build time via Dockerfile's GIT_SHA build
     # arg. The SPA polls `_mokosh_config.js` and reloads when this
