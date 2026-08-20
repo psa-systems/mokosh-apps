@@ -44,22 +44,6 @@ struct LoginBody {
     approval_code: Option<String>,
 }
 
-/// MAPPS-492 phase 3: request body for `POST /api/v1/auth/select-tenant`.
-#[derive(Serialize)]
-struct SelectTenantBody {
-    identity_token: String,
-    tenant_id: String,
-}
-
-/// MAPPS-493 phase 4: request body for `POST /api/v1/tenants/self-serve`.
-#[derive(Serialize)]
-struct SelfServeTenantBody {
-    identity_token: String,
-    tenant_name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tenant_slug: Option<String>,
-}
-
 /// MAPPS-492 phase 3: one entry in the picker list.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 struct MembershipItem {
@@ -114,24 +98,15 @@ pub fn StandaloneLogin() -> Element {
     let mut approval_code = use_signal(String::new);
     let mut approval_needed = use_signal(|| false);
 
-    // MAPPS-492 (phase 3) in-page picker state. Populated from the login
-    // response when `needs_selection` is true; rendered inline so no
-    // cross-page state handoff is needed. `needs_setup` uses the same
-    // pattern with `identity_token` and a create-org form (phase 4).
-    let mut identity_token = use_signal(|| None::<String>);
-    let mut memberships = use_signal(Vec::<MembershipItem>::new);
-    let mut needs_selection = use_signal(|| false);
-    let mut needs_setup = use_signal(|| false);
-
-    // MAPPS-493 (phase 4) create-org form state, revealed under
-    // `needs_setup`. Slug is optional; server slugifies the name when
-    // empty. Trades the identity_token for a new tenant + full session.
-    let mut new_org_name = use_signal(String::new);
-    let mut new_org_slug = use_signal(String::new);
+    // MAPPS-497 item 6: picker + create-org steps live on dedicated
+    // routes (`/pick-tenant`, `/create-org`) that read from
+    // `PENDING_LOGIN`. This page no longer holds their state locally;
+    // it just navigates + populates the signal.
 
     // MAPPS-492: installs the auth context + persists the standalone
-    // session, then routes to Dashboard. Shared by the auto-scope
-    // branch of /auth/login and the /auth/select-tenant response.
+    // session, then routes to Dashboard. Used only for the auto-scope
+    // (single-membership) branch of /auth/login now that pick + create
+    // moved to their own routes.
     let mut install_session = move |access_token: String,
                                     refresh_token: Option<String>,
                                     expires_at: chrono::DateTime<chrono::Utc>,
@@ -201,18 +176,46 @@ pub fn StandaloneLogin() -> Element {
                         error
                             .set("Enter the 6-digit code from your authenticator app.".to_string());
                     }
-                    // MAPPS-492: identity resolved but holds more than one
-                    // membership. Render the picker in-place.
+                    // MAPPS-492 / MAPPS-497 item 6: identity resolved
+                    // but needs the picker step. Populate the
+                    // cross-page pending signal and navigate to the
+                    // dedicated `/pick-tenant` route (was inline
+                    // before item 6).
                     Ok(resp) if resp.needs_selection => {
-                        identity_token.set(resp.identity_token);
-                        memberships.set(resp.memberships.unwrap_or_default());
-                        needs_selection.set(true);
+                        let carried_memberships: Vec<
+                            crate::hooks::pending_login::PickerMembership,
+                        > = resp
+                            .memberships
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|m| crate::hooks::pending_login::PickerMembership {
+                                tenant_id: m.tenant_id,
+                                tenant_name: m.tenant_name,
+                                tenant_slug: m.tenant_slug,
+                                tenant_kind: m.tenant_kind,
+                                role: m.role,
+                                status: m.status,
+                                is_active: m.is_active,
+                            })
+                            .collect();
+                        *crate::hooks::pending_login::PENDING_LOGIN.write() =
+                            crate::hooks::pending_login::PendingLogin {
+                                identity_token: resp.identity_token,
+                                memberships: carried_memberships,
+                            };
+                        nav.push(Route::PickTenant {});
                     }
-                    // MAPPS-492: identity resolved but holds zero
-                    // memberships. Render the setup landing.
+                    // MAPPS-492 / MAPPS-497 item 6: identity resolved
+                    // but holds zero memberships. Navigate to the
+                    // dedicated `/create-org` route (was inline
+                    // before item 6).
                     Ok(resp) if resp.needs_setup => {
-                        identity_token.set(resp.identity_token);
-                        needs_setup.set(true);
+                        *crate::hooks::pending_login::PENDING_LOGIN.write() =
+                            crate::hooks::pending_login::PendingLogin {
+                                identity_token: resp.identity_token,
+                                memberships: Vec::new(),
+                            };
+                        nav.push(Route::CreateOrg {});
                     }
                     // Auto-scope / MFA-completed / approval-completed:
                     // full session returned.
@@ -257,335 +260,94 @@ pub fn StandaloneLogin() -> Element {
         });
     };
 
-    // MAPPS-493: create-org submit. Trades the identity_token +
-    // org name/slug for a new tenant + a full session at
-    // /tenants/self-serve, then routes to the dashboard scoped to the
-    // fresh tenant.
-    let mut submit_new_org = move |_| {
-        if saving() {
-            return;
-        }
-        let Some(token) = identity_token.read().clone() else {
-            error.set("Sign in again to create your organization.".to_string());
-            needs_setup.set(false);
-            return;
-        };
-        let name = new_org_name.read().trim().to_string();
-        if name.is_empty() {
-            error.set("Enter an organization name.".to_string());
-            return;
-        }
-        let raw_slug = new_org_slug.read().trim().to_ascii_lowercase();
-        let slug = if raw_slug.is_empty() {
-            None
-        } else {
-            Some(raw_slug)
-        };
-        saving.set(true);
-        error.set(String::new());
-        spawn(async move {
-            #[cfg(feature = "web")]
-            {
-                use crate::hooks::fetch::api::ApiError;
-                let body = SelfServeTenantBody {
-                    identity_token: token,
-                    tenant_name: name,
-                    tenant_slug: slug,
-                };
-                match crate::hooks::fetch::api::post_typed::<LoginResp, _>(
-                    "/tenants/self-serve",
-                    &body,
-                )
-                .await
-                {
-                    Ok(resp) => match resp.user {
-                        Some(user) => install_session(
-                            resp.access_token,
-                            resp.refresh_token,
-                            resp.expires_at,
-                            user,
-                        ),
-                        None => {
-                            error.set(
-                                "Organization created but no session was returned.".to_string(),
-                            );
-                        }
-                    },
-                    Err(ApiError::Status { code: 401, .. }) => {
-                        error.set(
-                            "Your sign-in link expired. Sign in again to create your organization."
-                                .to_string(),
-                        );
-                        needs_setup.set(false);
-                        identity_token.set(None);
-                    }
-                    Err(ApiError::Status {
-                        code: 409, message, ..
-                    }) => {
-                        error.set(message);
-                    }
-                    Err(ApiError::Status {
-                        code: 400, message, ..
-                    }) => {
-                        error.set(message);
-                    }
-                    Err(e) => error.set(e.user_message()),
-                }
-            }
-            saving.set(false);
-        });
-    };
-
-    // MAPPS-492: the picker click. Trades the identity token + selected
-    // tenant_id for a full session at /auth/select-tenant, then routes.
-    let mut pick_tenant = move |tenant_id: String| {
-        if saving() {
-            return;
-        }
-        let Some(token) = identity_token.read().clone() else {
-            error.set("Sign in again to pick a workspace.".to_string());
-            needs_selection.set(false);
-            return;
-        };
-        saving.set(true);
-        error.set(String::new());
-        spawn(async move {
-            #[cfg(feature = "web")]
-            {
-                use crate::hooks::fetch::api::ApiError;
-                let body = SelectTenantBody {
-                    identity_token: token,
-                    tenant_id,
-                };
-                match crate::hooks::fetch::api::post_typed::<LoginResp, _>(
-                    "/auth/select-tenant",
-                    &body,
-                )
-                .await
-                {
-                    Ok(resp) => match resp.user {
-                        Some(user) => install_session(
-                            resp.access_token,
-                            resp.refresh_token,
-                            resp.expires_at,
-                            user,
-                        ),
-                        None => {
-                            error.set("Sign-in succeeded but no account was returned.".to_string());
-                        }
-                    },
-                    Err(ApiError::Status { code: 401, .. }) => {
-                        error.set(
-                            "Your sign-in session expired. Enter your email + password again."
-                                .to_string(),
-                        );
-                        needs_selection.set(false);
-                        identity_token.set(None);
-                    }
-                    Err(ApiError::Status { code: 404, .. }) => {
-                        error.set(
-                            "You do not have access to that workspace. Pick another.".to_string(),
-                        );
-                    }
-                    Err(e) => error.set(e.user_message()),
-                }
-            }
-            #[cfg(not(feature = "web"))]
-            {
-                let _ = tenant_id;
-            }
-            saving.set(false);
-        });
-    };
+    // MAPPS-497 item 6: `submit_new_org` and `pick_tenant` moved to
+    // `pages/create_org.rs` and `pages/pick_tenant.rs` respectively.
+    // The login page's sole job is now email+password submit; the
+    // response handler above navigates to those routes after
+    // populating the shared `PENDING_LOGIN` signal.
 
     rsx! {
         AuthLayout {
-            if needs_selection() {
-                div { class: "text-center mb-6",
-                    h1 { class: "text-2xl font-semibold text-content", "Choose a workspace" }
-                    p { class: "mt-2 text-sm text-content",
-                        "You belong to more than one Mokosh organization. Pick one to sign in to."
+            div { class: "text-center mb-6",
+                h1 { class: "text-2xl font-semibold text-content", "Sign in to Mokosh" }
+                p { class: "mt-2 text-sm text-content",
+                    "Enter your account email and password."
+                }
+            }
+
+            form {
+                class: "space-y-4",
+                onsubmit: move |evt: Event<FormData>| {
+                    evt.prevent_default();
+                    handle_submit(());
+                },
+
+                Input {
+                    name: "email",
+                    label: "Email",
+                    r#type: "email".to_string(),
+                    value: email(),
+                    required: true,
+                    disabled: saving(),
+                    oninput: move |e: FormEvent| {
+                        error.set(String::new());
+                        email.set(e.value());
+                    },
+                }
+
+                Input {
+                    name: "password",
+                    label: "Password",
+                    r#type: "password".to_string(),
+                    value: password(),
+                    required: true,
+                    disabled: saving(),
+                    oninput: move |e: FormEvent| {
+                        error.set(String::new());
+                        password.set(e.value());
+                    },
+                }
+
+                if mfa_needed() {
+                    Input {
+                        name: "mfa_code",
+                        label: "Authentication code",
+                        r#type: "text".to_string(),
+                        value: mfa_code(),
+                        disabled: saving(),
+                        oninput: move |e: FormEvent| {
+                            error.set(String::new());
+                            mfa_code.set(e.value());
+                        },
                     }
                 }
-                ul { class: "space-y-2",
-                    {memberships.read().iter().cloned().map(|m| {
-                        let tenant_id = m.tenant_id.clone();
-                        let label_name = m.tenant_name.clone();
-                        let label_role = m.role.clone();
-                        rsx! {
-                            li { key: "{tenant_id}",
-                                button {
-                                    r#type: "button",
-                                    class: "w-full text-left px-4 py-3 rounded-md border border-border hover:bg-surface-hover focus:outline-none focus:ring-2 focus:ring-primary",
-                                    disabled: saving(),
-                                    onclick: {
-                                        let tenant_id = tenant_id.clone();
-                                        move |_| pick_tenant(tenant_id.clone())
-                                    },
-                                    div { class: "font-medium text-content", "{label_name}" }
-                                    div { class: "text-sm text-content-muted", "Role: {label_role}" }
-                                }
-                            }
-                        }
-                    })}
+
+                if approval_needed() {
+                    Input {
+                        name: "approval_code",
+                        label: "Approval code",
+                        r#type: "text".to_string(),
+                        value: approval_code(),
+                        disabled: saving(),
+                        oninput: move |e: FormEvent| {
+                            error.set(String::new());
+                            approval_code.set(e.value());
+                        },
+                    }
                 }
+
                 if !error().is_empty() {
-                    p { role: "alert", class: "mt-4 text-sm text-red-600 dark:text-red-400", "{error}" }
-                }
-            } else if needs_setup() {
-                div { class: "text-center mb-6",
-                    h1 { class: "text-2xl font-semibold text-content", "Create your organization" }
-                    p { class: "mt-2 text-sm text-content",
-                        "Pick a name for your Mokosh workspace. You will be the first admin."
-                    }
-                }
-                form {
-                    class: "space-y-4",
-                    onsubmit: move |evt: Event<FormData>| {
-                        evt.prevent_default();
-                        submit_new_org(());
-                    },
-
-                    Input {
-                        name: "tenant_name",
-                        label: "Organization name",
-                        r#type: "text".to_string(),
-                        value: new_org_name(),
-                        required: true,
-                        disabled: saving(),
-                        oninput: move |e: FormEvent| {
-                            error.set(String::new());
-                            new_org_name.set(e.value());
-                        },
-                    }
-
-                    Input {
-                        name: "tenant_slug",
-                        label: "Portal slug (optional)",
-                        r#type: "text".to_string(),
-                        value: new_org_slug(),
-                        required: false,
-                        disabled: saving(),
-                        oninput: move |e: FormEvent| {
-                            error.set(String::new());
-                            new_org_slug.set(e.value());
-                        },
-                    }
-                    p { class: "text-xs text-content-muted",
-                        "Leave blank to derive from the name. Slugs are used only for the client-facing portal URL."
-                    }
-
-                    if !error().is_empty() {
-                        p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
-                    }
-
-                    div { class: "pt-2 space-y-2",
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            disabled: saving(),
-                            loading: saving(),
-                            r#type: "submit".to_string(),
-                            class: "w-full".to_string(),
-                            "Create organization"
-                        }
-                        Button {
-                            variant: ButtonVariant::Secondary,
-                            disabled: saving(),
-                            r#type: "button".to_string(),
-                            class: "w-full".to_string(),
-                            onclick: move |_| {
-                                needs_setup.set(false);
-                                identity_token.set(None);
-                                new_org_name.set(String::new());
-                                new_org_slug.set(String::new());
-                                error.set(String::new());
-                            },
-                            "Back to sign in"
-                        }
-                    }
-                }
-            } else {
-                div { class: "text-center mb-6",
-                    h1 { class: "text-2xl font-semibold text-content", "Sign in to Mokosh" }
-                    p { class: "mt-2 text-sm text-content",
-                        "Enter your account email and password."
-                    }
+                    p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
                 }
 
-                form {
-                    class: "space-y-4",
-                    onsubmit: move |evt: Event<FormData>| {
-                        evt.prevent_default();
-                        handle_submit(());
-                    },
-
-                    Input {
-                        name: "email",
-                        label: "Email",
-                        r#type: "email".to_string(),
-                        value: email(),
-                        required: true,
+                div { class: "pt-2",
+                    Button {
+                        variant: ButtonVariant::Primary,
                         disabled: saving(),
-                        oninput: move |e: FormEvent| {
-                            error.set(String::new());
-                            email.set(e.value());
-                        },
-                    }
-
-                    Input {
-                        name: "password",
-                        label: "Password",
-                        r#type: "password".to_string(),
-                        value: password(),
-                        required: true,
-                        disabled: saving(),
-                        oninput: move |e: FormEvent| {
-                            error.set(String::new());
-                            password.set(e.value());
-                        },
-                    }
-
-                    if mfa_needed() {
-                        Input {
-                            name: "mfa_code",
-                            label: "Authentication code",
-                            r#type: "text".to_string(),
-                            value: mfa_code(),
-                            disabled: saving(),
-                            oninput: move |e: FormEvent| {
-                                error.set(String::new());
-                                mfa_code.set(e.value());
-                            },
-                        }
-                    }
-
-                    if approval_needed() {
-                        Input {
-                            name: "approval_code",
-                            label: "Approval code",
-                            r#type: "text".to_string(),
-                            value: approval_code(),
-                            disabled: saving(),
-                            oninput: move |e: FormEvent| {
-                                error.set(String::new());
-                                approval_code.set(e.value());
-                            },
-                        }
-                    }
-
-                    if !error().is_empty() {
-                        p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
-                    }
-
-                    div { class: "pt-2",
-                        Button {
-                            variant: ButtonVariant::Primary,
-                            disabled: saving(),
-                            loading: saving(),
-                            r#type: "submit".to_string(),
-                            class: "w-full".to_string(),
-                            "Sign in"
-                        }
+                        loading: saving(),
+                        r#type: "submit".to_string(),
+                        class: "w-full".to_string(),
+                        "Sign in"
                     }
                 }
             }

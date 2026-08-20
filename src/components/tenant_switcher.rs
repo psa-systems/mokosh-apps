@@ -13,11 +13,10 @@
 //!   Refetch the membership list so the new tenant appears in the
 //!   dropdown; the operator can then switch into it.
 //!
-//! Standalone-mode note: the existing `use_memberships_loader` fetches
-//! from bunyip's endpoint and returns a synthetic single-membership
-//! fallback for standalone deployments. This component uses its own
-//! mokosh-side loader so a self-hosted standalone install sees real
-//! membership rows.
+//! MAPPS-497 item 3: memberships are loaded by the app-root
+//! `use_memberships_loader` hook (which points at mokosh's endpoint
+//! as of item 3). This component no longer runs its own load-once
+//! effect; it just reads `AuthContext.memberships` for render.
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -27,9 +26,11 @@ use crate::hooks::auth::MembershipView;
 use crate::modules::oidc::storage::{save_standalone, StandaloneSession};
 use crate::{CurrentUser, Route};
 
-/// GET /auth/memberships response shape.
-#[derive(Deserialize)]
-struct MembershipsResp(Vec<MembershipView>);
+/// MAPPS-497 item 1: global signal so the create-org modal can be
+/// opened from anywhere in the top-of-page chrome (TenantSwitcher
+/// dropdown when memberships >= 2, UserMenu when memberships <= 1 and
+/// the switcher trigger is hidden).
+pub static SHOW_CREATE_ORG: GlobalSignal<bool> = Signal::global(|| false);
 
 /// POST /auth/switch-tenant response shape (subset of LoginResponse).
 #[derive(Deserialize)]
@@ -50,12 +51,10 @@ struct AdditionalBody {
 }
 
 /// POST /tenants/additional response shape (subset of TenantResponse).
+/// Fields intentionally unread; we just care that the POST succeeded
+/// so we can refetch the memberships list and let the operator switch.
 #[derive(Deserialize)]
-struct TenantResp {
-    id: String,
-    #[serde(default)]
-    name: Option<String>,
-}
+struct TenantResp {}
 
 #[component]
 pub fn TenantSwitcher() -> Element {
@@ -64,47 +63,14 @@ pub fn TenantSwitcher() -> Element {
     let nav = use_navigator();
 
     let mut open = use_signal(|| false);
-    let mut show_create = use_signal(|| false);
     let mut new_org_name = use_signal(String::new);
     let mut new_org_slug = use_signal(String::new);
     let mut error = use_signal(String::new);
     let mut saving = use_signal(|| false);
-    // Guards against re-firing the load-once effect after we've already
-    // populated memberships from mokosh's endpoint.
-    let mut load_tried = use_signal(|| false);
-
-    // MAPPS-494 mokosh-side membership loader. Runs on mount when the
-    // identity is authenticated and the current membership list is
-    // empty or size 1 (the phase-3 install_session clears it for
-    // standalone). Doesn't clobber a populated list.
-    use_effect(move || {
-        if *load_tried.peek() {
-            return;
-        }
-        let needs = {
-            let a = auth_write.read();
-            a.is_authenticated() && a.memberships.is_empty()
-        };
-        if !needs {
-            return;
-        }
-        load_tried.set(true);
-        spawn(async move {
-            #[cfg(feature = "web")]
-            {
-                if let Ok(list) = crate::hooks::fetch::api::get_authed_typed::<Vec<MembershipView>>(
-                    "/auth/memberships",
-                )
-                .await
-                {
-                    if !list.is_empty() {
-                        let mut a = auth_write.write();
-                        a.memberships = list;
-                    }
-                }
-            }
-        });
-    });
+    // MAPPS-497 item 3: the load-once effect that lived here previously
+    // is retired; `crate::hooks::auth::use_memberships_loader`
+    // (mounted at the app root) is now the sole loader and hits
+    // mokosh's `/api/v1/auth/memberships` endpoint.
 
     // Close on route change (mirrors UserMenu).
     let route: Route = use_route();
@@ -114,6 +80,15 @@ pub fn TenantSwitcher() -> Element {
             open.set(false);
         }
     }));
+
+    // MAPPS-497 item 2: capture whether the operator is currently on
+    // the Dashboard. If they are, staying put after a switch is
+    // right; every scoped view lives under Dashboard, so re-mounting
+    // the same route is wasted work when the generation bump alone
+    // will refetch its resources. Captured as a bool so the
+    // install_session closure below stays FnMut (Route is not Copy).
+    let current_route: Route = use_route();
+    let already_on_dashboard = matches!(current_route, Route::Dashboard {});
 
     let install_session = move |access_token: String,
                                 refresh_token: Option<String>,
@@ -138,7 +113,16 @@ pub fn TenantSwitcher() -> Element {
             a.memberships = Vec::new();
             a.server_loaded = false;
         }
-        nav.replace(Route::Dashboard {});
+        // MAPPS-497 item 2: bump the tenant generation so every
+        // tenant-scoped resource that reads `active_tenant_generation`
+        // inside a `use_resource` closure refetches under the new
+        // scope. Preserves the operator's current page when they were
+        // on the Dashboard; only routes away when the current route is
+        // tenant-specific and has no equivalent under the new tenant.
+        *crate::hooks::fetch::TENANT_GENERATION.write() += 1;
+        if !already_on_dashboard {
+            nav.replace(Route::Dashboard {});
+        }
     };
 
     let mut switch_to = move |tenant_id: String| {
@@ -224,7 +208,7 @@ pub fn TenantSwitcher() -> Element {
                         }
                         new_org_name.set(String::new());
                         new_org_slug.set(String::new());
-                        show_create.set(false);
+                        *SHOW_CREATE_ORG.write() = false;
                         open.set(false);
                     }
                     Err(ApiError::Status {
@@ -269,33 +253,41 @@ pub fn TenantSwitcher() -> Element {
         return rsx! { Fragment {} };
     }
 
+    // MAPPS-497 item 1: hide the trigger + dropdown when the identity
+    // has 0 or 1 memberships (nothing to switch to). The create-org
+    // Modal is rendered unconditionally below because UserMenu can also
+    // open it via the SHOW_CREATE_ORG global signal.
+    let show_trigger = memberships.len() >= 2;
+
     rsx! {
         div { class: "relative",
-            button {
-                r#type: "button",
-                class: "flex items-center gap-2 px-3 py-2 rounded-md text-sm text-subtle hover:text-content hover:bg-surface-2 focus:outline-none",
-                aria_label: "Switch workspace",
-                title: "Switch workspace",
-                aria_expanded: if open() { "true" } else { "false" },
-                aria_haspopup: "menu",
-                onclick: move |_| {
-                    let next = !*open.read();
-                    open.set(next);
-                    if next { error.set(String::new()); }
-                },
-                span { class: "hidden md:inline max-w-[10rem] truncate", "{active_name}" }
-                // Small chevron caret drawn inline (avoids a dep on an
-                // icon we don't own yet).
-                svg {
-                    class: "w-4 h-4",
-                    view_box: "0 0 20 20",
-                    fill: "currentColor",
-                    path {
-                        d: "M5.23 7.21a.75.75 0 011.06.02L10 11.06l3.71-3.83a.75.75 0 111.08 1.04l-4.24 4.38a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z",
+            if show_trigger {
+                button {
+                    r#type: "button",
+                    class: "flex items-center gap-2 px-3 py-2 rounded-md text-sm text-subtle hover:text-content hover:bg-surface-2 focus:outline-none",
+                    aria_label: "Switch workspace",
+                    title: "Switch workspace",
+                    aria_expanded: if open() { "true" } else { "false" },
+                    aria_haspopup: "menu",
+                    onclick: move |_| {
+                        let next = !*open.read();
+                        open.set(next);
+                        if next { error.set(String::new()); }
+                    },
+                    span { class: "hidden md:inline max-w-[10rem] truncate", "{active_name}" }
+                    // Small chevron caret drawn inline (avoids a dep on an
+                    // icon we don't own yet).
+                    svg {
+                        class: "w-4 h-4",
+                        view_box: "0 0 20 20",
+                        fill: "currentColor",
+                        path {
+                            d: "M5.23 7.21a.75.75 0 011.06.02L10 11.06l3.71-3.83a.75.75 0 111.08 1.04l-4.24 4.38a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z",
+                        }
                     }
                 }
             }
-            if *open.read() {
+            if show_trigger && *open.read() {
                 div {
                     class: "fixed inset-0 z-10",
                     onclick: move |_| open.set(false),
@@ -339,7 +331,7 @@ pub fn TenantSwitcher() -> Element {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
                         r#type: "button",
                         onclick: move |_| {
-                            show_create.set(true);
+                            *SHOW_CREATE_ORG.write() = true;
                             open.set(false);
                             error.set(String::new());
                         },
@@ -351,10 +343,10 @@ pub fn TenantSwitcher() -> Element {
                 }
             }
             Modal {
-                open: show_create(),
+                open: SHOW_CREATE_ORG(),
                 title: "Create new organization".to_string(),
                 size: ModalSize::Small,
-                onclose: move |_| show_create.set(false),
+                onclose: move |_| *SHOW_CREATE_ORG.write() = false,
                 form {
                     class: "space-y-4",
                     onsubmit: move |evt: Event<FormData>| {
@@ -397,7 +389,7 @@ pub fn TenantSwitcher() -> Element {
                             r#type: "button".to_string(),
                             disabled: saving(),
                             onclick: move |_| {
-                                show_create.set(false);
+                                *SHOW_CREATE_ORG.write() = false;
                                 new_org_name.set(String::new());
                                 new_org_slug.set(String::new());
                                 error.set(String::new());

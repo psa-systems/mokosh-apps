@@ -1052,10 +1052,9 @@ fn EditTenantModal(
                         crate::components::AlertType::Success,
                         "Welcome email re-sent to the tenant admin.",
                     ),
-                    Err(msg) => crate::hooks::toast::push_toast(
-                        crate::components::AlertType::Warning,
-                        msg,
-                    ),
+                    Err(msg) => {
+                        crate::hooks::toast::push_toast(crate::components::AlertType::Warning, msg)
+                    }
                 }
             }
             resending.set(false);
@@ -1105,8 +1104,8 @@ fn EditTenantModal(
                 let email_new = admin_email.read().trim().to_string();
                 let first_new = admin_first_name.read().trim().to_string();
                 let last_new = admin_last_name.read().trim().to_string();
-                let email_changed = !email_new.eq_ignore_ascii_case(&s.email)
-                    && !email_new.is_empty();
+                let email_changed =
+                    !email_new.eq_ignore_ascii_case(&s.email) && !email_new.is_empty();
                 let first_changed = first_new != s.first_name.trim();
                 let last_changed = last_new != s.last_name.trim();
                 if !email_changed && !first_changed && !last_changed {
@@ -1135,17 +1134,16 @@ fn EditTenantModal(
                     #[allow(dead_code)]
                     id: uuid::Uuid,
                 }
-                let tenant_ok = match crate::hooks::fetch::api::put_authed_typed::<TenantId, _>(
-                    &path, &body,
-                )
-                .await
-                {
-                    Ok(_) => true,
-                    Err(e) => {
-                        error.set(e.user_message());
-                        false
-                    }
-                };
+                let tenant_ok =
+                    match crate::hooks::fetch::api::put_authed_typed::<TenantId, _>(&path, &body)
+                        .await
+                    {
+                        Ok(_) => true,
+                        Err(e) => {
+                            error.set(e.user_message());
+                            false
+                        }
+                    };
                 if tenant_ok {
                     // MAPPS-450: chase the tenant PUT with the admin PUT
                     // when any admin field is dirty. A 409 here (email
@@ -1155,10 +1153,9 @@ fn EditTenantModal(
                     // so the operator can undo the email edit.
                     let admin_ok = if let Some((abody, _status)) = admin_body.as_ref() {
                         let apath = format!("/tenants/{tenant_id}/admin");
-                        match crate::hooks::fetch::api::put_authed_typed::<
-                            TenantAdminInfo,
-                            _,
-                        >(&apath, abody)
+                        match crate::hooks::fetch::api::put_authed_typed::<TenantAdminInfo, _>(
+                            &apath, abody,
+                        )
                         .await
                         {
                             Ok(info) => {

@@ -985,6 +985,22 @@ fn UserMenu() -> Element {
                         "System Status"
                     }
                     div { class: "border-t border-line my-1" }
+                    // MAPPS-497 item 1: create-org lives here too so a
+                    // single-membership identity (switcher trigger
+                    // hidden) can still start a new org from the top
+                    // bar. Same global signal the switcher dropdown
+                    // uses; the modal itself is mounted inside
+                    // TenantSwitcher and reacts to the signal.
+                    button {
+                        r#type: "button",
+                        class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",
+                        onclick: move |_| {
+                            *crate::components::tenant_switcher::SHOW_CREATE_ORG.write() = true;
+                            open.set(false);
+                        },
+                        "Create new organization"
+                    }
+                    div { class: "border-t border-line my-1" }
                     button {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-surface-2",
                         onclick: logout,

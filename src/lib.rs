@@ -258,6 +258,17 @@ pub enum Route {
     #[route("/login")]
     Login {},
 
+    // MAPPS-497 item 6: dedicated intermediate routes for the
+    // identity-first login flow. Both read cross-page state from the
+    // `PENDING_LOGIN` global signal; empty state redirects them back
+    // to /login. Same auth surface as /login (public routes; no
+    // AuthGuard gating).
+    #[route("/pick-tenant")]
+    PickTenant {},
+
+    #[route("/create-org")]
+    CreateOrg {},
+
     #[route("/auth/callback")]
     AuthCallback {},
 
@@ -884,6 +895,19 @@ fn Login() -> Element {
 #[component]
 fn AuthCallback() -> Element {
     rsx! { auth_callback::AuthCallbackPage {} }
+}
+
+// MAPPS-497 item 6: route wrappers so the standalone login's
+// picker + create-org steps have their own URLs (better back-button
+// + deep-link behavior than the previous inline shape).
+#[component]
+fn PickTenant() -> Element {
+    rsx! { crate::pages::pick_tenant::PickTenantPage {} }
+}
+
+#[component]
+fn CreateOrg() -> Element {
+    rsx! { crate::pages::create_org::CreateOrgPage {} }
 }
 
 #[component]

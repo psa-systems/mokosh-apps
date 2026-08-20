@@ -210,7 +210,11 @@ fn TeamRow(props: TeamRowProps) -> Element {
     } else {
         BadgeVariant::Gray
     };
-    let status_label = if props.team.is_active { "Active" } else { "Archived" };
+    let status_label = if props.team.is_active {
+        "Active"
+    } else {
+        "Archived"
+    };
 
     rsx! {
         TableRow {
@@ -267,7 +271,11 @@ fn CreateTeamModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> Elem
             name: n,
             description: {
                 let d = description.read().trim().to_string();
-                if d.is_empty() { None } else { Some(d) }
+                if d.is_empty() {
+                    None
+                } else {
+                    Some(d)
+                }
             },
             color: Some(color.read().clone()),
         };
@@ -281,12 +289,11 @@ fn CreateTeamModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> Elem
                     #[allow(dead_code)]
                     id: uuid::Uuid,
                 }
-                match crate::hooks::fetch::api::post_authed_typed::<TeamId, _>("/teams", &body).await {
+                match crate::hooks::fetch::api::post_authed_typed::<TeamId, _>("/teams", &body)
+                    .await
+                {
                     Ok(_) => {
-                        crate::hooks::toast::push_toast(
-                            AlertType::Success,
-                            "Team created.",
-                        );
+                        crate::hooks::toast::push_toast(AlertType::Success, "Team created.");
                         onsaved.call(());
                     }
                     Err(e) => error.set(e.user_message()),
@@ -397,10 +404,7 @@ fn EditTeamModal(
                 }
                 match crate::hooks::fetch::api::put_authed_typed::<TeamId, _>(&path, &body).await {
                     Ok(_) => {
-                        crate::hooks::toast::push_toast(
-                            AlertType::Success,
-                            "Team updated.",
-                        );
+                        crate::hooks::toast::push_toast(AlertType::Success, "Team updated.");
                         onsaved.call(());
                     }
                     Err(e) => error.set(e.user_message()),
@@ -527,9 +531,15 @@ fn MembersSection(props: MembersSectionProps) -> Element {
             #[cfg(feature = "web")]
             {
                 let path = format!("/teams/{team_id}/members");
-                let body = AddTeamMemberBody { user_id: uid, role: None };
+                let body = AddTeamMemberBody {
+                    user_id: uid,
+                    role: None,
+                };
                 #[derive(serde::Deserialize)]
-                struct TmResp { #[allow(dead_code)] user_id: uuid::Uuid }
+                struct TmResp {
+                    #[allow(dead_code)]
+                    user_id: uuid::Uuid,
+                }
                 match crate::hooks::fetch::api::post_authed_typed::<TmResp, _>(&path, &body).await {
                     Ok(_) => {
                         crate::hooks::toast::push_toast(AlertType::Success, "Member added.");
