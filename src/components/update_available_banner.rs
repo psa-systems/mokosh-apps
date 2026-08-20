@@ -39,6 +39,9 @@ pub fn UpdateAvailableBanner() -> Element {
         return rsx! {};
     }
 
+    // MAPPS-509: the deployment's brand, not a baked-in product name.
+    let brand = crate::branding::product_name();
+
     rsx! {
         div {
             // `role=status` + `aria-live=polite` so assistive tech
@@ -52,7 +55,7 @@ pub fn UpdateAvailableBanner() -> Element {
                 // User-facing cause only: no build hashes, no version
                 // numbers, no operator instructions.
                 span { class: "font-medium",
-                    "A new version of Mokosh has been deployed. Reload the page to get it."
+                    "A new version of {brand} has been deployed. Reload the page to get it."
                 }
                 button {
                     r#type: "button",
@@ -136,12 +139,15 @@ mod tests {
     }
 
     /// The copy names the cause in user terms. No build hashes, no version
-    /// numbers, no operator instructions.
+    /// numbers, no operator instructions. MAPPS-509: the product name is
+    /// the deployment's brand, from runtime config, not a literal.
     #[test]
     fn copy_is_user_facing_only() {
         let src = banner_src();
-        assert!(src
-            .contains("\"A new version of Mokosh has been deployed. Reload the page to get it.\""));
+        assert!(src.contains("let brand = crate::branding::product_name();"));
+        assert!(src.contains(
+            "\"A new version of {brand} has been deployed. Reload the page to get it.\""
+        ));
         for forbidden in [
             "docker compose",
             "GIT_HASH",

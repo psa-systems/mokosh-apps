@@ -166,11 +166,12 @@ pub fn SystemStatusPage() -> Element {
     };
     let issuer = cfg.issuer.to_string();
     let hub_url = cfg.hub_url("/");
+    let brand = crate::branding::product_name();
 
     rsx! {
         PageHeader {
             title: "System Status",
-            subtitle: "Build versions and live health of the Mokosh client and API.",
+            subtitle: "Build versions and live health of the {brand} client and API.",
             actions: rsx! {
                 Button {
                     variant: ButtonVariant::Secondary,
