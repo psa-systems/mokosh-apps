@@ -29,6 +29,44 @@ and never re-declares `bg-raised` plus `shadow-lg` by hand; the call site keeps 
 positioning, width, max-height, z-index and padding (MAPPS-483, guarded by
 `scripts/check-kit-adoption.sh`).
 
+### The dropdown keyboard contract (MAPPS-503)
+
+Every typeahead behaves the same way, because every one of them uses
+`use_dropdown_nav` (`src/hooks/dropdown_nav.rs`). A new typeahead uses the hook
+too rather than growing its own handlers; five hand-rolled copies is how
+`GlobalSearch` ended up the only surface with an Escape key.
+
+| Input | Behaviour |
+| --- | --- |
+| Focus (tab in) or click on the field | Opens the list, including with an empty query, where the picker's unfiltered fetch supplies the rows. |
+| Down / Up | Move the highlight one row, clamped at both ends (never wraps), opening the list first if it is closed. The active row scrolls into view. |
+| Enter | Takes the highlighted row. Does not submit the form. |
+| Tab | Takes the highlighted row, or the first row when none is highlighted, then moves focus to the next field. Shift+Tab takes nothing. |
+| Escape | Closes without committing, leaving the typed text alone, so a following Tab leaves the field with what was typed. |
+
+The mechanics that go with it:
+
+- The handlers sit on the field's wrapper `div`, never on the shared `Input`.
+  Keydown bubbles up from the focused input, and MAPPS-347 already moved a
+  handler off `Input` because handlers there interfered with inline-error
+  rendering on the ticket-create form. The wrapper holds the input only: a
+  wrapper that also contained the panel would re-open the list on the click that
+  just picked a row.
+- Result rows carry `tabindex="-1"`, so Tab commits and leaves instead of walking
+  into the list.
+- An inline "+ Create new ..." row is part of the list: it is the last navigable
+  item, and committing it opens the create modal exactly as clicking it does.
+- ARIA comes with the hook: `role="combobox"` with `aria-expanded` and
+  `aria-controls` on the field wrapper, `role="listbox"` on the panel,
+  `role="option"` plus `aria-selected` on the rows, and `aria-activedescendant`
+  naming the active row.
+- A failed search is its own panel state: "Could not search. Try again.",
+  distinct from "Searching…" and "No matches.", logged at `warn`. No picker
+  drops the fetch error.
+
+Native `Select` fields need none of this; the browser already gives
+click-to-open, arrow navigation and Tab-commit.
+
 ### Company picker - every call site uses `CompanyPicker`
 
 Ticket, Contact, Asset, Contract (create), Project, Invoice, and the Record-Payment

@@ -11,6 +11,7 @@ pub mod auth;
 // referenced from places outside hooks/* (oidc callback, login handler)
 // to set/clear the global access-token holder. Keep this `pub` form
 // when merging from main.
+pub mod dropdown_nav;
 pub mod edit_queue;
 pub mod fetch;
 pub mod remote_data;
@@ -25,6 +26,7 @@ pub mod update_check;
 pub mod version_cache;
 
 pub use auth::*;
+pub use dropdown_nav::{use_dropdown_nav, DropdownNav, NavAction};
 pub use edit_queue::{use_replay_pending_edits, PendingEdit};
 pub use fetch::*;
 pub use remote_data::{classify_remote, use_remote_resource, RemoteData};
