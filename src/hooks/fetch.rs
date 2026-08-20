@@ -81,6 +81,42 @@ pub(crate) fn note_account_deleted() {
     }
 }
 
+/// Force every `use_resource` that reads [`active_tenant_generation`] to
+/// re-fetch, without changing the token.
+///
+/// MAPPS-504: the browser gets this for free from a page reload. The
+/// desktop build has no reload, so the one caller that told the user to
+/// reload after replacing all their data (the import panel in
+/// `pages::settings`) drives the refetch directly.
+#[cfg(feature = "web")]
+pub fn bump_tenant_generation() {
+    *TENANT_GENERATION.write() += 1;
+}
+
+/// MAPPS-504: raised when the fetch layer has ended the session and the
+/// user has to be put back on the login screen.
+///
+/// The browser does that with a full page reload, which resets every
+/// in-memory signal on the way. A desktop window cannot reload, so it
+/// needs something a component can observe:
+/// [`crate::hooks::auth::use_session_end_watch`] clears `AuthContext`
+/// when this flips, and the route guard takes it from there.
+///
+/// A `GlobalSignal` for the same reason [`ACCOUNT_DELETED`] is one: the
+/// `api` helpers are plain async fns and cannot reach a
+/// context-provided signal.
+#[cfg(feature = "web")]
+pub static SESSION_ENDED: GlobalSignal<bool> = Signal::global(|| false);
+
+/// Raise [`SESSION_ENDED`]. Idempotent, so a burst of 401s on the way
+/// out does not wake the watcher repeatedly.
+#[cfg(all(feature = "web", not(target_arch = "wasm32")))]
+pub(crate) fn note_session_ended() {
+    if !*SESSION_ENDED.peek() {
+        *SESSION_ENDED.write() = true;
+    }
+}
+
 /// Classify a completed HTTP response. Any response at all - even a 4xx -
 /// proves the server is reachable, so it clears the "down" state. A `5xx`
 /// is treated as "down" per MAPPS-333: the server is up but failing, and
@@ -124,8 +160,10 @@ fn set_server_reachable(reachable: bool) {
 
 /// API client for making HTTP requests
 pub mod api {
+    // MAPPS-504: `gloo-net` in the browser, `reqwest` on the desktop,
+    // same builder either way (see `crate::platform::http`).
     #[cfg(feature = "web")]
-    use gloo_net::http::Request;
+    use crate::platform::http::{MultipartExt, Request};
     #[cfg(feature = "web")]
     use serde::{de::DeserializeOwned, Serialize};
 
@@ -146,14 +184,35 @@ pub mod api {
         if let Some(injected) = crate::modules::runtime_config::get("api_base") {
             return normalize_api_base(&injected);
         }
-        if let Some(win) = web_sys::window() {
-            if let Ok(host) = win.location().host() {
-                if let Some(rest) = host.strip_prefix("msp.") {
-                    return format!("https://api.msp.{rest}/api/v1");
-                }
+        if let Some(host) = crate::platform::location::host() {
+            if let Some(rest) = host.strip_prefix("msp.") {
+                return format!("https://api.msp.{rest}/api/v1");
             }
         }
+        default_api_base()
+    }
+
+    /// The base to use when nothing else resolved.
+    ///
+    /// In a browser that is the same-origin `/api/v1`, which the `dx`
+    /// dev-server proxy and Caddy both serve.
+    #[cfg(all(feature = "web", target_arch = "wasm32"))]
+    fn default_api_base() -> String {
         "/api/v1".to_string()
+    }
+
+    /// MAPPS-504: a desktop binary has no origin, so a relative base
+    /// would address nothing. The build can bake one in with
+    /// `MOKOSH_API_BASE`; failing that this points at a mokosh-server on
+    /// the local machine, which is right for development and wrong
+    /// everywhere else, so a desktop install is expected to set
+    /// `api_base` in its `config.json` (see `crate::platform::config`).
+    #[cfg(all(feature = "web", not(target_arch = "wasm32")))]
+    fn default_api_base() -> String {
+        match option_env!("MOKOSH_API_BASE") {
+            Some(base) if !base.is_empty() => normalize_api_base(base),
+            _ => "http://localhost:8080/api/v1".to_string(),
+        }
     }
 
     /// PMS-758: the API's ORIGIN, without the `/api/v1` path.
@@ -525,11 +584,19 @@ pub mod api {
         set_access_token(None);
         // Clears the standalone session too (see `storage::clear_auth`).
         crate::modules::oidc::storage::clear_auth();
-        if let Some(win) = web_sys::window() {
-            if let Err(e) = win.location().set_href("/login") {
-                tracing::warn!("could not redirect to /login after signing out: {e:?}");
-            }
+        // MAPPS-504: in the browser the full reload is what drops the
+        // cleared state onto the login screen. A desktop window has no
+        // reload, so it raises `SESSION_ENDED` instead and the watcher at
+        // the app root (`crate::hooks::auth::use_session_end_watch`)
+        // clears `AuthContext`, which is what the route guard reads.
+        // Either way the user ends up on the login screen; what must not
+        // happen is the session ending with nothing on screen changing.
+        #[cfg(target_arch = "wasm32")]
+        if let Err(e) = crate::platform::location::set_href("/login") {
+            tracing::warn!("could not redirect to /login after signing out: {e}");
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        super::note_session_ended();
     }
 
     // MAPPS-395: the client-portal session token, a separate token class from
@@ -645,7 +712,7 @@ pub mod api {
     /// is the flat-string sibling for the many existing callers. Falls back
     /// to the status line when the body is not a recognised envelope.
     #[cfg(feature = "web")]
-    async fn status_error(response: gloo_net::http::Response) -> String {
+    async fn status_error(response: crate::platform::http::Response) -> String {
         let status = response.status();
         // A real HTTP response (even an error one) proves reachability; a
         // 5xx is classified as "down" (MAPPS-333).
@@ -909,29 +976,14 @@ pub mod api {
         mime: &str,
         bytes: &[u8],
     ) -> Result<T, ApiError> {
-        use wasm_bindgen::JsCast;
-
         ensure_fresh_access_token().await;
         let token = current_access_token()
             .ok_or_else(|| ApiError::Network("not authenticated".to_string()))?;
 
-        let array = js_sys::Uint8Array::from(bytes);
-        let parts = js_sys::Array::new();
-        parts.push(&array.buffer());
-        let opts = web_sys::BlobPropertyBag::new();
-        opts.set_type(mime);
-        let js_err =
-            |what: &str| ApiError::Network(format!("could not prepare the upload ({what})"));
-        let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &opts)
-            .map_err(|_| js_err("blob"))?;
-        let form = web_sys::FormData::new().map_err(|_| js_err("form"))?;
-        form.append_with_blob_and_filename("file", &blob, file_name)
-            .map_err(|_| js_err("part"))?;
-
         let url = format!("{}{}", api_base(), path);
         let resp = Request::put(&url)
             .header("Authorization", &format!("Bearer {token}"))
-            .body(form.unchecked_into::<wasm_bindgen::JsValue>())
+            .multipart_file(file_name, mime, bytes)
             .map_err(network_err)?
             .send()
             .await
@@ -1187,7 +1239,7 @@ pub mod api {
 
     #[cfg(feature = "web")]
     async fn handle_response<T: DeserializeOwned>(
-        response: gloo_net::http::Response,
+        response: crate::platform::http::Response,
     ) -> Result<T, ApiError> {
         let status = response.status();
         // Any response clears the "down" state; a 5xx sets it (MAPPS-333).

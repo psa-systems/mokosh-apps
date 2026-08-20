@@ -11,15 +11,11 @@
 //! UI updates without a reload; the root-level `use_apply_theme` hook
 //! covers the boot path (re-applies once on every mount).
 
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::JsCast;
-
 use crate::modules::theme::accents;
 use crate::utils::prefs;
 
 const THEME_KEY: &str = "mokosh_theme";
 const ACCENT_KEY: &str = "mokosh_accent";
-const HTML_DARK_CLASS: &str = "dark";
 
 /// Persisted theme preference. The string form is what's in
 /// localStorage; the enum is what the UI reads.
@@ -91,40 +87,22 @@ fn resolved_is_dark(theme: Theme) -> bool {
     }
 }
 
-#[cfg(feature = "web")]
+/// MAPPS-504: `prefers-color-scheme` in the browser, the window's tao
+/// theme on the desktop.
 fn system_prefers_dark() -> bool {
-    web_sys::window()
-        .and_then(|w| w.match_media("(prefers-color-scheme: dark)").ok().flatten())
-        .map(|m| m.matches())
-        .unwrap_or(false)
-}
-
-#[cfg(not(feature = "web"))]
-fn system_prefers_dark() -> bool {
-    false
+    crate::platform::dom::system_prefers_dark()
 }
 
 /// Apply the current theme to the `<html>` element. Toggles
 /// `class="dark"` (the Tailwind variant the SPA already uses).
-#[cfg(feature = "web")]
+///
+/// MAPPS-504: the two writes go through [`crate::platform::dom`], which
+/// touches the DOM directly in the browser and evaluates the equivalent
+/// script in the webview on the desktop.
 pub fn apply_now() {
-    let Some(win) = web_sys::window() else {
-        return;
-    };
-    let Some(doc) = win.document() else {
-        return;
-    };
-    let Some(root) = doc.document_element() else {
-        return;
-    };
     let is_dark = resolved_is_dark(current());
-    let class_list = root.class_list();
-    if is_dark {
-        let _ = class_list.add_1(HTML_DARK_CLASS);
-    } else {
-        let _ = class_list.remove_1(HTML_DARK_CLASS);
-    }
-    apply_accent(&root, is_dark);
+    crate::platform::dom::set_root_dark(is_dark);
+    apply_accent(is_dark);
 }
 
 /// Inject the current accent's ramp + per-base fill/on-accent as inline
@@ -132,15 +110,9 @@ pub fn apply_now() {
 /// defaults in `input.css`, so every `*-accent*` utility recolors live.
 /// The base surface/text/line variables are left to the stylesheet
 /// (driven by the `dark` class), so only the accent is dynamic here.
-#[cfg(feature = "web")]
-fn apply_accent(root: &web_sys::Element, is_dark: bool) {
-    use wasm_bindgen::JsCast;
-    let Some(html) = root.dyn_ref::<web_sys::HtmlElement>() else {
-        return;
-    };
+fn apply_accent(is_dark: bool) {
     let accent = current_accent();
     let variant = if is_dark { accent.dark } else { accent.light };
-    let style = html.style();
     const RAMP_VARS: [&str; 11] = [
         "--accent-50",
         "--accent-100",
@@ -154,46 +126,64 @@ fn apply_accent(root: &web_sys::Element, is_dark: bool) {
         "--accent-900",
         "--accent-950",
     ];
-    for (name, value) in RAMP_VARS.iter().zip(accent.ramp.iter()) {
-        let _ = style.set_property(name, value);
-    }
-    let _ = style.set_property("--accent", variant.fill);
-    let _ = style.set_property("--on-accent", variant.on_accent);
+    let mut vars: Vec<(&str, &str)> = RAMP_VARS
+        .iter()
+        .copied()
+        .zip(accent.ramp.iter().copied())
+        .collect();
+    vars.push(("--accent", variant.fill));
+    vars.push(("--on-accent", variant.on_accent));
+    crate::platform::dom::set_root_css_vars(&vars);
 }
-
-#[cfg(not(feature = "web"))]
-pub fn apply_now() {}
 
 /// Root-level hook. Mount once at `App`; applies the saved theme on
 /// boot and subscribes to OS-level dark-mode changes so `Theme::System`
 /// users follow the system in real time.
-#[cfg(feature = "web")]
+///
+/// MAPPS-504: the subscription is browser-only. tao delivers the desktop
+/// equivalent as a `ThemeChanged` window event, which needs the event
+/// handler MAPPS-511 adds; until then a desktop user on `Theme::System`
+/// picks up an OS theme change the next time the app starts.
 pub fn use_apply_theme() {
     use dioxus::prelude::*;
     use_effect(move || {
         apply_now();
-        let Some(win) = web_sys::window() else {
-            return;
-        };
-        let Some(media) = win
-            .match_media("(prefers-color-scheme: dark)")
-            .ok()
-            .flatten()
-        else {
-            return;
-        };
-        let cb = Closure::wrap(Box::new(move |_: web_sys::Event| {
-            // Only the System branch reacts to OS changes; the explicit
-            // settings already wrote the right class via `set`.
-            if matches!(current(), Theme::System) {
-                apply_now();
-            }
-        }) as Box<dyn FnMut(web_sys::Event)>);
-        let _ = media.add_event_listener_with_callback("change", cb.as_ref().unchecked_ref());
-        // Listener lives for the app's lifetime; nothing else removes it.
-        cb.forget();
+        #[cfg(target_arch = "wasm32")]
+        subscribe_to_system_theme();
     });
 }
 
-#[cfg(not(feature = "web"))]
-pub fn use_apply_theme() {}
+#[cfg(target_arch = "wasm32")]
+fn subscribe_to_system_theme() {
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen::JsCast;
+
+    let Some(win) = web_sys::window() else {
+        return;
+    };
+    let Some(media) = win
+        .match_media("(prefers-color-scheme: dark)")
+        .ok()
+        .flatten()
+    else {
+        return;
+    };
+    let cb = Closure::wrap(Box::new(move |_: web_sys::Event| {
+        // Only the System branch reacts to OS changes; the explicit
+        // settings already wrote the right class via `set`.
+        if matches!(current(), Theme::System) {
+            apply_now();
+        }
+    }) as Box<dyn FnMut(web_sys::Event)>);
+    if media
+        .add_event_listener_with_callback("change", cb.as_ref().unchecked_ref())
+        .is_err()
+    {
+        // Silently losing this leaves `Theme::System` users pinned to
+        // whatever the OS said at boot, with no way to tell why.
+        tracing::error!("could not subscribe to OS dark-mode changes");
+        return;
+    }
+    // Listener lives for the app's lifetime; nothing else removes it.
+    cb.forget();
+}

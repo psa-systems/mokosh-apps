@@ -107,25 +107,15 @@ impl FormGuard {
     }
 }
 
-/// Move keyboard focus to the field with the given DOM id. Gated on
-/// `target_arch = "wasm32"` (the repo convention for `web_sys`, see `lib.rs`):
-/// `web_sys` imports panic when called off-wasm, so on the host/test build this
-/// is a no-op rather than `feature = "web"` (which is on even for host tests).
-#[cfg(target_arch = "wasm32")]
+/// Move keyboard focus to the field with the given DOM id.
+///
+/// MAPPS-504: [`crate::platform::dom`] owns the target split. It reaches
+/// the element directly in the browser and evaluates the equivalent
+/// script in the webview on the desktop; on the host build, which
+/// renders nothing, it is a no-op.
 fn focus_field(id: &str) {
-    use wasm_bindgen::JsCast;
-    if let Some(element) = web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.get_element_by_id(id))
-    {
-        if let Ok(html) = element.dyn_into::<web_sys::HtmlElement>() {
-            let _ = html.focus();
-        }
-    }
+    crate::platform::dom::focus_by_id(id);
 }
-
-#[cfg(not(target_arch = "wasm32"))]
-fn focus_field(_id: &str) {}
 
 #[cfg(test)]
 mod tests {

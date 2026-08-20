@@ -47,12 +47,19 @@ pre-commit: css-build
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-web check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance
+check: check-web check-desktop check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance
 
 # Check web/WASM compilation
 [group: 'check']
 check-web:
     cargo check --target wasm32-unknown-unknown
+
+# MAPPS-504: check the native desktop build. `--no-default-features` drops
+# `web-renderer` so dioxus links the desktop renderer alone; `web` stays on
+# because it is the app-runtime gate, not a browser gate (see Cargo.toml).
+[group: 'check']
+check-desktop:
+    cargo check --no-default-features --features web,multi-tenant,desktop
 
 # MAPPS-259: fail on hardcoded neutral/brand color classes (use tokens). MAPPS-444: and on a red/green text class with no dark: pair. --self-test first, so a guard that stopped guarding fails loudly.
 [group: 'check']
@@ -254,6 +261,21 @@ test:
 [group: 'build']
 build: css-build
     dx build --release
+
+# MAPPS-504: run the desktop app against a local build.
+[group: 'dev']
+desktop-run: css-build
+    dx serve --platform desktop --no-default-features --features web,multi-tenant,desktop
+
+# MAPPS-504: build the desktop binary without launching it.
+[group: 'build']
+desktop-build: css-build
+    dx build --platform desktop --no-default-features --features web,multi-tenant,desktop
+
+# MAPPS-504: produce an installable desktop bundle for this platform.
+[group: 'build']
+desktop-bundle: css-build
+    dx bundle --release --platform desktop --no-default-features --features web,multi-tenant,desktop
 
 # Build OCI image for validation
 [group: 'check']

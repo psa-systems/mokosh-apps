@@ -1001,8 +1001,9 @@ struct CompanyPrefill {
 fn read_company_prefill_from_url() -> CompanyPrefill {
     #[cfg(feature = "web")]
     {
-        if let Some(search) = web_sys::window().and_then(|w| w.location().search().ok()) {
-            if let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) {
+        if let Some(search) = crate::platform::location::search() {
+            {
+                let params = crate::utils::url::QueryString::parse(&search);
                 let id = params.get("company_id").unwrap_or_default();
                 let name = params.get("company_name").unwrap_or_default();
                 if uuid::Uuid::parse_str(&id).is_ok() {
@@ -1030,8 +1031,9 @@ struct KbArticlePrefill {
 fn read_kb_prefill_from_url() -> KbArticlePrefill {
     #[cfg(feature = "web")]
     {
-        if let Some(search) = web_sys::window().and_then(|w| w.location().search().ok()) {
-            if let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) {
+        if let Some(search) = crate::platform::location::search() {
+            {
+                let params = crate::utils::url::QueryString::parse(&search);
                 let id = params.get("from_kb_article").unwrap_or_default();
                 let title = params.get("from_kb_title").unwrap_or_default();
                 let url = params.get("from_kb_url").unwrap_or_default();

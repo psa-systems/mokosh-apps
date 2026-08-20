@@ -1,7 +1,6 @@
 //! Modal dialog components
 
 use dioxus::prelude::*;
-use wasm_bindgen::JsCast;
 
 use super::button::{Button, ButtonVariant};
 use super::icon_button::IconButton;
@@ -97,17 +96,8 @@ fn ModalDialog(
     // Restore focus to the control that opened the modal. Capture the active
     // element on the first render, before the dialog steals focus on mount, and
     // restore it when this component unmounts (any close path).
-    let trigger = use_hook(|| {
-        web_sys::window()
-            .and_then(|w| w.document())
-            .and_then(|d| d.active_element())
-            .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok())
-    });
-    use_drop(move || {
-        if let Some(el) = trigger {
-            let _ = el.focus();
-        }
-    });
+    let trigger = use_hook(crate::platform::dom::capture_focus);
+    use_drop(move || trigger.restore());
 
     rsx! {
         ModalChrome { title, size, onclose, footer, subheader, {children} }
@@ -118,9 +108,9 @@ fn ModalDialog(
 /// scrolling body, pinned footer.
 ///
 /// Split out of [`ModalDialog`] so the layout can be rendered in a host test.
-/// `ModalDialog` reads `web_sys::window()` to restore focus on close, and a
-/// wasm-bindgen import cannot be called off wasm, so the dialog as a whole is
-/// unrenderable there. The structure is what PMS-763 was about, so the
+/// `ModalDialog` reads the focused element to restore focus on close, which
+/// only the browser build can do, so the dialog as a whole is not what the
+/// host test renders. The structure is what PMS-763 was about, so the
 /// structure is what the tests get to see - the real one, not a copy of it.
 #[component]
 fn ModalChrome(
@@ -505,7 +495,7 @@ fn ToastRow(props: ToastRowProps) -> Element {
             #[cfg(feature = "web")]
             {
                 dioxus::prelude::spawn(async move {
-                    gloo_timers::future::TimeoutFuture::new(ms).await;
+                    crate::platform::timer::sleep_ms(ms).await;
                     dismiss.call(id);
                 });
             }

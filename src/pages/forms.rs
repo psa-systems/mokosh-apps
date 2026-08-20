@@ -800,14 +800,7 @@ fn store_local_draft(id: Option<&str>, form: &DraftForm) {
 /// timestamp, so clock skew shifts which copy wins by the size of the skew and
 /// nothing worse.
 fn now_ms() -> f64 {
-    #[cfg(feature = "web")]
-    {
-        js_sys::Date::now()
-    }
-    #[cfg(not(feature = "web"))]
-    {
-        0.0
-    }
+    crate::platform::clock::now_ms() as f64
 }
 
 /// A draft the server holds, as `GET /forms/drafts` returns it.
@@ -1351,7 +1344,7 @@ fn FormEditorModal(
                     // The debounce. Every change spawns one of these; the ones
                     // whose snapshot has been superseded by the time they wake
                     // up drop out, so a burst of typing costs one request.
-                    gloo_timers::future::TimeoutFuture::new(DRAFT_DEBOUNCE_MS).await;
+                    crate::platform::timer::sleep_ms(DRAFT_DEBOUNCE_MS).await;
                     if latest_snapshot() != snapshot {
                         return;
                     }

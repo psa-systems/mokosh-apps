@@ -95,7 +95,7 @@ pub async fn replay_pending_edits() {
 
     // ---- local-first epic: replace the early-return above with this ----
     //
-    // use gloo_timers::future::TimeoutFuture;
+    // use crate::platform::timer::sleep_ms;
     //
     // // Snapshot + clear so new edits made during replay queue behind it.
     // let mut pending: Vec<PendingEdit> = EDIT_QUEUE.write().drain(..).collect();

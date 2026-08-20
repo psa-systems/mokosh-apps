@@ -108,8 +108,10 @@ impl OidcConfig {
         // image. Absent the override the compile-time default applies.
         let injected_scopes = crate::modules::runtime_config::get("oidc_scopes");
 
-        let host_rest = web_sys::window()
-            .and_then(|w| w.location().host().ok())
+        // MAPPS-504: `None` on the desktop, which has no host to derive
+        // from. A desktop install configures `oidc_issuer` / `hub_base_url`
+        // explicitly (see `crate::platform::config`) or runs standalone.
+        let host_rest = crate::platform::location::host()
             .and_then(|h| h.strip_prefix("msp.").map(str::to_string));
 
         if let Some(issuer) = injected_issuer {
@@ -156,8 +158,12 @@ impl OidcConfig {
         if let Some(s) = self.redirect_uri {
             return Ok(s.to_string());
         }
-        let win = web_sys::window().ok_or("no window")?;
-        let origin = win.location().origin().map_err(|_| "no origin")?;
+        // MAPPS-505 will give the desktop build a loopback redirect URI.
+        // Until then there is no origin to derive one from, and saying so
+        // is what makes `start_login` fail loudly instead of sending the
+        // OP a redirect_uri it cannot honour.
+        let origin = crate::platform::location::origin()
+            .ok_or("this build has no origin to derive a redirect URI from")?;
         Ok(format!("{origin}/auth/callback"))
     }
 }

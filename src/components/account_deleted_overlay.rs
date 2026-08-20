@@ -53,15 +53,12 @@ pub fn use_account_deleted() -> bool {
 fn build_hub_logout_url() -> String {
     let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
     let issuer = cfg.issuer.trim_end_matches('/');
-    let post_logout_target = web_sys::window()
-        .and_then(|w| w.location().origin().ok())
+    let post_logout_target = crate::platform::location::origin()
         .map(|origin| format!("{}/", origin.trim_end_matches('/')))
         .unwrap_or_else(|| cfg.hub_url("/"));
     format!(
         "{issuer}/v1/auth/logout?url={}",
-        js_sys::encode_uri_component(&post_logout_target)
-            .as_string()
-            .unwrap_or(post_logout_target)
+        crate::utils::url::encode_uri_component(&post_logout_target)
     )
 }
 
@@ -111,13 +108,11 @@ fn AccountDeletedTerminal() -> Element {
     use_effect(move || {
         let secs = *remaining.read();
         if secs == 0 {
-            if let Some(win) = web_sys::window() {
-                let _ = win.location().replace(&build_hub_logout_url());
-            }
+            crate::platform::location::replace(&build_hub_logout_url());
             return;
         }
         spawn(async move {
-            gloo_timers::future::TimeoutFuture::new(1000).await;
+            crate::platform::timer::sleep_ms(1000).await;
             let now = *remaining.peek();
             if now > 0 {
                 remaining.set(now - 1);
@@ -126,9 +121,7 @@ fn AccountDeletedTerminal() -> Element {
     });
 
     let sign_out_now = move |_| {
-        if let Some(win) = web_sys::window() {
-            let _ = win.location().replace(&build_hub_logout_url());
-        }
+        crate::platform::location::replace(&build_hub_logout_url());
     };
 
     let secs = *remaining.read();

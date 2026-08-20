@@ -12,14 +12,12 @@
 //! and the dropdown render. See `mokosh-server/src/modules/search/`
 //! for the SQL.
 
-use dioxus::prelude::*;
-use serde::Deserialize;
 #[cfg(feature = "web")]
-use wasm_bindgen::JsCast;
-
 use crate::components::Input;
 use crate::utils::url::urlencoding_minimal;
 use crate::Route;
+use dioxus::prelude::*;
+use serde::Deserialize;
 
 /// Mirror of the server's `SearchResponse` envelope.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -78,14 +76,7 @@ pub fn GlobalSearch() -> Element {
     #[cfg(feature = "web")]
     use_effect(move || {
         if expanded() {
-            if let Some(el) = web_sys::window()
-                .and_then(|w| w.document())
-                .and_then(|d| d.get_element_by_id("global_search"))
-            {
-                if let Ok(input) = el.dyn_into::<web_sys::HtmlElement>() {
-                    let _ = input.focus();
-                }
-            }
+            crate::platform::dom::focus_by_id("global_search");
         }
     });
 

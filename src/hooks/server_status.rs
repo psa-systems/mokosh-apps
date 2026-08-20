@@ -100,7 +100,7 @@ pub fn use_server_status_monitor() {
             return;
         }
         loop {
-            gloo_timers::future::TimeoutFuture::new(RECOVERY_POLL_SECS * 1000).await;
+            crate::platform::timer::sleep_ms(RECOVERY_POLL_SECS * 1000).await;
             // `probe` classifies its own result, so a recovered server
             // flips `SERVER_REACHABLE` back to `true` here.
             let _ = crate::hooks::fetch::api::probe("/ready").await;

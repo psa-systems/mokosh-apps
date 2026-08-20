@@ -8,6 +8,9 @@ pub mod components;
 pub mod hooks;
 pub mod modules;
 pub mod pages;
+// MAPPS-504: everything the app needs from its host, declared once and
+// implemented per target. Browser bindings are reachable only from here.
+pub mod platform;
 pub mod utils;
 
 pub use modules::auth::CurrentUser;
@@ -95,9 +98,9 @@ pub fn AuthGuard() -> Element {
     // placeholders). Bypass when the user is already on the
     // onboarding route itself, otherwise the AuthGuard would re-fire
     // its own redirect every render and loop. Reads the pathname out
-    // of `window.location` rather than the router's current Route
+    // of the current location rather than the router's current Route
     // because we need to make the comparison synchronously inside
-    // render; pulling from web_sys avoids a re-entrant signal read.
+    // render; reading the location avoids a re-entrant signal read.
     //
     // MAPPS-317: gate the redirect on `server_loaded` so the optimistic
     // rehydrate window (which sets profile_completed=true before /me
@@ -115,12 +118,8 @@ pub fn AuthGuard() -> Element {
             .as_ref()
             .is_some_and(|u| !u.profile_completed);
     if needs_onboarding {
-        #[cfg(target_arch = "wasm32")]
-        let on_onboarding_route = web_sys::window()
-            .and_then(|w| w.location().pathname().ok())
-            .is_some_and(|p| p == "/onboarding/profile");
-        #[cfg(not(target_arch = "wasm32"))]
-        let on_onboarding_route = false;
+        let on_onboarding_route =
+            crate::platform::location::pathname().is_some_and(|p| p == "/onboarding/profile");
         if !on_onboarding_route {
             tracing::info!(
                 target: "auth_guard",
@@ -210,10 +209,16 @@ fn RouteErrorFallback(errors: ErrorContext) -> Element {
             nav.replace(Route::Dashboard {});
         }
     };
-    let reload = move |_| {
-        #[cfg(target_arch = "wasm32")]
-        if let Some(win) = web_sys::window() {
-            let _ = win.location().reload();
+    let reload = {
+        let errors = errors.clone();
+        move |_| {
+            // MAPPS-504: a desktop window cannot reload a document, so it
+            // takes the same recovery the sibling "back to the dashboard"
+            // control does rather than doing nothing when clicked.
+            if !crate::platform::location::reload() {
+                errors.clear_errors();
+                nav.replace(Route::Dashboard {});
+            }
         }
     };
     let detail = format!("{errors:?}");
@@ -729,11 +734,8 @@ use pages::*;
 /// rather than `assign()` so the hub's URL takes over the history
 /// entry; the back button skips the dead mokosh-clients URL.
 fn redirect_to_hub(path: &str) {
-    if let Some(win) = web_sys::window() {
-        let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
-        let url = cfg.hub_url(path);
-        let _ = win.location().replace(&url);
-    }
+    let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
+    crate::platform::location::replace(&cfg.hub_url(path));
 }
 
 #[component]

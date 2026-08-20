@@ -42,10 +42,7 @@ fn restart_login(underlying: &str) -> Result<(), String> {
     log_auth_error(&format!(
         "auth callback: restarting the login flow (attempt {attempt} of {MAX_CALLBACK_RETRIES}): {underlying}"
     ));
-    let win = web_sys::window().ok_or_else(|| "no window".to_string())?;
-    win.location()
-        .replace("/login")
-        .map_err(|_| "location.replace(\"/login\") failed".to_string())
+    crate::platform::location::set_href("/login")
 }
 
 #[component]
@@ -64,7 +61,10 @@ pub fn AuthCallbackPage() -> Element {
         // the router skipped or deferred the rewrite. Replace happens on
         // both success and error so a failed exchange does not leave the
         // sensitive query string sitting in the URL bar either.
-        #[cfg(feature = "web")]
+        // MAPPS-504: browser-only, and it has nothing to strip anywhere
+        // else - the desktop build never reaches this route, because it
+        // has no redirect to come back from (MAPPS-505).
+        #[cfg(all(feature = "web", target_arch = "wasm32"))]
         if let Some(win) = web_sys::window() {
             if let Ok(history) = win.history() {
                 let _ = history.replace_state_with_url(
@@ -187,9 +187,8 @@ pub fn AuthCallbackPage() -> Element {
                 //   re-login loop.
                 match crate::modules::oidc::classify_return_to(&return_to) {
                     crate::modules::oidc::ReturnTarget::Restore => {
-                        if let Some(win) = web_sys::window() {
-                            let _ = win.location().set_href(&return_to);
-                        } else {
+                        if let Err(e) = crate::platform::location::set_href(&return_to) {
+                            tracing::warn!("could not restore {return_to}: {e}");
                             navigator.push(Route::Dashboard {});
                         }
                     }

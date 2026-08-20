@@ -4,8 +4,14 @@
 //! `/_mokosh_config.js` that sets `window.__MOKOSH_CONFIG__` from
 //! env vars at container start. This module is the SPA-side reader.
 //!
+//! MAPPS-504: on the desktop build there is no container and no window
+//! global, so the same fields come from a `config.json` in the per-user
+//! config directory (or a `MOKOSH_<FIELD>` environment variable). Both
+//! are read through [`crate::platform::config`]; the lookup order below
+//! is unchanged.
+//!
 //! Lookup order, in priority:
-//!   1. `window.__MOKOSH_CONFIG__.<field>` (this module)
+//!   1. `window.__MOKOSH_CONFIG__.<field>` / `config.json` (this module)
 //!   2. Host-prefix derivation for the canonical `msp.<tld>` deploys
 //!      (`api_base()` in `hooks::fetch::api`,
 //!      `OidcConfig::for_current_origin()`).
@@ -15,33 +21,14 @@
 //! window global is absent and every reader returns `None`, so the
 //! existing fallback chain kicks in unchanged.
 
-#[cfg(feature = "web")]
-use wasm_bindgen::JsValue;
-
-/// Read a string field off `window.__MOKOSH_CONFIG__`. Returns `None`
-/// when either the global, the field, or its string conversion is
-/// missing, and also when the resolved string is empty (operators
-/// who leave an env var unset get the same outcome as if it was
-/// never declared).
-#[cfg(feature = "web")]
+/// Read a string field of the runtime configuration. Returns `None`
+/// when it is absent or empty, so the caller's own fallback chain runs.
+///
+/// MAPPS-504: the source is [`crate::platform::config`] -
+/// `window.__MOKOSH_CONFIG__` in the browser, `config.json` under the
+/// per-user config directory on the desktop.
 pub fn get(field: &str) -> Option<String> {
-    let win = web_sys::window()?;
-    let cfg = js_sys::Reflect::get(&win, &JsValue::from_str("__MOKOSH_CONFIG__")).ok()?;
-    if cfg.is_undefined() || cfg.is_null() {
-        return None;
-    }
-    let value = js_sys::Reflect::get(&cfg, &JsValue::from_str(field)).ok()?;
-    let s = value.as_string()?;
-    if s.is_empty() {
-        None
-    } else {
-        Some(s)
-    }
-}
-
-#[cfg(not(feature = "web"))]
-pub fn get(_field: &str) -> Option<String> {
-    None
+    crate::platform::config::get(field)
 }
 
 /// MAPPS-329: read a boolean feature-flag field off `window.__MOKOSH_CONFIG__`.

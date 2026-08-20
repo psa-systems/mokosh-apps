@@ -219,20 +219,12 @@ const SIDEBAR_NAV_ID: &str = "mokosh-sidebar-nav";
 
 /// Read the current scroll offset of the sidebar nav from the DOM.
 fn read_sidebar_scroll() -> Option<i32> {
-    web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.get_element_by_id(SIDEBAR_NAV_ID))
-        .map(|el| el.scroll_top())
+    crate::platform::dom::scroll_top(SIDEBAR_NAV_ID)
 }
 
 /// Restore a previously recorded scroll offset onto the sidebar nav.
 fn restore_sidebar_scroll(top: i32) {
-    if let Some(el) = web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.get_element_by_id(SIDEBAR_NAV_ID))
-    {
-        el.set_scroll_top(top);
-    }
+    crate::platform::dom::set_scroll_top(SIDEBAR_NAV_ID, top);
 }
 
 /// MAPPS-358: while mokosh-server is unreachable, the sidebar collapses to
@@ -648,15 +640,13 @@ pub fn TopBar(props: TopBarProps) -> Element {
     // ASCII spelling; scripts/check-ellipsis-glyph.sh keeps it gone.
     #[cfg(feature = "web")]
     {
-        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-            let t = title.trim();
-            let next = if t.is_empty() || t == "Loading…" {
-                "Mokosh Platform".to_string()
-            } else {
-                format!("{} | Mokosh Platform", t)
-            };
-            doc.set_title(&next);
-        }
+        let t = title.trim();
+        let next = if t.is_empty() || t == "Loading…" {
+            "Mokosh Platform".to_string()
+        } else {
+            format!("{} | Mokosh Platform", t)
+        };
+        crate::platform::dom::set_title(&next);
     }
     rsx! {
         header { class: "h-16 flex items-center bg-surface-2 border-b border-line shrink-0 z-20",
@@ -780,15 +770,12 @@ fn UserMenu() -> Element {
     // the hub root when the browser origin is somehow unavailable
     // (server-side render path, mostly unreachable in `web` builds).
     let issuer = cfg.issuer.trim_end_matches('/');
-    let post_logout_target = web_sys::window()
-        .and_then(|w| w.location().origin().ok())
+    let post_logout_target = crate::platform::location::origin()
         .map(|origin| format!("{}/", origin.trim_end_matches('/')))
         .unwrap_or_else(|| cfg.hub_url("/"));
     let hub_logout = format!(
         "{issuer}/v1/auth/logout?url={}",
-        js_sys::encode_uri_component(&post_logout_target)
-            .as_string()
-            .unwrap_or(post_logout_target)
+        crate::utils::url::encode_uri_component(&post_logout_target)
     );
 
     let logout = move |_| {
@@ -821,9 +808,7 @@ fn UserMenu() -> Element {
             }
         }
         crate::modules::oidc::storage::clear_auth();
-        if let Some(win) = web_sys::window() {
-            let _ = win.location().replace(&hub_logout);
-        }
+        crate::platform::location::replace(&hub_logout);
     };
 
     rsx! {
@@ -1198,15 +1183,12 @@ fn PortalUserMenu() -> Element {
     // `GET /v1/auth/logout?url=<absolute>` clears the shared cookies and
     // 302s back to this SPA's origin root, signed out.
     let issuer = cfg.issuer.trim_end_matches('/');
-    let post_logout_target = web_sys::window()
-        .and_then(|w| w.location().origin().ok())
+    let post_logout_target = crate::platform::location::origin()
         .map(|origin| format!("{}/", origin.trim_end_matches('/')))
         .unwrap_or_else(|| cfg.hub_url("/"));
     let hub_logout = format!(
         "{issuer}/v1/auth/logout?url={}",
-        js_sys::encode_uri_component(&post_logout_target)
-            .as_string()
-            .unwrap_or(post_logout_target)
+        crate::utils::url::encode_uri_component(&post_logout_target)
     );
 
     let logout = move |_| {
@@ -1215,9 +1197,7 @@ fn PortalUserMenu() -> Element {
         // hard-navigate so the full reload resets in-memory auth state
         // without a router re-render racing the redirect.
         crate::modules::oidc::storage::clear_auth();
-        if let Some(win) = web_sys::window() {
-            let _ = win.location().replace(&hub_logout);
-        }
+        crate::platform::location::replace(&hub_logout);
     };
 
     rsx! {

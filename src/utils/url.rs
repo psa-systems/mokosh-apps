@@ -27,32 +27,25 @@ pub fn urlencoding_minimal(s: &str) -> String {
 /// MAPPS-249: the company context cards' "View All" links carry a
 /// `?company_id=<uuid>` so the destination list page can scope itself to that
 /// company. The list pages read it back through this helper. Returns `None`
-/// off-web, when the key is absent, or when its value is empty. Values are
+/// on a host with no URL, when the key is absent, or when its value is
+/// empty. Values are
 /// matched on the raw (percent-encoded) text; callers that need a decoded
 /// value should decode it themselves, but `company_id` is a bare UUID so no
 /// decoding is required.
 pub fn current_query_param(key: &str) -> Option<String> {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let search = web_sys::window()?.location().search().ok()?;
-        let search = search.strip_prefix('?').unwrap_or(&search);
-        for pair in search.split('&') {
-            let mut parts = pair.splitn(2, '=');
-            if parts.next() == Some(key) {
-                let value = parts.next().unwrap_or("").trim();
-                if value.is_empty() {
-                    return None;
-                }
-                return Some(value.to_string());
+    let search = crate::platform::location::search()?;
+    let search = search.strip_prefix('?').unwrap_or(&search);
+    for pair in search.split('&') {
+        let mut parts = pair.splitn(2, '=');
+        if parts.next() == Some(key) {
+            let value = parts.next().unwrap_or("").trim();
+            if value.is_empty() {
+                return None;
             }
+            return Some(value.to_string());
         }
-        None
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = key;
-        None
-    }
+    None
 }
 
 /// Extract the explicit URL scheme from `value`, lower-cased, if present.
@@ -105,9 +98,140 @@ pub fn safe_href(value: &str) -> Option<String> {
     }
 }
 
+/// `encodeURIComponent`, in Rust (MAPPS-504).
+///
+/// Percent-encodes every byte outside JavaScript's unreserved set
+/// (`A-Z a-z 0-9 - _ . ! ~ * ' ( )`), UTF-8 first. Replaces the
+/// `js_sys::encode_uri_component` calls that only existed because the
+/// browser had the function built in; there is nothing browser-specific
+/// about the rule, and having it here makes it testable on the host.
+pub fn encode_uri_component(s: &str) -> String {
+    const UNRESERVED: &[u8] = b"-_.!~*'()";
+    let mut out = String::with_capacity(s.len());
+    for byte in s.as_bytes() {
+        if byte.is_ascii_alphanumeric() || UNRESERVED.contains(byte) {
+            out.push(*byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// A parsed query string, standing in for `web_sys::UrlSearchParams`.
+///
+/// Same decoding rules: `+` is a space, `%XX` is a byte, and a key with
+/// no `=` has an empty value. Invalid UTF-8 in the decoded bytes is
+/// replaced rather than dropping the parameter, matching what the
+/// browser does with a malformed query.
+pub struct QueryString {
+    pairs: Vec<(String, String)>,
+}
+
+impl QueryString {
+    pub fn parse(search: &str) -> Self {
+        let trimmed = search.strip_prefix('?').unwrap_or(search);
+        let pairs = trimmed
+            .split('&')
+            .filter(|part| !part.is_empty())
+            .map(|part| match part.split_once('=') {
+                Some((k, v)) => (decode_component(k), decode_component(v)),
+                None => (decode_component(part), String::new()),
+            })
+            .collect();
+        Self { pairs }
+    }
+
+    /// First value for `key`, matching `UrlSearchParams::get`.
+    pub fn get(&self, key: &str) -> Option<String> {
+        self.pairs
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    }
+}
+
+fn decode_component(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                match u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        i += 3;
+                    }
+                    // Not a valid escape: pass the `%` through as a
+                    // literal, which is what browsers do.
+                    Err(_) => {
+                        out.push(b'%');
+                        i += 1;
+                    }
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{safe_href, scheme_of};
+    use super::{decode_component, encode_uri_component, safe_href, scheme_of, QueryString};
+
+    #[test]
+    fn encode_uri_component_matches_the_javascript_unreserved_set() {
+        assert_eq!(encode_uri_component("abcXYZ019"), "abcXYZ019");
+        assert_eq!(encode_uri_component("-_.!~*'()"), "-_.!~*'()");
+        assert_eq!(encode_uri_component("a b"), "a%20b");
+        assert_eq!(encode_uri_component("a&b=c"), "a%26b%3Dc");
+        assert_eq!(encode_uri_component("/path?x#y"), "%2Fpath%3Fx%23y");
+    }
+
+    #[test]
+    fn encode_uri_component_percent_encodes_utf8_bytes() {
+        // encodeURIComponent("é") === "%C3%A9"
+        assert_eq!(encode_uri_component("\u{e9}"), "%C3%A9");
+    }
+
+    #[test]
+    fn query_string_reads_values_the_way_urlsearchparams_does() {
+        let q = QueryString::parse("?code=abc&state=x%20y&empty=&plus=a+b");
+        assert_eq!(q.get("code"), Some("abc".to_string()));
+        assert_eq!(q.get("state"), Some("x y".to_string()));
+        assert_eq!(q.get("empty"), Some(String::new()));
+        assert_eq!(q.get("plus"), Some("a b".to_string()));
+        assert_eq!(q.get("absent"), None);
+    }
+
+    #[test]
+    fn query_string_tolerates_a_missing_leading_question_mark_and_bare_keys() {
+        let q = QueryString::parse("flag&code=1");
+        assert_eq!(q.get("flag"), Some(String::new()));
+        assert_eq!(q.get("code"), Some("1".to_string()));
+    }
+
+    #[test]
+    fn query_string_returns_the_first_value_for_a_repeated_key() {
+        let q = QueryString::parse("code=first&code=second");
+        assert_eq!(q.get("code"), Some("first".to_string()));
+    }
+
+    #[test]
+    fn decode_component_passes_through_a_malformed_escape() {
+        assert_eq!(decode_component("100%"), "100%");
+        assert_eq!(decode_component("%zz"), "%zz");
+        assert_eq!(decode_component("%C3%A9"), "\u{e9}");
+    }
 
     #[test]
     fn scheme_of_extracts_explicit_scheme_lowercased() {

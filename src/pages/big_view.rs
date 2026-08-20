@@ -47,21 +47,16 @@ fn use_periodic_tick(seconds: u32) -> Signal<u64> {
     use_effect(move || {
         #[cfg(feature = "web")]
         {
-            use wasm_bindgen::prelude::*;
-            use wasm_bindgen::JsCast;
-            let cb = Closure::wrap(Box::new(move || {
-                *tick.write() += 1;
-            }) as Box<dyn FnMut()>);
-            if let Some(win) = web_sys::window() {
-                let _ = win.set_interval_with_callback_and_timeout_and_arguments_0(
-                    cb.as_ref().unchecked_ref(),
-                    (seconds * 1000) as i32,
-                );
-            }
-            // The closure must live as long as the interval. Leak is
-            // fine here: the Big View routes are kiosk-mounted, the
-            // tab stays open for the lifetime of the session.
-            cb.forget();
+            // MAPPS-504: a spawned sleep loop rather than `setInterval`
+            // plus a leaked wasm closure. Same cadence, no browser
+            // binding, and the Big View routes are kiosk-mounted so the
+            // loop runs for the lifetime of the session either way.
+            dioxus::prelude::spawn(async move {
+                loop {
+                    crate::platform::timer::sleep_ms(seconds * 1000).await;
+                    *tick.write() += 1;
+                }
+            });
         }
         #[cfg(not(feature = "web"))]
         {
@@ -105,17 +100,12 @@ pub fn BigLayout(props: BigLayoutProps) -> Element {
     }
 }
 
+/// MAPPS-504: was `Date.prototype.toLocaleTimeString("en-US")`. The
+/// locale was pinned to `en-US` anyway, so the same rendering comes out
+/// of `chrono` on both targets ("3:45:12 PM"), in the machine's local
+/// zone.
 fn current_time_string() -> String {
-    #[cfg(feature = "web")]
-    {
-        if let Some(date) = web_sys::js_sys::Date::new_0()
-            .to_locale_time_string("en-US")
-            .as_string()
-        {
-            return date;
-        }
-    }
-    String::new()
+    chrono::Local::now().format("%-I:%M:%S %p").to_string()
 }
 
 // ===========================================================================

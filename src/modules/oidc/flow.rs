@@ -1,8 +1,14 @@
 //! `start_login` and `complete_login`: the two halves of the OIDC code
 //! flow as seen from a browser SPA.
+//!
+//! MAPPS-504: the desktop build compiles this but cannot run it - there
+//! is no origin for a `redirect_uri` and no document to redirect. It
+//! signs in through the standalone username/password path instead, and
+//! `start_login` reports that rather than failing quietly. MAPPS-505
+//! adds the RFC 8252 loopback flow that makes this work there too.
 
+use crate::platform::http::Request;
 use chrono::{Duration, Utc};
-use gloo_net::http::Request;
 use serde::Deserialize;
 
 use super::config::OidcConfig;
@@ -81,10 +87,13 @@ pub fn start_login(cfg: &OidcConfig, return_to: impl Into<String>) -> Result<(),
         url.push_str(&urlencode(v));
     }
 
-    let win = web_sys::window().ok_or_else(|| FlowError::Redirect("no window".into()))?;
-    win.location()
-        .set_href(&url)
-        .map_err(|_| FlowError::Redirect("set_href failed".into()))
+    // MAPPS-504/505: the desktop build has nowhere to be redirected TO,
+    // so this reports why instead of appearing to do nothing. The
+    // standalone username/password path (MAPPS-368) is what a desktop
+    // sign-in uses until the loopback flow lands.
+    crate::platform::location::set_href(&url).map_err(|e| {
+        FlowError::Redirect(format!("could not hand off to the identity provider: {e}"))
+    })
 }
 
 // Snapshot of `?code=...&state=...` taken before the Dioxus router
@@ -105,9 +114,7 @@ thread_local! {
 /// `dioxus::launch(App)` so the snapshot is taken before the Router
 /// has a chance to rewrite the URL.
 pub fn snapshot_initial_search() {
-    let s = web_sys::window()
-        .and_then(|w| w.location().search().ok())
-        .unwrap_or_default();
+    let s = crate::platform::location::search().unwrap_or_default();
     INITIAL_SEARCH.with(|cell| *cell.borrow_mut() = Some(s));
 }
 
@@ -115,7 +122,7 @@ fn current_search() -> String {
     INITIAL_SEARCH
         .with(|cell| cell.borrow().clone())
         .filter(|s| !s.is_empty())
-        .or_else(|| web_sys::window().and_then(|w| w.location().search().ok()))
+        .or_else(crate::platform::location::search)
         .unwrap_or_default()
 }
 
@@ -151,10 +158,9 @@ fn sanitize_return_to(path: &str, search: &str) -> String {
 /// routes that must never be a return target, and off-wasm where there is
 /// no window.
 pub fn current_return_to() -> String {
-    let Some(win) = web_sys::window() else {
+    let Some(path) = crate::platform::location::pathname() else {
         return String::new();
     };
-    let path = win.location().pathname().unwrap_or_default();
     sanitize_return_to(&path, &current_search())
 }
 
@@ -243,8 +249,7 @@ pub fn classify_flow_error(e: &FlowError) -> CallbackRecovery {
 /// to return to.
 pub async fn complete_login(cfg: &OidcConfig) -> Result<(Tokens, String), FlowError> {
     let search = current_search();
-    let params = web_sys::UrlSearchParams::new_with_str(&search)
-        .map_err(|_| FlowError::Redirect("UrlSearchParams".into()))?;
+    let params = crate::utils::url::QueryString::parse(&search);
     // Surface an OP error response before extracting code/state. An error
     // redirect carries no `code`, so checking code first masks the real
     // error as a generic "missing code".
@@ -531,10 +536,10 @@ fn form_encode(pairs: &[(&str, &str)]) -> String {
 
 fn urlencode(s: &str) -> String {
     // application/x-www-form-urlencoded percent-encoding. Spaces become
-    // `+`. We use js_sys's encodeURIComponent and then patch spaces.
-    let encoded = js_sys::encode_uri_component(s);
-    let s: String = encoded.into();
-    s.replace("%20", "+")
+    // `+`. MAPPS-504: `encode_uri_component` is now ours (it was
+    // `js_sys`'s), so this rule holds on both targets; the `%20` patch
+    // is unchanged.
+    crate::utils::url::encode_uri_component(s).replace("%20", "+")
 }
 
 #[cfg(test)]
