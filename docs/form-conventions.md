@@ -37,7 +37,42 @@ because a contract's company is immutable after creation (not a drift).
 
 `CompanyPicker` props: `value` (display name), `selected_id: Option<String>`,
 `required: bool`, `allow_inline_create: bool` (the "+ Create new company"
-affordance, PMS-352), `onselect: (id, name)`, `onclear`.
+affordance, PMS-352), `show_create_button: bool` (MAPPS-484, the same create
+modal on a "+ New company" button beside the input, so it is reachable without
+opening the dropdown; needs `allow_inline_create`, which owns the modal),
+`onselect: (id, name)`, `onclear`.
+
+### The contact form's two company paths
+
+The Contact form is the one form that can save a company name **without** a
+company (MAPPS-251 / PMS-402: a bare name and phone with no CRM record to point
+at). The two paths produce different data and are named for it (MAPPS-484):
+
+| Path | Control | Result |
+| --- | --- | --- |
+| Linked | `CompanyPicker`, including its "+ New company" button | A `companies` row plus `company_id` on the contact. The name appears under Companies. |
+| Typed | the "Enter a name without creating a company" text link under the picker | `company_name` on the contact only. No `companies` row, no `company_id`. |
+
+Rules that follow from the split:
+
+- The only control on the form labelled like a create is the picker's, and it
+  creates. A label of the "+ Add Company" shape on the typed path is the defect
+  MAPPS-484 fixed, and `company_source_tests` in `src/pages/contacts.rs` fails
+  if it returns.
+- Switching paths clears the other path's value, so exactly one company source
+  is ever submitted (the server rejects both together).
+- While the typed field holds a value, the form states the outcome in that
+  value: "Saved as a typed name. `<value>` will not appear under Companies."
+- **Any surface showing a company name says which of the two it is.** Link
+  colour is not a signal on its own: the contact detail page prints a muted
+  "not a company record" note under a typed name, and the contacts list appends
+  a muted "(typed)" in the company cell. A linked company shows neither.
+- A typed name is recoverable: the contact detail page's "Create this company"
+  POSTs `/contacts/companies` and then PUTs the contact's `company_id`. The
+  server clears the stored freeform name when `company_id` is set, so the name
+  becomes a link. Both calls report failure inline and log at `warn`; a created
+  company with a failed link says the company exists and the contact still
+  needs linking.
 
 ### Known follow-up
 

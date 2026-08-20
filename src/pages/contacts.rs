@@ -5,10 +5,10 @@ use serde::Deserialize;
 
 use crate::components::{
     asset_status_badge, contract_status_badge, invoice_status_badge, project_status_badge,
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, CollapsibleCard, DataTable,
-    ErrorBanner, IconSize, Modal, PageHeader, PlusIcon, SearchInput, Select, SelectOption,
-    SortDirection, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
-    TableRow,
+    use_page_title, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CollapsibleCard,
+    DataTable, ErrorBanner, IconSize, Modal, PageHeader, PlusIcon, SearchInput, Select,
+    SelectOption, SortDirection, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
+    TableLoading, TableRow,
 };
 use crate::modules::contacts::Address;
 use crate::utils::money::format_money_str;
@@ -3780,6 +3780,11 @@ fn ContactRow(props: ContactRowProps) -> Element {
                     }
                 } else {
                     span { class: "text-muted", "{props.company}" }
+                    // MAPPS-484: say the name is a typed string, not a company
+                    // record. Link colour alone was the only signal before.
+                    if !props.company.is_empty() {
+                        span { class: "text-subtle ml-1", "(typed)" }
+                    }
                 }
             }
             TableCell { "{props.email}" }
@@ -4013,6 +4018,28 @@ struct ContactFormValues {
     contact_type: String,
     company_id: String,
     company_name: String,
+}
+
+/// MAPPS-484: the contact form's two company paths, each named for what it
+/// does. The old freeform toggle read "+ Add Company", which is a create
+/// label on a control that creates nothing; the picker's own "+ New company"
+/// button is the create affordance now.
+const FREEFORM_TOGGLE_LABEL: &str = "Enter a name without creating a company";
+const LINK_COMPANY_TOGGLE_LABEL: &str = "Link an existing company";
+
+/// MAPPS-484: marks a company name that is a typed string rather than a
+/// `companies` row, so link colour is not the only signal.
+const FREEFORM_COMPANY_NOTE: &str = "Typed name - not a company record.";
+
+/// MAPPS-484: the consequence of the typed-name path, stated in the value the
+/// user typed. Empty while nothing has been typed, so the form renders no note.
+fn freeform_company_note(value: &str) -> String {
+    let name = value.trim();
+    if name.is_empty() {
+        String::new()
+    } else {
+        format!("Saved as a typed name. {name} will not appear under Companies.")
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4318,43 +4345,29 @@ fn ContactForm(props: ContactFormProps) -> Element {
                     }
                 }
 
-                // MAPPS-251: company is optional and can be entered two ways. The
-                // toggle flips between "link an existing CRM company" (the picker)
-                // and "+ Add Company" (a freeform typed name that creates no
-                // `companies` row). Switching modes clears the other mode's value
-                // so only one company source is ever submitted.
+                // MAPPS-251: company is optional and can be entered two ways -
+                // link an existing CRM company (the picker) or type a name that
+                // creates no `companies` row. Switching modes clears the other
+                // mode's value so only one company source is ever submitted.
+                // MAPPS-484: the picker's own "+ New company" button is the
+                // visible create affordance and it really does create; the
+                // typed-name path is a secondary text link named for what it
+                // does, because the old "+ Add Company" button created nothing.
                 div { class: "space-y-2",
-                    div { class: "flex items-center justify-between",
-                        span { class: "block text-sm font-medium text-content", "Company" }
-                        button {
-                            r#type: "button",
-                            class: "inline-flex items-center text-sm text-blue-600 hover:text-blue-500",
-                            onclick: move |_| {
-                                let next = !*freeform_mode.read();
-                                if next {
-                                    company_id.set(String::new());
-                                    company_name.set(String::new());
-                                } else {
-                                    freeform_company.set(String::new());
-                                }
-                                freeform_mode.set(next);
-                            },
-                            if *freeform_mode.read() {
-                                "Link existing company"
-                            } else {
-                                PlusIcon { size: IconSize::Small, class: "mr-1".to_string() }
-                                "Add Company"
-                            }
-                        }
-                    }
+                    span { class: "block text-sm font-medium text-content", "Company" }
                     if *freeform_mode.read() {
                         crate::components::Input {
                             name: "company_name_freeform",
                             value: freeform_company.read().clone(),
                             oninput: move |e: FormEvent| freeform_company.set(e.value()),
                         }
-                        p { class: "text-xs text-muted",
-                            "Typed company name only. Not linked to a CRM company record."
+                        // MAPPS-484: state the outcome in the user's own value
+                        // instead of the old "not linked to a CRM company record"
+                        // jargon. Empty until something is typed.
+                        if !freeform_company_note(&freeform_company.read()).is_empty() {
+                            p { class: "text-xs text-muted",
+                                {freeform_company_note(&freeform_company.read())}
+                            }
                         }
                     } else {
                         crate::components::CompanyPicker {
@@ -4369,6 +4382,10 @@ fn ContactForm(props: ContactFormProps) -> Element {
                             // distinct from the freeform path, it materializes a real
                             // `companies` row.
                             allow_inline_create: true,
+                            // MAPPS-484: and surface it as a button beside the
+                            // input, so a user with nothing to search for does
+                            // not have to open the dropdown to find it.
+                            show_create_button: true,
                             onselect: move |(id, name): (String, String)| {
                                 company_id.set(id);
                                 company_name.set(name);
@@ -4377,6 +4394,25 @@ fn ContactForm(props: ContactFormProps) -> Element {
                                 company_id.set(String::new());
                                 company_name.set(String::new());
                             },
+                        }
+                    }
+                    button {
+                        r#type: "button",
+                        class: "inline-flex items-center text-xs text-accent hover:opacity-90",
+                        onclick: move |_| {
+                            let next = !*freeform_mode.read();
+                            if next {
+                                company_id.set(String::new());
+                                company_name.set(String::new());
+                            } else {
+                                freeform_company.set(String::new());
+                            }
+                            freeform_mode.set(next);
+                        },
+                        if *freeform_mode.read() {
+                            {LINK_COMPANY_TOGGLE_LABEL}
+                        } else {
+                            {FREEFORM_TOGGLE_LABEL}
                         }
                     }
                 }
@@ -4401,6 +4437,14 @@ fn ContactForm(props: ContactFormProps) -> Element {
     }
 }
 
+/// MAPPS-484: the part of the created company's `CompanyResponse` the
+/// "Create this company" recovery needs to link the contact. Serde drops
+/// the rest.
+#[derive(Clone, Debug, Deserialize)]
+struct CreatedCompanyRef {
+    id: uuid::Uuid,
+}
+
 /// Contact detail page
 #[derive(Props, Clone, PartialEq)]
 pub struct ContactDetailPageProps {
@@ -4416,6 +4460,9 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     let id_for_edit = contact_id_str.clone();
     let id_for_delete = contact_id_str.clone();
     let id_for_portal = contact_id_str.clone();
+    // MAPPS-484: the id the "Create this company" recovery links the new
+    // company to.
+    let id_for_create_company = contact_id_str.clone();
 
     // MAPPS-357: the contact record is this detail page's primary resource
     // (the tickets list below is secondary and keeps degrading to its own
@@ -4461,6 +4508,13 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     let navigator = use_navigator();
     let mut deleting = use_signal(|| false);
     let portal_toggling = use_signal(|| false);
+    // MAPPS-484: state for "Create this company", the recovery path for a
+    // contact whose company is a typed name.
+    let mut creating_company = use_signal(|| false);
+    let mut create_company_error = use_signal(String::new);
+    // Holds the company created by a first attempt whose link then failed, so
+    // the retry links that row instead of creating a duplicate.
+    let mut created_company_id = use_signal(String::new);
     let edit_id = id_for_edit.clone();
     let delete_id = id_for_delete.clone();
     let mut confirming_delete = use_signal(|| false);
@@ -4572,6 +4626,82 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                 let contact_type = c.contact_type.clone();
                 let is_portal_user = c.is_portal_user;
                 let portal_id = id_for_portal.clone();
+                // MAPPS-484: turn a typed company name into a real `companies`
+                // row and link the contact to it. Two calls, each reported: the
+                // create, then the link. A create that succeeds with a failed
+                // link says so, naming both facts, so the half-state is never
+                // silent (the server clears the stored freeform name itself
+                // once `company_id` is set).
+                let create_name = company_name.clone();
+                let create_contact_id = id_for_create_company.clone();
+                let on_create_company = move |_| {
+                    if *creating_company.read() {
+                        return;
+                    }
+                    let name = create_name.clone();
+                    let contact_id = create_contact_id.clone();
+                    creating_company.set(true);
+                    create_company_error.set(String::new());
+                    spawn(async move {
+                        #[cfg(feature = "web")]
+                        {
+                            // A retry after a failed link must link the company
+                            // the first attempt created, not create a second one
+                            // under the same name.
+                            let already_created = created_company_id.read().clone();
+                            let company_id = if already_created.is_empty() {
+                                let body = serde_json::json!({ "name": name });
+                                match crate::hooks::fetch::api::post_authed::<CreatedCompanyRef, _>(
+                                    "/contacts/companies",
+                                    &body,
+                                )
+                                .await
+                                {
+                                    Ok(created) => {
+                                        let id = created.id.to_string();
+                                        created_company_id.set(id.clone());
+                                        id
+                                    }
+                                    Err(err) => {
+                                        tracing::warn!(
+                                            "creating company \"{name}\" from contact {contact_id} failed: {err}"
+                                        );
+                                        create_company_error
+                                            .set(format!("Could not create {name}: {err}"));
+                                        creating_company.set(false);
+                                        return;
+                                    }
+                                }
+                            } else {
+                                already_created
+                            };
+                            let path = format!("/contacts/contacts/{contact_id}");
+                            let link_body = serde_json::json!({ "company_id": company_id });
+                            match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(
+                                &path, &link_body,
+                            )
+                            .await
+                            {
+                                Ok(_) => {
+                                    crate::hooks::toast::push_toast(
+                                        crate::components::AlertType::Success,
+                                        "Company created and linked.",
+                                    );
+                                    contact.restart();
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        "linking contact {contact_id} to new company {company_id} failed: {err}"
+                                    );
+                                    create_company_error.set(format!(
+                                        "{name} was created under Companies, but this contact still needs linking: {err}"
+                                    ));
+                                }
+                            }
+                        }
+                        creating_company.set(false);
+                    });
+                };
                 rsx! {
                     div { class: "grid grid-cols-1 lg:grid-cols-3 gap-6",
                         div { class: "lg:col-span-2 space-y-6",
@@ -4651,6 +4781,29 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                                     }
                                                 } else {
                                                     span { class: "text-content", "{company_name}" }
+                                                    // MAPPS-484: say what the name is, and
+                                                    // offer the one click that turns it into
+                                                    // a real `companies` row. Before this the
+                                                    // only way out was retyping the name on
+                                                    // the Companies form.
+                                                    p { class: "text-xs text-subtle", {FREEFORM_COMPANY_NOTE} }
+                                                    if !create_company_error.read().is_empty() {
+                                                        p {
+                                                            class: "text-xs text-red-600 dark:text-red-400 mt-1",
+                                                            role: "alert",
+                                                            "{create_company_error}"
+                                                        }
+                                                    }
+                                                    Button {
+                                                        variant: ButtonVariant::Secondary,
+                                                        size: ButtonSize::Small,
+                                                        class: "mt-2".to_string(),
+                                                        loading: *creating_company.read(),
+                                                        disabled: !can_mutate,
+                                                        title: (!can_mutate).then(|| "Can't create a company while the server is unreachable".to_string()),
+                                                        onclick: on_create_company,
+                                                        "Create this company"
+                                                    }
                                                 }
                                             }
                                         }
@@ -5144,5 +5297,60 @@ mod validation_tests {
         // Unknown / absent values pass through verbatim rather than vanishing.
         assert_eq!(humanize_contact_type("escalation"), "escalation");
         assert_eq!(humanize_contact_type(""), "");
+    }
+}
+
+#[cfg(test)]
+mod company_source_tests {
+    use super::{
+        freeform_company_note, FREEFORM_COMPANY_NOTE, FREEFORM_TOGGLE_LABEL,
+        LINK_COMPANY_TOGGLE_LABEL,
+    };
+
+    /// MAPPS-484: the visible create affordance is the picker's "+ New
+    /// company" button, which creates a `companies` row. Neither company
+    /// control that does NOT create may read like one, which is what the old
+    /// "+ Add Company" label did.
+    #[test]
+    fn neither_toggle_label_promises_a_create() {
+        for label in [FREEFORM_TOGGLE_LABEL, LINK_COMPANY_TOGGLE_LABEL] {
+            let lowered = label.to_lowercase();
+            assert!(
+                !lowered.contains("add "),
+                "{label} reads like a create action but creates nothing"
+            );
+            assert!(
+                !lowered.contains("new compan"),
+                "{label} reads like a create action but creates nothing"
+            );
+        }
+        assert_eq!(
+            FREEFORM_TOGGLE_LABEL,
+            "Enter a name without creating a company"
+        );
+    }
+
+    /// The note names the value and the consequence, and says nothing until
+    /// something has been typed.
+    #[test]
+    fn freeform_note_names_the_value_and_the_consequence() {
+        assert_eq!(
+            freeform_company_note("PugTsurani"),
+            "Saved as a typed name. PugTsurani will not appear under Companies."
+        );
+        // Trimmed, so the note reads the same as the value that gets submitted.
+        assert_eq!(
+            freeform_company_note("  PugTsurani  "),
+            "Saved as a typed name. PugTsurani will not appear under Companies."
+        );
+        assert!(freeform_company_note("").is_empty());
+        assert!(freeform_company_note("   ").is_empty());
+    }
+
+    /// The read side says what the name is rather than leaving link colour as
+    /// the only signal.
+    #[test]
+    fn read_side_note_says_it_is_not_a_record() {
+        assert!(FREEFORM_COMPANY_NOTE.contains("not a company record"));
     }
 }

@@ -65,6 +65,14 @@ pub struct CompanyPickerProps {
     /// entry pickers do not want the affordance.
     #[props(default)]
     pub allow_inline_create: bool,
+    /// MAPPS-484: render a "+ New company" button beside the input that opens
+    /// the same create modal `allow_inline_create` puts in the dropdown. The
+    /// dropdown affordance only exists once the dropdown is open, so a form
+    /// that needs a visible create control sets this too. Default off, so no
+    /// existing call site changes; ignored without `allow_inline_create`,
+    /// which owns the modal.
+    #[props(default)]
+    pub show_create_button: bool,
 }
 
 /// Subset of the server's `CompanyResponse` the inline-create modal
@@ -85,6 +93,9 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
     // the user doesn't have to re-type the company name they were
     // already searching for.
     let allow_inline_create = props.allow_inline_create;
+    // MAPPS-484: the modal lives behind `allow_inline_create`, so the button
+    // that opens it cannot render without it.
+    let show_create_button = props.show_create_button && allow_inline_create;
     let mut show_create_modal = use_signal(|| false);
     let mut new_name = use_signal(String::new);
     let mut creating = use_signal(|| false);
@@ -153,22 +164,51 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
 
     let snap = results.read_unchecked();
     let onselect = props.onselect;
+    // The button sits beside the input, so it drops by the height of the
+    // label when the picker renders one.
+    let create_button_class = if props.label.is_empty() {
+        "whitespace-nowrap"
+    } else {
+        "whitespace-nowrap mt-6"
+    };
+    let query_for_button = query_text.clone();
     rsx! {
         div { class: "relative space-y-1",
-            Input {
-                name: "company_search",
-                label: props.label,
-                placeholder: "Search companies…",
-                required: props.required,
-                // MAPPS-322: forward the parent's validation message so a
-                // blank-company submit paints the red border + inline error
-                // on the picker, matching every other required field.
-                error: props.error.clone(),
-                value: query.read().clone(),
-                oninput: move |e: FormEvent| {
-                    query.set(e.value());
-                    show_dropdown.set(true);
-                },
+            div { class: "flex items-start gap-2",
+                div { class: "flex-1 min-w-0",
+                    Input {
+                        name: "company_search",
+                        label: props.label,
+                        placeholder: "Search companies…",
+                        required: props.required,
+                        // MAPPS-322: forward the parent's validation message so a
+                        // blank-company submit paints the red border + inline error
+                        // on the picker, matching every other required field.
+                        error: props.error.clone(),
+                        value: query.read().clone(),
+                        oninput: move |e: FormEvent| {
+                            query.set(e.value());
+                            show_dropdown.set(true);
+                        },
+                    }
+                }
+                // MAPPS-484: the visible create affordance. Opens the same
+                // modal as the in-dropdown "Create new company", so what it
+                // creates is a real `companies` row, not a typed name.
+                if show_create_button {
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        class: create_button_class.to_string(),
+                        onclick: move |_| {
+                            new_name.set(query_for_button.clone());
+                            create_error.set(String::new());
+                            show_dropdown.set(false);
+                            show_create_modal.set(true);
+                        },
+                        PlusIcon { size: IconSize::Small, class: "mr-1".to_string() }
+                        "New company"
+                    }
+                }
             }
             if *show_dropdown.read() {
                 // Transparent full-viewport backdrop: a click anywhere outside
