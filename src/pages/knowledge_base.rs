@@ -10,6 +10,11 @@
 //!   - `POST /api/v1/kb/articles/{id}/versions/{n}/restore`
 //!   - `POST /api/v1/kb/articles/{id}/helpful` and `/not_helpful`
 //!
+//! A `client_specific` article carries a company scope (`company_ids`,
+//! PMS-341): the article form submits it, the edit form reads it back and
+//! resolves each id to a name through `GET /contacts/companies/{id}`, and the
+//! detail page and list badge show what an article is scoped to (MAPPS-515).
+//!
 //! Structure and conventions mirror `crate::pages::contacts`: every
 //! list/detail view reads `active_tenant_generation()` inside its
 //! `use_resource` closure so an org switch / token swap re-fetches, the
@@ -254,6 +259,109 @@ fn visibility_label(raw: &str) -> (String, BadgeVariant) {
         "" => ("Internal".to_string(), BadgeVariant::Blue),
         other => (other.to_string(), BadgeVariant::Gray),
     }
+}
+
+/// MAPPS-515: the visibility badge for an article, with the scoped-company
+/// count appended for a `client_specific` one ("Client-specific (2)"), so a
+/// scoped article is distinguishable from a broken one without a second fetch.
+/// [`visibility_label`] stays the shared label source; only the count is added
+/// here.
+fn client_specific_badge_label(visibility: &str, count: usize) -> String {
+    let (label, _) = visibility_label(visibility);
+    if visibility == "client_specific" {
+        format!("{label} ({count})")
+    } else {
+        label
+    }
+}
+
+/// MAPPS-515: label on the control that opens the company picker on the
+/// article form, by count. Same rule as the contact form's
+/// `add_company_label`: "add" here means add another company to the scope, and
+/// never create a company record.
+fn add_scope_company_label(selected: usize) -> &'static str {
+    if selected == 0 {
+        "Add a company"
+    } else {
+        "Add another company"
+    }
+}
+
+/// MAPPS-515: display label for one scoped company. The resolved name, or the
+/// raw id when the name lookup failed, so a failed lookup is still a visible,
+/// removable row instead of a blank line.
+fn company_label(id: &str, name: &str) -> String {
+    if name.trim().is_empty() {
+        id.to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+/// MAPPS-515: the article form's submit guard for the company scope. The
+/// server 422s a `client_specific` article with an empty `company_ids`
+/// (`KbService::create_article`), so the form blocks it rather than sending a
+/// request it knows will be rejected.
+fn company_scope_error(visibility: &str, companies: &[(String, String)]) -> Option<&'static str> {
+    if visibility == "client_specific" && companies.is_empty() {
+        Some("Select at least one company for a client-specific article.")
+    } else {
+        None
+    }
+}
+
+/// MAPPS-515: what saving under a non-client-specific visibility does to the
+/// selected companies, stated in the user's own values. The server clears the
+/// stored scope for any other visibility, so this note is what keeps that
+/// clear from being silent. Empty when there is nothing to lose.
+fn company_scope_clear_note(visibility: &str, companies: &[(String, String)]) -> String {
+    if companies.is_empty() || visibility == "client_specific" {
+        return String::new();
+    }
+    let (label, _) = visibility_label(visibility);
+    let names: Vec<String> = companies
+        .iter()
+        .map(|(id, name)| company_label(id, name))
+        .collect();
+    format!(
+        "Saving as {label} removes the company scope ({}).",
+        names.join(", ")
+    )
+}
+
+/// One company name, the subset of the server's `CompanyResponse` the KB
+/// pages read when resolving a `client_specific` article's scope (MAPPS-515).
+#[derive(Clone, Debug, serde::Deserialize)]
+struct CompanyNameRow {
+    #[serde(default)]
+    name: String,
+}
+
+/// MAPPS-515: resolve `company_ids` to `(id, name)` pairs, in the order the
+/// server returned them, through the same `GET /contacts/companies/{id}` call
+/// `ContextFilterBanner` makes.
+///
+/// A lookup that fails keeps the id with an empty name (logged at `warn`, and
+/// the caller labels the row with the id and says the name is unavailable).
+/// Dropping the id instead would silently revoke that client's access to the
+/// article on the next save.
+async fn resolve_company_names(ids: &[uuid::Uuid]) -> Vec<(String, String)> {
+    let mut rows = Vec::with_capacity(ids.len());
+    for id in ids {
+        let name = match crate::hooks::fetch::api::get_authed::<CompanyNameRow>(&format!(
+            "/contacts/companies/{id}"
+        ))
+        .await
+        {
+            Ok(row) => row.name,
+            Err(err) => {
+                tracing::warn!("company name lookup failed for {id}: {err}");
+                String::new()
+            }
+        };
+        rows.push((id.to_string(), name));
+    }
+    rows
 }
 
 /// Truncate an ISO timestamp to its date portion for compact display.
@@ -1006,6 +1114,7 @@ pub fn KBArticleListPage(
                                         title: article.title,
                                         status: article.status,
                                         visibility: article.visibility,
+                                        company_count: article.company_ids.len(),
                                         updated: date_only(&article.updated_at),
                                         tags: article.tags,
                                     }
@@ -1025,6 +1134,9 @@ struct ArticleRowProps {
     title: String,
     status: String,
     visibility: String,
+    /// MAPPS-515: how many companies a `client_specific` article is scoped to.
+    #[props(default)]
+    company_count: usize,
     updated: String,
     #[props(default)]
     tags: Vec<String>,
@@ -1034,7 +1146,8 @@ struct ArticleRowProps {
 fn ArticleRow(props: ArticleRowProps) -> Element {
     let navigator = use_navigator();
     let id = props.id.clone();
-    let (vis_label, vis_variant) = visibility_label(&props.visibility);
+    let (_, vis_variant) = visibility_label(&props.visibility);
+    let vis_label = client_specific_badge_label(&props.visibility, props.company_count);
     let raw_status = if props.status.is_empty() {
         "draft"
     } else {
@@ -1200,6 +1313,27 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
             rating.set((a.helpful_count, a.not_helpful_count));
         }
     });
+
+    // MAPPS-515: the article's company scope, resolved to names. The ids
+    // arrive with the article, so an effect copies them into a signal the
+    // lookup resource keys on (the same shape the rating effect above uses).
+    // A failed name lookup keeps the id as the chip label rather than
+    // dropping the company from the list.
+    let mut scope_ids = use_signal(Vec::<uuid::Uuid>::new);
+    use_effect(move || {
+        if let Some(Some(a)) = &*article_resource.read_unchecked() {
+            scope_ids.set(a.company_ids.clone());
+        }
+    });
+    let scoped_companies_resource = use_resource(move || {
+        let ids = scope_ids();
+        async move { resolve_company_names(&ids).await }
+    });
+    let scoped_companies: Vec<(String, String)> = match &*scoped_companies_resource.read_unchecked()
+    {
+        Some(rows) => rows.clone(),
+        None => Vec::new(),
+    };
 
     // Seed my_vote (and refine counts) from GET /kb/articles/{id}/vote once
     // the article id is available. Declared unconditionally for rules-of-hooks.
@@ -1371,9 +1505,28 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                             }
                             div { class: "mt-2 flex items-center justify-between gap-3 flex-wrap",
                                 h1 { class: "text-2xl sm:text-3xl font-bold text-content truncate", "{article.title}" }
-                                div { class: "flex items-center gap-2",
+                                div { class: "flex items-center gap-2 flex-wrap",
                                     Badge { variant: status_variant, "{status_label}" }
                                     Badge { variant: vis_variant, "{vis_label}" }
+                                    // MAPPS-515: who a client-specific article is
+                                    // for. An empty scope is only reachable for
+                                    // data written before PMS-341 and makes the
+                                    // article invisible to every portal user, so
+                                    // it is called out instead of left as a gap.
+                                    if article.visibility == "client_specific" {
+                                        if article.company_ids.is_empty() {
+                                            Badge { variant: BadgeVariant::Red, "No companies scoped" }
+                                        } else {
+                                            for (company_id , company_name) in scoped_companies.iter().cloned() {
+                                                Link {
+                                                    key: "{company_id}",
+                                                    to: Route::CompanyDetail { id: company_id.clone() },
+                                                    class: "inline-flex items-center rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium text-accent hover:opacity-90",
+                                                    {company_label(&company_id, &company_name)}
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             p { class: "mt-1 text-xs text-subtle", "Updated {updated}" }
@@ -1603,6 +1756,10 @@ struct ArticleFormValues {
     status: String,
     content: String,
     tags: String,
+    /// MAPPS-515: the company scope for a `client_specific` article, as
+    /// `(id, name)` pairs in selection order. A pair with an empty name is an
+    /// id whose lookup failed; the id is kept so saving cannot drop it.
+    companies: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1651,9 +1808,21 @@ pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
             // MAPPS-357: subscribe to reachability so the article (this edit
             // page's primary resource) auto-refetches on reconnect.
             let _reachable = crate::hooks::use_server_reachable();
-            crate::hooks::fetch::api::get_authed::<KbArticle>(&format!("/kb/articles/{id}"))
+            match crate::hooks::fetch::api::get_authed::<KbArticle>(&format!("/kb/articles/{id}"))
                 .await
-                .ok()
+            {
+                // MAPPS-515: resolve the company scope in the same pass, so
+                // the form mounts with its company rows already seeded (its
+                // signals seed once, from `initial`).
+                Ok(article) => {
+                    let companies = resolve_company_names(&article.company_ids).await;
+                    Some((article, companies))
+                }
+                Err(err) => {
+                    tracing::warn!("edit article load failed for {id}: {err}");
+                    None
+                }
+            }
         }
     });
     let snap = article_resource.read_unchecked();
@@ -1691,7 +1860,7 @@ pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
                     }
                 }
             },
-            Some(Some(article)) => {
+            Some(Some((article, companies))) => {
                 let initial = ArticleFormValues {
                     title: article.title.clone(),
                     slug: article.slug.clone(),
@@ -1709,6 +1878,7 @@ pub fn KBArticleEditPage(props: KBArticleEditPageProps) -> Element {
                     },
                     content: article.content.clone(),
                     tags: article.tags.join(", "),
+                    companies: companies.clone(),
                 };
                 let id = id_for_form.clone();
                 rsx! {
@@ -1758,6 +1928,15 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     // PMS-518: per-field inline error slots, fed by the FormGuard on submit.
     let mut title_error = use_signal(String::new);
     let mut content_error = use_signal(String::new);
+    // MAPPS-515: the company scope of a `client_specific` article. `companies`
+    // is the selection (kept across a visibility change, so switching back
+    // restores it), `adding_company` opens the picker, `company_add_note`
+    // carries the "already selected" reply, and `company_error` is the
+    // picker's inline slot (MAPPS-322).
+    let mut companies = use_signal(|| initial.companies.clone());
+    let mut adding_company = use_signal(|| false);
+    let mut company_add_note = use_signal(String::new);
+    let mut company_error = use_signal(String::new);
 
     // Category dropdown options, fetched live.
     let categories_resource = use_resource(move || async move {
@@ -1819,6 +1998,45 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         title_error.set(guard.field("title", &title_val, "Title", &[Rule::Required]));
         let content_val = content.read().to_string();
         content_error.set(guard.field("content", content_val.trim(), "Body", &[Rule::Required]));
+
+        // MAPPS-515: the company scope. A `client_specific` article with no
+        // company is a guaranteed server 422, so it is blocked here with the
+        // message on the picker; evaluated alongside the fields above so one
+        // failure never masks another (PMS-518).
+        let visibility_val = visibility.read().clone();
+        match company_scope_error(&visibility_val, &companies.read()) {
+            Some(message) => {
+                company_error.set(message.to_string());
+                // Open the picker so the message has its slot to render in.
+                adding_company.set(true);
+                guard.note_invalid(Some("company_search"));
+            }
+            None => company_error.set(String::new()),
+        }
+
+        // The ids are server-issued UUIDs (picked, or read back from the
+        // article), so a value that will not parse means the round-trip is
+        // corrupt. Block rather than send the set without it: a dropped id
+        // silently revokes that client's access to the article.
+        let mut company_ids: Vec<uuid::Uuid> = Vec::new();
+        let mut unparsable: Vec<String> = Vec::new();
+        for (id, _) in companies.read().iter() {
+            match id.parse::<uuid::Uuid>() {
+                Ok(parsed) => company_ids.push(parsed),
+                Err(err) => {
+                    tracing::warn!("scoped company id `{id}` is not a UUID: {err}");
+                    unparsable.push(id.clone());
+                }
+            }
+        }
+        if !unparsable.is_empty() {
+            error.set(format!(
+                "Could not save article: {} of the selected companies could not be identified. Remove and re-add them, then save again.",
+                unparsable.len()
+            ));
+            guard.note_invalid(Some("company_search"));
+        }
+
         if guard.blocked() {
             return;
         }
@@ -1850,9 +2068,15 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                 raw.parse::<uuid::Uuid>().ok()
             }
         };
-        let visibility_val = visibility.read().clone();
         let status_val = status.read().clone();
         let tags_vec: Vec<String> = sanitize_tags(&tags.read());
+        // MAPPS-515: the server ignores and clears the scope for any other
+        // visibility, so `None` is the honest payload there.
+        let company_ids_opt = if visibility_val == "client_specific" {
+            Some(company_ids)
+        } else {
+            None
+        };
 
         let mode = mode.clone();
         spawn(async move {
@@ -1869,6 +2093,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                             visibility: visibility_val.clone(),
                             status: status_val.clone(),
                             tags: tags_vec.clone(),
+                            company_ids: company_ids_opt.clone(),
                         };
                         crate::hooks::fetch::api::post_authed::<KbArticle, _>("/kb/articles", &body)
                             .await
@@ -1884,6 +2109,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                             visibility: Some(visibility_val.clone()),
                             status: Some(status_val.clone()),
                             tags: Some(tags_vec.clone()),
+                            company_ids: company_ids_opt.clone(),
                         };
                         let path = format!("/kb/articles/{id}");
                         crate::hooks::fetch::api::put_authed::<KbArticle, _>(&path, &body)
@@ -1904,6 +2130,33 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
         });
     };
 
+    // MAPPS-515: company-scope view state. The selection survives a visibility
+    // change (so switching back inside one edit restores it); the block itself
+    // only renders for `client_specific`, and the note below the Visibility
+    // select states what saving under another visibility drops.
+    let company_rows: Vec<(String, String)> = companies.read().clone();
+    let visibility_now = visibility.read().clone();
+    let show_company_block = visibility_now == "client_specific";
+    let scope_clear_note = company_scope_clear_note(&visibility_now, &company_rows);
+    let unresolved_names = company_rows
+        .iter()
+        .filter(|(_, name)| name.trim().is_empty())
+        .count();
+    // A name lookup that failed is reported, not hidden. The ids stay in the
+    // list and still save, so the scope cannot silently shrink because a name
+    // was missing.
+    let unresolved_note = if unresolved_names == 0 {
+        String::new()
+    } else {
+        let noun = if unresolved_names == 1 {
+            "company name"
+        } else {
+            "company names"
+        };
+        format!("Could not load {unresolved_names} {noun} for this article's scope. Those companies are listed by id below and stay scoped when you save.")
+    };
+    let picker_open = *adding_company.read();
+
     rsx! {
         Card {
             form {
@@ -1912,6 +2165,11 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
 
                 if !error.read().is_empty() {
                     ErrorBanner { "{error.read()}" }
+                }
+
+                // MAPPS-515: the failed name lookups, at form level.
+                if !unresolved_note.is_empty() {
+                    ErrorBanner { "{unresolved_note}" }
                 }
 
                 crate::components::Input {
@@ -1962,12 +2220,23 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                         value: category_id.read().clone(),
                         onchange: move |e: FormEvent| category_id.set(e.value()),
                     }
-                    Select {
-                        name: "visibility",
-                        label: "Visibility",
-                        options: visibility_options,
-                        value: visibility.read().clone(),
-                        onchange: move |e: FormEvent| visibility.set(e.value()),
+                    div { class: "space-y-1",
+                        Select {
+                            name: "visibility",
+                            label: "Visibility",
+                            options: visibility_options,
+                            value: visibility.read().clone(),
+                            onchange: move |e: FormEvent| {
+                                company_error.set(String::new());
+                                visibility.set(e.value());
+                            },
+                        }
+                        // MAPPS-515: the server clears the stored scope under
+                        // any other visibility. Say so, in the author's own
+                        // values, instead of letting the save do it silently.
+                        if !scope_clear_note.is_empty() {
+                            p { class: "text-xs text-muted", role: "status", "{scope_clear_note}" }
+                        }
                     }
                     Select {
                         name: "status",
@@ -1975,6 +2244,104 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                         options: status_options,
                         value: status.read().clone(),
                         onchange: move |e: FormEvent| status.set(e.value()),
+                    }
+                }
+
+                // MAPPS-515: the company scope. Only a `client_specific`
+                // article has one, and the server requires it to be non-empty.
+                if show_company_block {
+                    fieldset { class: "space-y-2",
+                        legend { class: "block text-sm font-medium text-content", "Companies" }
+                        p { class: "text-xs text-muted",
+                            "Only these companies see this article in the client portal."
+                        }
+                        for (index , (company_id , company_name)) in company_rows.iter().cloned().enumerate() {
+                            div {
+                                key: "{company_id}",
+                                class: "flex items-center justify-between gap-3 rounded-md border border-line p-3",
+                                div { class: "min-w-0",
+                                    p { class: "text-sm font-medium text-content truncate",
+                                        {company_label(&company_id, &company_name)}
+                                    }
+                                    if company_name.trim().is_empty() {
+                                        p { class: "text-xs text-muted",
+                                            "Name unavailable. This company stays scoped to the article."
+                                        }
+                                    }
+                                }
+                                crate::components::IconButton {
+                                    label: "Remove company".to_string(),
+                                    class: "p-1 text-subtle hover:text-red-600 dark:hover:text-red-400".to_string(),
+                                    onclick: move |_| {
+                                        companies.write().remove(index);
+                                        company_add_note.set(String::new());
+                                    },
+                                    TrashIcon { size: IconSize::Small }
+                                }
+                            }
+                        }
+                        if picker_open {
+                            crate::components::CompanyPicker {
+                                value: String::new(),
+                                selected_id: None,
+                                label: String::new(),
+                                required: false,
+                                // Scoping an article is not the place to create a
+                                // CRM company record; the contact and project
+                                // forms remain the paths that do.
+                                allow_inline_create: false,
+                                // MAPPS-322: the submit guard's message lands
+                                // here, beside the control that fixes it.
+                                error: company_error.read().clone(),
+                                onselect: move |(id, name): (String, String)| {
+                                    if companies.read().iter().any(|(existing, _)| existing == &id) {
+                                        company_add_note
+                                            .set(format!("{name} is already scoped to this article."));
+                                        return;
+                                    }
+                                    companies.write().push((id, name));
+                                    company_error.set(String::new());
+                                    company_add_note.set(String::new());
+                                    adding_company.set(false);
+                                },
+                                onclear: move |_| { company_add_note.set(String::new()); },
+                            }
+                        }
+                        if !company_add_note.read().is_empty() {
+                            p { class: "text-xs text-muted", role: "status", "{company_add_note}" }
+                        }
+                        div { class: "flex flex-wrap items-center gap-3",
+                            if picker_open {
+                                button {
+                                    r#type: "button",
+                                    class: "inline-flex items-center text-xs text-accent hover:opacity-90",
+                                    onclick: move |_| {
+                                        company_add_note.set(String::new());
+                                        adding_company.set(false);
+                                    },
+                                    "Don't add a company"
+                                }
+                            } else {
+                                Button {
+                                    variant: ButtonVariant::Secondary,
+                                    size: ButtonSize::Small,
+                                    onclick: move |_| {
+                                        company_add_note.set(String::new());
+                                        adding_company.set(true);
+                                    },
+                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                    {add_scope_company_label(company_rows.len())}
+                                }
+                            }
+                        }
+                        // The picker owns the inline message while it is open;
+                        // with it closed the guard's message would have nowhere
+                        // to render, so the block carries it here.
+                        if !picker_open && !company_error.read().is_empty() {
+                            p { class: "text-xs text-red-600 dark:text-red-400", role: "alert",
+                                "{company_error}"
+                            }
+                        }
                     }
                 }
 
@@ -2743,6 +3110,7 @@ mod tests {
             not_helpful_count: 0,
             published_at: None,
             tags: vec![],
+            company_ids: vec![],
             created_at: None,
             updated_at: None,
         }
@@ -2845,5 +3213,84 @@ mod tests {
         // Whitespace-only, comma-only, and control-character-only entries drop out.
         assert_eq!(sanitize_tags("  , \t , a , "), vec!["a".to_string()]);
         assert!(sanitize_tags("").is_empty());
+    }
+
+    // MAPPS-515: the company-scope rules.
+
+    fn scope(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(id, name)| (id.to_string(), name.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn company_scope_error_only_for_empty_client_specific() {
+        // The one case the server 422s.
+        assert_eq!(
+            company_scope_error("client_specific", &[]),
+            Some("Select at least one company for a client-specific article.")
+        );
+        // One company is enough.
+        assert_eq!(
+            company_scope_error("client_specific", &scope(&[("id-1", "Acme Corp")])),
+            None
+        );
+        // Every other visibility saves with no company at all.
+        assert_eq!(company_scope_error("internal", &[]), None);
+        assert_eq!(company_scope_error("public", &[]), None);
+        assert_eq!(company_scope_error("", &[]), None);
+    }
+
+    #[test]
+    fn company_scope_clear_note_names_what_is_lost() {
+        let selected = scope(&[("id-1", "Acme Corp"), ("id-2", "Globex")]);
+        assert_eq!(
+            company_scope_clear_note("internal", &selected),
+            "Saving as Internal removes the company scope (Acme Corp, Globex)."
+        );
+        assert_eq!(
+            company_scope_clear_note("public", &selected),
+            "Saving as Public removes the company scope (Acme Corp, Globex)."
+        );
+        // Nothing to lose: no selection, or the visibility that keeps it.
+        assert!(company_scope_clear_note("internal", &[]).is_empty());
+        assert!(company_scope_clear_note("client_specific", &selected).is_empty());
+        // A company whose name did not resolve is still named, by its id, so
+        // the note never understates what the save drops.
+        assert_eq!(
+            company_scope_clear_note("internal", &scope(&[("id-1", "")])),
+            "Saving as Internal removes the company scope (id-1)."
+        );
+    }
+
+    #[test]
+    fn client_specific_badge_label_carries_the_count() {
+        assert_eq!(
+            client_specific_badge_label("client_specific", 2),
+            "Client-specific (2)"
+        );
+        // A scoped-to-nothing article reads as (0) rather than as a plain
+        // Client-specific badge, since no portal user can see it.
+        assert_eq!(
+            client_specific_badge_label("client_specific", 0),
+            "Client-specific (0)"
+        );
+        // Every other visibility keeps the shared label untouched.
+        assert_eq!(client_specific_badge_label("internal", 0), "Internal");
+        assert_eq!(client_specific_badge_label("public", 3), "Public");
+        assert_eq!(client_specific_badge_label("", 0), "Internal");
+    }
+
+    #[test]
+    fn company_label_falls_back_to_the_id() {
+        assert_eq!(company_label("id-1", "Acme Corp"), "Acme Corp");
+        assert_eq!(company_label("id-1", "   "), "id-1");
+    }
+
+    #[test]
+    fn add_scope_company_label_reads_by_count() {
+        assert_eq!(add_scope_company_label(0), "Add a company");
+        assert_eq!(add_scope_company_label(1), "Add another company");
     }
 }

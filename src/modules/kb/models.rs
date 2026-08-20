@@ -66,6 +66,12 @@ pub struct KbArticle {
     pub published_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// MAPPS-515: companies a `client_specific` article is scoped to; empty
+    /// for `public` / `internal`. The article form round-trips this set, and
+    /// the portal filter matches on it, so an empty set on a client-specific
+    /// article means no client can see it.
+    #[serde(default)]
+    pub company_ids: Vec<Uuid>,
     #[serde(default)]
     pub created_at: Option<DateTime<Utc>>,
     #[serde(default)]
@@ -140,6 +146,10 @@ pub struct CreateKbArticleRequest {
     pub visibility: String,
     pub status: String,
     pub tags: Vec<String>,
+    /// MAPPS-515: required (non-empty) when `visibility = client_specific`;
+    /// `None` for any other visibility, which the server stores as an empty
+    /// scope.
+    pub company_ids: Option<Vec<Uuid>>,
 }
 
 /// `UpdateKbArticleRequest`. Every field is optional; the edit form sends
@@ -154,6 +164,10 @@ pub struct UpdateKbArticleRequest {
     pub visibility: Option<String>,
     pub status: Option<String>,
     pub tags: Option<Vec<String>>,
+    /// MAPPS-515: the company scope. `Some(ids)` when the submitted
+    /// visibility is `client_specific`; `None` otherwise, since the server
+    /// clears the stored scope for any other visibility anyway.
+    pub company_ids: Option<Vec<Uuid>>,
 }
 
 /// PMS-485: one row of the `/kb/top-ticket-driving-articles` feed used

@@ -18,6 +18,7 @@ Use a plain `Select` for small, bounded lookups.
 | Work type, status, priority, type, queue, category, tax rate, payment term | native `Select` | Fixed/short tenant-config lookups. |
 | Asset (on a ticket) | `crate::components::AssetPicker` (autocomplete) | Assets can be numerous. |
 | Contact (attach to company) | `crate::components::ContactPicker` (autocomplete) | Contacts can be numerous. |
+| Company scope (KB article, MAPPS-515) | `crate::components::CompanyPicker`, multi-select, `allow_inline_create: false` | Same roster, so the same picker; an article takes several companies, and scoping an article is not a place to create a CRM company record. |
 
 Native `Select` popups are themed by element-level `option` / `optgroup` rules in
 `input.css` (MAPPS-479), so no call site adds option styling. Colors come from the
@@ -69,8 +70,8 @@ click-to-open, arrow navigation and Tab-commit.
 
 ### Company picker - every call site uses `CompanyPicker`
 
-Ticket, Contact, Asset, Contract (create), Project, Invoice, and the Record-Payment
-form all use `CompanyPicker`. The Contract **edit** form keeps a disabled `Select`
+Ticket, Contact, Asset, Contract (create), Project, Invoice, the Record-Payment
+form, and the KB article form's company scope all use `CompanyPicker`. The Contract **edit** form keeps a disabled `Select`
 because a contract's company is immutable after creation (not a drift).
 
 `CompanyPicker` props: `value` (display name), `selected_id: Option<String>`,
