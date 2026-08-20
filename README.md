@@ -194,3 +194,7 @@ Something else is bound to `${HOST_IP}:4301`. Find it with `ss --tcp --listening
 
 **`HOST_IP` is empty:**
 The `dev` recipe reads `sys net | where name =~ 'eth0|br0'`. If neither interface has an IPv4 address, the recipe fails. Check `ip --brief address show` and edit the regex to match the right interface.
+
+## Development happens on Forgejo
+
+The development home for this repository is <https://dev.a8n.run/psa-systems/mokosh-apps>. The [GitHub](https://github.com/psa-systems/mokosh-apps) and [Codeberg](https://codeberg.org/psa-systems/mokosh-apps) copies are read-only mirrors that exist for visibility only: issues and pull requests are disabled there, and no community support runs on the mirrors. File issues and open pull requests on Forgejo.
