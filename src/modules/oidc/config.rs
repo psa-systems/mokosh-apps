@@ -17,6 +17,12 @@ pub struct OidcConfig {
     /// stubs so existing bookmarks land on the hub instead of a 404. No
     /// trailing slash.
     pub hub_base_url: &'static str,
+    /// MAPPS-453: base URL of the documentation subdomain (e.g.
+    /// `https://docs.n.niceguyit.biz`), runtime-injected via
+    /// `window.__MOKOSH_CONFIG__.docs_base_url` (`MOKOSH_DOCS_URL`). Empty when
+    /// unconfigured, which hides the Documentation menu entry and the help
+    /// links. No trailing slash.
+    pub docs_base_url: &'static str,
 }
 
 impl OidcConfig {
@@ -42,6 +48,14 @@ impl OidcConfig {
             hub_base_url: match option_env!("MOKOSH_HUB_BASE_URL") {
                 Some(s) => s,
                 None => "http://localhost:4400",
+            },
+            // MAPPS-453: empty by default. Set via MOKOSH_DOCS_URL /
+            // window.__MOKOSH_CONFIG__.docs_base_url; unset means no docs
+            // subdomain, so the menu entry and help links stay hidden rather
+            // than pointing somewhere wrong.
+            docs_base_url: match option_env!("MOKOSH_DOCS_URL") {
+                Some(s) => s,
+                None => "",
             },
         }
     }
@@ -132,6 +146,11 @@ impl OidcConfig {
             cfg.hub_base_url = Box::leak(format!("https://{rest}").into_boxed_str());
         }
 
+        // MAPPS-453: docs subdomain is injection/env only (no host derivation).
+        if let Some(docs) = crate::modules::runtime_config::get("docs_base_url") {
+            cfg.docs_base_url = Box::leak(docs.into_boxed_str());
+        }
+
         if let Some(scopes) = injected_scopes {
             cfg.scopes = Box::leak(scopes.into_boxed_str());
         }
@@ -152,6 +171,20 @@ impl OidcConfig {
         !self.issuer.trim().is_empty()
     }
 
+    /// MAPPS-453: absolute URL to a documentation article on the docs
+    /// subdomain. `path` is joined to the configured base with one slash
+    /// boundary, mirroring [`hub_url`](Self::hub_url).
+    pub fn docs_url(&self, path: &str) -> String {
+        format!("{}{}", self.docs_base_url.trim_end_matches('/'), path)
+    }
+
+    /// MAPPS-453: whether a documentation subdomain is configured. When false
+    /// the Documentation menu entry and every `ContextualHelpLink` render
+    /// nothing, so an unconfigured deploy shows no link to a missing docs site.
+    pub fn has_docs(&self) -> bool {
+        !self.docs_base_url.trim().is_empty()
+    }
+
     /// Resolve the redirect_uri. Falls back to `<origin>/auth/callback`
     /// at runtime when not pinned at compile time.
     pub fn resolve_redirect_uri(&self) -> Result<String, &'static str> {
@@ -165,5 +198,39 @@ impl OidcConfig {
         let origin = crate::platform::location::origin()
             .ok_or("this build has no origin to derive a redirect URI from")?;
         Ok(format!("{origin}/auth/callback"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OidcConfig;
+
+    fn with_docs(base: &'static str) -> OidcConfig {
+        let mut cfg = OidcConfig::from_env();
+        cfg.docs_base_url = base;
+        cfg
+    }
+
+    #[test]
+    fn docs_url_joins_base_and_path_with_one_slash() {
+        assert_eq!(
+            with_docs("https://docs.example.test/").docs_url("/tickets/sla"),
+            "https://docs.example.test/tickets/sla"
+        );
+        assert_eq!(
+            with_docs("https://docs.example.test").docs_url("/tickets/sla"),
+            "https://docs.example.test/tickets/sla"
+        );
+        assert_eq!(
+            with_docs("https://docs.example.test").docs_url(""),
+            "https://docs.example.test"
+        );
+    }
+
+    #[test]
+    fn has_docs_reflects_configuration() {
+        assert!(with_docs("https://docs.example.test").has_docs());
+        assert!(!with_docs("").has_docs());
+        assert!(!with_docs("   ").has_docs());
     }
 }

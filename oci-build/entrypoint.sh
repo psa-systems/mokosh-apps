@@ -74,6 +74,9 @@ if ! {
     emit_field oidc_issuer "${MOKOSH_OIDC_ISSUER:-}"
     emit_field oidc_client_id "${MOKOSH_OIDC_CLIENT_ID:-}"
     emit_field hub_base_url "${MOKOSH_HUB_BASE_URL:-}"
+    # MAPPS-453: documentation subdomain base URL (e.g. https://docs.n.niceguyit.biz).
+    # Unset hides the Documentation menu entry and every contextual help link.
+    emit_field docs_base_url "${MOKOSH_DOCS_URL:-}"
     # BUNYIP-142: requested scope string for /oauth2/authorize. Default
     # compile-time value is "openid email offline_access"; operators
     # opting in to bunyip's profile/phone claim emission set this to
