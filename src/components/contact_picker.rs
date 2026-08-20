@@ -21,6 +21,7 @@ use serde::Deserialize;
 use crate::components::{
     Button, ButtonSize, ButtonVariant, ErrorBanner, IconSize, Input, Modal, ModalSize, PlusIcon,
 };
+use crate::hooks::use_dropdown_nav;
 use crate::utils::url::urlencoding_minimal;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -120,7 +121,8 @@ impl CreatedContact {
 #[component]
 pub fn ContactPicker(props: ContactPickerProps) -> Element {
     let mut query = use_signal(String::new);
-    let mut show_dropdown = use_signal(|| false);
+    // MAPPS-503: open / highlight state and the shared keyboard contract.
+    let mut nav = use_dropdown_nav("contact-picker");
     let mut editing = use_signal(|| false);
     // MAPPS-276: inline-create modal state. Same shape as the
     // CompanyPicker's. `new_first`/`new_last` seed the form when opened
@@ -152,10 +154,13 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
             if let Some(cid) = company_filter.as_ref().filter(|s| !s.is_empty()) {
                 path.push_str(&format!("&company_id={}", urlencoding_minimal(cid)));
             }
+            // MAPPS-503: keep the failure. `.ok()` here made a failed search
+            // indistinguishable from "still loading", so the panel sat on
+            // "Searching…" forever with nothing logged.
             crate::hooks::fetch::api::get_authed::<PickerPage>(&path)
                 .await
-                .ok()
                 .map(|p| p.data)
+                .inspect_err(|e| tracing::warn!("contact search failed: {e}"))
         }
     });
 
@@ -188,7 +193,7 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                                 onclear.call(());
                                 query.set(String::new());
                                 editing.set(true);
-                                show_dropdown.set(true);
+                                nav.open();
                             },
                             "Change"
                         }
@@ -200,45 +205,96 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
 
     let snap = results.read_unchecked();
     let onselect = props.onselect;
+    // MAPPS-503: the navigable rows. The inline create action is the last
+    // one, so Down reaches it, and it only counts while a result list is
+    // actually rendered (not under "Searching…" or the failure banner).
+    let rows: Vec<PickerContact> = match &*snap {
+        Some(Ok(rows)) => rows.clone(),
+        _ => Vec::new(),
+    };
+    let loaded = matches!(&*snap, Some(Ok(_)));
+    let create_index = if allow_inline_create && loaded {
+        Some(rows.len())
+    } else {
+        None
+    };
+    let nav_len = rows.len() + usize::from(create_index.is_some());
+    let rows_for_keys = rows.clone();
+    let query_for_keys = query_text.clone();
     rsx! {
         div { class: "relative space-y-1",
-            Input {
-                name: "contact_search",
-                label: props.label,
-                placeholder: "Search contacts…",
-                required: props.required,
-                value: query.read().clone(),
-                oninput: move |e: FormEvent| {
-                    query.set(e.value());
-                    show_dropdown.set(true);
+            // MAPPS-503: combobox seam. The handlers live on this wrapper
+            // rather than on the shared `Input` (MAPPS-347), where keydown
+            // from the focused input bubbles up to them.
+            div {
+                role: "combobox",
+                aria_expanded: nav.expanded(),
+                aria_controls: nav.panel_id(),
+                aria_activedescendant: nav.active_descendant(),
+                onfocusin: move |_| nav.open(),
+                onclick: move |_| nav.open(),
+                onkeydown: move |e: KeyboardEvent| {
+                    let rows = rows_for_keys.clone();
+                    let seed = query_for_keys.clone();
+                    nav.keydown(&e, nav_len, move |index| {
+                        match rows.get(index) {
+                            Some(row) => {
+                                let name = row.display_name();
+                                onselect.call((row.id.to_string(), name.clone()));
+                                editing.set(false);
+                                query.set(name);
+                            }
+                            // Past the last result row: the inline create action.
+                            None => {
+                                seed_create_form(&seed, &mut new_first, &mut new_last);
+                                new_email.set(String::new());
+                                create_error.set(String::new());
+                                show_create_modal.set(true);
+                            }
+                        }
+                    });
                 },
+                Input {
+                    name: "contact_search",
+                    label: props.label,
+                    placeholder: "Search contacts…",
+                    required: props.required,
+                    value: query.read().clone(),
+                    oninput: move |e: FormEvent| {
+                        query.set(e.value());
+                        nav.open_fresh();
+                    },
+                }
             }
-            if *show_dropdown.read() {
+            if nav.is_open() {
                 // Transparent full-viewport backdrop dismisses the
                 // dropdown on click-outside; sits below it (z-10 vs z-20)
                 // so the rows stay clickable.
                 div {
                     class: "fixed inset-0 z-10",
                     onclick: move |_| {
-                        show_dropdown.set(false);
+                        nav.close();
                         editing.set(false);
                     },
                 }
                 div {
+                    id: nav.panel_id(),
+                    role: "listbox",
                     class: "dropdown-panel absolute z-20 left-0 right-0 mt-1 max-h-72 overflow-y-auto",
                     match &*snap {
                         None => rsx! {
                             div { class: "px-3 py-2 text-sm text-muted", "Searching…" }
                         },
-                        Some(None) => rsx! {
-                            // MAPPS-444: the only signal the list failed, so it
-                            // takes the shared banner (paired hues, role="alert").
-                            // `m-1` keeps its border off the dropdown's own edge.
-                            ErrorBanner { class: "m-1", "Could not load contacts." }
+                        // MAPPS-503: a failed search is its own state, distinct
+                        // from "Searching…" and "No matches."
+                        // MAPPS-444: it takes the shared banner (paired hues,
+                        // role="alert"); `m-1` keeps its border off the
+                        // dropdown's own edge.
+                        Some(Err(_)) => rsx! {
+                            ErrorBanner { class: "m-1", "Could not search. Try again." }
                         },
-                        Some(Some(rows)) if rows.is_empty() => {
-                            let query_for_seed = query_text.clone();
-                            rsx! {
+                        Some(Ok(_)) => rsx! {
+                            if rows.is_empty() {
                                 div { class: "px-3 py-2 text-sm text-muted",
                                     if query_text.is_empty() {
                                         "No contacts yet."
@@ -246,46 +302,11 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                                         "No matches."
                                     }
                                 }
-                                // MAPPS-276: inline create affordance. Opt-in
-                                // per parent so contact picker call sites
-                                // that should only attach existing contacts
-                                // stay unchanged.
-                                // MAPPS-320: render it in a visually distinct
-                                // band (gap + top border + muted background +
-                                // leading icon) so a hurried click can't be
-                                // confused with an existing match.
-                                if allow_inline_create {
-                                    div { class: "mt-1 border-t border-line",
-                                        button {
-                                            r#type: "button",
-                                            class: "flex w-full items-center gap-1.5 text-left px-3 py-2 text-sm bg-surface-2/50 text-accent hover:bg-accent-50 dark:hover:bg-accent-900/30",
-                                            onclick: move |_| {
-                                                seed_create_form(&query_for_seed, &mut new_first, &mut new_last);
-                                                new_email.set(String::new());
-                                                create_error.set(String::new());
-                                                show_dropdown.set(false);
-                                                show_create_modal.set(true);
-                                            },
-                                            PlusIcon { size: IconSize::Small }
-                                            if query_text.is_empty() {
-                                                "Create new contact"
-                                            } else {
-                                                {
-                                                    let q = query_text.clone();
-                                                    rsx! { "Create \"{q}\"" }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        Some(Some(rows)) => {
-                            let rows = rows.clone();
-                            let query_for_seed = query_text.clone();
-                            rsx! {
-                                ul { class: "py-1",
-                                    for row in rows.into_iter() {
+                            } else {
+                                // MAPPS-503: `role="none"` so the rows stay the
+                                // listbox panel's own options.
+                                ul { class: "py-1", role: "none",
+                                    for (index , row) in rows.iter().enumerate() {
                                         {
                                             let id_str = row.id.to_string();
                                             let key = id_str.clone();
@@ -303,12 +324,19 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                                             rsx! {
                                                 li {
                                                     key: "{key}",
+                                                    id: nav.row_id(index),
+                                                    role: "option",
+                                                    aria_selected: nav.row_selected(index),
                                                     button {
                                                         r#type: "button",
-                                                        class: "w-full text-left px-3 py-2 text-sm hover:bg-surface-2",
+                                                        // MAPPS-503: out of the tab order, so Tab
+                                                        // commits and moves to the next field
+                                                        // instead of walking into the list.
+                                                        tabindex: "-1",
+                                                        class: nav.row_class(index, "w-full text-left px-3 py-2 text-sm hover:bg-surface-2"),
                                                         onclick: move |_| {
                                                             onselect.call((id_for_click.clone(), name_for_click.clone()));
-                                                            show_dropdown.set(false);
+                                                            nav.close();
                                                             editing.set(false);
                                                             query.set(name_for_click.clone());
                                                         },
@@ -325,34 +353,46 @@ pub fn ContactPicker(props: ContactPickerProps) -> Element {
                                         }
                                     }
                                 }
-                                // MAPPS-276: inline-create affordance at the
-                                // bottom of the populated list so a user
-                                // searching for a similar-name contact who
-                                // is not actually in the list can still
-                                // create one without leaving the form.
-                                // MAPPS-320: visually distinct Create band
-                                // (gap + top border + muted background +
-                                // leading icon) so a fat-finger click on the
-                                // bottom match can't bleed into Create.
-                                if allow_inline_create {
-                                    div { class: "mt-1 border-t border-line",
-                                        button {
-                                            r#type: "button",
-                                            class: "flex w-full items-center gap-1.5 text-left px-3 py-2 text-sm bg-surface-2/50 text-accent hover:bg-accent-50 dark:hover:bg-accent-900/30",
-                                            onclick: move |_| {
-                                                seed_create_form(&query_for_seed, &mut new_first, &mut new_last);
-                                                new_email.set(String::new());
-                                                create_error.set(String::new());
-                                                show_dropdown.set(false);
-                                                show_create_modal.set(true);
-                                            },
-                                            PlusIcon { size: IconSize::Small }
-                                            if query_text.is_empty() {
-                                                "Create new contact"
-                                            } else {
-                                                {
-                                                    let q = query_text.clone();
-                                                    rsx! { "Create \"{q}\"" }
+                            }
+                            // MAPPS-276: inline create affordance. Opt-in per
+                            // parent so contact-picker call sites that should
+                            // only attach existing contacts stay unchanged. It
+                            // sits below the matches so a user searching for a
+                            // similar-name contact who is not actually in the
+                            // list can still create one without leaving the form.
+                            // MAPPS-320: visually distinct Create band (gap + top
+                            // border + muted background + leading icon) so a
+                            // fat-finger click on the bottom match can't bleed
+                            // into Create.
+                            // MAPPS-503: it is the last navigable row, reachable
+                            // by Down and committed by Enter / Tab.
+                            if let Some(index) = create_index {
+                                {
+                                    let query_for_seed = query_text.clone();
+                                    rsx! {
+                                        div { class: "mt-1 border-t border-line",
+                                            button {
+                                                r#type: "button",
+                                                tabindex: "-1",
+                                                id: nav.row_id(index),
+                                                role: "option",
+                                                aria_selected: nav.row_selected(index),
+                                                class: nav.row_class(index, "flex w-full items-center gap-1.5 text-left px-3 py-2 text-sm bg-surface-2/50 text-accent hover:bg-accent-50 dark:hover:bg-accent-900/30"),
+                                                onclick: move |_| {
+                                                    seed_create_form(&query_for_seed, &mut new_first, &mut new_last);
+                                                    new_email.set(String::new());
+                                                    create_error.set(String::new());
+                                                    nav.close();
+                                                    show_create_modal.set(true);
+                                                },
+                                                PlusIcon { size: IconSize::Small }
+                                                if query_text.is_empty() {
+                                                    "Create new contact"
+                                                } else {
+                                                    {
+                                                        let q = query_text.clone();
+                                                        rsx! { "Create \"{q}\"" }
+                                                    }
                                                 }
                                             }
                                         }

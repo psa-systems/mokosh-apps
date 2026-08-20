@@ -17,7 +17,8 @@
 
 use dioxus::prelude::*;
 
-use crate::components::Input;
+use crate::components::{ErrorBanner, Input};
+use crate::hooks::use_dropdown_nav;
 use crate::utils::url::urlencoding_minimal;
 
 #[derive(Props, Clone, PartialEq)]
@@ -47,7 +48,8 @@ pub struct SuggestInputProps {
 
 #[component]
 pub fn SuggestInput(props: SuggestInputProps) -> Element {
-    let mut show_dropdown = use_signal(|| false);
+    // MAPPS-503: open / highlight state and the shared keyboard contract.
+    let mut nav = use_dropdown_nav("suggest-input");
     // Mirror the current text for the server fetch. Read INSIDE the resource
     // closure so Dioxus subscribes the resource to keystrokes (CompanyPicker
     // PMS-371). Unused in the curated-list path, harmless there.
@@ -60,7 +62,7 @@ pub fn SuggestInput(props: SuggestInputProps) -> Element {
         async move {
             // Curated list or no field configured: nothing to fetch.
             if static_mode || field.is_empty() {
-                return Vec::new();
+                return Ok(Vec::new());
             }
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let q = query.read().trim().to_string();
@@ -69,16 +71,22 @@ pub fn SuggestInput(props: SuggestInputProps) -> Element {
                 urlencoding_minimal(&field),
                 urlencoding_minimal(&q),
             );
+            // MAPPS-503: keep the failure. `.ok().unwrap_or_default()` here
+            // made a failed lookup indistinguishable from "no suggestions",
+            // with nothing logged.
             crate::hooks::fetch::api::get_authed::<Vec<String>>(&path)
                 .await
-                .ok()
-                .unwrap_or_default()
+                .inspect_err(|e| tracing::warn!("suggestion lookup failed: {e}"))
         }
     });
 
     let oninput = props.oninput;
     // Drop a suggestion equal to the current text: nothing to pick.
     let current = props.value.trim().to_string();
+    let snap = results.read_unchecked();
+    // MAPPS-503: a failed lookup is its own panel state, so it is not read as
+    // "this field has no suggestions".
+    let failed = !static_mode && matches!(&*snap, Some(Err(_)));
     let suggestions: Vec<String> = if static_mode {
         // Curated list, filtered client-side by case-insensitive substring.
         let needle = current.to_lowercase();
@@ -91,57 +99,95 @@ pub fn SuggestInput(props: SuggestInputProps) -> Element {
             .cloned()
             .collect()
     } else {
-        results
-            .read_unchecked()
-            .clone()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|s| s != &current)
-            .collect()
+        match &*snap {
+            Some(Ok(values)) => values.iter().filter(|s| *s != &current).cloned().collect(),
+            _ => Vec::new(),
+        }
     };
 
+    let nav_len = suggestions.len();
+    let suggestions_for_keys = suggestions.clone();
     rsx! {
         div { class: "relative space-y-1",
-            Input {
-                name: props.name.clone(),
-                label: props.label.clone(),
-                required: props.required,
-                error: props.error.clone(),
-                help: props.help.clone(),
-                value: props.value.clone(),
-                oninput: move |e: FormEvent| {
-                    let v = e.value();
-                    query.set(v.clone());
-                    oninput.call(v);
-                    show_dropdown.set(true);
+            // MAPPS-503: combobox seam. The handlers live on this wrapper
+            // rather than on the shared `Input` (MAPPS-347), where keydown
+            // from the focused input bubbles up to them.
+            div {
+                role: "combobox",
+                aria_expanded: nav.expanded(),
+                aria_controls: nav.panel_id(),
+                aria_activedescendant: nav.active_descendant(),
+                onfocusin: move |_| nav.open(),
+                onclick: move |_| nav.open(),
+                onkeydown: move |e: KeyboardEvent| {
+                    let suggestions = suggestions_for_keys.clone();
+                    nav.keydown(&e, nav_len, move |index| {
+                        if let Some(value) = suggestions.get(index) {
+                            query.set(value.clone());
+                            oninput.call(value.clone());
+                        }
+                    });
                 },
+                Input {
+                    name: props.name.clone(),
+                    label: props.label.clone(),
+                    required: props.required,
+                    error: props.error.clone(),
+                    help: props.help.clone(),
+                    value: props.value.clone(),
+                    oninput: move |e: FormEvent| {
+                        let v = e.value();
+                        query.set(v.clone());
+                        oninput.call(v);
+                        nav.open_fresh();
+                    },
+                }
             }
-            if *show_dropdown.read() && !suggestions.is_empty() {
+            if nav.is_open() && (!suggestions.is_empty() || failed) {
                 // Transparent backdrop: a click anywhere outside dismisses the
                 // list. Below the dropdown (z-10 vs z-20) so rows stay clickable.
                 div {
                     class: "fixed inset-0 z-10",
-                    onclick: move |_| show_dropdown.set(false),
+                    onclick: move |_| nav.close(),
                 }
                 div {
+                    id: nav.panel_id(),
+                    role: "listbox",
                     class: "dropdown-panel absolute z-20 left-0 right-0 mt-1 max-h-60 overflow-y-auto",
-                    ul { class: "py-1",
-                        for s in suggestions.into_iter() {
-                            {
-                                let val = s.clone();
-                                let key = s.clone();
-                                rsx! {
-                                    li {
-                                        key: "{key}",
-                                        button {
-                                            r#type: "button",
-                                            class: "w-full text-left px-3 py-2 text-sm hover:bg-surface-2",
-                                            onclick: move |_| {
-                                                query.set(val.clone());
-                                                oninput.call(val.clone());
-                                                show_dropdown.set(false);
-                                            },
-                                            "{s}"
+                    if failed {
+                        // MAPPS-444: the shared banner (paired hues,
+                        // role="alert"); `m-1` keeps its border off the
+                        // dropdown's own edge.
+                        ErrorBanner { class: "m-1", "Could not search. Try again." }
+                    } else {
+                        // MAPPS-503: `role="none"` so the rows stay the
+                        // listbox panel's own options.
+                        ul { class: "py-1", role: "none",
+                            for (index , s) in suggestions.iter().enumerate() {
+                                {
+                                    let val = s.clone();
+                                    let key = s.clone();
+                                    let text = s.clone();
+                                    rsx! {
+                                        li {
+                                            key: "{key}",
+                                            id: nav.row_id(index),
+                                            role: "option",
+                                            aria_selected: nav.row_selected(index),
+                                            button {
+                                                r#type: "button",
+                                                // MAPPS-503: out of the tab order, so Tab
+                                                // commits and moves to the next field
+                                                // instead of walking into the list.
+                                                tabindex: "-1",
+                                                class: nav.row_class(index, "w-full text-left px-3 py-2 text-sm hover:bg-surface-2"),
+                                                onclick: move |_| {
+                                                    query.set(val.clone());
+                                                    oninput.call(val.clone());
+                                                    nav.close();
+                                                },
+                                                "{text}"
+                                            }
                                         }
                                     }
                                 }
