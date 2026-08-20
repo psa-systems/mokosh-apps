@@ -28,6 +28,12 @@ escape_js() {
     printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }
 
+# HTML-escape for an attribute context (og:/twitter: content="..."). Distinct
+# from escape_js: the link-preview tags below live in HTML, not the JS object.
+escape_html() {
+    printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'
+}
+
 emit_field() {
     name="$1"
     val="$2"
@@ -115,6 +121,50 @@ if ! grep -q -F "$INCLUDE_TAG" "$INDEX"; then
     if ! sed -i "s|</head>|    ${INCLUDE_TAG}\\n</head>|" "$INDEX" 2>/dev/null; then
         echo "[entrypoint] WARN: could not patch ${INDEX} (read-only fs?); SPA will fall back to compile-time config" >&2
     fi
+fi
+
+# MAPPS-477: link-preview (OpenGraph / Twitter) metadata. A link-preview
+# crawler does not run the WASM app, so these tags must live in the served
+# HTML. They are stamped from the branding env here, at container start, the
+# same way _mokosh_config.js is; the SPA never sets them. Idempotent (skips if
+# already injected) and best-effort (a read-only rootfs is not fatal).
+OG_MARKER='<!-- MAPPS-477 link-preview metadata -->'
+if ! grep -q -F "$OG_MARKER" "$INDEX"; then
+    og_title="$(escape_html "${MOKOSH_BRAND_NAME:-Mokosh Platform}")"
+    og_desc="$(escape_html "${MOKOSH_BRAND_DESCRIPTION:-Mokosh Platform - Professional Services Automation for MSPs}")"
+    og_image_raw="${MOKOSH_BRAND_LOGO_URL:-}"
+
+    og_blockfile="$(mktemp 2>/dev/null || echo "${INDEX}.ogblock")"
+    {
+        printf '    %s\n' "$OG_MARKER"
+        printf '    <meta property="og:type" content="website">\n'
+        printf '    <meta property="og:title" content="%s">\n' "$og_title"
+        printf '    <meta property="og:site_name" content="%s">\n' "$og_title"
+        printf '    <meta property="og:description" content="%s">\n' "$og_desc"
+        if [ -n "$og_image_raw" ]; then
+            og_image="$(escape_html "$og_image_raw")"
+            printf '    <meta property="og:image" content="%s">\n' "$og_image"
+            printf '    <meta name="twitter:card" content="summary_large_image">\n'
+        else
+            printf '    <meta name="twitter:card" content="summary">\n'
+        fi
+        printf '    <meta name="twitter:title" content="%s">\n' "$og_title"
+        printf '    <meta name="twitter:description" content="%s">\n' "$og_desc"
+        if [ -n "$og_image_raw" ]; then
+            printf '    <meta name="twitter:image" content="%s">\n' "$og_image"
+        fi
+    } > "$og_blockfile" 2>/dev/null
+
+    og_tmp="$(mktemp 2>/dev/null || echo "${INDEX}.ogtmp")"
+    if [ -s "$og_blockfile" ] \
+        && awk 'FNR==NR{b=b $0 ORS; next} !ins && /<\/head>/{printf "%s",b; ins=1} {print}' "$og_blockfile" "$INDEX" > "$og_tmp" 2>/dev/null \
+        && mv "$og_tmp" "$INDEX" 2>/dev/null; then
+        :
+    else
+        echo "[entrypoint] WARN: could not inject link-preview metadata into ${INDEX} (read-only fs?); a pasted link shows the built-in defaults or nothing" >&2
+        rm -f "$og_tmp" 2>/dev/null
+    fi
+    rm -f "$og_blockfile" 2>/dev/null
 fi
 
 # MAPPS-369: derive origin-scoped CSP sources from the operator-facing base
