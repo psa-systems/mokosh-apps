@@ -4,6 +4,7 @@
 
 use dioxus::prelude::*;
 
+pub mod branding;
 pub mod components;
 pub mod hooks;
 pub mod modules;

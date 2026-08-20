@@ -18,6 +18,7 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{Button, ButtonSize, ButtonVariant, ErrorBanner, Input};
+use crate::hooks::use_dropdown_nav;
 use crate::utils::url::urlencoding_minimal;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -57,7 +58,8 @@ pub struct AssetPickerProps {
 #[component]
 pub fn AssetPicker(props: AssetPickerProps) -> Element {
     let mut query = use_signal(String::new);
-    let mut show_dropdown = use_signal(|| false);
+    // MAPPS-503: open / highlight state and the shared keyboard contract.
+    let mut nav = use_dropdown_nav("asset-picker");
     // PMS-344 follow-up: when the picker has a selected_id from the
     // parent (e.g. the inline ticket-detail editor showing the currently
     // associated asset), clicking Change must surface the search input
@@ -85,10 +87,13 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
         } else {
             format!("/assets?q={}&per_page=20", urlencoding_minimal(&q))
         };
+        // MAPPS-503: keep the failure. `.ok()` here made a failed search
+        // indistinguishable from "still loading", so the panel sat on
+        // "Searching…" forever with nothing logged.
         crate::hooks::fetch::api::get_authed::<PickerPage>(&path)
             .await
-            .ok()
             .map(|p| p.data)
+            .inspect_err(|e| tracing::warn!("asset search failed: {e}"))
     });
 
     // Chip view: parent supplied a selected_id AND the user is not
@@ -134,7 +139,7 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                                 onclick: move |_| {
                                     query.set(String::new());
                                     editing.set(true);
-                                    show_dropdown.set(true);
+                                    nav.open();
                                 },
                                 "Change"
                             }
@@ -161,20 +166,50 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
 
     let snap = results.read_unchecked();
     let onselect = props.onselect;
+    // MAPPS-503: the navigable rows. The picker has no inline create, so the
+    // result rows are the whole list.
+    let rows: Vec<PickerAsset> = match &*snap {
+        Some(Ok(rows)) => rows.clone(),
+        _ => Vec::new(),
+    };
+    let nav_len = rows.len();
+    let rows_for_keys = rows.clone();
     rsx! {
         div { class: "relative space-y-1",
-            Input {
-                name: "asset_search",
-                label: props.label,
-                placeholder: "Search assets…",
-                required: props.required,
-                value: query.read().clone(),
-                oninput: move |e: FormEvent| {
-                    query.set(e.value());
-                    show_dropdown.set(true);
+            // MAPPS-503: combobox seam. The handlers live on this wrapper
+            // rather than on the shared `Input` (MAPPS-347), where keydown
+            // from the focused input bubbles up to them.
+            div {
+                role: "combobox",
+                aria_expanded: nav.expanded(),
+                aria_controls: nav.panel_id(),
+                aria_activedescendant: nav.active_descendant(),
+                onfocusin: move |_| nav.open(),
+                onclick: move |_| nav.open(),
+                onkeydown: move |e: KeyboardEvent| {
+                    let rows = rows_for_keys.clone();
+                    nav.keydown(&e, nav_len, move |index| {
+                        if let Some(row) = rows.get(index) {
+                            let name = row.name.clone();
+                            onselect.call((row.id.to_string(), name.clone()));
+                            editing.set(false);
+                            query.set(name);
+                        }
+                    });
                 },
+                Input {
+                    name: "asset_search",
+                    label: props.label,
+                    placeholder: "Search assets…",
+                    required: props.required,
+                    value: query.read().clone(),
+                    oninput: move |e: FormEvent| {
+                        query.set(e.value());
+                        nav.open_fresh();
+                    },
+                }
             }
-            if *show_dropdown.read() {
+            if nav.is_open() {
                 // Backdrop dismisses the dropdown on click-outside; sits
                 // below the dropdown's z-20 so rows stay clickable. Also
                 // exits inline-edit mode so the chip view returns when
@@ -182,23 +217,27 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                 div {
                     class: "fixed inset-0 z-10",
                     onclick: move |_| {
-                        show_dropdown.set(false);
+                        nav.close();
                         editing.set(false);
                     },
                 }
                 div {
+                    id: nav.panel_id(),
+                    role: "listbox",
                     class: "dropdown-panel absolute z-20 left-0 right-0 mt-1 max-h-72 overflow-y-auto",
                     match &*snap {
                         None => rsx! {
                             div { class: "px-3 py-2 text-sm text-muted", "Searching…" }
                         },
-                        Some(None) => rsx! {
-                            // MAPPS-444: the only signal the list failed, so it
-                            // takes the shared banner (paired hues, role="alert").
-                            // `m-1` keeps its border off the dropdown's own edge.
-                            ErrorBanner { class: "m-1", "Could not load assets." }
+                        // MAPPS-503: a failed search is its own state, distinct
+                        // from "Searching…" and "No matches."
+                        // MAPPS-444: it takes the shared banner (paired hues,
+                        // role="alert"); `m-1` keeps its border off the
+                        // dropdown's own edge.
+                        Some(Err(_)) => rsx! {
+                            ErrorBanner { class: "m-1", "Could not search. Try again." }
                         },
-                        Some(Some(rows)) if rows.is_empty() => rsx! {
+                        Some(Ok(_)) if rows.is_empty() => rsx! {
                             div { class: "px-3 py-2 text-sm text-muted",
                                 if query_text.is_empty() {
                                     "No assets yet."
@@ -207,37 +246,43 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                                 }
                             }
                         },
-                        Some(Some(rows)) => {
-                            let rows = rows.clone();
-                            rsx! {
-                                ul { class: "py-1",
-                                    for row in rows.into_iter() {
-                                        {
-                                            let id_str = row.id.to_string();
-                                            let key = id_str.clone();
-                                            let name = row.name.clone();
-                                            let tag = row
-                                                .asset_tag
-                                                .clone()
-                                                .filter(|s| !s.trim().is_empty());
-                                            let id_for_click = id_str.clone();
-                                            let name_for_click = name.clone();
-                                            rsx! {
-                                                li {
-                                                    key: "{key}",
-                                                    button {
-                                                        r#type: "button",
-                                                        class: "w-full text-left px-3 py-2 text-sm hover:bg-surface-2",
-                                                        onclick: move |_| {
-                                                            onselect.call((id_for_click.clone(), name_for_click.clone()));
-                                                            show_dropdown.set(false);
-                                                            editing.set(false);
-                                                            query.set(name_for_click.clone());
-                                                        },
-                                                        span { class: "font-medium", "{name}" }
-                                                        if let Some(t) = tag {
-                                                            span { class: "ml-2 text-xs text-muted font-mono", "{t}" }
-                                                        }
+                        Some(Ok(_)) => rsx! {
+                            // MAPPS-503: `role="none"` so the rows stay the
+                            // listbox panel's own options.
+                            ul { class: "py-1", role: "none",
+                                for (index , row) in rows.iter().enumerate() {
+                                    {
+                                        let id_str = row.id.to_string();
+                                        let key = id_str.clone();
+                                        let name = row.name.clone();
+                                        let tag = row
+                                            .asset_tag
+                                            .clone()
+                                            .filter(|s| !s.trim().is_empty());
+                                        let id_for_click = id_str.clone();
+                                        let name_for_click = name.clone();
+                                        rsx! {
+                                            li {
+                                                key: "{key}",
+                                                id: nav.row_id(index),
+                                                role: "option",
+                                                aria_selected: nav.row_selected(index),
+                                                button {
+                                                    r#type: "button",
+                                                    // MAPPS-503: out of the tab order, so Tab
+                                                    // commits and moves to the next field
+                                                    // instead of walking into the list.
+                                                    tabindex: "-1",
+                                                    class: nav.row_class(index, "w-full text-left px-3 py-2 text-sm hover:bg-surface-2"),
+                                                    onclick: move |_| {
+                                                        onselect.call((id_for_click.clone(), name_for_click.clone()));
+                                                        nav.close();
+                                                        editing.set(false);
+                                                        query.set(name_for_click.clone());
+                                                    },
+                                                    span { class: "font-medium", "{name}" }
+                                                    if let Some(t) = tag {
+                                                        span { class: "ml-2 text-xs text-muted font-mono", "{t}" }
                                                     }
                                                 }
                                             }

@@ -40,6 +40,24 @@ services:
       # your apex (e.g. https://example.com). Optional: leave unset
       # to fall through to compile-time defaults.
       MOKOSH_HUB_BASE_URL: https://example.com
+
+      # Branding. All three are optional: leave them unset and the SPA
+      # keeps its built-in name and artwork. See
+      # docs/deployment-branding.md for the static files (favicons,
+      # apple-touch-icon, manifest, index.html title) you mount alongside
+      # these, and for the CSP and cache-header constraints.
+      #
+      # Name in the tab title, both wordmarks, the portal footer and the
+      # user-facing copy. Default: "Mokosh Platform".
+      # MOKOSH_BRAND_NAME: PSA Systems
+      #
+      # Logo in the app top bar and on the sign-in screen. Must be
+      # same-origin (mount it into the web root, as below) or served by
+      # the API: the CSP is `img-src 'self' data: {API origin}`.
+      # MOKOSH_BRAND_LOGO_URL: /branding/logo.svg
+      #
+      # Hero image on the marketing landing page. Same origin rule.
+      # MOKOSH_BRAND_HERO_URL: /branding/hero.png
     ports:
       # Loopback bind by default. Front the container with your own
       # TLS reverse proxy (Caddy / Traefik / nginx) so cookies set by
@@ -50,11 +68,22 @@ services:
     networks:
       - mokosh-private
 
-    # Optional: override the bundled Caddyfile. Uncomment, edit the
-    # source file, then bind-mount it in. The default works for the
-    # SPA-only case behind an upstream reverse proxy.
+    # Optional: override the bundled Caddyfile, and mount your own
+    # branding files over the image's web root (/usr/share/caddy). The
+    # Caddyfile default works for the SPA-only case behind an upstream
+    # reverse proxy. The branding paths are the ones referenced by
+    # MOKOSH_BRAND_LOGO_URL / MOKOSH_BRAND_HERO_URL above, plus the
+    # static files listed in docs/deployment-branding.md.
     # volumes:
     #   - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    #   - ./branding:/usr/share/caddy/branding:ro
+    #   - ./branding/favicon.svg:/usr/share/caddy/favicon.svg:ro
+    #   - ./branding/favicon.ico:/usr/share/caddy/favicon.ico:ro
+    #   - ./branding/apple-touch-icon.png:/usr/share/caddy/apple-touch-icon.png:ro
+    #   - ./branding/manifest.webmanifest:/usr/share/caddy/manifest.webmanifest:ro
+    #   - ./branding/icon-192.png:/usr/share/caddy/icon-192.png:ro
+    #   - ./branding/icon-512.png:/usr/share/caddy/icon-512.png:ro
+    #   - ./branding/icon-maskable-512.png:/usr/share/caddy/icon-maskable-512.png:ro
 
 networks:
   mokosh-private:

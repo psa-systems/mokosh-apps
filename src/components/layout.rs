@@ -634,18 +634,25 @@ pub fn TopBar(props: TopBarProps) -> Element {
     // the Outlet/page - so a page and its ContentUnavailable / PermissionRequired
     // branch can both call use_page_title without fighting into a render loop.
     let title = use_current_page_title().read().0.clone();
+    // MAPPS-509: the deployment's brand, from runtime config, so an
+    // operator renames the tab and the wordmark without a rebuild.
+    let brand = crate::branding::product_name();
+    let logo = crate::branding::logo_src();
     // MAPPS-287: keep document.title in sync. The loading placeholder
     // ("Loading…", U+2026) reads as "no title yet" so the tab shows a clean
-    // "Mokosh Platform" until the real title arrives. MAPPS-445 dropped the
+    // brand name until the real title arrives. MAPPS-445 dropped the
     // ASCII spelling; scripts/check-ellipsis-glyph.sh keeps it gone.
     #[cfg(feature = "web")]
     {
         let t = title.trim();
         let next = if t.is_empty() || t == "Loading…" {
-            "Mokosh Platform".to_string()
+            brand.clone()
         } else {
-            format!("{} | Mokosh Platform", t)
+            format!("{} | {}", t, brand)
         };
+        // MAPPS-504: `platform::dom` sets `document.title` in the browser
+        // and the OS window title on the desktop, so the operator's brand
+        // name (MAPPS-509) reaches the window frame too.
         crate::platform::dom::set_title(&next);
     }
     rsx! {
@@ -665,13 +672,13 @@ pub fn TopBar(props: TopBarProps) -> Element {
                     to: Route::Dashboard {},
                     class: "flex items-center gap-2 min-w-0",
                     img {
-                        src: asset!("/assets/icon-192.png"),
-                        alt: "Mokosh",
+                        src: "{logo}",
+                        alt: "{brand}",
                         class: "h-8 w-8 shrink-0",
                     }
                     div { class: "flex flex-col leading-tight min-w-0",
                         span { class: "text-base font-bold text-content truncate",
-                            "Mokosh Platform"
+                            "{brand}"
                         }
                         // Active-org indicator. Hidden until auth resolves an
                         // active tenant - we don't show a "no org" state in
@@ -1090,6 +1097,7 @@ pub struct PortalLayoutProps {
 
 #[component]
 pub fn PortalLayout(props: PortalLayoutProps) -> Element {
+    let brand = crate::branding::product_name();
     rsx! {
         div { class: "min-h-screen bg-app",
             // Portal header
@@ -1148,7 +1156,7 @@ pub fn PortalLayout(props: PortalLayoutProps) -> Element {
             footer { class: "bg-surface border-t border-line",
                 div { class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6",
                     p { class: "text-sm text-muted text-center",
-                        "Powered by Mokosh Platform"
+                        "Powered by {brand}"
                     }
                     VersionFooter {}
                 }
@@ -1263,18 +1271,20 @@ pub struct AuthLayoutProps {
 #[component]
 pub fn AuthLayout(props: AuthLayoutProps) -> Element {
     let width = format!("sm:mx-auto sm:w-full {}", props.max_w);
+    let brand = crate::branding::product_name();
+    let logo = crate::branding::logo_src();
     rsx! {
         div { class: "min-h-screen flex flex-col justify-center py-12 sm:px-6 lg:px-8 bg-app",
             div { class: "{width}",
                 // Logo
                 div { class: "flex flex-col items-center gap-3",
                     img {
-                        src: asset!("/assets/icon-192.png"),
-                        alt: "Mokosh",
+                        src: "{logo}",
+                        alt: "{brand}",
                         class: "h-16 w-16",
                     }
                     span { class: "text-3xl font-bold text-accent",
-                        "Mokosh Platform"
+                        "{brand}"
                     }
                 }
             }

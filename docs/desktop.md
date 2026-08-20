@@ -60,13 +60,20 @@ origin, so it has to be told. Resolution order, highest first:
 {
   "api_base": "https://api.msp.example.com/api/v1",
   "hub_base_url": "https://example.com",
-  "oidc_issuer": "https://api.example.com"
+  "oidc_issuer": "https://api.example.com",
+  "brand_name": "PSA Systems",
+  "brand_logo_url": "https://example.com/branding/logo.svg"
 }
 ```
 
 The same file backs `crate::modules::runtime_config`, so every key the
 production container injects into `window.__MOKOSH_CONFIG__` is settable here
-by the same name.
+by the same name. That includes the MAPPS-509 branding keys (`brand_name`,
+`brand_logo_url`, `brand_hero_url`), so a desktop install brands itself the
+same way a hosted deployment does, down to the OS window title. See
+[deployment-branding.md](deployment-branding.md) for what each key changes;
+the container-side half of that document (Caddy, `entrypoint.sh`,
+`index.html`) does not apply here.
 
 mokosh-server has to accept the desktop client's requests through CORS; the
 webview does not send a same-origin `Origin` header.
@@ -95,6 +102,7 @@ Everything the app needs from its host lives in `src/platform/`, split on
 | `config` | `window.__MOKOSH_CONFIG__` | `config.json` + `MOKOSH_*` env |
 | `location` | `window.location` | no URL; readers answer `None` |
 | `dom` | `web-sys` on the document | JavaScript evaluated in the webview |
+| `log` | `console.error` | `tracing` |
 | `download` | Blob + synthesized anchor | writes to the downloads directory |
 | `timer` | `gloo-timers` | `tokio::time` |
 | `tz` | `Intl.DateTimeFormat` | `iana-time-zone` |

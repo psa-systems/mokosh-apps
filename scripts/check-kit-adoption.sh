@@ -44,7 +44,7 @@ if [ "${1:-}" = "--self-test" ]; then
         > "$fixtures/src/pages/$page.rs"
     done
     {
-      printf '    // Mokosh Platform wordmark\n'
+      printf '    // wordmark: crate::branding::product_name()\n'
       printf '    VersionFooter {}\n'
       printf '    div { class: "dropdown-panel absolute right-0 mt-2 w-52 z-20 p-1", "menu" }\n'
     } > "$fixtures/src/components/layout.rs"
@@ -116,8 +116,10 @@ if [ "$shell_hits" != "$shell_expected" ]; then
 fi
 
 # Fail if AuthLayout stops supplying either piece, which would make the check
-# above pass while the pages it points at lost the branding anyway.
-for needle in 'Mokosh Platform' 'VersionFooter'; do
+# above pass while the pages it points at lost the branding anyway. MAPPS-509:
+# the wordmark is the deployment's brand from runtime config, so the needle is
+# the helper call, not the product name it defaults to.
+for needle in 'branding::product_name()' 'VersionFooter'; do
   if ! grep -q "$needle" "$root/components/layout.rs"; then
     echo "auth-shell guard: FAIL (AuthLayout no longer renders \`$needle\`)"
     status=1

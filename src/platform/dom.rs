@@ -113,10 +113,12 @@ pub fn focus_by_id(id: &str) {
         return;
     };
     if let Ok(html) = el.dyn_into::<web_sys::HtmlElement>() {
-        // Best-effort: the browser refuses focus for reasons the caller
-        // cannot act on (element not focusable, document not active),
-        // and every caller is a convenience, not a requirement.
-        let _ = html.focus();
+        // MAPPS-503: a dropped focus failure left the expanded global-search
+        // entry unusable with no record of why. That call site now routes
+        // through here, so the logging lives here and covers every caller.
+        if let Err(e) = html.focus() {
+            tracing::warn!("focusing #{id} failed: {e:?}");
+        }
     }
 }
 
@@ -191,6 +193,21 @@ pub fn set_scroll_top(id: &str, top: i32) {
         .and_then(|d| d.get_element_by_id(id))
     {
         el.set_scroll_top(top);
+    }
+}
+
+/// Bring the element with this id into its scroll container's view.
+/// `align_top` picks the top of the element over the bottom.
+///
+/// MAPPS-503 uses this to follow a keyboard highlight past the edge of a
+/// dropdown's `max-h-*` scroll box.
+#[cfg(target_arch = "wasm32")]
+pub fn scroll_into_view(id: &str, align_top: bool) {
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(id))
+    {
+        el.scroll_into_view_with_bool(align_top);
     }
 }
 
@@ -300,6 +317,14 @@ pub fn focus_by_id(id: &str) {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn scroll_top(_id: &str) -> Option<i32> {
     None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn scroll_into_view(id: &str, align_top: bool) {
+    eval(&format!(
+        "document.getElementById({})?.scrollIntoView({align_top});",
+        js_string(id)
+    ));
 }
 
 #[cfg(not(target_arch = "wasm32"))]

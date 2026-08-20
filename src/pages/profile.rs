@@ -290,6 +290,7 @@ fn IdentityStrip() -> Element {
             String::new(),
         ),
     };
+    let brand = crate::branding::product_name();
 
     rsx! {
         Card {
@@ -310,13 +311,13 @@ fn IdentityStrip() -> Element {
                         }
                     }
                     if !role.is_empty() {
-                        // MAPPS-329: explicit "Mokosh Role" so a user with
+                        // MAPPS-329: explicit "<brand> Role" so a user with
                         // admin-on-mokosh does not assume the same level on
                         // the Bunyip hub. The Bunyip role is a separate
                         // claim issued by the OP and managed in Bunyip's
                         // own admin surface.
                         p { class: "mt-1 text-xs uppercase tracking-wide text-muted",
-                            "Mokosh Role: {role}"
+                            "{brand} Role: {role}"
                         }
                         p { class: "text-xs text-muted",
                             "Bunyip hub role is separate."
