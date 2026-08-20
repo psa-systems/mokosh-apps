@@ -34,7 +34,7 @@ page headers), `Large` (hero CTAs).
 
 1. A "New &lt;thing&gt;" / create / submit action is **always** `Primary`. No
    exceptions - this is the rule the review flagged.
-2. Each form has exactly one `Primary` (the submit); its Cancel is `Secondary`.
+2. Each form has exactly one `Primary`, and its Cancel is `Secondary`. In a single-step form that `Primary` is the submit. In a multi-section modal that builds one record across tabs (the request-form editor in `src/pages/forms.rs`), the `Primary` is the action that carries the operator forward: `Next: <section>` while a later section exists during creation, and the submit on the last section.
 3. Destructive actions are `Danger`, and should be guarded by a confirm dialog.
 4. Do not invent ad-hoc Tailwind colour classes on a raw `button` to fake a
    variant - extend `ButtonVariant` if a genuinely new style is needed, so the
