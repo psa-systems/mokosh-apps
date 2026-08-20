@@ -228,37 +228,6 @@ pub mod api {
         false
     }
 
-    /// MAPPS-473 (PMS-728 followup): `true` iff the SPA is served on an
-    /// AGENT host (i.e. `window.location.host` ends with the configured
-    /// `agent_host_suffix`, e.g. `.msp.a8n.systems`). Used by the
-    /// standalone login page to hide the "Account slug" input entirely
-    /// so no operator needs to type it — the server derives the slug
-    /// from the Host header. Falls open (returns `false`, showing the
-    /// input) when the env is unset OR the host does not match, so a
-    /// deploy without agent-host-derivation configured keeps the
-    /// pre-473 form.
-    #[cfg(feature = "web")]
-    pub fn on_agent_host() -> bool {
-        let Some(suffix) = crate::modules::runtime_config::agent_host_suffix() else {
-            return false;
-        };
-        let Some(win) = web_sys::window() else {
-            return false;
-        };
-        let Ok(host) = win.location().host() else {
-            return false;
-        };
-        let host_no_port = host.split(':').next().unwrap_or(&host);
-        host_no_port
-            .to_ascii_lowercase()
-            .ends_with(&suffix.to_ascii_lowercase())
-    }
-
-    #[cfg(not(feature = "web"))]
-    pub fn on_agent_host() -> bool {
-        false
-    }
-
     /// PMS-729: the current browser-visible host (`window.location.host`,
     /// including port). Attached as `X-Forwarded-Host` on every
     /// portal-side fetch below so the mokosh-server host-to-tenant

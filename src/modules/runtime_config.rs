@@ -74,24 +74,6 @@ pub fn portal_host_suffix() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// MAPPS-473 (PMS-728 followup): resolve the agent host suffix for the
-/// running deploy, checking (in order) the container-emitted
-/// `window.__MOKOSH_CONFIG__.agent_host_suffix` and the compile-time
-/// `MOKOSH_AGENT_HOST_SUFFIX` env fallback. Returns `None` when
-/// neither is set (dev without env baked in, or a deploy that stays on
-/// the pre-473 standalone slug-input form). Always includes the
-/// leading dot, e.g. `.msp.a8n.systems`.
-pub fn agent_host_suffix() -> Option<String> {
-    if let Some(v) = get("agent_host_suffix") {
-        if !v.is_empty() {
-            return Some(v);
-        }
-    }
-    option_env!("MOKOSH_AGENT_HOST_SUFFIX")
-        .map(str::to_string)
-        .filter(|s| !s.is_empty())
-}
-
 /// Build the URL a customer would use to sign in to the tenant's own
 /// client portal. Returns `None` when no portal-host suffix is
 /// configured (i.e. the portal is not served on this deploy), so
