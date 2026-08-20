@@ -51,6 +51,15 @@ struct SelectTenantBody {
     tenant_id: String,
 }
 
+/// MAPPS-493 phase 4: request body for `POST /api/v1/tenants/self-serve`.
+#[derive(Serialize)]
+struct SelfServeTenantBody {
+    identity_token: String,
+    tenant_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tenant_slug: Option<String>,
+}
+
 /// MAPPS-492 phase 3: one entry in the picker list.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 struct MembershipItem {
@@ -108,11 +117,17 @@ pub fn StandaloneLogin() -> Element {
     // MAPPS-492 (phase 3) in-page picker state. Populated from the login
     // response when `needs_selection` is true; rendered inline so no
     // cross-page state handoff is needed. `needs_setup` uses the same
-    // pattern with `identity_token` and a simple "no orgs yet" panel.
+    // pattern with `identity_token` and a create-org form (phase 4).
     let mut identity_token = use_signal(|| None::<String>);
     let mut memberships = use_signal(Vec::<MembershipItem>::new);
     let mut needs_selection = use_signal(|| false);
     let mut needs_setup = use_signal(|| false);
+
+    // MAPPS-493 (phase 4) create-org form state, revealed under
+    // `needs_setup`. Slug is optional; server slugifies the name when
+    // empty. Trades the identity_token for a new tenant + full session.
+    let mut new_org_name = use_signal(String::new);
+    let mut new_org_slug = use_signal(String::new);
 
     // MAPPS-492: installs the auth context + persists the standalone
     // session, then routes to Dashboard. Shared by the auto-scope
@@ -242,6 +257,85 @@ pub fn StandaloneLogin() -> Element {
         });
     };
 
+    // MAPPS-493: create-org submit. Trades the identity_token +
+    // org name/slug for a new tenant + a full session at
+    // /tenants/self-serve, then routes to the dashboard scoped to the
+    // fresh tenant.
+    let mut submit_new_org = move |_| {
+        if saving() {
+            return;
+        }
+        let Some(token) = identity_token.read().clone() else {
+            error.set("Sign in again to create your organization.".to_string());
+            needs_setup.set(false);
+            return;
+        };
+        let name = new_org_name.read().trim().to_string();
+        if name.is_empty() {
+            error.set("Enter an organization name.".to_string());
+            return;
+        }
+        let raw_slug = new_org_slug.read().trim().to_ascii_lowercase();
+        let slug = if raw_slug.is_empty() {
+            None
+        } else {
+            Some(raw_slug)
+        };
+        saving.set(true);
+        error.set(String::new());
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                use crate::hooks::fetch::api::ApiError;
+                let body = SelfServeTenantBody {
+                    identity_token: token,
+                    tenant_name: name,
+                    tenant_slug: slug,
+                };
+                match crate::hooks::fetch::api::post_typed::<LoginResp, _>(
+                    "/tenants/self-serve",
+                    &body,
+                )
+                .await
+                {
+                    Ok(resp) => match resp.user {
+                        Some(user) => install_session(
+                            resp.access_token,
+                            resp.refresh_token,
+                            resp.expires_at,
+                            user,
+                        ),
+                        None => {
+                            error.set(
+                                "Organization created but no session was returned.".to_string(),
+                            );
+                        }
+                    },
+                    Err(ApiError::Status { code: 401, .. }) => {
+                        error.set(
+                            "Your sign-in link expired. Sign in again to create your organization."
+                                .to_string(),
+                        );
+                        needs_setup.set(false);
+                        identity_token.set(None);
+                    }
+                    Err(ApiError::Status {
+                        code: 409, message, ..
+                    }) => {
+                        error.set(message);
+                    }
+                    Err(ApiError::Status {
+                        code: 400, message, ..
+                    }) => {
+                        error.set(message);
+                    }
+                    Err(e) => error.set(e.user_message()),
+                }
+            }
+            saving.set(false);
+        });
+    };
+
     // MAPPS-492: the picker click. Trades the identity token + selected
     // tenant_id for a full session at /auth/select-tenant, then routes.
     let mut pick_tenant = move |tenant_id: String| {
@@ -340,22 +434,74 @@ pub fn StandaloneLogin() -> Element {
                 }
             } else if needs_setup() {
                 div { class: "text-center mb-6",
-                    h1 { class: "text-2xl font-semibold text-content", "No organization yet" }
+                    h1 { class: "text-2xl font-semibold text-content", "Create your organization" }
                     p { class: "mt-2 text-sm text-content",
-                        "Your account is not a member of any Mokosh organization. Ask a super-admin to add you, or create your own (self-serve creation lands in a follow-up)."
+                        "Pick a name for your Mokosh workspace. You will be the first admin."
                     }
                 }
-                div { class: "pt-2",
-                    Button {
-                        variant: ButtonVariant::Secondary,
-                        r#type: "button".to_string(),
-                        class: "w-full".to_string(),
-                        onclick: move |_| {
-                            needs_setup.set(false);
-                            identity_token.set(None);
+                form {
+                    class: "space-y-4",
+                    onsubmit: move |evt: Event<FormData>| {
+                        evt.prevent_default();
+                        submit_new_org(());
+                    },
+
+                    Input {
+                        name: "tenant_name",
+                        label: "Organization name",
+                        r#type: "text".to_string(),
+                        value: new_org_name(),
+                        required: true,
+                        disabled: saving(),
+                        oninput: move |e: FormEvent| {
                             error.set(String::new());
+                            new_org_name.set(e.value());
                         },
-                        "Back to sign in"
+                    }
+
+                    Input {
+                        name: "tenant_slug",
+                        label: "Portal slug (optional)",
+                        r#type: "text".to_string(),
+                        value: new_org_slug(),
+                        required: false,
+                        disabled: saving(),
+                        oninput: move |e: FormEvent| {
+                            error.set(String::new());
+                            new_org_slug.set(e.value());
+                        },
+                    }
+                    p { class: "text-xs text-content-muted",
+                        "Leave blank to derive from the name. Slugs are used only for the client-facing portal URL."
+                    }
+
+                    if !error().is_empty() {
+                        p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
+                    }
+
+                    div { class: "pt-2 space-y-2",
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            disabled: saving(),
+                            loading: saving(),
+                            r#type: "submit".to_string(),
+                            class: "w-full".to_string(),
+                            "Create organization"
+                        }
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            disabled: saving(),
+                            r#type: "button".to_string(),
+                            class: "w-full".to_string(),
+                            onclick: move |_| {
+                                needs_setup.set(false);
+                                identity_token.set(None);
+                                new_org_name.set(String::new());
+                                new_org_slug.set(String::new());
+                                error.set(String::new());
+                            },
+                            "Back to sign in"
+                        }
                     }
                 }
             } else {
