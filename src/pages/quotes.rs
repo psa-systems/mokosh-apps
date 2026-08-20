@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 use crate::components::{
     use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, ErrorBanner,
-    IconSize, Input, Modal, ModalSize, PageHeader, PlusIcon, Select, SelectOption, Table,
+    IconSize, Input, MailIcon, Modal, ModalSize, PageHeader, PlusIcon, Select, SelectOption, Table,
     TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea,
 };
 use crate::hooks::use_can_mutate;
@@ -40,6 +40,13 @@ use crate::utils::{FormGuard, Paginated};
 use crate::Route;
 
 const PER_PAGE: usize = 25;
+
+/// MAPPS-482: the sign-off mail does not come from a notification rule.
+/// mokosh-server's `mail_quote_to_client` calls the mailer directly with a
+/// built-in template, so `POST /notifications/preview` has nothing to render
+/// and its empty answer must not be read as "no email goes out". MAPPS-489
+/// moves the send onto the dispatcher and deletes this note.
+const QUOTE_PREVIEW_NOTE: &str = "The quote email is built into the server rather than by a notification rule, so there is nothing to render yet. The billing contact is still emailed a sign-off link.";
 
 /// True when the signed-in user holds a finance role, matching the
 /// server's `RequireFinance` guard on every quote route. Mirrors the
@@ -629,7 +636,22 @@ fn QuoteDetailBody(id: String) -> Element {
                                                     send_quote(qid.clone(), version, busy, action_error);
                                                 }
                                             },
+                                            MailIcon { size: IconSize::Small, class: "mr-2".to_string() }
                                             "Send to client"
+                                        }
+                                        // MAPPS-482: the context this page already holds. The
+                                        // sign-off link is minted at send time, so it comes back
+                                        // in `unresolved`.
+                                        crate::components::EmailPreview {
+                                            event_type: "quote.sent".to_string(),
+                                            context: serde_json::json!({
+                                                "quote_id": q.id.to_string(),
+                                                "quote_number": q.quote_number.clone().unwrap_or_default(),
+                                                "title": q.title.clone(),
+                                                "total": format_money(q.total),
+                                                "company_name": q.company_name.clone().unwrap_or_default(),
+                                            }),
+                                            empty_note: QUOTE_PREVIEW_NOTE.to_string(),
                                         }
                                         p { class: "text-xs text-subtle",
                                             "Emails the billing contact a link to accept or decline."

@@ -9,8 +9,8 @@ use dioxus::prelude::*;
 
 use crate::components::{
     use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, ConfirmDialog, DataTable,
-    ErrorBanner, Input, PageHeader, Select, SelectOption, Table, TableBody, TableCell, TableEmpty,
-    TableHead, TableHeader, TableLoading, TableRow,
+    ErrorBanner, IconSize, Input, MailIcon, PageHeader, Select, SelectOption, Table, TableBody,
+    TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::hooks::auth::use_auth;
 use crate::modules::auth::UserRole;
@@ -39,6 +39,14 @@ struct PaginatedInvitations {
 /// hidden and every invite goes out as the lowest-privilege role (Technician).
 /// Flip to `true` to restore role assignment once RBAC is complete. See PMS-513.
 const ROLE_ASSIGNMENT_ENABLED: bool = false;
+
+/// MAPPS-482: `POST /notifications/preview` renders whatever the tenant's
+/// notification rules say, and the invite is not one of them: mokosh-server
+/// builds its subject and body in `invitations/service.rs` and inserts the
+/// queue row directly. So the preview honestly returns nothing to render, and
+/// the operator must not read that as "no email goes out", because one does.
+/// MAPPS-489 moves the invite onto the dispatcher and deletes this note.
+const INVITE_PREVIEW_NOTE: &str = "The invitation email is built into the server rather than by a notification rule, so there is nothing to render yet. An invitation email is still sent.";
 
 #[component]
 pub fn TeamPage() -> Element {
@@ -181,6 +189,14 @@ pub fn TeamPage() -> Element {
     // now stages the target id and email into `pending_revoke`, which
     // opens a ConfirmDialog; only the explicit Revoke press inside the
     // dialog fires the DELETE. Cancel and the X both clear the signal.
+
+    // MAPPS-482: what the invite form already holds. The accept link and the
+    // expiry are the server's to fill at send time.
+    let preview_context = serde_json::json!({
+        "recipient_email": email.read().trim(),
+        "role": role.read().clone(),
+    });
+
     rsx! {
         PageHeader {
             title: "Team",
@@ -217,14 +233,22 @@ pub fn TeamPage() -> Element {
                             onchange: move |e: FormEvent| role.set(e.value()),
                         }
                     }
-                    Button {
-                        variant: ButtonVariant::Primary,
-                        r#type: "submit".to_string(),
-                        loading: is_submitting(),
-                        // MAPPS-357: block invites while the server is down.
-                        disabled: is_submitting() || !can_mutate,
-                        title: (!can_mutate).then(|| "Can't send an invite while the server is unreachable".to_string()),
-                        "Send invite"
+                    div { class: "flex items-center gap-3",
+                        Button {
+                            variant: ButtonVariant::Primary,
+                            r#type: "submit".to_string(),
+                            loading: is_submitting(),
+                            // MAPPS-357: block invites while the server is down.
+                            disabled: is_submitting() || !can_mutate,
+                            title: (!can_mutate).then(|| "Can't send an invite while the server is unreachable".to_string()),
+                            MailIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                            "Send invite"
+                        }
+                        crate::components::EmailPreview {
+                            event_type: "invitations.created".to_string(),
+                            context: preview_context,
+                            empty_note: INVITE_PREVIEW_NOTE.to_string(),
+                        }
                     }
                 }
             }
