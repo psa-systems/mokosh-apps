@@ -205,6 +205,36 @@ struct PaginationMeta {
     total: u64,
 }
 
+/// MAPPS-481: one entry of a contact's `phones` array (PMS-806's
+/// `contact_phones`). The array already arrives in `sort_order`, so the SPA
+/// keeps the server's order rather than re-deriving it.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+struct RemotePhone {
+    #[serde(default)]
+    phone_type: String,
+    #[serde(default)]
+    number: String,
+    #[serde(default)]
+    extension: Option<String>,
+    #[serde(default)]
+    is_primary: bool,
+}
+
+/// MAPPS-481: one entry of a contact's `companies` array (PMS-806's
+/// `contact_companies`). `title` is the role at THIS company; the contact's
+/// own `title` stays their default.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+struct RemoteCompanyLink {
+    #[serde(default)]
+    company_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    company_name: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    is_primary: bool,
+}
+
 /// Subset of mokosh-server's `ContactResponse` we render in the contacts
 /// list. As with companies, serde drops unknown fields so this can grow
 /// without breaking decoding. Field names match the server's
@@ -235,6 +265,12 @@ struct RemoteContact {
     // still shown on the contact detail page, which decodes its own struct.
     #[serde(default)]
     contact_type: Option<String>,
+    // MAPPS-481: `#[serde(default)]` so a server that predates PMS-806 still
+    // deserializes; the `phone` / `company_id` mirrors above cover that case.
+    #[serde(default)]
+    phones: Vec<RemotePhone>,
+    #[serde(default)]
+    companies: Vec<RemoteCompanyLink>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1270,6 +1306,95 @@ fn validate_phone_field(raw: &str, label: &str) -> Result<serde_json::Value, Str
     }
 }
 
+// ---- MAPPS-481 / PMS-806: a contact's typed phone list and company links.
+
+/// The five `contact_phones.phone_type` values PMS-806's CHECK constraint
+/// allows, paired with their labels and in the order the form offers them.
+const PHONE_TYPES: &[(&str, &str)] = &[
+    ("mobile", "Mobile"),
+    ("work", "Work"),
+    ("home", "Home"),
+    ("fax", "Fax"),
+    ("other", "Other"),
+];
+
+/// Coerce a form value onto one of the wire values. Anything unrecognized
+/// becomes `other`, which is the server's own default for the column.
+fn normalize_phone_type(raw: &str) -> &'static str {
+    PHONE_TYPES
+        .iter()
+        .find(|(value, _)| *value == raw)
+        .map(|(value, _)| *value)
+        .unwrap_or("other")
+}
+
+/// Label a stored `phone_type` for the read surfaces. An unknown value (a
+/// server that grew a sixth type) passes through verbatim rather than
+/// vanishing, the same rule [`humanize_contact_type`] follows.
+fn humanize_phone_type(raw: &str) -> String {
+    PHONE_TYPES
+        .iter()
+        .find(|(value, _)| *value == raw)
+        .map(|(_, label)| (*label).to_string())
+        .unwrap_or_else(|| raw.to_string())
+}
+
+/// Render one phone entry as the read surfaces show it: the number with
+/// separators (MAPPS-283) and its extension when it has one.
+fn format_phone_entry(number: &str, extension: Option<&str>) -> String {
+    let base = format_phone(number);
+    match extension.map(str::trim).filter(|e| !e.is_empty()) {
+        Some(ext) => format!("{base} ext. {ext}"),
+        None => base,
+    }
+}
+
+/// The entry a list view shows for a contact: the one flagged primary, else
+/// the first. PMS-806 promotes the first entry when none is flagged, so this
+/// mirrors what the server stored.
+fn primary_entry<T>(entries: &[T], is_primary: impl Fn(&T) -> bool) -> Option<&T> {
+    entries
+        .iter()
+        .find(|e| is_primary(e))
+        .or_else(|| entries.first())
+}
+
+/// The contacts-list Phone cell: the primary number with its type, e.g.
+/// "Mobile (904) 210-8340". Falls back to the `phone` mirror when the server
+/// sent no list, so a pre-PMS-806 response still fills the column.
+fn primary_phone_label(phones: &[RemotePhone], fallback: &str) -> String {
+    match primary_entry(phones, |p| p.is_primary) {
+        Some(entry) => {
+            let number = format_phone_entry(&entry.number, entry.extension.as_deref());
+            let label = humanize_phone_type(&entry.phone_type);
+            if label.is_empty() {
+                number
+            } else {
+                format!("{label} {number}")
+            }
+        }
+        None => format_phone(fallback),
+    }
+}
+
+/// The row index in a server field name of the form `phones[2].number`, which
+/// is how PMS-806 identifies the entry that failed. `None` for any other field
+/// name, which keeps the existing mapping untouched.
+fn phone_row_index(field: &str) -> Option<usize> {
+    let (index, _) = field.strip_prefix("phones[")?.split_once(']')?;
+    index.parse().ok()
+}
+
+/// The contacts-list Company cell suffix: "+N" for the links beyond the one
+/// shown, empty when the contact links at most one company.
+fn extra_company_suffix(total: usize) -> String {
+    if total > 1 {
+        format!("+{}", total - 1)
+    } else {
+        String::new()
+    }
+}
+
 /// Validate an optional ISO 3166-1 alpha-2 country code. Blank -> `Ok(None)`.
 /// Requires exactly two ASCII letters (normalized to uppercase). The server
 /// (PMS-325) checks membership against the official set.
@@ -2228,8 +2353,12 @@ fn CompanyContactsCard(
                                         let delete_path = format!("/contacts/contacts/{id}");
                                         let name = format!("{} {}", contact.first_name, contact.last_name).trim().to_string();
                                         let email = contact.email.clone().unwrap_or_default();
-                                        // MAPPS-283: render with separators.
-                                        let phone = format_phone(&contact.phone.clone().unwrap_or_default());
+                                        // MAPPS-481: the same primary-with-its-type cell as the
+                                        // contacts list, so every Phone column reads alike.
+                                        let phone = primary_phone_label(
+                                            &contact.phones,
+                                            contact.phone.as_deref().unwrap_or_default(),
+                                        );
                                         let role = humanize_contact_type(
                                             contact.contact_type.as_deref().unwrap_or_default(),
                                         );
@@ -3722,17 +3851,40 @@ pub fn ContactListPage() -> Element {
                 } else {
                     TableBody {
                         for contact in page_rows.iter().cloned() {
-                            ContactRow {
-                                key: "{contact.id}",
-                                id: contact.id.to_string(),
-                                name: format!("{} {}", contact.first_name, contact.last_name).trim().to_string(),
-                                company: contact.company_name.clone().unwrap_or_default(),
-                                company_id: contact.company_id.map(|id| id.to_string()).unwrap_or_default(),
-                                email: contact.email.clone().unwrap_or_default(),
-                                phone: contact.phone.clone().unwrap_or_default(),
-                                role: humanize_contact_type(
-                                    contact.contact_type.as_deref().unwrap_or_default(),
-                                ),
+                            // MAPPS-481: the Company cell shows the primary
+                            // link plus a "+N" for the rest, and the Phone cell
+                            // the primary number with its type. Both fall back
+                            // to the `company_id` / `phone` mirrors, which is
+                            // also the freeform-company case (no link at all).
+                            {
+                                let primary_company = primary_entry(&contact.companies, |c| c.is_primary);
+                                let company = primary_company
+                                    .and_then(|c| c.company_name.clone())
+                                    .or_else(|| contact.company_name.clone())
+                                    .unwrap_or_default();
+                                let company_id = primary_company
+                                    .and_then(|c| c.company_id)
+                                    .or(contact.company_id)
+                                    .map(|id| id.to_string())
+                                    .unwrap_or_default();
+                                rsx! {
+                                    ContactRow {
+                                        key: "{contact.id}",
+                                        id: contact.id.to_string(),
+                                        name: format!("{} {}", contact.first_name, contact.last_name).trim().to_string(),
+                                        company,
+                                        company_id,
+                                        company_extra: extra_company_suffix(contact.companies.len()),
+                                        email: contact.email.clone().unwrap_or_default(),
+                                        phone: primary_phone_label(
+                                            &contact.phones,
+                                            contact.phone.as_deref().unwrap_or_default(),
+                                        ),
+                                        role: humanize_contact_type(
+                                            contact.contact_type.as_deref().unwrap_or_default(),
+                                        ),
+                                    }
+                                }
                             }
                         }
                     }
@@ -3748,7 +3900,12 @@ struct ContactRowProps {
     name: String,
     company: String,
     company_id: String,
+    /// MAPPS-481: "+N" for the company links beyond the one shown; empty when
+    /// the contact links at most one.
+    company_extra: String,
     email: String,
+    /// MAPPS-481: the primary number already rendered with its type and
+    /// separators, because the cell shows one of a list rather than a field.
     phone: String,
     role: String,
 }
@@ -3786,11 +3943,16 @@ fn ContactRow(props: ContactRowProps) -> Element {
                         span { class: "text-subtle ml-1", "(typed)" }
                     }
                 }
+                // MAPPS-481: the contact links more companies than the one
+                // shown; the detail page lists them all.
+                if !props.company_extra.is_empty() {
+                    span { class: "text-subtle ml-1", "{props.company_extra}" }
+                }
             }
             TableCell { "{props.email}" }
-            // MAPPS-283: route the phone column through `format_phone`
-            // so the cell shows `(555) 123-4567` not `5551234567`.
-            TableCell { {format_phone(&props.phone)} }
+            // MAPPS-481: the primary number with its type, already formatted
+            // by `primary_phone_label` (which keeps the MAPPS-283 separators).
+            TableCell { "{props.phone}" }
             TableCell { "{props.role}" }
         }
     }
@@ -3815,9 +3977,14 @@ pub fn ContactNewPage() -> Element {
     let prefill = use_signal(read_company_prefill_from_url);
     let prefill = prefill.read().clone();
 
+    // MAPPS-481: the prefill seeds the first row of the company list rather
+    // than a single company field.
     let initial = ContactFormValues {
-        company_id: prefill.id.clone(),
-        company_name: prefill.name.clone(),
+        companies: company_rows_from_remote(
+            &[],
+            uuid::Uuid::parse_str(&prefill.id).ok(),
+            Some(&prefill.name),
+        ),
         contact_type: "other".to_string(),
         ..ContactFormValues::default()
     };
@@ -3949,12 +4116,19 @@ pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
                 }
             },
             Some(Some(payload)) => {
+                // MAPPS-481: the child lists round-trip; the freeform name is
+                // seeded only when the contact links no company, which is the
+                // one case it can be set in (a link plus a freeform name is a
+                // 422 on the server).
+                let companies = company_rows_from_remote(
+                    &payload.companies,
+                    payload.company_id,
+                    payload.company_name.as_deref(),
+                );
                 let initial = ContactFormValues {
                     first_name: payload.first_name.clone(),
                     last_name: payload.last_name.clone(),
                     email: payload.email.clone().unwrap_or_default(),
-                    phone: payload.phone.clone().unwrap_or_default(),
-                    mobile: payload.mobile.clone().unwrap_or_default(),
                     title: payload.title.clone().unwrap_or_default(),
                     department: payload.department.clone().unwrap_or_default(),
                     contact_type: if payload.contact_type.is_empty() {
@@ -3962,11 +4136,17 @@ pub fn ContactEditPage(props: ContactEditPageProps) -> Element {
                     } else {
                         payload.contact_type.clone()
                     },
-                    company_id: payload
-                        .company_id
-                        .map(|id| id.to_string())
-                        .unwrap_or_default(),
-                    company_name: payload.company_name.clone().unwrap_or_default(),
+                    company_name: if companies.is_empty() {
+                        payload.company_name.clone().unwrap_or_default()
+                    } else {
+                        String::new()
+                    },
+                    phones: phone_rows_from_remote(
+                        &payload.phones,
+                        payload.phone.as_deref(),
+                        payload.mobile.as_deref(),
+                    ),
+                    companies,
                 };
                 let id = id_for_form.clone();
                 rsx! {
@@ -4004,6 +4184,35 @@ struct ContactEditPayload {
     company_id: Option<uuid::Uuid>,
     #[serde(default)]
     company_name: Option<String>,
+    // MAPPS-481: `#[serde(default)]` so a pre-PMS-806 response still decodes
+    // and the form falls back to the scalar mirrors above.
+    #[serde(default)]
+    phones: Vec<RemotePhone>,
+    #[serde(default)]
+    companies: Vec<RemoteCompanyLink>,
+}
+
+/// MAPPS-481: one editable row of the contact form's phone list. `error` is
+/// the row's own inline slot, so one bad number never masks another's message
+/// (see the repeating-child-row rules in `docs/form-conventions.md`).
+#[derive(Clone, Debug, Default, PartialEq)]
+struct PhoneRow {
+    phone_type: String,
+    number: String,
+    extension: String,
+    is_primary: bool,
+    error: String,
+}
+
+/// MAPPS-481: one editable row of the contact form's company list. Always a
+/// linked CRM company; the freeform typed name is the no-linked-company case
+/// and lives in its own signal.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct CompanyRow {
+    company_id: String,
+    company_name: String,
+    title: String,
+    is_primary: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -4011,13 +4220,153 @@ struct ContactFormValues {
     first_name: String,
     last_name: String,
     email: String,
-    phone: String,
-    mobile: String,
     title: String,
     department: String,
     contact_type: String,
-    company_id: String,
+    /// MAPPS-481: the freeform typed company name (MAPPS-251), which is the
+    /// no-linked-company case and so is only ever set while `companies` is
+    /// empty.
     company_name: String,
+    phones: Vec<PhoneRow>,
+    companies: Vec<CompanyRow>,
+}
+
+/// MAPPS-481: seed the form's phone rows from a loaded contact. The PMS-806
+/// list wins; a response that carries none (a server that predates it) falls
+/// back to the `phone` / `mobile` mirrors so an edit does not silently drop
+/// the numbers already on the record.
+fn phone_rows_from_remote(
+    phones: &[RemotePhone],
+    phone: Option<&str>,
+    mobile: Option<&str>,
+) -> Vec<PhoneRow> {
+    if !phones.is_empty() {
+        return phones
+            .iter()
+            .map(|p| PhoneRow {
+                phone_type: normalize_phone_type(&p.phone_type).to_string(),
+                number: p.number.clone(),
+                extension: p.extension.clone().unwrap_or_default(),
+                is_primary: p.is_primary,
+                error: String::new(),
+            })
+            .collect();
+    }
+    let mut rows = Vec::new();
+    for (value, phone_type) in [(phone, "work"), (mobile, "mobile")] {
+        let number = value.unwrap_or_default().trim();
+        if !number.is_empty() {
+            rows.push(PhoneRow {
+                phone_type: phone_type.to_string(),
+                number: number.to_string(),
+                is_primary: rows.is_empty(),
+                ..PhoneRow::default()
+            });
+        }
+    }
+    rows
+}
+
+/// MAPPS-481: seed the form's company rows from a loaded contact. As with
+/// phones, the PMS-806 list wins and the single `company_id` mirror is the
+/// fallback. A freeform-only contact has neither and stays on the typed-name
+/// path.
+fn company_rows_from_remote(
+    companies: &[RemoteCompanyLink],
+    company_id: Option<uuid::Uuid>,
+    company_name: Option<&str>,
+) -> Vec<CompanyRow> {
+    if !companies.is_empty() {
+        return companies
+            .iter()
+            .filter_map(|c| {
+                Some(CompanyRow {
+                    company_id: c.company_id?.to_string(),
+                    company_name: c.company_name.clone().unwrap_or_default(),
+                    title: c.title.clone().unwrap_or_default(),
+                    is_primary: c.is_primary,
+                })
+            })
+            .collect();
+    }
+    match company_id {
+        Some(id) => vec![CompanyRow {
+            company_id: id.to_string(),
+            company_name: company_name.unwrap_or_default().to_string(),
+            title: String::new(),
+            is_primary: true,
+        }],
+        None => Vec::new(),
+    }
+}
+
+/// MAPPS-481: validate every phone row and build the request's `phones`
+/// array. Evaluates ALL rows before bailing and returns one message per row
+/// (empty where the row passed), so no row's failure masks another's, per the
+/// every-required-field rule in `docs/form-conventions.md`.
+///
+/// A row whose number is blank is dropped rather than rejected: an added row
+/// the user left empty is not a number, and a contact with none is valid.
+/// The surviving entries keep their form order, which is the `sort_order`
+/// PMS-806 derives from the array index, and exactly one carries
+/// `is_primary` - the flagged row, or the first when none is flagged.
+fn validate_phone_rows(rows: &[PhoneRow]) -> Result<Vec<serde_json::Value>, Vec<String>> {
+    let mut errors = vec![String::new(); rows.len()];
+    let mut entries: Vec<serde_json::Value> = Vec::new();
+    let mut primary_at: Option<usize> = None;
+
+    for (index, row) in rows.iter().enumerate() {
+        // The message lands in this row's own slot, so "Number" is the whole
+        // label the reader needs.
+        match validate_phone_field(&row.number, "Number") {
+            Err(message) => errors[index] = message,
+            // Blank row: nothing to send.
+            Ok(serde_json::Value::Null) => {}
+            Ok(number) => {
+                if row.is_primary && primary_at.is_none() {
+                    primary_at = Some(entries.len());
+                }
+                entries.push(serde_json::json!({
+                    "phone_type": normalize_phone_type(&row.phone_type),
+                    "number": number,
+                    "extension": optional_string(&row.extension),
+                    "is_primary": false,
+                }));
+            }
+        }
+    }
+
+    if errors.iter().any(|e| !e.is_empty()) {
+        return Err(errors);
+    }
+    // Send the promotion explicitly instead of leaning on the server's
+    // promote-the-first rule, so the saved primary is the one the form shows.
+    if let Some(index) = primary_at.or(if entries.is_empty() { None } else { Some(0) }) {
+        entries[index]["is_primary"] = serde_json::json!(true);
+    }
+    Ok(entries)
+}
+
+/// MAPPS-481: build the request's `companies` array from the form's rows,
+/// applying the same single-primary rule as [`validate_phone_rows`]. Rows
+/// carry an already-picked company id, so there is nothing left to validate.
+fn company_link_entries(rows: &[CompanyRow]) -> Vec<serde_json::Value> {
+    let mut entries: Vec<serde_json::Value> = Vec::new();
+    let mut primary_at: Option<usize> = None;
+    for row in rows {
+        if row.is_primary && primary_at.is_none() {
+            primary_at = Some(entries.len());
+        }
+        entries.push(serde_json::json!({
+            "company_id": row.company_id,
+            "title": optional_string(&row.title),
+            "is_primary": false,
+        }));
+    }
+    if let Some(index) = primary_at.or(if entries.is_empty() { None } else { Some(0) }) {
+        entries[index]["is_primary"] = serde_json::json!(true);
+    }
+    entries
 }
 
 /// MAPPS-484: the contact form's two company paths, each named for what it
@@ -4030,6 +4379,18 @@ const LINK_COMPANY_TOGGLE_LABEL: &str = "Link an existing company";
 /// MAPPS-484: marks a company name that is a typed string rather than a
 /// `companies` row, so link colour is not the only signal.
 const FREEFORM_COMPANY_NOTE: &str = "Typed name - not a company record.";
+
+/// MAPPS-481: the label on the control that appends a company LINK. Now that
+/// a contact holds several companies, "add" means "add another company" and
+/// nothing else; the picker's own "+ New company" button stays the only
+/// control on the form that creates a `companies` row (MAPPS-484).
+fn add_company_label(linked: usize) -> &'static str {
+    if linked == 0 {
+        "Add a company"
+    } else {
+        "Add another company"
+    }
+}
 
 /// MAPPS-484: the consequence of the typed-name path, stated in the value the
 /// user typed. Empty while nothing has been typed, so the form renders no note.
@@ -4061,8 +4422,6 @@ fn ContactForm(props: ContactFormProps) -> Element {
     let mut first_name = use_signal(|| initial.first_name.clone());
     let mut last_name = use_signal(|| initial.last_name.clone());
     let mut email = use_signal(|| initial.email.clone());
-    let mut phone = use_signal(|| initial.phone.clone());
-    let mut mobile = use_signal(|| initial.mobile.clone());
     let mut title = use_signal(|| initial.title.clone());
     let mut department = use_signal(|| initial.department.clone());
     let mut contact_type = use_signal(|| {
@@ -4072,14 +4431,19 @@ fn ContactForm(props: ContactFormProps) -> Element {
             initial.contact_type.clone()
         }
     });
-    let mut company_id = use_signal(|| initial.company_id.clone());
-    let mut company_name = use_signal(|| initial.company_name.clone());
+    // MAPPS-481: the two child collections. Row order is the order the server
+    // stores (it derives `sort_order` from the array index).
+    let mut phones = use_signal(|| initial.phones.clone());
+    let mut companies = use_signal(|| initial.companies.clone());
+    // MAPPS-481: the "+ Add another company" picker, shown only while the user
+    // is adding one, and the inline note for picking one already in the list.
+    let mut adding_company = use_signal(|| false);
+    let mut company_add_note = use_signal(String::new);
     // MAPPS-251: a contact's company can be a freeform typed name instead of an
-    // FK-linked CRM company. Open in freeform mode when the loaded contact has a
-    // company_name but no resolvable company_id (a freeform-only contact); else
-    // open in the existing "link a CRM company" picker mode.
-    let initial_freeform = uuid::Uuid::parse_str(initial.company_id.as_str()).is_err()
-        && !initial.company_name.trim().is_empty();
+    // FK-linked CRM company. MAPPS-481: that path is the no-linked-company
+    // case, so it opens only when the loaded contact links none and carries a
+    // typed name.
+    let initial_freeform = initial.companies.is_empty() && !initial.company_name.trim().is_empty();
     let mut freeform_mode = use_signal(|| initial_freeform);
     let mut freeform_company = use_signal(|| {
         if initial_freeform {
@@ -4090,12 +4454,11 @@ fn ContactForm(props: ContactFormProps) -> Element {
     });
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
-    // Per-field inline validation errors (MAPPS-177, MAPPS-265).
+    // Per-field inline validation errors (MAPPS-177, MAPPS-265). Phone errors
+    // live on their own row (MAPPS-481), not in a shared slot.
     let mut first_name_err = use_signal(String::new);
     let mut last_name_err = use_signal(String::new);
     let mut email_err = use_signal(String::new);
-    let mut phone_err = use_signal(String::new);
-    let mut mobile_err = use_signal(String::new);
 
     let type_options = vec![
         SelectOption::new("primary", "Primary"),
@@ -4103,6 +4466,10 @@ fn ContactForm(props: ContactFormProps) -> Element {
         SelectOption::new("billing", "Billing"),
         SelectOption::new("other", "Other"),
     ];
+    let phone_type_options: Vec<SelectOption> = PHONE_TYPES
+        .iter()
+        .map(|(value, label)| SelectOption::new(*value, *label))
+        .collect();
 
     let navigator = use_navigator();
     // MAPPS-357: block the Create / Save submit while the server is
@@ -4124,8 +4491,11 @@ fn ContactForm(props: ContactFormProps) -> Element {
         first_name_err.set(String::new());
         last_name_err.set(String::new());
         email_err.set(String::new());
-        phone_err.set(String::new());
-        mobile_err.set(String::new());
+        // MAPPS-481: clear every phone row's own slot, same as the fixed
+        // fields it replaced.
+        for row in phones.write().iter_mut() {
+            row.error.clear();
+        }
 
         // MAPPS-281: trim required name fields client-side so a
         // whitespace-only value cannot satisfy the browser's native
@@ -4149,54 +4519,59 @@ fn ContactForm(props: ContactFormProps) -> Element {
             guard.note_invalid(Some("last_name"));
         }
 
-        // MAPPS-251: company is optional - an FK-linked CRM company (company_id)
-        // OR a freeform typed name (company_name), not both. The XOR error has no
-        // inline slot, so it goes to the banner; note_invalid blocks and ties
-        // focus to the freeform input.
-        let picked_company = uuid::Uuid::parse_str(company_id.read().as_str()).ok();
+        // MAPPS-251 / MAPPS-481: company is optional - any number of linked CRM
+        // companies OR a freeform typed name, never both (the server 422s on
+        // the pair). The XOR error has no inline slot, so it goes to the
+        // banner; note_invalid blocks and ties focus to the freeform input.
+        let company_rows = companies.read().clone();
         let freeform_name = freeform_company.read().trim().to_string();
-        if picked_company.is_some() && !freeform_name.is_empty() {
-            error.set("Pick an existing company or type a new one, not both.".to_string());
+        if !company_rows.is_empty() && !freeform_name.is_empty() {
+            error.set("Link companies or type a name, not both.".to_string());
             guard.note_invalid(Some("company_name_freeform"));
         }
 
-        // Validate phone/mobile inline before submit (MAPPS-177). The bespoke
-        // validator parses-and-returns the value the body uses.
-        let phone_res = validate_phone_field(&phone.read(), "Phone");
-        if let Err(msg) = &phone_res {
-            phone_err.set(msg.clone());
-            guard.note_invalid(Some("phone"));
-        }
-        let mobile_res = validate_phone_field(&mobile.read(), "Mobile");
-        if let Err(msg) = &mobile_res {
-            mobile_err.set(msg.clone());
-            guard.note_invalid(Some("mobile"));
-        }
+        // MAPPS-481: every phone row is validated and every failure lands in
+        // that row's own slot before the submit bails once.
+        let phone_rows = phones.read().clone();
+        let phone_entries = match validate_phone_rows(&phone_rows) {
+            Ok(entries) => Some(entries),
+            Err(messages) => {
+                let mut rows = phones.write();
+                for (index, message) in messages.iter().enumerate() {
+                    if message.is_empty() {
+                        continue;
+                    }
+                    rows[index].error = message.clone();
+                    guard.note_invalid(Some(&format!("phone_number_{index}")));
+                }
+                None
+            }
+        };
 
         if guard.blocked() {
             return;
         }
-        let phone_value = phone_res.expect("phone validated above");
-        let mobile_value = mobile_res.expect("mobile validated above");
+        let phone_entries = phone_entries.expect("phone rows validated above");
+        let company_entries = company_link_entries(&company_rows);
         is_submitting.set(true);
 
-        let mut body = serde_json::json!({
+        let has_links = !company_entries.is_empty();
+        let body = serde_json::json!({
             "first_name": first_name.read().trim(),
             "last_name": last_name.read().trim(),
             "email": optional_string(&email.read()),
-            "phone": phone_value,
-            "mobile": mobile_value,
             "title": optional_string(&title.read()),
             "department": optional_string(&department.read()),
             "contact_type": contact_type.read().clone(),
+            // PMS-806: both lists are authoritative when present, and both are
+            // always sent, so removing the last row really unlinks.
+            "phones": phone_entries,
+            "companies": company_entries,
+            // MAPPS-251: the freeform typed name is the no-linked-company case.
+            // Sent as `""` whenever a company is linked, which clears any name
+            // stored by an earlier save (a link plus a name is a 422).
+            "company_name": if has_links { "" } else { freeform_name.as_str() },
         });
-        // MAPPS-251: send company_id when a CRM company is picked, company_name
-        // when a freeform name is typed, and neither when left blank.
-        if let Some(company_uuid) = picked_company {
-            body["company_id"] = serde_json::json!(company_uuid);
-        } else if !freeform_name.is_empty() {
-            body["company_name"] = serde_json::json!(freeform_name);
-        }
         let mode = mode.clone();
         let mode_for_toast = mode.clone();
         spawn(async move {
@@ -4241,12 +4616,20 @@ fn ContactForm(props: ContactFormProps) -> Element {
                         } else {
                             let mut leftover = Vec::new();
                             for fe in fields {
+                                // MAPPS-481: PMS-806 names a bad entry
+                                // `phones[i].number`, so route it to that row's
+                                // own slot rather than the banner.
+                                if let Some(index) = phone_row_index(&fe.field) {
+                                    let mut rows = phones.write();
+                                    if let Some(row) = rows.get_mut(index) {
+                                        row.error = fe.message.clone();
+                                        continue;
+                                    }
+                                }
                                 match fe.field.as_str() {
                                     "first_name" => first_name_err.set(fe.message.clone()),
                                     "last_name" => last_name_err.set(fe.message.clone()),
                                     "email" => email_err.set(fe.message.clone()),
-                                    "phone" => phone_err.set(fe.message.clone()),
-                                    "mobile" => mobile_err.set(fe.message.clone()),
                                     _ => leftover.push(fe.message.clone()),
                                 }
                             }
@@ -4264,12 +4647,10 @@ fn ContactForm(props: ContactFormProps) -> Element {
         });
     };
 
-    let picker_selected_id: Option<String> =
-        if uuid::Uuid::parse_str(company_id.read().as_str()).is_ok() {
-            Some(company_id.read().clone())
-        } else {
-            None
-        };
+    // MAPPS-481: snapshots, so the rsx below holds no signal borrow while a
+    // row handler writes back into the same signal.
+    let phone_rows = phones.read().clone();
+    let company_rows = companies.read().clone();
 
     rsx! {
         Card {
@@ -4314,20 +4695,6 @@ fn ContactForm(props: ContactFormProps) -> Element {
                         value: title.read().clone(),
                         oninput: move |v: String| title.set(v),
                     }
-                    crate::components::Input {
-                        name: "phone",
-                        label: "Phone",
-                        value: phone.read().clone(),
-                        error: phone_err(),
-                        oninput: move |e: FormEvent| phone.set(e.value()),
-                    }
-                    crate::components::Input {
-                        name: "mobile",
-                        label: "Mobile",
-                        value: mobile.read().clone(),
-                        error: mobile_err(),
-                        oninput: move |e: FormEvent| mobile.set(e.value()),
-                    }
                     crate::components::SuggestInput {
                         name: "department",
                         label: "Department",
@@ -4345,16 +4712,156 @@ fn ContactForm(props: ContactFormProps) -> Element {
                     }
                 }
 
+                // MAPPS-481: the phone list. Any number of typed numbers, each
+                // with its own type, extension, primary radio and remove
+                // control, and each with its own error slot so one bad number
+                // never masks another's message. Zero rows is valid.
+                fieldset { class: "space-y-2",
+                    legend { class: "block text-sm font-medium text-content", "Phone Numbers" }
+                    if phone_rows.is_empty() {
+                        p { class: "text-xs text-muted", "No phone numbers yet. A contact can be saved without one." }
+                    }
+                    for (index, row) in phone_rows.iter().cloned().enumerate() {
+                        div {
+                            key: "{index}",
+                            class: "rounded-md border border-line p-3 space-y-2",
+                            div { class: "grid grid-cols-1 gap-3 sm:grid-cols-12",
+                                div { class: "sm:col-span-3",
+                                    Select {
+                                        name: "phone_type_{index}",
+                                        label: "Type",
+                                        options: phone_type_options.clone(),
+                                        value: row.phone_type.clone(),
+                                        onchange: move |e: FormEvent| {
+                                            phones.write()[index].phone_type = e.value();
+                                        },
+                                    }
+                                }
+                                div { class: "sm:col-span-6",
+                                    crate::components::Input {
+                                        name: "phone_number_{index}",
+                                        label: "Number",
+                                        value: row.number.clone(),
+                                        error: row.error.clone(),
+                                        oninput: move |e: FormEvent| {
+                                            let mut rows = phones.write();
+                                            rows[index].number = e.value();
+                                            rows[index].error.clear();
+                                        },
+                                    }
+                                }
+                                div { class: "sm:col-span-3",
+                                    crate::components::Input {
+                                        name: "phone_extension_{index}",
+                                        label: "Extension",
+                                        maxlength: 20,
+                                        value: row.extension.clone(),
+                                        oninput: move |e: FormEvent| {
+                                            phones.write()[index].extension = e.value();
+                                        },
+                                    }
+                                }
+                            }
+                            div { class: "flex items-center justify-between",
+                                label { class: "flex items-center gap-2 text-sm text-content",
+                                    input {
+                                        r#type: "radio",
+                                        name: "phone_primary",
+                                        checked: row.is_primary,
+                                        // Single-select: marking one row primary
+                                        // clears the flag on every other row.
+                                        onchange: move |_| {
+                                            let mut rows = phones.write();
+                                            for (i, r) in rows.iter_mut().enumerate() {
+                                                r.is_primary = i == index;
+                                            }
+                                        },
+                                    }
+                                    "Primary"
+                                }
+                                crate::components::IconButton {
+                                    label: "Remove phone number".to_string(),
+                                    class: "p-1 text-subtle hover:text-red-600 dark:hover:text-red-400".to_string(),
+                                    onclick: move |_| { phones.write().remove(index); },
+                                    crate::components::TrashIcon { size: IconSize::Small }
+                                }
+                            }
+                        }
+                    }
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        size: ButtonSize::Small,
+                        onclick: move |_| {
+                            // The first number added is the primary one; after
+                            // that the user picks.
+                            let is_first = phones.read().is_empty();
+                            phones.write().push(PhoneRow {
+                                phone_type: "mobile".to_string(),
+                                is_primary: is_first,
+                                ..PhoneRow::default()
+                            });
+                        },
+                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                        "Add phone number"
+                    }
+                }
+
                 // MAPPS-251: company is optional and can be entered two ways -
-                // link an existing CRM company (the picker) or type a name that
-                // creates no `companies` row. Switching modes clears the other
-                // mode's value so only one company source is ever submitted.
+                // link CRM companies (the picker) or type a name that creates
+                // no `companies` row. Switching modes clears the other mode's
+                // value so only one company source is ever submitted.
                 // MAPPS-484: the picker's own "+ New company" button is the
                 // visible create affordance and it really does create; the
                 // typed-name path is a secondary text link named for what it
                 // does, because the old "+ Add Company" button created nothing.
-                div { class: "space-y-2",
-                    span { class: "block text-sm font-medium text-content", "Company" }
+                // MAPPS-481: a contact can link several companies, one of them
+                // primary, each with its role at THAT company. The typed name
+                // is the no-linked-company case and is offered only while the
+                // list is empty.
+                fieldset { class: "space-y-2",
+                    legend { class: "block text-sm font-medium text-content", "Companies" }
+                    for (index, row) in company_rows.iter().cloned().enumerate() {
+                        div {
+                            key: "{row.company_id}",
+                            class: "rounded-md border border-line p-3 space-y-2",
+                            div { class: "flex items-center justify-between gap-3",
+                                span { class: "text-sm font-medium text-content", "{row.company_name}" }
+                                crate::components::IconButton {
+                                    label: "Remove company link".to_string(),
+                                    class: "p-1 text-subtle hover:text-red-600 dark:hover:text-red-400".to_string(),
+                                    onclick: move |_| {
+                                        companies.write().remove(index);
+                                        company_add_note.set(String::new());
+                                    },
+                                    crate::components::TrashIcon { size: IconSize::Small }
+                                }
+                            }
+                            crate::components::Input {
+                                name: "company_title_{index}",
+                                label: "Title at this company",
+                                maxlength: 100,
+                                help: "Optional. Leave blank to use the contact's own title.".to_string(),
+                                value: row.title.clone(),
+                                oninput: move |e: FormEvent| {
+                                    companies.write()[index].title = e.value();
+                                },
+                            }
+                            label { class: "flex items-center gap-2 text-sm text-content",
+                                input {
+                                    r#type: "radio",
+                                    name: "company_primary",
+                                    checked: row.is_primary,
+                                    onchange: move |_| {
+                                        let mut rows = companies.write();
+                                        for (i, r) in rows.iter_mut().enumerate() {
+                                            r.is_primary = i == index;
+                                        }
+                                    },
+                                }
+                                "Primary"
+                            }
+                        }
+                    }
                     if *freeform_mode.read() {
                         crate::components::Input {
                             name: "company_name_freeform",
@@ -4369,10 +4876,10 @@ fn ContactForm(props: ContactFormProps) -> Element {
                                 {freeform_company_note(&freeform_company.read())}
                             }
                         }
-                    } else {
+                    } else if *adding_company.read() {
                         crate::components::CompanyPicker {
-                            value: company_name.read().clone(),
-                            selected_id: picker_selected_id,
+                            value: String::new(),
+                            selected_id: None,
                             // MAPPS-251: company is no longer mandatory; a contact
                             // can be saved with no company at all.
                             required: false,
@@ -4387,32 +4894,82 @@ fn ContactForm(props: ContactFormProps) -> Element {
                             // not have to open the dropdown to find it.
                             show_create_button: true,
                             onselect: move |(id, name): (String, String)| {
-                                company_id.set(id);
-                                company_name.set(name);
+                                // Picking a company already linked is a no-op
+                                // that says so, not a duplicate row (the server
+                                // 422s on a repeated company_id anyway).
+                                if companies.read().iter().any(|c| c.company_id == id) {
+                                    company_add_note.set(format!("{name} is already linked to this contact."));
+                                    return;
+                                }
+                                let is_first = companies.read().is_empty();
+                                companies.write().push(CompanyRow {
+                                    company_id: id,
+                                    company_name: name,
+                                    title: String::new(),
+                                    is_primary: is_first,
+                                });
+                                // Linking a company clears the typed name: the
+                                // server rejects a link plus a freeform name.
+                                freeform_company.set(String::new());
+                                company_add_note.set(String::new());
+                                adding_company.set(false);
                             },
-                            onclear: move |_| {
-                                company_id.set(String::new());
-                                company_name.set(String::new());
-                            },
+                            onclear: move |_| { company_add_note.set(String::new()); },
                         }
                     }
-                    button {
-                        r#type: "button",
-                        class: "inline-flex items-center text-xs text-accent hover:opacity-90",
-                        onclick: move |_| {
-                            let next = !*freeform_mode.read();
-                            if next {
-                                company_id.set(String::new());
-                                company_name.set(String::new());
+                    if !company_add_note.read().is_empty() {
+                        p { class: "text-xs text-muted", role: "status", "{company_add_note}" }
+                    }
+                    div { class: "flex flex-wrap items-center gap-3",
+                        if !*freeform_mode.read() {
+                            if *adding_company.read() {
+                                // The picker is open with nothing picked yet,
+                                // so there is a way back out of it.
+                                button {
+                                    r#type: "button",
+                                    class: "inline-flex items-center text-xs text-accent hover:opacity-90",
+                                    onclick: move |_| {
+                                        company_add_note.set(String::new());
+                                        adding_company.set(false);
+                                    },
+                                    "Don't add a company"
+                                }
                             } else {
-                                freeform_company.set(String::new());
+                                Button {
+                                    variant: ButtonVariant::Secondary,
+                                    size: ButtonSize::Small,
+                                    onclick: move |_| {
+                                        company_add_note.set(String::new());
+                                        adding_company.set(true);
+                                    },
+                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                    {add_company_label(company_rows.len())}
+                                }
                             }
-                            freeform_mode.set(next);
-                        },
-                        if *freeform_mode.read() {
-                            {LINK_COMPANY_TOGGLE_LABEL}
-                        } else {
-                            {FREEFORM_TOGGLE_LABEL}
+                        }
+                        // MAPPS-481: the typed name is what a contact has
+                        // INSTEAD of a link, so the path disappears once one
+                        // company is linked.
+                        if company_rows.is_empty() {
+                            button {
+                                r#type: "button",
+                                class: "inline-flex items-center text-xs text-accent hover:opacity-90",
+                                onclick: move |_| {
+                                    let next = !*freeform_mode.read();
+                                    if next {
+                                        adding_company.set(false);
+                                    } else {
+                                        freeform_company.set(String::new());
+                                    }
+                                    company_add_note.set(String::new());
+                                    freeform_mode.set(next);
+                                },
+                                if *freeform_mode.read() {
+                                    {LINK_COMPANY_TOGGLE_LABEL}
+                                } else {
+                                    {FREEFORM_TOGGLE_LABEL}
+                                }
+                            }
                         }
                     }
                 }
@@ -4626,6 +5183,11 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                 let contact_type = c.contact_type.clone();
                 let is_portal_user = c.is_portal_user;
                 let portal_id = id_for_portal.clone();
+                // MAPPS-481: every phone and every company link, each as its
+                // own row. Empty lists keep the pre-PMS-806 scalar rendering
+                // below, which is also the freeform-company path (MAPPS-484).
+                let phone_entries = c.phones.clone();
+                let company_entries = c.companies.clone();
                 // MAPPS-484: turn a typed company name into a real `companies`
                 // row and link the contact to it. Two calls, each reported: the
                 // create, then the link. A create that succeeds with a failed
@@ -4724,21 +5286,40 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                             }
                                         }
                                     }
-                                    if let Some(phone) = phone {
-                                        if !phone.is_empty() {
-                                            div {
-                                                dt { class: "text-sm text-muted", "Phone" }
+                                    // MAPPS-481: one row per phone, labelled
+                                    // with its type and marking the primary.
+                                    if !phone_entries.is_empty() {
+                                        for (index, entry) in phone_entries.iter().cloned().enumerate() {
+                                            div { key: "{index}",
+                                                dt { class: "text-sm text-muted",
+                                                    {humanize_phone_type(&entry.phone_type)}
+                                                    if entry.is_primary {
+                                                        span { class: "text-subtle ml-1", "(primary)" }
+                                                    }
+                                                }
                                                 // MAPPS-283: render with separators.
-                                                dd { class: "mt-1", {format_phone(&phone)} }
+                                                dd { class: "mt-1",
+                                                    {format_phone_entry(&entry.number, entry.extension.as_deref())}
+                                                }
                                             }
                                         }
-                                    }
-                                    if let Some(mobile) = mobile {
-                                        if !mobile.is_empty() {
-                                            div {
-                                                dt { class: "text-sm text-muted", "Mobile" }
-                                                // MAPPS-283: render with separators.
-                                                dd { class: "mt-1", {format_phone(&mobile)} }
+                                    } else {
+                                        if let Some(phone) = phone {
+                                            if !phone.is_empty() {
+                                                div {
+                                                    dt { class: "text-sm text-muted", "Phone" }
+                                                    // MAPPS-283: render with separators.
+                                                    dd { class: "mt-1", {format_phone(&phone)} }
+                                                }
+                                            }
+                                        }
+                                        if let Some(mobile) = mobile {
+                                            if !mobile.is_empty() {
+                                                div {
+                                                    dt { class: "text-sm text-muted", "Mobile" }
+                                                    // MAPPS-283: render with separators.
+                                                    dd { class: "mt-1", {format_phone(&mobile)} }
+                                                }
                                             }
                                         }
                                     }
@@ -4766,7 +5347,37 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
                                             }
                                         }
                                     }
-                                    if !company_name.is_empty() {
+                                    // MAPPS-481: one row per linked company,
+                                    // each with its role at THAT company and
+                                    // the primary marked.
+                                    if !company_entries.is_empty() {
+                                        for (index, link) in company_entries.iter().cloned().enumerate() {
+                                            div { key: "{index}",
+                                                dt { class: "text-sm text-muted",
+                                                    "Company"
+                                                    if link.is_primary {
+                                                        span { class: "text-subtle ml-1", "(primary)" }
+                                                    }
+                                                }
+                                                dd { class: "mt-1",
+                                                    if let Some(cid) = link.company_id {
+                                                        Link {
+                                                            to: Route::CompanyDetail { id: cid.to_string() },
+                                                            class: "text-accent hover:opacity-90",
+                                                            {link.company_name.clone().unwrap_or_default()}
+                                                        }
+                                                    } else {
+                                                        span { class: "text-content",
+                                                            {link.company_name.clone().unwrap_or_default()}
+                                                        }
+                                                    }
+                                                    if let Some(role) = link.title.clone().filter(|t| !t.trim().is_empty()) {
+                                                        p { class: "text-xs text-subtle", "{role}" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else if !company_name.is_empty() {
                                         div {
                                             dt { class: "text-sm text-muted", "Company" }
                                             dd { class: "mt-1",
@@ -4860,6 +5471,12 @@ struct ContactDetail {
     company_id: Option<uuid::Uuid>,
     #[serde(default)]
     company_name: Option<String>,
+    // MAPPS-481: `#[serde(default)]` so a pre-PMS-806 response still decodes
+    // and the page keeps rendering the scalar mirrors above.
+    #[serde(default)]
+    phones: Vec<RemotePhone>,
+    #[serde(default)]
+    companies: Vec<RemoteCompanyLink>,
 }
 
 #[component]
@@ -5352,5 +5969,382 @@ mod company_source_tests {
     #[test]
     fn read_side_note_says_it_is_not_a_record() {
         assert!(FREEFORM_COMPANY_NOTE.contains("not a company record"));
+    }
+}
+
+/// MAPPS-481: the contact form's two repeating child collections. The rules
+/// under test are the ones `docs/form-conventions.md` states for any repeating
+/// child row: validate every row, exactly one primary, order preserved.
+#[cfg(test)]
+mod contact_child_row_tests {
+    use super::{
+        add_company_label, company_link_entries, company_rows_from_remote, extra_company_suffix,
+        humanize_phone_type, normalize_phone_type, phone_row_index, phone_rows_from_remote,
+        primary_phone_label, validate_phone_rows, CompanyRow, ContactDetail, PhoneRow,
+        RemoteCompanyLink, RemoteContact, RemotePhone,
+    };
+
+    fn row(phone_type: &str, number: &str, is_primary: bool) -> PhoneRow {
+        PhoneRow {
+            phone_type: phone_type.to_string(),
+            number: number.to_string(),
+            is_primary,
+            ..PhoneRow::default()
+        }
+    }
+
+    /// Every row is evaluated before the submit bails, so a bad row two rows
+    /// down still gets its own message. No row's failure masks another's.
+    #[test]
+    fn every_row_is_validated_not_just_the_first() {
+        let rows = [
+            row("work", "not-a-phone", false),
+            row("mobile", "+14155551234", false),
+            row("home", "0412 345 678", false),
+        ];
+        let errors = validate_phone_rows(&rows).expect_err("two rows are invalid");
+        assert_eq!(errors.len(), 3);
+        assert!(errors[0].starts_with("Number must be a valid phone number"));
+        assert!(errors[1].is_empty(), "the valid row keeps a clean slot");
+        assert!(errors[2].starts_with("Number must be a valid phone number"));
+    }
+
+    /// A contact with no numbers is valid, and a row the user added and left
+    /// empty is not a number rather than an error.
+    #[test]
+    fn no_rows_and_blank_rows_both_save() {
+        assert!(validate_phone_rows(&[]).expect("valid").is_empty());
+        let entries = validate_phone_rows(&[row("work", "   ", false)]).expect("valid");
+        assert!(entries.is_empty());
+    }
+
+    /// Exactly one entry is sent primary: the flagged row, or the first when
+    /// none is flagged (which is also PMS-806's own promotion rule).
+    #[test]
+    fn exactly_one_entry_is_primary() {
+        let entries = validate_phone_rows(&[
+            row("work", "+14155551234", false),
+            row("mobile", "+14155559999", true),
+        ])
+        .expect("valid");
+        assert_eq!(entries[0]["is_primary"], serde_json::json!(false));
+        assert_eq!(entries[1]["is_primary"], serde_json::json!(true));
+
+        let promoted = validate_phone_rows(&[
+            row("work", "+14155551234", false),
+            row("mobile", "+14155559999", false),
+        ])
+        .expect("valid");
+        assert_eq!(promoted[0]["is_primary"], serde_json::json!(true));
+        assert_eq!(promoted[1]["is_primary"], serde_json::json!(false));
+    }
+
+    /// Row order is the payload order, which is the `sort_order` PMS-806
+    /// derives from the array index, and the type/extension travel with it.
+    #[test]
+    fn payload_keeps_row_order_and_fields() {
+        let rows = [
+            PhoneRow {
+                phone_type: "work".to_string(),
+                number: "(415) 555-1234".to_string(),
+                extension: "220".to_string(),
+                is_primary: false,
+                error: String::new(),
+            },
+            row("pager", "+14155559999", false),
+        ];
+        let entries = validate_phone_rows(&rows).expect("valid");
+        assert_eq!(entries[0]["phone_type"], serde_json::json!("work"));
+        // `validate_phone_field` strips the separators and keeps what was typed.
+        assert_eq!(entries[0]["number"], serde_json::json!("4155551234"));
+        assert_eq!(entries[0]["extension"], serde_json::json!("220"));
+        // An unknown type falls back to the server's own default.
+        assert_eq!(entries[1]["phone_type"], serde_json::json!("other"));
+        assert_eq!(entries[1]["extension"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn phone_types_normalize_and_humanize() {
+        assert_eq!(normalize_phone_type("fax"), "fax");
+        assert_eq!(normalize_phone_type("pager"), "other");
+        assert_eq!(normalize_phone_type(""), "other");
+        assert_eq!(humanize_phone_type("mobile"), "Mobile");
+        // Unknown values pass through rather than vanishing.
+        assert_eq!(humanize_phone_type("pager"), "pager");
+    }
+
+    /// Create and edit round-trip: the server's list reloads into the form
+    /// with the same rows, types, order and primary flags.
+    #[test]
+    fn phone_rows_round_trip_from_the_server_list() {
+        let remote = [
+            RemotePhone {
+                phone_type: "work".to_string(),
+                number: "+14155551234".to_string(),
+                extension: Some("220".to_string()),
+                is_primary: false,
+            },
+            RemotePhone {
+                phone_type: "mobile".to_string(),
+                number: "+14155559999".to_string(),
+                extension: None,
+                is_primary: true,
+            },
+        ];
+        let rows = phone_rows_from_remote(&remote, Some("+14155551234"), None);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].phone_type, "work");
+        assert_eq!(rows[0].extension, "220");
+        assert!(!rows[0].is_primary);
+        assert_eq!(rows[1].phone_type, "mobile");
+        assert!(rows[1].is_primary);
+    }
+
+    /// A server that predates PMS-806 sends no list, so the scalar mirrors
+    /// seed the rows instead of the edit silently dropping the numbers.
+    #[test]
+    fn phone_rows_fall_back_to_the_scalar_mirrors() {
+        let rows = phone_rows_from_remote(&[], Some("+14155551234"), Some("+14155559999"));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].phone_type, "work");
+        assert!(rows[0].is_primary);
+        assert_eq!(rows[1].phone_type, "mobile");
+        assert!(!rows[1].is_primary);
+        assert!(phone_rows_from_remote(&[], None, None).is_empty());
+    }
+
+    #[test]
+    fn company_rows_round_trip_and_fall_back() {
+        let remote = [
+            RemoteCompanyLink {
+                company_id: Some(uuid::Uuid::nil()),
+                company_name: Some("Acme".to_string()),
+                title: Some("IT Director".to_string()),
+                is_primary: true,
+            },
+            RemoteCompanyLink {
+                company_id: Some(uuid::Uuid::max()),
+                company_name: Some("Globex".to_string()),
+                title: None,
+                is_primary: false,
+            },
+        ];
+        let rows = company_rows_from_remote(&remote, None, None);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].company_name, "Acme");
+        assert_eq!(rows[0].title, "IT Director");
+        assert!(rows[0].is_primary);
+        assert_eq!(rows[1].company_name, "Globex");
+
+        // No list: the single-company mirror seeds one row.
+        let mirrored = company_rows_from_remote(&[], Some(uuid::Uuid::nil()), Some("Acme"));
+        assert_eq!(mirrored.len(), 1);
+        assert!(mirrored[0].is_primary);
+        // A freeform-only contact links nothing, so it stays on the typed path.
+        assert!(company_rows_from_remote(&[], None, Some("PugTsurani")).is_empty());
+    }
+
+    #[test]
+    fn company_entries_promote_exactly_one_primary() {
+        let rows = [
+            CompanyRow {
+                company_id: "a".to_string(),
+                company_name: "Acme".to_string(),
+                title: "  ".to_string(),
+                is_primary: false,
+            },
+            CompanyRow {
+                company_id: "b".to_string(),
+                company_name: "Globex".to_string(),
+                title: "Consultant".to_string(),
+                is_primary: true,
+            },
+        ];
+        let entries = company_link_entries(&rows);
+        assert_eq!(entries[0]["is_primary"], serde_json::json!(false));
+        assert_eq!(entries[0]["title"], serde_json::Value::Null);
+        assert_eq!(entries[1]["is_primary"], serde_json::json!(true));
+        assert_eq!(entries[1]["title"], serde_json::json!("Consultant"));
+        assert!(company_link_entries(&[]).is_empty());
+    }
+
+    /// The list Phone cell names the type, and the Company cell counts the
+    /// links the cell does not show.
+    #[test]
+    fn list_cells_show_the_primary_and_the_remainder() {
+        let phones = [
+            RemotePhone {
+                phone_type: "work".to_string(),
+                number: "+19042108340".to_string(),
+                extension: Some("12".to_string()),
+                is_primary: false,
+            },
+            RemotePhone {
+                phone_type: "mobile".to_string(),
+                number: "9042108340".to_string(),
+                extension: None,
+                is_primary: true,
+            },
+        ];
+        assert_eq!(
+            primary_phone_label(&phones, ""),
+            "Mobile (904) 210-8340".to_string()
+        );
+        // No list: the `phone` mirror still fills the column.
+        assert_eq!(primary_phone_label(&[], "9042108340"), "(904) 210-8340");
+        assert_eq!(primary_phone_label(&[], ""), "");
+        // No flag: the first entry is what the server promoted, and the
+        // extension rides along.
+        assert_eq!(
+            primary_phone_label(&phones[..1], ""),
+            "Work +1 (904) 210-8340 ext. 12".to_string()
+        );
+
+        assert_eq!(extra_company_suffix(0), "");
+        assert_eq!(extra_company_suffix(1), "");
+        assert_eq!(extra_company_suffix(3), "+2");
+    }
+
+    /// PMS-806 names a rejected entry `phones[i].number`, so the message can
+    /// land in that row's own slot instead of the form-level banner.
+    #[test]
+    fn server_phone_field_names_resolve_to_a_row() {
+        assert_eq!(phone_row_index("phones[0].number"), Some(0));
+        assert_eq!(phone_row_index("phones[12].number"), Some(12));
+        assert_eq!(phone_row_index("phones[].number"), None);
+        assert_eq!(phone_row_index("phone"), None);
+        assert_eq!(phone_row_index("first_name"), None);
+    }
+
+    /// "Add" on the company block means add another company, and never reads
+    /// like the create affordance MAPPS-484 reserved for the picker.
+    #[test]
+    fn add_company_label_only_ever_adds() {
+        assert_eq!(add_company_label(0), "Add a company");
+        assert_eq!(add_company_label(2), "Add another company");
+        for linked in [0usize, 2] {
+            assert!(!add_company_label(linked)
+                .to_lowercase()
+                .contains("new compan"));
+        }
+    }
+
+    /// The DTOs carry both lists with `#[serde(default)]`, so a response from
+    /// a server that predates PMS-806 still deserializes.
+    #[test]
+    fn contact_dtos_decode_without_the_child_lists() {
+        let body = serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+        });
+        let listed: RemoteContact = serde_json::from_value(body.clone()).expect("decodes");
+        assert!(listed.phones.is_empty());
+        assert!(listed.companies.is_empty());
+        let detail: ContactDetail = serde_json::from_value(body).expect("decodes");
+        assert!(detail.phones.is_empty());
+        assert!(detail.companies.is_empty());
+    }
+}
+
+/// MAPPS-481: the create/edit round trip. A contact saved with three phones
+/// and two companies reloads into the form with the same rows, types, order
+/// and primary flags. Exercised over the pure edges of the trip (form rows ->
+/// request payload, and server response -> form rows) with the payload echoed
+/// back as the server would return it.
+#[cfg(test)]
+mod contact_round_trip_tests {
+    use super::{
+        company_link_entries, company_rows_from_remote, phone_rows_from_remote,
+        validate_phone_rows, CompanyRow, PhoneRow, RemoteCompanyLink, RemotePhone,
+    };
+
+    /// Turn the request entries back into the response shape the server sends
+    /// for the same contact, so the reload starts from real wire values.
+    fn echo_phones(entries: &[serde_json::Value]) -> Vec<RemotePhone> {
+        entries
+            .iter()
+            .map(|e| RemotePhone {
+                phone_type: e["phone_type"].as_str().unwrap_or_default().to_string(),
+                number: e["number"].as_str().unwrap_or_default().to_string(),
+                extension: e["extension"].as_str().map(str::to_string),
+                is_primary: e["is_primary"].as_bool().unwrap_or_default(),
+            })
+            .collect()
+    }
+
+    fn echo_companies(entries: &[serde_json::Value], names: &[&str]) -> Vec<RemoteCompanyLink> {
+        entries
+            .iter()
+            .zip(names)
+            .map(|(e, name)| RemoteCompanyLink {
+                company_id: e["company_id"]
+                    .as_str()
+                    .and_then(|id| uuid::Uuid::parse_str(id).ok()),
+                company_name: Some((*name).to_string()),
+                title: e["title"].as_str().map(str::to_string),
+                is_primary: e["is_primary"].as_bool().unwrap_or_default(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn three_phones_and_two_companies_reload_unchanged() {
+        let saved_phones = vec![
+            PhoneRow {
+                phone_type: "work".to_string(),
+                number: "+14155551234".to_string(),
+                extension: "220".to_string(),
+                is_primary: false,
+                error: String::new(),
+            },
+            PhoneRow {
+                phone_type: "mobile".to_string(),
+                number: "+14155559999".to_string(),
+                extension: String::new(),
+                is_primary: true,
+                error: String::new(),
+            },
+            PhoneRow {
+                phone_type: "fax".to_string(),
+                number: "+14155550000".to_string(),
+                extension: String::new(),
+                is_primary: false,
+                error: String::new(),
+            },
+        ];
+        let acme = uuid::Uuid::nil();
+        let globex = uuid::Uuid::max();
+        let saved_companies = vec![
+            CompanyRow {
+                company_id: acme.to_string(),
+                company_name: "Acme".to_string(),
+                title: "IT Director".to_string(),
+                is_primary: false,
+            },
+            CompanyRow {
+                company_id: globex.to_string(),
+                company_name: "Globex".to_string(),
+                title: String::new(),
+                is_primary: true,
+            },
+        ];
+
+        let phone_entries = validate_phone_rows(&saved_phones).expect("valid");
+        let company_entries = company_link_entries(&saved_companies);
+        assert_eq!(phone_entries.len(), 3);
+        assert_eq!(company_entries.len(), 2);
+
+        // The mirrors the server derives are ignored once the lists arrive.
+        let reloaded_phones =
+            phone_rows_from_remote(&echo_phones(&phone_entries), Some("+14155559999"), None);
+        assert_eq!(reloaded_phones, saved_phones);
+
+        let reloaded_companies = company_rows_from_remote(
+            &echo_companies(&company_entries, &["Acme", "Globex"]),
+            Some(globex),
+            Some("Globex"),
+        );
+        assert_eq!(reloaded_companies, saved_companies);
     }
 }

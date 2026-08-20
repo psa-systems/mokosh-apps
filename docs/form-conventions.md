@@ -50,15 +50,21 @@ at). The two paths produce different data and are named for it (MAPPS-484):
 
 | Path | Control | Result |
 | --- | --- | --- |
-| Linked | `CompanyPicker`, including its "+ New company" button | A `companies` row plus `company_id` on the contact. The name appears under Companies. |
-| Typed | the "Enter a name without creating a company" text link under the picker | `company_name` on the contact only. No `companies` row, no `company_id`. |
+| Linked | `CompanyPicker`, including its "+ New company" button, reached from the "Add another company" button | A `contact_companies` row per link (PMS-806). The names appear under Companies. |
+| Typed | the "Enter a name without creating a company" text link under the list | `company_name` on the contact only. No `companies` row, no link. |
 
 Rules that follow from the split:
 
 - The only control on the form labelled like a create is the picker's, and it
   creates. A label of the "+ Add Company" shape on the typed path is the defect
   MAPPS-484 fixed, and `company_source_tests` in `src/pages/contacts.rs` fails
-  if it returns.
+  if it returns. Since MAPPS-481 the company block also carries an "Add another
+  company" button; "add" there means add another LINK, never create a record,
+  which is why the create wording stays on the picker's own button.
+- The typed path is the **no-linked-company** case, so it is offered only while
+  the list is empty, and linking the first company clears the typed value. The
+  server rejects a non-empty `companies` list alongside a non-empty
+  `company_name` with a 422.
 - Switching paths clears the other path's value, so exactly one company source
   is ever submitted (the server rejects both together).
 - While the typed field holds a value, the form states the outcome in that
@@ -101,6 +107,36 @@ Concretely, the new-ticket form evaluates Title and Company together and sets bo
 slots before returning, so submitting with both empty surfaces both errors. The
 broader effort to make `required` actually enforce across every form, and to unify
 the validation system, is the PMS-515 epic.
+
+## Repeating child rows
+
+A field that holds several values of the same shape (a contact's phone numbers
+and its company links, MAPPS-481 / PMS-806) is a **list of rows**, not a fixed
+set of numbered fields. One `Signal<Vec<Row>>` holds the collection, an
+"Add <thing>" button appends a row, and each row carries a remove control. The
+same three rules apply to every such list:
+
+- **Validate every row.** Each row struct carries its own `error: String`, bound
+  to that row's inline slot. The submit handler clears every slot, evaluates
+  every row, sets each failing row's own message, and bails **once** afterwards
+  - the same rule as required fields above, applied per row, so one bad row
+  never masks another's message. `validate_phone_rows` in
+  `src/pages/contacts.rs` is the reference implementation and
+  `contact_child_row_tests` covers it. A server field error naming an entry
+  (PMS-806 answers `phones[2].number`) is routed back to that row's slot rather
+  than to the form-level banner.
+- **Exactly one primary.** The flag is a radio, so marking one row clears every
+  other. The payload is built with the flag on the marked row, or on the first
+  row when none is marked, which is also what the server does with a list that
+  arrives with none flagged.
+- **Order is the payload.** Rows are sent in the order they appear, and the
+  server derives `sort_order` from the array index. Nothing re-sorts the list
+  behind the user.
+
+A row the user added and left blank is dropped rather than rejected, and a
+contact with zero rows is valid: adding a row is not a commitment to fill it.
+The list is always sent, including as `[]`, so removing the last row really
+does unlink or delete.
 
 ## Website fields
 
