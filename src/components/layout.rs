@@ -260,6 +260,10 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
         .as_ref()
         .map(|u| u.role.is_admin())
         .unwrap_or(false);
+
+    // MAPPS-453: the documentation subdomain, if this deploy configured one.
+    // Gates the Documentation nav entry below.
+    let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
     // Manager+ (manager/admin/super_admin) see the timesheet approvals queue,
     // matching the server's RequireManager gate on approve/reject (MAPPS-194).
     let can_manage = auth
@@ -317,6 +321,13 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                     }
                 },
                 NavItem { to: Route::Dashboard {}, icon: rsx!(HomeIcon {}), label: "Dashboard", collapsed }
+
+                // MAPPS-453: surface the docs subdomain in the main menu, not
+                // buried under Applications. External link (new tab), shown
+                // only when a docs base is configured.
+                if cfg.has_docs() {
+                    DocsNavItem { href: cfg.docs_url(""), collapsed }
+                }
 
             // MAPPS-358: every section below is hidden while the server is
             // unreachable, leaving Dashboard as the only navigable
@@ -609,6 +620,37 @@ fn NavItem(props: NavItemProps) -> Element {
                 {props.icon}
             }
             "{props.label}"
+        }
+    }
+}
+
+/// MAPPS-453: the sidebar's Documentation entry. `NavItem` is an internal
+/// router `Link`; this is its visual twin for an off-site link (the docs
+/// subdomain), so it opens in a new tab and carries no active state.
+#[component]
+fn DocsNavItem(href: String, collapsed: bool) -> Element {
+    let icon_color = "text-subtle group-hover:text-content";
+    if collapsed {
+        return rsx! {
+            a {
+                href: "{href}",
+                target: "_blank",
+                rel: "noopener noreferrer",
+                class: "group flex items-center justify-center px-2 py-1 rounded-md text-muted hover:bg-surface hover:text-content",
+                title: "Documentation",
+                aria_label: "Documentation",
+                span { class: "{icon_color}", InformationIcon {} }
+            }
+        };
+    }
+    rsx! {
+        a {
+            href: "{href}",
+            target: "_blank",
+            rel: "noopener noreferrer",
+            class: "group flex items-center px-3 py-2 text-sm font-medium rounded-md text-muted hover:bg-surface hover:text-content",
+            span { class: "mr-3 {icon_color}", InformationIcon {} }
+            "Documentation"
         }
     }
 }

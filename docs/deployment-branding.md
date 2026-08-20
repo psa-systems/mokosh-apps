@@ -91,6 +91,7 @@ falls back to its built-in value.
 | `MOKOSH_BRAND_NAME` | `brand_name` | `Mokosh Platform` | Tab title (bare and as the `"{page} \| {brand}"` suffix), the app top-bar wordmark, the sign-in wordmark, the client-portal footer ("Powered by ..."), the marketing wordmark and copyright line, "Sign in to ...", "Welcome to ...", the profile role line, the System Status subtitle, the demo-data copy, the theme-picker note and the update banner. |
 | `MOKOSH_BRAND_LOGO_URL` | `brand_logo_url` | built-in `icon-192.png` | The logo in the app top bar and on the sign-in screen. Its `alt` text follows the brand name. |
 | `MOKOSH_BRAND_HERO_URL` | `brand_hero_url` | built-in `mokosh-hero.png` | The illustration on the marketing landing page. Setting it also replaces the alt text, which otherwise describes artwork that is no longer on the page. |
+| `MOKOSH_DOCS_URL` | `docs_base_url` | none (hidden) | The documentation subdomain base URL (e.g. `https://docs.n.niceguyit.biz`). Set it to show a top-level **Documentation** entry in the sidebar and to activate the contextual help links (each deep-links to an article under this base). Unset, both stay hidden so no link points at a missing site (MAPPS-453). |
 
 `src/branding.rs` is the single reader; every render site calls it.
 
