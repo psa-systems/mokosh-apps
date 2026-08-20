@@ -23,6 +23,12 @@ Native `Select` popups are themed by element-level `option` / `optgroup` rules i
 `input.css` (MAPPS-479), so no call site adds option styling. Colors come from the
 semantic variables, so both base modes follow automatically.
 
+A hand-built floating dropdown panel (picker list, overflow menu, user menu,
+notification list) takes its surface from the `dropdown-panel` class in `input.css`
+and never re-declares `bg-raised` plus `shadow-lg` by hand; the call site keeps only
+positioning, width, max-height, z-index and padding (MAPPS-483, guarded by
+`scripts/check-kit-adoption.sh`).
+
 ### Company picker - every call site uses `CompanyPicker`
 
 Ticket, Contact, Asset, Contract (create), Project, Invoice, and the Record-Payment
