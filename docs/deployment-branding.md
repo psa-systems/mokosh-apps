@@ -74,11 +74,35 @@ is served at its root path and can be replaced by a bind mount:
 
 `index.html` is a special case. `oci-build/entrypoint.sh` rewrites it in
 place at container start (it injects the `_mokosh_config.js` script tag),
+and the OpenGraph / Twitter link-preview tags (see [Link previews](#link-previews-opengraph--twitter)),
 so it must stay writable: mount it read-write, or leave it alone and rely
 on `MOKOSH_BRAND_NAME` for the title. The `<title>` in `index.html` is
 only what the tab shows **before** the SPA boots; once mounted, the SPA
 sets `document.title` from `MOKOSH_BRAND_NAME`. Set both so the tab does
 not flicker from one name to the other on a cold load.
+
+## Link previews (OpenGraph / Twitter)
+
+When someone pastes a Mokosh link into a chat client or a social platform,
+the preview is built by a crawler that fetches the page but does **not** run
+the WASM app. The OpenGraph and Twitter card tags therefore cannot be set by
+the SPA; `oci-build/entrypoint.sh` stamps them into `index.html`'s `<head>` at
+container start, from the branding env, the same way it writes
+`_mokosh_config.js`. Set none of it and the tags carry the built-in Mokosh
+defaults.
+
+| Env var | Tag | Default |
+| --- | --- | --- |
+| `MOKOSH_BRAND_NAME` | `og:title`, `og:site_name`, `twitter:title` | `Mokosh Platform` |
+| `MOKOSH_BRAND_DESCRIPTION` | `og:description`, `twitter:description` | `Mokosh Platform - Professional Services Automation for MSPs` |
+| `MOKOSH_BRAND_LOGO_URL` | `og:image`, `twitter:image` | none: the image tags are omitted and `twitter:card` becomes `summary` instead of `summary_large_image` |
+
+`MOKOSH_BRAND_DESCRIPTION` is used **only** for the link preview; unlike the
+other `MOKOSH_BRAND_*` vars it is not read by the SPA. Because the tags are
+written into `index.html`, the same writable-root caveat applies as for the
+`_mokosh_config.js` injection above: mount `index.html` read-write (or leave
+it in place) so the entrypoint can patch it. A read-only root logs a warning
+and serves the un-injected page.
 
 ## Runtime config env vars
 
