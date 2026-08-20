@@ -2524,7 +2524,7 @@ fn ArticleActionsMenu(
                     class: "fixed inset-0 z-40",
                     onclick: move |_| open.set(false),
                 }
-                div { class: "absolute right-0 z-50 mt-1 w-56 rounded-md bg-raised shadow-lg ring-1 ring-black/5 p-2",
+                div { class: "dropdown-panel absolute right-0 z-50 mt-1 w-56 p-2",
                     ArticleActions {
                         article_id,
                         article_title,

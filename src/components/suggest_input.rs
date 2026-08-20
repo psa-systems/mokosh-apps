@@ -124,7 +124,7 @@ pub fn SuggestInput(props: SuggestInputProps) -> Element {
                     onclick: move |_| show_dropdown.set(false),
                 }
                 div {
-                    class: "absolute z-20 left-0 right-0 mt-1 max-h-60 overflow-y-auto rounded-md border border-line bg-raised shadow-lg",
+                    class: "dropdown-panel absolute z-20 left-0 right-0 mt-1 max-h-60 overflow-y-auto",
                     ul { class: "py-1",
                         for s in suggestions.into_iter() {
                             {

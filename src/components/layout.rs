@@ -864,7 +864,7 @@ fn UserMenu() -> Element {
                     onclick: move |_| open.set(false),
                 }
                 div {
-                    class: "absolute right-0 mt-2 w-52 rounded-md shadow-lg bg-raised ring-1 ring-black/5 z-20 p-1",
+                    class: "dropdown-panel absolute right-0 mt-2 w-52 z-20 p-1",
                     role: "menu",
                     // Profile is a mokosh-side route, served by this
                     // SPA. Use the router `Link` so the SPA does an
@@ -1004,7 +1004,7 @@ fn NotificationBell() -> Element {
                     onclick: move |_| open.set(false),
                 }
                 div {
-                    class: "absolute right-0 mt-2 w-80 max-h-96 overflow-y-auto rounded-md shadow-lg bg-raised ring-1 ring-black/5 z-20",
+                    class: "dropdown-panel absolute right-0 mt-2 w-80 max-h-96 overflow-y-auto z-20",
                     role: "menu",
                     div { class: "px-4 py-2 border-b border-line text-sm font-semibold text-content",
                         "Notifications"
@@ -1249,7 +1249,7 @@ fn PortalUserMenu() -> Element {
                     onclick: move |_| open.set(false),
                 }
                 div {
-                    class: "absolute right-0 mt-2 w-52 rounded-md shadow-lg bg-raised ring-1 ring-black/5 z-20 p-1",
+                    class: "dropdown-panel absolute right-0 mt-2 w-52 z-20 p-1",
                     role: "menu",
                     a {
                         class: "block w-full text-left rounded-md px-3 py-2 text-sm text-content hover:bg-surface-2",

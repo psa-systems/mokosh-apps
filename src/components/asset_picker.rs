@@ -187,7 +187,7 @@ pub fn AssetPicker(props: AssetPickerProps) -> Element {
                     },
                 }
                 div {
-                    class: "absolute z-20 left-0 right-0 mt-1 max-h-72 overflow-y-auto rounded-md border border-line bg-raised shadow-lg",
+                    class: "dropdown-panel absolute z-20 left-0 right-0 mt-1 max-h-72 overflow-y-auto",
                     match &*snap {
                         None => rsx! {
                             div { class: "px-3 py-2 text-sm text-muted", "Searching…" }

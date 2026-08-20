@@ -1909,7 +1909,7 @@ fn RowActions(
                         open.set(false);
                     },
                 }
-                div { class: "absolute right-0 top-full z-50 mt-1 w-32 rounded-md bg-raised shadow-lg ring-1 ring-black/5 py-1 flex flex-col",
+                div { class: "dropdown-panel absolute right-0 top-full z-50 mt-1 w-32 py-1 flex flex-col",
                     button {
                         r#type: "button",
                         class: "px-3 py-1.5 text-left text-sm text-content hover:bg-surface-2",

@@ -288,6 +288,14 @@
     @apply bg-surface rounded-lg shadow border border-line;
   }
 
+  /* MAPPS-483: one recipe for every floating dropdown panel (the picker
+     lists, the overflow menus, the user menu, the notification list).
+     Positioning, width and max-height stay at the call site; only the
+     surface is shared, so a panel cannot drift off the themed edge. */
+  .dropdown-panel {
+    @apply rounded-md border border-line bg-raised shadow-lg;
+  }
+
   /* Button variants */
   .btn {
     @apply inline-flex items-center justify-center font-medium rounded-md

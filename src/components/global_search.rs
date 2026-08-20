@@ -186,7 +186,7 @@ pub fn GlobalSearch() -> Element {
                 }
             }
             if *show_dropdown.read() && !query_text.trim().is_empty() {
-                div { class: "absolute z-20 left-0 right-0 mt-1 max-h-[32rem] overflow-y-auto rounded-md border border-line bg-raised shadow-lg",
+                div { class: "dropdown-panel absolute z-20 left-0 right-0 mt-1 max-h-[32rem] overflow-y-auto",
                     if query_text.trim().len() < 2 {
                         div { class: "px-3 py-2 text-sm text-muted",
                             "Type at least two characters to search."

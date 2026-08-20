@@ -91,9 +91,10 @@ check-confirm-destructive:
 check-class-omissions:
     bash scripts/check-class-omissions.sh
 
-# MAPPS-440: keep the DaisyUI classes out, the auth shells on AuthLayout, and the file-input recipe in FileField
+# MAPPS-440: keep the DaisyUI classes out, the auth shells on AuthLayout, and the file-input recipe in FileField. MAPPS-483: and every floating dropdown on the shared .dropdown-panel surface. --self-test first, so a guard that stopped guarding fails loudly.
 [group: 'check']
 check-kit-adoption:
+    bash scripts/check-kit-adoption.sh --self-test
     bash scripts/check-kit-adoption.sh
 
 # MAPPS-445: keep rendered text on the single ellipsis character (U+2026), never three ASCII periods. --self-test first, so a guard that stopped guarding fails loudly.
