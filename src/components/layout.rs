@@ -6,7 +6,28 @@ use super::global_search::GlobalSearch;
 use super::icons::*;
 use super::tenant_switcher::TenantSwitcher;
 use super::theme_picker::ThemePickerButton;
-use crate::modules::auth::UserRole;
+/// MAPPS-518: the sessionStorage key where `/platform/login` stashes
+/// the platform-admin bearer (mirrors
+/// `pages::platform_login::PLATFORM_TOKEN_KEY`).
+const PLATFORM_TOKEN_KEY: &str = "mokosh:platform_token";
+
+/// MAPPS-518: is the platform-admin bearer present in sessionStorage?
+/// Used to gate the Tenants nav item (and any other UI that requires
+/// a platform-admin session, distinct from a tenant admin session).
+fn platform_bearer_present() -> bool {
+    #[cfg(feature = "web")]
+    {
+        if let Some(win) = web_sys::window() {
+            if let Ok(Some(store)) = win.session_storage() {
+                if let Ok(Some(token)) = store.get_item(PLATFORM_TOKEN_KEY) {
+                    return !token.trim().is_empty();
+                }
+            }
+        }
+    }
+    false
+}
+
 use crate::modules::theme::SectionColor;
 use crate::Route;
 
@@ -275,16 +296,15 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
         .as_ref()
         .map(|u| u.role.can_manage_users())
         .unwrap_or(false);
-    // MAPPS-447: Tenants nav is super-admin-only. `is_admin` above covers both
-    // admin AND super_admin, but `POST /api/v1/tenants` is `RequireSuperAdmin`
-    // server-side; a plain admin clicking through would land on a page whose
-    // Create button 403s. Mirror the server gate here.
-    let is_super_admin = auth
-        .read()
-        .user
-        .as_ref()
-        .map(|u| u.role == UserRole::SuperAdmin)
-        .unwrap_or(false);
+    // MAPPS-447 (revised for MAPPS-518): the Tenants nav opens the
+    // platform-admin console. Post MAPPS-518 the server gates
+    // `POST /api/v1/tenants` (and the other tenant-management
+    // endpoints) on `RequirePlatformAdmin` (a `typ="platform"` JWT
+    // from /platform/login), NOT on `users.role = 'super_admin'`.
+    // Gate the nav item on the presence of the platform bearer in
+    // sessionStorage so the item only appears once the operator has
+    // signed in on the platform plane.
+    let is_platform_admin = platform_bearer_present();
     // PMS-791 phase 2 / MAPPS-463: Teams nav is org-tenants-only per Q4
     // default. Personal tenants (`kind='personal'`, single owner) hide
     // the item entirely; a personal tenant hitting /admin/teams directly
@@ -398,7 +418,7 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                     // anchors the group. The helper is a no-op stub on
                     // single-tenant builds where `Route::TenantManagement`
                     // does not exist.
-                    TenantsNavItem { visible: is_super_admin, collapsed }
+                    TenantsNavItem { visible: is_platform_admin, collapsed }
                     // PMS-791 phase 2: Teams (was "Team", which was
                     // actually the invitations page — see the
                     // Invitations item below). Org tenants only per Q4

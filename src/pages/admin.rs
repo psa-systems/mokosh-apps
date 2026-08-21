@@ -117,6 +117,26 @@ fn format_created(when: chrono::DateTime<chrono::Utc>) -> String {
 #[component]
 pub fn TenantManagementPage() -> Element {
     use_page_title("Tenant Management");
+    // MAPPS-518: this whole surface (list / create / suspend /
+    // activate / resend welcome / edit tenant admin) is gated on
+    // the platform-admin bearer server-side. If the operator has not
+    // signed in on `/platform/login` there is no platform bearer in
+    // sessionStorage and every call below would 401; short-circuit
+    // to a redirect instead of rendering an all-401 shell.
+    #[cfg(feature = "web")]
+    {
+        if crate::hooks::fetch::api::current_platform_access_token().is_none() {
+            let nav = use_navigator();
+            use_hook(move || {
+                nav.push(crate::Route::PlatformLogin {});
+            });
+            return rsx! {
+                div { class: "p-6 text-sm text-content",
+                    "Redirecting to platform sign-in..."
+                }
+            };
+        }
+    }
     // MAPPS-396: super-admin create + edit surface. `show_create`
     // toggles the create modal; `edit_target` carries the row being
     // edited (`None` = no modal). Both modals refresh the resource
@@ -133,7 +153,14 @@ pub fn TenantManagementPage() -> Element {
         // MAPPS-351: also refetch on reconnect so the roster drops the demo
         // fallback once the real backend answers again.
         let _reachable = crate::hooks::use_server_reachable();
-        let token = match crate::hooks::fetch::api::current_access_token() {
+        // MAPPS-518: `GET /api/v1/tenants` is now gated on
+        // `RequirePlatformAdmin`; the tenant `ACCESS_TOKEN` is a
+        // guaranteed 401 here. Read the platform bearer stashed by
+        // `/platform/login` instead; the caller (TenantManagementPage)
+        // gates rendering on `platform_bearer_present()`, so an
+        // absent token here means the visitor is unauthenticated for
+        // this surface and should see the empty/demo state.
+        let token = match crate::hooks::fetch::api::current_platform_access_token() {
             Some(t) => t,
             None => return (Vec::<RemoteTenant>::new(), TenantSource::Demo),
         };
@@ -522,7 +549,8 @@ fn TenantRow(props: TenantRowProps) -> Element {
                                                     } else {
                                                         format!("/tenants/{tid}/activate")
                                                     };
-                                                    match crate::hooks::fetch::api::post_authed_no_content(&path).await {
+                                                    // MAPPS-518: suspend/activate are RequirePlatformAdmin.
+                                                    match crate::hooks::fetch::api::post_platform_authed_no_content(&path).await {
                                                         Ok(_) => {
                                                             let toast = if suspend {
                                                                 format!("Tenant \"{name}\" suspended.")
@@ -763,7 +791,8 @@ fn CreateTenantModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> El
                     #[allow(dead_code)]
                     id: uuid::Uuid,
                 }
-                match crate::hooks::fetch::api::post_authed_typed::<TenantId, _>("/tenants", &body)
+                // MAPPS-518: POST /tenants is RequirePlatformAdmin.
+                match crate::hooks::fetch::api::post_platform_authed_typed::<TenantId, _>("/tenants", &body)
                     .await
                 {
                     Ok(_) => {
@@ -1022,8 +1051,9 @@ fn EditTenantModal(
     use_hook(move || {
         spawn(async move {
             let path = format!("/tenants/{tenant_id}/admin");
+            // MAPPS-518: GET /tenants/{id}/admin is RequirePlatformAdmin.
             if let Ok(info) =
-                crate::hooks::fetch::api::get_authed_typed::<TenantAdminInfo>(&path).await
+                crate::hooks::fetch::api::get_platform_authed_typed::<TenantAdminInfo>(&path).await
             {
                 admin_email.set(info.email.clone());
                 admin_first_name.set(info.first_name.clone());
@@ -1047,7 +1077,11 @@ fn EditTenantModal(
             #[cfg(feature = "web")]
             {
                 let path = format!("/tenants/{tenant_id}/admin/resend-welcome");
-                match crate::hooks::fetch::api::post_authed_no_content(&path).await {
+                // MAPPS-518: resend-welcome is RequirePlatformAdmin (and
+                // now writes only to the tenant admin's identity, never
+                // the platform_admins credential, so the "reset own
+                // password" bug is gone at the model level too).
+                match crate::hooks::fetch::api::post_platform_authed_no_content(&path).await {
                     Ok(_) => crate::hooks::toast::push_toast(
                         crate::components::AlertType::Success,
                         "Welcome email re-sent to the tenant admin.",
@@ -1134,8 +1168,14 @@ fn EditTenantModal(
                     #[allow(dead_code)]
                     id: uuid::Uuid,
                 }
+                // MAPPS-518: PUT /tenants/{id} accepts either a
+                // same-tenant admin OR a platform admin bearer. On
+                // this super-admin surface we send the platform
+                // bearer so cross-tenant edits work; the tenant
+                // admin's own tenant-edit UI lives elsewhere (under
+                // /tenants/current) and uses the tenant bearer.
                 let tenant_ok =
-                    match crate::hooks::fetch::api::put_authed_typed::<TenantId, _>(&path, &body)
+                    match crate::hooks::fetch::api::put_platform_authed_typed::<TenantId, _>(&path, &body)
                         .await
                     {
                         Ok(_) => true,
@@ -1153,7 +1193,8 @@ fn EditTenantModal(
                     // so the operator can undo the email edit.
                     let admin_ok = if let Some((abody, _status)) = admin_body.as_ref() {
                         let apath = format!("/tenants/{tenant_id}/admin");
-                        match crate::hooks::fetch::api::put_authed_typed::<TenantAdminInfo, _>(
+                        // MAPPS-518: PUT /tenants/{id}/admin is RequirePlatformAdmin.
+                        match crate::hooks::fetch::api::put_platform_authed_typed::<TenantAdminInfo, _>(
                             &apath, abody,
                         )
                         .await

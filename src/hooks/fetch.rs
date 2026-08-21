@@ -1050,6 +1050,124 @@ pub mod api {
         Ok((bytes, filename))
     }
 
+    // --- Platform-authed wrappers (MAPPS-518) ---------------------------
+    //
+    // MAPPS-518: the platform super-admin persona lives in
+    // `platform_admins` on the server, with its own JWT typ
+    // (`"platform"`) and its own bearer minted at
+    // `POST /api/v1/platform/login`. The client stashes that bearer
+    // under `PLATFORM_TOKEN_KEY` in `sessionStorage` (see
+    // `pages::platform_login`); the tenant `ACCESS_TOKEN` holder is
+    // untouched. Every tenant-management endpoint that used to be
+    // `RequireSuperAdmin` (list/create tenants, suspend/activate,
+    // get/update tenant admin, resend welcome) is now
+    // `RequirePlatformAdmin`, so the SPA MUST send the platform
+    // bearer instead of the tenant bearer on those calls or the
+    // server returns 401.
+    //
+    // These wrappers read ONLY the platform-token slot in
+    // sessionStorage; they never fall back to the tenant bearer
+    // (mirroring the portal-authed helpers above).
+
+    /// MAPPS-518: the sessionStorage key `/platform/login` writes to.
+    /// Kept in sync with `pages::platform_login::PLATFORM_TOKEN_KEY`.
+    #[cfg(feature = "web")]
+    const PLATFORM_TOKEN_KEY: &str = "mokosh:platform_token";
+
+    /// MAPPS-518: read the current platform-admin bearer from
+    /// sessionStorage. `None` when the operator has not signed in on
+    /// `/platform/login` (or the browser blocks sessionStorage).
+    #[cfg(feature = "web")]
+    pub fn current_platform_access_token() -> Option<String> {
+        let win = web_sys::window()?;
+        let store = win.session_storage().ok()??;
+        let token = store.get_item(PLATFORM_TOKEN_KEY).ok()??;
+        if token.trim().is_empty() {
+            None
+        } else {
+            Some(token)
+        }
+    }
+
+    #[cfg(feature = "web")]
+    fn platform_not_signed_in() -> String {
+        "not signed in as a platform admin".to_string()
+    }
+
+    #[cfg(feature = "web")]
+    fn platform_not_signed_in_api() -> ApiError {
+        ApiError::Status {
+            code: 401,
+            message: platform_not_signed_in(),
+            fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
+        }
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn get_platform_authed<T: DeserializeOwned>(path: &str) -> Result<T, String> {
+        let t = current_platform_access_token().ok_or_else(platform_not_signed_in)?;
+        get_with_auth(path, &t).await
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn get_platform_authed_typed<T: DeserializeOwned>(
+        path: &str,
+    ) -> Result<T, ApiError> {
+        let t = current_platform_access_token().ok_or_else(platform_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::get(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn post_platform_authed_typed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let t = current_platform_access_token().ok_or_else(platform_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::post(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn put_platform_authed_typed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let t = current_platform_access_token().ok_or_else(platform_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::put(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn post_platform_authed_no_content(path: &str) -> Result<(), String> {
+        let t = current_platform_access_token().ok_or_else(platform_not_signed_in)?;
+        post_no_content_with_auth(path, &t).await
+    }
+
     // --- Typed error layer ----------------------------------------------
     //
     // The string-returning helpers above are kept so existing callers
