@@ -220,7 +220,23 @@ pub fn PortalLoginPage() -> Element {
                         // session expired" flag so returning to
                         // /portal/login later starts clean.
                         crate::hooks::portal_auth::clear_portal_session_expired();
-                        nav.replace(Route::PortalHome {});
+                        // MAPPS-520: on a portal-host the tenant-
+                        // subdomain root IS the portal login, so we
+                        // land back on `/` and let `Home` dispatch to
+                        // the portal dashboard (see `crate::Home`).
+                        // Off portal-host (dev testing on the apex,
+                        // direct navigation to /portal/login) we keep
+                        // the pre-520 destination so the URL bar
+                        // stays coherent with the entry point.
+                        #[cfg(feature = "web")]
+                        let on_portal_host = crate::hooks::fetch::api::on_portal_host();
+                        #[cfg(not(feature = "web"))]
+                        let on_portal_host = false;
+                        if on_portal_host {
+                            nav.replace(Route::Home {});
+                        } else {
+                            nav.replace(Route::PortalHome {});
+                        }
                     }
                     // PMS-729 phase 2 H8: 403 CAPTCHA_REQUIRED /
                     // CAPTCHA_INVALID. Envelope carries the Turnstile

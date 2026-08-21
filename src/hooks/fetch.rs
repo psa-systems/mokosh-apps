@@ -1112,9 +1112,7 @@ pub mod api {
     }
 
     #[cfg(feature = "web")]
-    pub async fn get_platform_authed_typed<T: DeserializeOwned>(
-        path: &str,
-    ) -> Result<T, ApiError> {
+    pub async fn get_platform_authed_typed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
         let t = current_platform_access_token().ok_or_else(platform_not_signed_in_api)?;
         let url = format!("{}{}", api_base(), path);
         let resp = Request::get(&url)

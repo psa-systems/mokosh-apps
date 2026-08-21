@@ -120,19 +120,20 @@ pub fn TenantManagementPage() -> Element {
     // MAPPS-518: this whole surface (list / create / suspend /
     // activate / resend welcome / edit tenant admin) is gated on
     // the platform-admin bearer server-side. If the operator has not
-    // signed in on `/platform/login` there is no platform bearer in
-    // sessionStorage and every call below would 401; short-circuit
-    // to a redirect instead of rendering an all-401 shell.
+    // signed in on `/login` (MAPPS-520: unified sign-in URL) there is
+    // no platform bearer in sessionStorage and every call below would
+    // 401; short-circuit to a redirect instead of rendering an
+    // all-401 shell.
     #[cfg(feature = "web")]
     {
         if crate::hooks::fetch::api::current_platform_access_token().is_none() {
             let nav = use_navigator();
             use_hook(move || {
-                nav.push(crate::Route::PlatformLogin {});
+                nav.push(crate::Route::Login {});
             });
             return rsx! {
                 div { class: "p-6 text-sm text-content",
-                    "Redirecting to platform sign-in..."
+                    "Redirecting to sign-in..."
                 }
             };
         }
@@ -792,8 +793,10 @@ fn CreateTenantModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> El
                     id: uuid::Uuid,
                 }
                 // MAPPS-518: POST /tenants is RequirePlatformAdmin.
-                match crate::hooks::fetch::api::post_platform_authed_typed::<TenantId, _>("/tenants", &body)
-                    .await
+                match crate::hooks::fetch::api::post_platform_authed_typed::<TenantId, _>(
+                    "/tenants", &body,
+                )
+                .await
                 {
                     Ok(_) => {
                         created_slug.set(s);
@@ -1174,16 +1177,18 @@ fn EditTenantModal(
                 // bearer so cross-tenant edits work; the tenant
                 // admin's own tenant-edit UI lives elsewhere (under
                 // /tenants/current) and uses the tenant bearer.
-                let tenant_ok =
-                    match crate::hooks::fetch::api::put_platform_authed_typed::<TenantId, _>(&path, &body)
-                        .await
-                    {
-                        Ok(_) => true,
-                        Err(e) => {
-                            error.set(e.user_message());
-                            false
-                        }
-                    };
+                let tenant_ok = match crate::hooks::fetch::api::put_platform_authed_typed::<
+                    TenantId,
+                    _,
+                >(&path, &body)
+                .await
+                {
+                    Ok(_) => true,
+                    Err(e) => {
+                        error.set(e.user_message());
+                        false
+                    }
+                };
                 if tenant_ok {
                     // MAPPS-450: chase the tenant PUT with the admin PUT
                     // when any admin field is dirty. A 409 here (email
@@ -1194,9 +1199,10 @@ fn EditTenantModal(
                     let admin_ok = if let Some((abody, _status)) = admin_body.as_ref() {
                         let apath = format!("/tenants/{tenant_id}/admin");
                         // MAPPS-518: PUT /tenants/{id}/admin is RequirePlatformAdmin.
-                        match crate::hooks::fetch::api::put_platform_authed_typed::<TenantAdminInfo, _>(
-                            &apath, abody,
-                        )
+                        match crate::hooks::fetch::api::put_platform_authed_typed::<
+                            TenantAdminInfo,
+                            _,
+                        >(&apath, abody)
                         .await
                         {
                             Ok(info) => {

@@ -255,21 +255,28 @@ pub enum Route {
     #[route("/")]
     Home {},
 
-    // MAPPS-518 URL swap: the mokosh platform super-admin owns the
-    // canonical `/login` (unchanged for the operator). Tenant
-    // admin/user (a mokosh client = MSP) login moves to
-    // `/client/login`. Both routes point at the same page components
-    // as before the swap — only the paths change; nav.push(Route::*)
-    // call sites still resolve to the right screen because the enum
-    // variant names are unchanged.
+    // MAPPS-520: unified `/login` for both personas.
     //
-    // `/platform/login` is retained as a legacy alias for the same
-    // page so operator bookmarks minted in stage A keep working.
-    #[route("/client/login")]
+    // Post-MAPPS-518 the SPA had TWO visible login URLs (`/login` for
+    // the mokosh platform super-admin, `/client/login` for the MSP
+    // tenant admin/user). MAPPS-520 collapses them into ONE URL and
+    // one page: the `Login` component (see `pages::login`) tries the
+    // platform-admin credential first and falls back to the tenant
+    // credential on 401. The MAPPS-518 credential isolation stays
+    // intact underneath (`platform_admins` and `users` are still
+    // separate tables; the MAPPS-498 mirror still cannot touch
+    // `platform_admins`) — the unification is UI only.
+    //
+    // `/client/login` and `/platform/login` are retained as `#[route]`
+    // entries but render "moved" redirect stubs (see
+    // `ClientLoginLegacy` and `PlatformLoginLegacy` components
+    // below) so bookmarks from either previous URL land on the
+    // unified page without a 404.
+    #[route("/login")]
     Login {},
 
-    #[route("/login")]
-    PlatformLogin {},
+    #[route("/client/login")]
+    ClientLoginLegacy {},
 
     #[route("/platform/login")]
     PlatformLoginLegacy {},
@@ -854,23 +861,31 @@ fn HubRedirect(target: String, label: &'static str) -> Element {
 
 #[component]
 fn Home() -> Element {
-    // PMS-729: when the SPA is served from a portal host (e.g.
-    // `acme.client.localhost:4301`), the root path belongs to the
-    // customer portal, not the agent marketing home page. Redirect to
-    // `/portal/login` so a visitor typing the bare host lands where the
-    // MSP branding hint renders and the login form is offered.
+    // PMS-729 / MAPPS-520: when the SPA is served from a portal host
+    // (e.g. `acme.client.localhost:4301`, `acme.client.a8n.systems`)
+    // the tenant-subdomain root belongs to the customer portal, not
+    // the agent marketing home page. Post-MAPPS-520 we render the
+    // portal login (or the portal dashboard when a portal session is
+    // already present) INLINE at `/`, so the URL bar stays clean
+    // instead of bouncing through `/portal/login`. `/portal/login`
+    // still resolves via `Route::PortalLogin` as an internal alias
+    // for programmatic navigations (post-logout redirects, session-
+    // expired handlers).
     //
     // Non-portal hosts (localhost:4301, msp.<tld>) keep the pre-729
     // behaviour and render the agent-side home page.
     #[cfg(feature = "web")]
     if hooks::fetch::api::on_portal_host() {
-        let nav = use_navigator();
-        nav.replace(Route::PortalLogin {});
-        return rsx! {
-            div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
-                "Redirecting to the portal sign-in…"
-            }
-        };
+        // Portal session in place -> land on the dashboard; otherwise
+        // show the login form. `current_portal_access_token` is the
+        // authoritative "signed in on the portal plane" signal (see
+        // `hooks::fetch::api`) and matches the extractor server-side
+        // uses for `/portal/*`. Kept inline on the same route so the
+        // URL never leaves `/` while the portal user is here.
+        if hooks::fetch::api::current_portal_access_token().is_some() {
+            return rsx! { crate::pages::portal::PortalHomePage {} };
+        }
+        return rsx! { crate::pages::portal_login::PortalLoginPage {} };
     }
     rsx! { home::HomePage {} }
 }
@@ -885,20 +900,37 @@ fn Home() -> Element {
 /// hits a protected route. The pre-cutover behaviour (HubRedirect to bunyip's
 /// `/login` directly) skipped the OIDC handshake entirely, which is why the
 /// user landed on bunyip's dashboard with no way back to msp.
-// MAPPS-513 stage A / MAPPS-518 URL swap: route wrappers for the
-// platform super-admin login page. `PlatformLogin` owns `/login`
-// post URL swap; `PlatformLoginLegacy` keeps the stage-A URL
-// `/platform/login` alive as an alias so operator bookmarks and any
-// documentation referencing it keep working. Both render the same
-// page component. Public (no AuthGuard).
+// MAPPS-520: legacy-URL redirect stubs. Post-unification the only
+// public login URL is `/login`; the two previous URLs (`/client/login`
+// and `/platform/login`) render a tiny redirect component so bookmarks
+// from before the unification land on the new URL without a 404. Kept
+// separate from the unified `Login` route wrapper below so a
+// bookmarked visitor sees a moved-page hint rather than the
+// unification landing silently. Public (no AuthGuard).
 #[component]
-fn PlatformLogin() -> Element {
-    rsx! { crate::pages::platform_login::PlatformLoginPage {} }
+fn ClientLoginLegacy() -> Element {
+    let nav = use_navigator();
+    use_hook(move || {
+        nav.replace(Route::Login {});
+    });
+    rsx! {
+        div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
+            "Sign-in has moved to /login. Redirecting…"
+        }
+    }
 }
 
 #[component]
 fn PlatformLoginLegacy() -> Element {
-    rsx! { crate::pages::platform_login::PlatformLoginPage {} }
+    let nav = use_navigator();
+    use_hook(move || {
+        nav.replace(Route::Login {});
+    });
+    rsx! {
+        div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
+            "Sign-in has moved to /login. Redirecting…"
+        }
+    }
 }
 
 #[component]

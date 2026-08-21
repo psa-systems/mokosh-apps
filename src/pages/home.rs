@@ -18,26 +18,22 @@ pub fn HomePage() -> Element {
                 div { class: "flex items-center justify-between",
                     span { class: "text-2xl font-bold text-white", "Mokosh Platform" }
                     div { class: "flex items-center space-x-4",
-                        // MAPPS-518 URL swap walkthrough fix: the
-                        // top-nav "Login" is the mokosh operator's
-                        // way in - it MUST land on /login (the
-                        // platform-admin login, `Route::PlatformLogin`
-                        // post URL swap), not on the tenant admin
-                        // login. The MSP-tenant admin login sits
-                        // under the "Client Portal" affordance to
-                        // its right (from mokosh's marketing-site
-                        // perspective the MSP tenant IS the client;
-                        // their portal is where they administer
-                        // their world).
-                        Link {
-                            to: Route::PlatformLogin {},
-                            class: "text-white hover:text-blue-200 transition-colors",
-                            "Login"
-                        }
+                        // MAPPS-520: unified sign-in. The mokosh
+                        // operator and the MSP tenant admin/user
+                        // both sign in at `/login` (`Route::Login`);
+                        // the page tries the platform credential
+                        // first and falls back to the tenant
+                        // credential on 401. The prior split "Login"
+                        // + "Client Portal" nav pair is retired here
+                        // because both destinations now collapse to
+                        // one URL; MSP customers arrive on their
+                        // tenant subdomain
+                        // (`<slug>.client.<suffix>`) directly, not
+                        // via the mokosh marketing landing.
                         Link {
                             to: Route::Login {},
                             class: "bg-white text-blue-600 px-4 py-2 rounded-md font-medium hover:bg-blue-50 transition-colors", // theme-guard-allow: marketing hero CTA on brand gradient
-                            "Client Portal"
+                            "Sign in"
                         }
                     }
                 }

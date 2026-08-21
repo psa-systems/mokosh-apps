@@ -44,6 +44,33 @@ struct LoginBody {
     approval_code: Option<String>,
 }
 
+/// MAPPS-520: request body for `POST /api/v1/platform/login`. Kept as a
+/// distinct struct from `LoginBody` because the platform endpoint takes
+/// only email + password (no MFA / approval / remember-me).
+#[cfg(feature = "web")]
+#[derive(Serialize)]
+struct PlatformLoginBody {
+    email: String,
+    password: String,
+}
+
+/// MAPPS-520: subset of mokosh-server's `PlatformLoginResponse` the
+/// unified login page decodes. Only the bearer is needed here; the
+/// platform admin's profile is refetched from the platform surface
+/// after the redirect.
+#[cfg(feature = "web")]
+#[derive(Deserialize)]
+struct PlatformLoginResp {
+    access_token: String,
+}
+
+/// MAPPS-513 / MAPPS-520: sessionStorage key `/platform/login` (now
+/// unified into `/login`) writes its bearer to. Kept in sync with
+/// `pages::platform_login::PLATFORM_TOKEN_KEY` and
+/// `components::layout::PLATFORM_TOKEN_KEY`.
+#[cfg(feature = "web")]
+const PLATFORM_TOKEN_KEY: &str = "mokosh:platform_token";
+
 /// MAPPS-492 phase 3: one entry in the picker list.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 struct MembershipItem {
@@ -153,6 +180,62 @@ pub fn StandaloneLogin() -> Element {
             #[cfg(feature = "web")]
             {
                 use crate::hooks::fetch::api::ApiError;
+
+                // MAPPS-520: unified /login. Try the platform-admin
+                // plane FIRST (only when there is no MFA / approval
+                // code in the submission - both are tenant-plane
+                // challenges and would confuse a platform login). A
+                // 200 stashes the platform bearer in its own
+                // sessionStorage slot and navigates to the
+                // platform-admin surface. A 401 falls through to the
+                // tenant `/auth/login` flow below exactly as before,
+                // so a tenant admin at the same email path is
+                // unaffected. Any other error also falls through -
+                // the tenant call will surface a more actionable
+                // message than a naked 500 on the platform endpoint.
+                let can_try_platform = mfa.is_none() && approval.is_none();
+                if can_try_platform {
+                    let platform_body = PlatformLoginBody {
+                        email: em.clone(),
+                        password: pw.clone(),
+                    };
+                    match crate::hooks::fetch::api::post_typed::<PlatformLoginResp, _>(
+                        "/platform/login",
+                        &platform_body,
+                    )
+                    .await
+                    {
+                        Ok(resp) => {
+                            if let Some(win) = web_sys::window() {
+                                if let Ok(Some(store)) = win.session_storage() {
+                                    let _ = store.set_item(PLATFORM_TOKEN_KEY, &resp.access_token);
+                                }
+                            }
+                            // Land on the platform-admin surface
+                            // (tenant-management console). Uses the
+                            // platform bearer via the client's
+                            // platform-authed fetch helpers.
+                            #[cfg(feature = "multi-tenant")]
+                            nav.push(Route::TenantManagement {});
+                            #[cfg(not(feature = "multi-tenant"))]
+                            nav.push(Route::Dashboard {});
+                            saving.set(false);
+                            return;
+                        }
+                        Err(ApiError::Status { code: 401, .. }) => {
+                            // Not a platform admin (or wrong platform
+                            // password). Fall through to try the
+                            // tenant credential.
+                        }
+                        Err(_) => {
+                            // Non-401 platform error: fall through
+                            // rather than block. The tenant call
+                            // below may still succeed and will
+                            // surface a clearer error if it fails.
+                        }
+                    }
+                }
+
                 let body = LoginBody {
                     email: em.clone(),
                     password: pw.clone(),
