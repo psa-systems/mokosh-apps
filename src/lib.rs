@@ -45,6 +45,36 @@ pub fn AuthGuard() -> Element {
         };
     }
     if !auth_state.is_authenticated() {
+        // MAPPS-520: platform-plane admins pass through the tenant
+        // AuthGuard when they hold a valid platform bearer in
+        // sessionStorage. The MAPPS-518 platform-admin surface
+        // (currently only `/admin/tenants`, `TenantManagementPage`)
+        // gates its own render on the same signal and issues its own
+        // fetches with the platform bearer, so a platform-only
+        // caller can reach it without the tenant `AuthContext`
+        // being populated. AppShell / Sidebar / TopBar all read the
+        // tenant user via `.as_ref().map(...).unwrap_or(false)` so
+        // they render sensibly with no tenant session; the platform
+        // admin sees a nav where every tenant-role-gated item is
+        // hidden EXCEPT the Tenants item (which gates on
+        // `platform_bearer_present()`).
+        //
+        // Every OTHER `AuthGuard` fall-through remains: no platform
+        // bearer AND no tenant auth still bounces to `/login` (or
+        // kicks the OIDC flow off), so nothing above this line
+        // silently unlocks a route that used to require tenant auth.
+        #[cfg(feature = "web")]
+        if crate::hooks::fetch::api::current_platform_access_token().is_some() {
+            return rsx! {
+                ErrorBoundary {
+                    handle_error: |errors: ErrorContext| rsx! {
+                        RouteErrorFallback { errors }
+                    },
+                    Outlet::<Route> {}
+                }
+            };
+        }
+
         // MAPPS-368: a deployment with no OIDC issuer has no bunyip OP to
         // redirect to, so send the user to the standalone username/password
         // login form instead of a dead `/oauth2/authorize`.
