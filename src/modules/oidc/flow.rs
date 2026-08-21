@@ -114,12 +114,19 @@ fn current_search() -> String {
 }
 
 /// True for routes that must never be a post-login `return_to` target:
-/// the auth plumbing itself (round-tripping back through `/login` or
-/// `/auth/callback` would loop) and the bare root.
+/// the auth plumbing itself (round-tripping back through any login
+/// page or `/auth/callback` would loop) and the bare root.
+///
+/// MAPPS-518 URL swap: `/login` is the platform-admin login,
+/// `/client/login` is the tenant login, `/platform/login` is the
+/// stage-A legacy alias for the platform-admin page. All three are
+/// login screens and must be excluded.
 fn is_auth_plumbing(path: &str) -> bool {
     path.is_empty()
         || path == "/"
         || path.starts_with("/login")
+        || path.starts_with("/client/login")
+        || path.starts_with("/platform/login")
         || path.starts_with("/auth/callback")
 }
 
@@ -494,7 +501,18 @@ mod tests {
 
     #[test]
     fn sanitize_drops_auth_plumbing_and_root() {
-        for p in ["", "/", "/login", "/login/2fa", "/auth/callback"] {
+        // MAPPS-518: three login screens now — /login (platform),
+        // /client/login (tenant), /platform/login (stage-A legacy).
+        // All three must be excluded from return_to targets.
+        for p in [
+            "",
+            "/",
+            "/login",
+            "/login/2fa",
+            "/client/login",
+            "/platform/login",
+            "/auth/callback",
+        ] {
             assert_eq!(sanitize_return_to(p, "?code=x"), "", "path {p:?}");
         }
     }
@@ -524,7 +542,9 @@ mod tests {
             "//evil.example",         // protocol-relative
             "https://evil.example/x", // cross-origin
             "javascript:alert(1)",    // scheme injection
-            "/login",                 // would loop
+            "/login",                 // would loop (platform login post MAPPS-518)
+            "/client/login",          // would loop (tenant login post MAPPS-518)
+            "/platform/login",        // would loop (stage-A legacy alias)
             "/auth/callback?code=x",  // would loop
         ] {
             assert_eq!(classify_return_to(p), ReturnTarget::Dashboard, "path {p:?}");

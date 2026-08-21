@@ -178,8 +178,9 @@ pub fn AuthCallbackPage() -> Element {
     #[cfg(feature = "web")]
     use_effect(move || {
         if is_retriable {
+            // MAPPS-518 URL swap: tenant login is /client/login.
             if let Some(win) = web_sys::window() {
-                let _ = win.location().replace("/login");
+                let _ = win.location().replace("/client/login");
             }
         }
     });
@@ -192,7 +193,8 @@ pub fn AuthCallbackPage() -> Element {
                 } else if let Some(err) = error_msg.read().as_ref() {
                     h1 { class: "text-xl font-semibold text-red-600", "Sign-in failed" }
                     p { class: "text-content", "{err}" }
-                    a { href: "/login", class: "text-accent underline", "Try again" }
+                    // MAPPS-518 URL swap: tenant login is /client/login.
+                    a { href: "/client/login", class: "text-accent underline", "Try again" }
                 } else {
                     h1 { class: "text-xl", "Signing you in…" }
                 }

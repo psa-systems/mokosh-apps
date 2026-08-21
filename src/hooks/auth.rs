@@ -424,8 +424,12 @@ pub fn use_token_refresh() {
                     // is unavailable. window.location.set_href works
                     // regardless and triggers a full page reload,
                     // which is appropriate after a forced sign-out.
+                    // MAPPS-518 URL swap: tenant login lives at
+                    // /client/login now; /login is the platform-admin
+                    // page and would be the wrong destination for a
+                    // forced tenant sign-out.
                     if let Some(win) = web_sys::window() {
-                        let _ = win.location().set_href("/login");
+                        let _ = win.location().set_href("/client/login");
                     }
                 }
             }
@@ -518,8 +522,9 @@ pub fn use_standalone_token_refresh() {
                     crate::hooks::fetch::api::set_access_token(None);
                     // Hard redirect (mirrors use_token_refresh): this hook is
                     // mounted above the Router, so use_navigator is unavailable.
+                    // MAPPS-518 URL swap: tenant login is /client/login.
                     if let Some(win) = web_sys::window() {
-                        let _ = win.location().set_href("/login");
+                        let _ = win.location().set_href("/client/login");
                     }
                 }
             }

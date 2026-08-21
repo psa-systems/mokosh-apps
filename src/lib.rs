@@ -255,15 +255,24 @@ pub enum Route {
     #[route("/")]
     Home {},
 
-    #[route("/login")]
+    // MAPPS-518 URL swap: the mokosh platform super-admin owns the
+    // canonical `/login` (unchanged for the operator). Tenant
+    // admin/user (a mokosh client = MSP) login moves to
+    // `/client/login`. Both routes point at the same page components
+    // as before the swap — only the paths change; nav.push(Route::*)
+    // call sites still resolve to the right screen because the enum
+    // variant names are unchanged.
+    //
+    // `/platform/login` is retained as a legacy alias for the same
+    // page so operator bookmarks minted in stage A keep working.
+    #[route("/client/login")]
     Login {},
 
-    // MAPPS-513 stage A: platform super-admin login. Distinct URL,
-    // distinct credential store (`platform_admins` on the server),
-    // distinct JWT typ so it never collides with the tenant identity
-    // plane. Public route (no AuthGuard).
-    #[route("/platform/login")]
+    #[route("/login")]
     PlatformLogin {},
+
+    #[route("/platform/login")]
+    PlatformLoginLegacy {},
 
     // MAPPS-497 item 6: dedicated intermediate routes for the
     // identity-first login flow. Both read cross-page state from the
@@ -876,10 +885,19 @@ fn Home() -> Element {
 /// hits a protected route. The pre-cutover behaviour (HubRedirect to bunyip's
 /// `/login` directly) skipped the OIDC handshake entirely, which is why the
 /// user landed on bunyip's dashboard with no way back to msp.
-// MAPPS-513 stage A: route wrapper for the platform super-admin
-// login page. Public (no AuthGuard); distinct from tenant login.
+// MAPPS-513 stage A / MAPPS-518 URL swap: route wrappers for the
+// platform super-admin login page. `PlatformLogin` owns `/login`
+// post URL swap; `PlatformLoginLegacy` keeps the stage-A URL
+// `/platform/login` alive as an alias so operator bookmarks and any
+// documentation referencing it keep working. Both render the same
+// page component. Public (no AuthGuard).
 #[component]
 fn PlatformLogin() -> Element {
+    rsx! { crate::pages::platform_login::PlatformLoginPage {} }
+}
+
+#[component]
+fn PlatformLoginLegacy() -> Element {
     rsx! { crate::pages::platform_login::PlatformLoginPage {} }
 }
 

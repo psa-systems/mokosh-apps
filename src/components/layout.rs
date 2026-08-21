@@ -906,8 +906,9 @@ fn UserMenu() -> Element {
         // `location.replace` schedules
         // a Dioxus re-render. On that re-render `use_require_auth` (the
         // route guard) sees `user = None` on `/dashboard` and calls
-        // `navigator.push(Route::Login {})`, which puts `/login` on TOP
-        // of `/dashboard` in history. The subsequent `location.replace`
+        // `navigator.push(Route::Login {})`, which puts /client/login
+        // (post MAPPS-518 URL swap; was /login) on TOP of `/dashboard`
+        // in history. The subsequent `location.replace`
         // then races with the router push; the user ends up navigated
         // away from the hub logout URL and back onto an authenticated-
         // looking dashboard view. So: clear sessionStorage, navigate
