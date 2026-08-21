@@ -410,15 +410,37 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
                 NavItem { to: Route::Reports {}, icon: rsx!(ChartIcon {}), label: "Reports", collapsed }
             }
 
+            // MAPPS-520 walkthrough: the platform super-admin has its
+            // OWN nav section (Tenants) that renders whenever a
+            // platform bearer is present in sessionStorage. Split out
+            // of the tenant "Admin" section below so a pure platform
+            // admin (users row deleted by migration 133; no
+            // tenant-plane `AuthContext`) still sees the top-level
+            // action they own instead of a completely empty admin
+            // area. The section renders WITHOUT gating on
+            // `is_admin` (which reads `auth.user.role.is_admin()` and
+            // is false when there is no users row at all).
+            if is_platform_admin {
+                NavSection { title: "Platform", rail_collapsed: collapsed, color: SectionColor::Violet,
+                    // MAPPS-447 / MAPPS-518: only the platform-admin
+                    // persona (`platform_admins` row + `/login`
+                    // bearer) can create / suspend / edit tenants
+                    // ("client portals" in the mokosh vocabulary).
+                    // Server side is gated on `RequirePlatformAdmin`;
+                    // this nav item mirrors the same gate.
+                    TenantsNavItem { visible: true, collapsed }
+                }
+            }
+
+            // Tenant-scoped admin surface (Teams, Invitations, Audit
+            // Log, Request Forms, SLA, Settings). Renders when the
+            // signed-in `users` row carries an admin-ish role, so a
+            // pure platform admin without any tenant context does
+            // NOT see items that would 401 the moment they were
+            // clicked. A caller who holds both hats (platform bearer
+            // AND a tenant admin users row) sees both sections.
             if is_admin {
                 NavSection { title: "Admin", rail_collapsed: collapsed, color: SectionColor::Violet,
-                    // MAPPS-447: super-admins get a shortcut to the tenant
-                    // roster + Create-tenant modal. Rendered at the top of
-                    // the Admin section so tenant management visually
-                    // anchors the group. The helper is a no-op stub on
-                    // single-tenant builds where `Route::TenantManagement`
-                    // does not exist.
-                    TenantsNavItem { visible: is_platform_admin, collapsed }
                     // PMS-791 phase 2: Teams (was "Team", which was
                     // actually the invitations page — see the
                     // Invitations item below). Org tenants only per Q4
