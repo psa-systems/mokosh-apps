@@ -66,7 +66,7 @@ Every error that appears in this chain is a field you must then audit in full. A
 # TECHNIQUE 4 - FORMAT-FIELD PROBES (per format, the exact valid/invalid pairs)
 For every field whose value has a defined format, run the matching probe set. A valid value MUST accept; each invalid value MUST be rejected with a field-level message, on BOTH the UI and the API:
 - email: reject missing @, double @, no domain, no TLD, internal spaces, trailing dot; accept `a+tag@x.com`, normalize uppercase. (RFC-ish, but the app's own rule is what you verify.)
-- url / website: reject `javascript:`, `data:`, `vbscript:` schemes (stored-XSS vector - inspect the rendered anchor href, not just the 200), reject missing scheme and bare `ftp:`; accept `https://`.
+- url / website: reject `javascript:`, `data:`, `vbscript:` schemes (stored-XSS vector - inspect the rendered anchor href, not just the 200), reject bare `ftp:` and any other explicit scheme, and reject embedded whitespace or control characters; accept `https://`, and accept a scheme-less domain like `example.com`, which must persist as `https://example.com` (MAPPS-480, PMS-805). A single-label host (`localhost`, `no-dot`) must still reject.
 - phone: reject letters, too short, too long; accept E.164 `+14155552671`; national format with spaces/dashes/parens must normalize then enforce E.164, never 500.
 - country: reject full name "United States", lowercase, invalid "XX"; accept ISO 3166-1 alpha-2 "US".
 - timezone: reject "America/New York" (space), "EST", garbage; accept IANA "America/New_York".
