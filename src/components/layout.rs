@@ -932,12 +932,24 @@ fn UserMenu() -> Element {
         .and_then(|w| w.location().origin().ok())
         .map(|origin| format!("{}/", origin.trim_end_matches('/')))
         .unwrap_or_else(|| cfg.hub_url("/"));
-    let hub_logout = format!(
-        "{issuer}/v1/auth/logout?url={}",
-        js_sys::encode_uri_component(&post_logout_target)
-            .as_string()
-            .unwrap_or(post_logout_target)
-    );
+    // MAPPS-520 walkthrough fix: with no bunyip issuer configured
+    // (standalone dev / self-hosted no-OP mode), `issuer` is the empty
+    // string and the format below collapsed to `/v1/auth/logout?url=...`
+    // - a same-origin path the browser hit on localhost:4301 and the
+    // SPA rendered as a 404 (no client route matches). Fall back to
+    // the SPA login URL directly when there is no OP to bounce
+    // through; the local session clear below is what actually signs
+    // the user out in standalone mode.
+    let hub_logout = if issuer.is_empty() {
+        "/login".to_string()
+    } else {
+        format!(
+            "{issuer}/v1/auth/logout?url={}",
+            js_sys::encode_uri_component(&post_logout_target)
+                .as_string()
+                .unwrap_or(post_logout_target)
+        )
+    };
 
     let logout = move |_| {
         open.set(false);
