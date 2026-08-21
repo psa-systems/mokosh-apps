@@ -7,6 +7,13 @@ on:
   push:
     branches:
       - "main"
+      # Branch publish allow-list (MAPPS-421). A push to a branch named here
+      # publishes ONLY a tag derived from the branch name, so staging can run a
+      # feature branch while `:latest` stays reachable from main alone. This
+      # list IS the allow-list: any other branch never triggers the workflow,
+      # so it publishes nothing. Retire an entry when its branch merges
+      # (mokosh-client-login: MAPPS-521).
+      - "mokosh-client-login"
     tags:
       - "v*"
     paths:
@@ -107,10 +114,11 @@ jobs:
         run: |
           # Derive the publish mode from the trigger, never from git describe:
           # a tag ref -> release (push :vX.Y.Z only), a main push -> latest
-          # (push :latest only), a manual run -> dry-run. A release commit fires
-          # BOTH the main-push and the tag-push events; resolving disjoint tags
-          # per trigger is what stops the two runs from racing to overwrite the
-          # same :latest tag (governance GOV-13).
+          # (push :latest only), a push to an allow-listed branch -> branch
+          # (push :<branch> only, MAPPS-421), a manual run -> dry-run. A release
+          # commit fires BOTH the main-push and the tag-push events; resolving
+          # disjoint tags per trigger is what stops the two runs from racing to
+          # overwrite the same :latest tag (governance GOV-13).
           let event = "${{ github.event_name }}"
           let ref_type = "${{ github.ref_type }}"
           let ref_name = "${{ github.ref_name }}"
@@ -119,12 +127,23 @@ jobs:
             "dry-run"
           } else if $ref_type == "tag" {
             "release"
-          } else {
+          } else if $ref_name == "main" {
             "latest"
+          } else {
+            # Only the branches in the `on: push: branches:` allow-list above can
+            # reach this arm; any other branch never triggers the workflow.
+            "branch"
           }
           # A manual run only mutates the registry if dry_run is explicitly false;
           # the input defaults to true, and push events always publish for real.
           let dry_run = ($event == "workflow_dispatch" and "${{ inputs.dry_run }}" != "false")
+          # A manual run resolves the latest (or simulated release) train, so
+          # letting one publish for real from a feature branch would write
+          # :latest from unmerged code. Refuse it loudly: publish a branch by
+          # pushing the branch, which resolves the branch train instead.
+          if $event == "workflow_dispatch" and (not $dry_run) and $ref_type != "tag" and $ref_name != "main" {
+            error make { msg: $"A workflow_dispatch with dry_run=false is only allowed on main or a v* tag, not on '($ref_name)': it would publish :latest from unmerged code. Push the branch instead to publish its branch tag." }
+          }
           let r = (^nu oci-build/get-tags.nu --mode $mode --ref-name $ref_name --simulate-tag $simulate_tag --json | from json)
           $"mode=($r.mode)\n" | save --append $env.GITHUB_OUTPUT
           $"train=($r.train)\n" | save --append $env.GITHUB_OUTPUT
@@ -194,7 +213,9 @@ jobs:
           )
 
       - name: Mirror image to public registry
-        if: vars.PSA_SYSTEMS_PUBLIC_PACKAGE_OWNER != ''
+        # MAPPS-421: a branch tag is a staging-only artifact, so it is never
+        # mirrored. The public owner carries main and release tags only.
+        if: vars.PSA_SYSTEMS_PUBLIC_PACKAGE_OWNER != '' && steps.resolve.outputs.train != 'branch'
         shell: nu {0}
         run: |
           # Copy each tag's manifest list (multi-arch preserved) from
@@ -231,7 +252,9 @@ jobs:
         # gap. `::warning` surfaces as a run annotation; it does not fail the
         # build, because an intentionally-unset owner (no public image yet) is a
         # valid config.
-        if: vars.PSA_SYSTEMS_PUBLIC_PACKAGE_OWNER == '' && steps.resolve.outputs.dry_run == 'false'
+        # MAPPS-421: a branch build is never mirrored by design, so it gets the
+        # explicit line in "Print image URLs" instead of this warning.
+        if: vars.PSA_SYSTEMS_PUBLIC_PACKAGE_OWNER == '' && steps.resolve.outputs.dry_run == 'false' && steps.resolve.outputs.train != 'branch'
         run: |
           echo "::warning title=Public mirror skipped::PSA_SYSTEMS_PUBLIC_PACKAGE_OWNER is empty, so mokosh-www:${{ steps.resolve.outputs.tag }} was NOT mirrored to the public registry. Set the var to publish a public image, or leave it unset intentionally if no public mirror is wanted."
 
@@ -239,12 +262,15 @@ jobs:
         shell: nu {0}
         run: |
           let tag = "${{ steps.resolve.outputs.tag }}"
+          let train = "${{ steps.resolve.outputs.train }}"
           let dry_run = ("${{ steps.resolve.outputs.dry_run }}" == "true")
           let prefix = if $dry_run { "[dry-run] WOULD push image to" } else { "Image pushed to" }
           let image = "mokosh-www"
           let registry = $env.IMAGE_REGISTRY
           print $"($prefix) ($registry)/($image):($tag)"
-          if ($env.PUBLIC_REGISTRY_OWNER | is-not-empty) {
+          if $train == "branch" {
+            print $"Branch build: ($image):($tag) is a staging-only artifact, so it was NOT mirrored to the public registry (MAPPS-421)."
+          } else if ($env.PUBLIC_REGISTRY_OWNER | is-not-empty) {
             let public_reg = $"($env.REGISTRY_PROVIDER)/($env.PUBLIC_REGISTRY_OWNER)"
             let mirror_prefix = if $dry_run { "[dry-run] WOULD mirror image to" } else { "Image mirrored to" }
             print $"($mirror_prefix) ($public_reg)/($image):($tag)"
