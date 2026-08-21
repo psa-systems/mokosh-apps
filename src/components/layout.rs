@@ -808,6 +808,25 @@ pub fn TopBar(props: TopBarProps) -> Element {
 
             // Right side actions
             div { class: "flex items-center px-4 sm:px-6 lg:px-8 space-x-4",
+                // MAPPS-520 walkthrough: visible confirmation that the
+                // caller holds the mokosh platform super-admin persona
+                // (`platform_admins` row + `/login` bearer). Post
+                // MAPPS-518 the persona no longer shows up in
+                // `users.role`, so the operator lost a visible signal
+                // that they hold the top role. The badge only renders
+                // when the platform bearer is present in sessionStorage
+                // (`platform_bearer_present()`), which mirrors what
+                // gates cross-tenant writes server-side. Kept as a
+                // read-only chip; no click behaviour and no interaction
+                // with the tenant AuthContext.
+                if platform_bearer_present() {
+                    span {
+                        class: "hidden sm:inline-flex items-center rounded-full bg-accent-100 text-accent-800 dark:bg-accent-900 dark:text-accent-300 px-2 py-0.5 text-xs font-medium",
+                        title: "You are signed in as the mokosh platform super-admin. Only this role can create client portals (tenants).",
+                        "Super-admin"
+                    }
+                }
+
                 // MAPPS-346: global search, collapsed to a magnifier icon
                 // that expands the text entry leftward. Sits to the left of
                 // the theme picker.
