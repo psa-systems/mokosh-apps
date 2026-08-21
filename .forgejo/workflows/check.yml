@@ -130,5 +130,15 @@ jobs:
       - name: Check web/WASM build
         run: cargo check --target wasm32-unknown-unknown
 
+      # MAPPS-514: the desktop target is a second build, and nothing else in
+      # this workflow compiles it. MAPPS-503 broke it while every step here
+      # stayed green, which is what this guards against. `--no-default-features`
+      # drops `web-renderer` so dioxus links the desktop renderer alone; `web`
+      # stays on because it is the app-runtime gate, not a browser gate.
+      # The webview headers come from the runner image, not an install step
+      # (see scripts/check-runner-labels.sh).
+      - name: Check desktop build
+        run: cargo check --no-default-features --features web,multi-tenant,desktop
+
       - name: Unit tests
         run: cargo test --lib

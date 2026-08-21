@@ -34,6 +34,13 @@ just desktop-bundle    # build an installable bundle for this platform
 just check-desktop     # type-check the desktop build (part of `just check`)
 ```
 
+MAPPS-514 wires the same `cargo check` invocation as `just check-desktop` into
+`.forgejo/workflows/check.yml` as its own step, so a change that breaks the
+desktop target fails CI in the same run that a change breaking the web build
+does. The webview development packages listed above are supplied by the runner
+image behind `vars.RUNS_ON_OPENSUSE_DEV_LATEST`, not by a workflow-level
+install step (see `scripts/check-runner-labels.sh`).
+
 `just desktop-bundle` reads the `[bundle]` block in `Dioxus.toml` (identifier,
 publisher, and the icons under `assets/icons/`).
 
