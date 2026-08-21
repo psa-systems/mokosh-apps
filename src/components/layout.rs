@@ -433,13 +433,30 @@ fn SidebarContent(persist_scroll: bool, collapsed: bool) -> Element {
             }
 
             // Tenant-scoped admin surface (Teams, Invitations, Audit
-            // Log, Request Forms, SLA, Settings). Renders when the
-            // signed-in `users` row carries an admin-ish role, so a
-            // pure platform admin without any tenant context does
-            // NOT see items that would 401 the moment they were
-            // clicked. A caller who holds both hats (platform bearer
-            // AND a tenant admin users row) sees both sections.
-            if is_admin {
+            // Log, Request Forms, SLA, Settings). Renders when
+            // EITHER the signed-in `users` row carries an admin-ish
+            // role OR the caller holds a platform bearer.
+            //
+            // Pre-MAPPS-518 the mokosh super-admin was a
+            // `users.role='super_admin'` row and these items were
+            // part of their nav; post-518 the persona moved into
+            // `platform_admins` and the super-admin's tenant users
+            // row was deleted by migration 133, which hid the whole
+            // section for a pure platform admin. Adding the
+            // platform-admin gate here restores that visibility so
+            // the operator sees the full super-admin surface they
+            // had before the split.
+            //
+            // Individual items behind here still call tenant-scoped
+            // endpoints that authenticate against the tenant
+            // `AuthContext`, not the platform bearer. A pure platform
+            // admin who does not also hold a tenant admin users row
+            // will see the items but may hit an "auth required"
+            // screen after navigating. Teaching each admin route to
+            // accept a platform bearer (mirroring the MAPPS-518
+            // `TenantOrPlatformCaller` pattern already on the 5
+            // dual-check tenant handlers) is tracked separately.
+            if is_admin || is_platform_admin {
                 NavSection { title: "Admin", rail_collapsed: collapsed, color: SectionColor::Violet,
                     // PMS-791 phase 2: Teams (was "Team", which was
                     // actually the invitations page — see the
