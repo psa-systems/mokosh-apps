@@ -211,10 +211,73 @@ pub fn StandaloneLogin() -> Element {
                                     let _ = store.set_item(PLATFORM_TOKEN_KEY, &resp.access_token);
                                 }
                             }
+
+                            // MAPPS-520 walkthrough: chain a tenant
+                            // login attempt with the same credentials
+                            // so a super-admin lands with BOTH
+                            // bearers - the platform bearer for
+                            // cross-tenant surfaces (Tenants) AND a
+                            // tenant admin bearer for tenant-scoped
+                            // surfaces (Invitations, Audit Log,
+                            // Settings, ...). Server-side
+                            // `PlatformAdminService::authenticate`
+                            // auto-provisions a matching users row
+                            // in DEFAULT_TENANT with role='admin'
+                            // (see mokosh-server companion change),
+                            // so an operator who has only ever
+                            // signed in as platform admin still
+                            // gets tenant admin caps here.
+                            //
+                            // A failure of this chained call is
+                            // silent: the platform bearer already
+                            // landed, and there are legitimate
+                            // reasons the tenant call may not
+                            // full-session (needs_selection with
+                            // multiple memberships, needs_setup on
+                            // a fresh instance with a partial
+                            // auto-provision, MFA required on the
+                            // tenant users row). The operator can
+                            // still use the platform surface; the
+                            // tenant surface will kick to /login on
+                            // demand.
+                            let chained = LoginBody {
+                                email: em.clone(),
+                                password: pw.clone(),
+                                remember_me: false,
+                                mfa_code: None,
+                                approval_code: None,
+                            };
+                            if let Ok(tenant_resp) =
+                                crate::hooks::fetch::api::post_typed::<LoginResp, _>(
+                                    "/auth/login",
+                                    &chained,
+                                )
+                                .await
+                            {
+                                if let (Some(user), false, false, false, false) = (
+                                    tenant_resp.user.clone(),
+                                    tenant_resp.mfa_required,
+                                    tenant_resp.approval_required,
+                                    tenant_resp.needs_selection,
+                                    tenant_resp.needs_setup,
+                                ) {
+                                    install_session(
+                                        tenant_resp.access_token,
+                                        tenant_resp.refresh_token,
+                                        tenant_resp.expires_at,
+                                        user,
+                                    );
+                                }
+                            }
+
                             // Land on the platform-admin surface
                             // (tenant-management console). Uses the
                             // platform bearer via the client's
-                            // platform-authed fetch helpers.
+                            // platform-authed fetch helpers; the
+                            // tenant bearer (if the chain above
+                            // installed it) is used implicitly by
+                            // every tenant-scoped fetch elsewhere in
+                            // the SPA.
                             #[cfg(feature = "multi-tenant")]
                             nav.push(Route::TenantManagement {});
                             #[cfg(not(feature = "multi-tenant"))]
