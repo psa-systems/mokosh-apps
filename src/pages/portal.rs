@@ -3,9 +3,9 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    invoice_status_badge, Badge, BadgeVariant, BookIcon, Button, ButtonVariant, Card, CurrencyIcon,
-    IconSize, PlusIcon, PortalLayout, SearchInput, Table, TableBody, TableCell, TableEmptyRow,
-    TableHead, TableHeader, TableRow,
+    invoice_status_badge, Badge, BadgeVariant, BannerTone, BookIcon, Button, ButtonVariant, Card,
+    CurrencyIcon, IconSize, Input, PlusIcon, PortalLayout, SearchInput, StatusBanner, Table,
+    TableBody, TableCell, TableEmptyRow, TableHead, TableHeader, TableRow, Textarea,
 };
 use crate::Route;
 
@@ -150,35 +150,203 @@ pub fn PortalTicketListPage() -> Element {
     }
 }
 
-/// Portal new ticket page
+/// Subset of the server `TicketResponse` (`POST /api/v1/portal/tickets`) the
+/// submission page needs. The full type carries a lot more fields; we only
+/// read `id` to navigate to the new ticket's detail page on success. `serde`
+/// drops unknown fields, so extending the server side later does not break
+/// this decode.
+#[cfg(feature = "web")]
+#[derive(Clone, Debug, serde::Deserialize)]
+struct PortalCreatedTicket {
+    id: uuid::Uuid,
+}
+
+/// Portal new ticket page (MAPPS-454).
+///
+/// A signed-in portal contact opens a ticket from here. Server endpoint
+/// `POST /api/v1/portal/tickets` exists (mounted at
+/// `src/modules/portal/routes.rs`, PMS-27, gated on `RequirePortalAuth` and
+/// scoped to the contact's own tenant and company); this page renders the
+/// form and drives the submit against it.
+///
+/// Fields mirror `CreatePortalTicketRequest`
+/// (`src/modules/portal/models.rs`): `title` is required (1..=200 chars);
+/// `description` is optional. `priority_id` and `type_id` are deliberately
+/// left off — the portal has no endpoint to list either, and both are
+/// optional on the server payload, so triage picks them up on the
+/// technician side.
+///
+/// On success we navigate to the created ticket's own portal detail page
+/// so the contact can see the ticket exists. On failure we render the
+/// server's message next to the form with the entered values preserved
+/// (the signals hold across renders naturally); a `422` with a
+/// `field_message("title")` attaches next to the title field.
 #[component]
 pub fn PortalTicketNewPage() -> Element {
-    // MAPPS-357: N/A because this is a static "coming soon" page. It has no
-    // fetch and no working submit (the form was removed), so there is no
-    // primary resource to gate and no mutating control to disable.
+    let title = use_signal(String::new);
+    let description = use_signal(String::new);
+    let submitting = use_signal(|| false);
+    let error = use_signal(String::new);
+    let title_error = use_signal(String::new);
+
+    // MAPPS-357: server-reachable gate so a click cannot silently fail
+    // during an outage. Matches the portal reply form's posture: the
+    // submit button disables while the server is flagged down, and the
+    // page's "not available yet" copy is gone (MAPPS-454).
+    let can_mutate = crate::hooks::use_can_mutate();
+
     rsx! {
-        // P1-10 dedup: title rendered once below.
         PortalLayout {
             h1 { class: "text-2xl font-bold text-content mb-6", "Submit a Ticket" }
 
-            // Honest "coming soon" state. The previous form's inputs were
-            // dead (no-op oninput handlers) and there is no `POST
-            // /portal/tickets` endpoint to submit to, so the page never
-            // created a ticket. Rather than present a form that silently
-            // discards input, tell the user the flow is not available yet
-            // and point them at a working channel.
             Card {
-                div { class: "py-12 text-center",
-                    h2 { class: "text-lg font-medium text-content mb-2",
-                        "Coming soon"
+                PortalTicketNewForm {
+                    title,
+                    description,
+                    submitting,
+                    error,
+                    title_error,
+                    can_mutate,
+                }
+            }
+        }
+    }
+}
+
+/// Extracted so the signals live in the parent (which owns the page
+/// lifetime) while this component owns the form markup + submit handler
+/// closure. Splitting keeps the closure's captured signal set explicit,
+/// which the Dioxus 0.7 signal-tracking model prefers.
+#[component]
+fn PortalTicketNewForm(
+    title: Signal<String>,
+    description: Signal<String>,
+    submitting: Signal<bool>,
+    error: Signal<String>,
+    title_error: Signal<String>,
+    can_mutate: bool,
+) -> Element {
+    let mut title = title;
+    let mut description = description;
+    let mut submitting = submitting;
+    let mut error = error;
+    let mut title_error = title_error;
+
+    #[cfg(feature = "web")]
+    let navigator = use_navigator();
+
+    let disable_submit = *submitting.read() || !can_mutate;
+    let submit_label = if *submitting.read() {
+        "Submitting…"
+    } else {
+        "Submit ticket"
+    };
+
+    let handle_submit = move |e: FormEvent| {
+        e.prevent_default();
+        if *submitting.read() {
+            return;
+        }
+        let title_v = title.read().trim().to_string();
+        if title_v.is_empty() {
+            // Mirror the server's own rule (1..=200 chars) so an empty
+            // submit shows an inline title error rather than a raw 422
+            // envelope. Server-side length rejection still lands in the
+            // form-level banner via `field_message` below.
+            title_error.set("Title is required.".to_string());
+            return;
+        }
+        title_error.set(String::new());
+        error.set(String::new());
+        submitting.set(true);
+
+        let body = build_create_ticket_body(&title_v, &description.read());
+
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                // build_create_ticket_body only returns None on an empty
+                // title, and we guarded that above, so unwrap is sound.
+                let body = body.expect(
+                    "build_create_ticket_body returned None despite non-empty title guard above",
+                );
+                match crate::hooks::fetch::api::post_portal_authed_typed::<PortalCreatedTicket, _>(
+                    "/portal/tickets",
+                    &body,
+                )
+                .await
+                {
+                    Ok(ticket) => {
+                        // Land on the ticket the contact just created so
+                        // they see it exists (per the ticket AC).
+                        navigator.push(Route::PortalTicketDetail {
+                            id: ticket.id.to_string(),
+                        });
                     }
-                    p { class: "text-sm text-muted mb-6 max-w-md mx-auto",
-                        "Submitting tickets from the portal is not available yet. In the meantime, please contact your account team to open a request."
+                    Err(e) => {
+                        // Route a `title` field error into the inline
+                        // slot; keep everything else in the top banner.
+                        // Values persist across this render because the
+                        // signals still hold them.
+                        if let Some(msg) = e.field_message("title") {
+                            title_error.set(msg);
+                        }
+                        error.set(e.user_message());
                     }
-                    Link {
-                        to: Route::PortalTicketList {},
-                        Button { variant: ButtonVariant::Secondary, "Back to tickets" }
-                    }
+                }
+            }
+            submitting.set(false);
+        });
+    };
+
+    rsx! {
+        form {
+            class: "space-y-4",
+            onsubmit: handle_submit,
+
+            if !error.read().is_empty() {
+                StatusBanner { tone: BannerTone::Error, "{error.read()}" }
+            }
+
+            Input {
+                name: "title".to_string(),
+                label: "Title".to_string(),
+                r#type: "text".to_string(),
+                value: title.read().clone(),
+                required: true,
+                disabled: *submitting.read(),
+                error: title_error.read().clone(),
+                maxlength: 200_i64,
+                oninput: move |e: FormEvent| {
+                    title_error.set(String::new());
+                    title.set(e.value());
+                },
+            }
+
+            Textarea {
+                name: "description".to_string(),
+                label: "Description".to_string(),
+                value: description.read().clone(),
+                rows: 6_u32,
+                disabled: *submitting.read(),
+                help: "Optional. Include steps to reproduce, screenshots, or anything else that will help us diagnose.".to_string(),
+                oninput: move |e: FormEvent| {
+                    description.set(e.value());
+                },
+            }
+
+            div { class: "flex items-center justify-end gap-2 pt-2",
+                Link {
+                    to: Route::PortalTicketList {},
+                    Button { variant: ButtonVariant::Secondary, "Cancel" }
+                }
+                Button {
+                    variant: ButtonVariant::Primary,
+                    r#type: "submit".to_string(),
+                    disabled: disable_submit,
+                    loading: *submitting.read(),
+                    title: (!can_mutate).then(|| "Can't submit while the server is unreachable".to_string()),
+                    "{submit_label}"
                 }
             }
         }
@@ -1277,6 +1445,95 @@ pub fn PortalQuoteDetailPage(props: PortalQuoteDetailPageProps) -> Element {
                     }
                 }
             }
+        }
+    }
+}
+
+/// MAPPS-454: build the JSON body for `POST /api/v1/portal/tickets`.
+///
+/// Pulled out of the submit closure so the trim-and-shape rule the server
+/// receives is unit-testable without a WASM harness (the closure itself
+/// does HTTP + navigation and cannot run outside a browser). Returns
+/// `None` when the trimmed title is empty (the caller has already
+/// short-circuited to the inline title error in that case, but returning
+/// `None` here means a caller that forgets the guard still cannot POST a
+/// blank ticket).
+///
+/// A whitespace-only description collapses to `null` so the server sees
+/// "no description" rather than storing a body full of spaces.
+#[cfg(any(test, feature = "web"))]
+fn build_create_ticket_body(title: &str, description: &str) -> Option<serde_json::Value> {
+    let title = title.trim();
+    if title.is_empty() {
+        return None;
+    }
+    let description = description.trim();
+    let description = if description.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::String(description.to_string())
+    };
+    Some(serde_json::json!({
+        "title": title,
+        "description": description,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // MAPPS-454 test 1: the happy path an authenticated portal contact
+    // walks. Non-empty title + non-empty description, both trimmed, is
+    // exactly what the server's `CreatePortalTicketRequest` accepts.
+    #[test]
+    fn build_body_happy_path() {
+        let body = build_create_ticket_body(
+            "  Ticket about the printer  ",
+            "  Paper jam on the ground-floor unit  ",
+        )
+        .expect("non-empty title must produce a body");
+        assert_eq!(
+            body["title"], "Ticket about the printer",
+            "title must be trimmed"
+        );
+        assert_eq!(
+            body["description"], "Paper jam on the ground-floor unit",
+            "description must be trimmed"
+        );
+    }
+
+    // MAPPS-454 test 2: the rejection branch. An empty title (after
+    // trim) yields `None` so the caller cannot POST a body the server
+    // is guaranteed to reject with a 422, and the inline title error
+    // can carry the whole failure instead of round-tripping through
+    // the server for a validation the client already knows.
+    #[test]
+    fn build_body_rejects_empty_title() {
+        assert!(
+            build_create_ticket_body("", "anything").is_none(),
+            "an empty title must fail here, not on the server"
+        );
+        assert!(
+            build_create_ticket_body("   \t\n  ", "anything").is_none(),
+            "a whitespace-only title must also fail here (mirrors the \
+             MAPPS-281 rule for other required text fields)"
+        );
+    }
+
+    // The optional-description shape: the server takes an Option<String>,
+    // and a customer clicking Submit without filling in the body should
+    // send `null`, not an empty string that persists as "".
+    #[test]
+    fn build_body_collapses_empty_description_to_null() {
+        for empty in ["", " ", "\t\n  "] {
+            let body = build_create_ticket_body("Title", empty)
+                .expect("non-empty title must produce a body");
+            assert!(
+                body["description"].is_null(),
+                "description {empty:?} must collapse to null, got {}",
+                body["description"]
+            );
         }
     }
 }

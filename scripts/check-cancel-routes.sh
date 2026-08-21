@@ -25,6 +25,7 @@ src/pages/contacts.rs:cancel_route.clone()
 src/pages/contacts.rs:cancel_route.clone()
 src/pages/contracts.rs:cancel_route.clone()
 src/pages/knowledge_base.rs:cancel_route.clone()
+src/pages/portal.rs:Route::PortalTicketList {}
 src/pages/projects.rs:Route::ProjectList {}
 src/pages/quotes.rs:cancel_route.clone()
 src/pages/tickets.rs:Route::TicketList {}
