@@ -121,6 +121,14 @@ jobs:
           bash scripts/check-no-demo-rows.sh --self-test
           bash scripts/check-no-demo-rows.sh
 
+      # MAPPS-482: every email-sending action carries MailIcon and offers
+      # EmailPreview. --self-test proves the guard still rejects a call site
+      # missing either one.
+      - name: Email-affordance guard
+        run: |
+          bash scripts/check-email-affordance.sh --self-test
+          bash scripts/check-email-affordance.sh
+
       - name: Check formatting
         run: cargo fmt --all --check
 
