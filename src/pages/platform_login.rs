@@ -54,6 +54,12 @@ pub fn PlatformLoginPage() -> Element {
         }
         saving.set(true);
         error.set(String::new());
+        // MAPPS-518 walkthrough fix: clear the success greeting on every
+        // submit too. Without this a failed re-attempt renders the stale
+        // "Signed in as ..." banner from a previous success alongside
+        // the new "Invalid email or password." error, and the operator
+        // can't tell which state they are in.
+        done_greeting.set(String::new());
         spawn(async move {
             #[cfg(feature = "web")]
             {
