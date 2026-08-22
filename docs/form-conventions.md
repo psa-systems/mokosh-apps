@@ -20,6 +20,15 @@ Use a plain `Select` for small, bounded lookups.
 | Contact (attach to company) | `crate::components::ContactPicker` (autocomplete) | Contacts can be numerous. |
 | Company scope (KB article, MAPPS-515) | `crate::components::CompanyPicker`, multi-select, `allow_inline_create: false` | Same roster, so the same picker; an article takes several companies, and scoping an article is not a place to create a CRM company record. |
 
+However a picker gets its options, it reads the WHOLE list through the
+`get_all_*` helpers in `src/hooks/fetch.rs`, which page until a short page
+arrives. mokosh-server caps `per_page` at 100 and clamps a larger ask instead
+of rejecting it, so a picker that fetches one big page renders a truncated
+option list that looks complete: the record the operator is looking for is
+simply not offered, and nothing says why (MAPPS-528, enforced by
+`scripts/check-per-page-cap.sh`). A list with its own pager is the exception:
+it keeps `page={n}` and a per_page below the cap.
+
 Native `Select` popups are themed by element-level `option` / `optgroup` rules in
 `input.css` (MAPPS-479), so no call site adds option styling. Colors come from the
 semantic variables, so both base modes follow automatically.

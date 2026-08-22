@@ -32,12 +32,6 @@ use crate::modules::forms::{
     FormDefinition, IssueRequestLinkRequest, RequestLink, RequestLinkStatus,
 };
 
-/// Contacts offered as recipients. A company's contact list is bounded, so a
-/// plain `Select` is right per docs/form-conventions.md; this deliberately does
-/// NOT reuse the detail page's contacts resource, which is capped at 5 rows for
-/// its preview card and would silently hide the rest from the picker.
-const CONTACT_PAGE_SIZE: usize = 200;
-
 #[derive(Clone, Debug, Deserialize)]
 struct PickerContact {
     id: Uuid,
@@ -47,12 +41,6 @@ struct PickerContact {
     last_name: String,
     #[serde(default)]
     email: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct PickerContacts {
-    #[serde(default)]
-    data: Vec<PickerContact>,
 }
 
 #[component]
@@ -351,15 +339,21 @@ pub(crate) fn SendRequestLinkModal(
         let id = contacts_company.clone();
         async move {
             let _token = crate::hooks::fetch::api::current_access_token()?;
-            crate::hooks::fetch::api::get_authed_typed::<PickerContacts>(&format!(
-                "/contacts/companies/{id}/contacts?per_page={CONTACT_PAGE_SIZE}"
+            // MAPPS-528: every contact of the company, paged. A plain `Select`
+            // is right per docs/form-conventions.md, but the old single
+            // `per_page=200` ask was clamped to 100 by the server, which hid
+            // the rest of a large company's contacts from the picker. This
+            // deliberately does NOT reuse the detail page's contacts resource,
+            // capped at 5 rows for its preview card.
+            crate::hooks::fetch::api::get_all_authed::<PickerContact>(&format!(
+                "/contacts/companies/{id}/contacts"
             ))
             .await
             .ok()
         }
     });
     let contact_rows: Vec<PickerContact> = match &*contacts.read_unchecked() {
-        Some(Some(page)) => page.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
     // A contact with no email cannot receive the link, so it is not offered:

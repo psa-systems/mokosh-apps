@@ -90,10 +90,14 @@ async fn load_companies() -> Vec<CompanyOption> {
 /// `RemoteTaxRate` model from the Tax Rates settings view. Best-effort: an
 /// empty list on error so a form still renders.
 async fn load_tax_rates() -> Vec<RemoteTaxRate> {
-    crate::hooks::fetch::api::get_authed::<Paginated<RemoteTaxRate>>("/tax-rates?per_page=100")
+    crate::hooks::fetch::api::get_all_authed::<RemoteTaxRate>("/tax-rates")
         .await
-        .map(|p| p.data)
-        .unwrap_or_default()
+        .unwrap_or_else(|e| {
+            // Best-effort: the form still renders without the picker, but the
+            // failure is logged rather than read as "this tenant has no rates".
+            tracing::warn!("tax-rate load failed: {e}");
+            Vec::new()
+        })
 }
 
 /// Build `[("", "No tax"), (id, "name (rate%)"), ...]` select options from a
@@ -165,11 +169,14 @@ struct RemoteInvoice {
 /// filter). Best-effort: an empty list on error so the picker still renders
 /// the "(Unapplied payment)" choice.
 async fn load_company_invoices(company_id: uuid::Uuid) -> Vec<RemoteInvoice> {
-    let path = format!("/invoices?company_id={company_id}&per_page=200");
-    crate::hooks::fetch::api::get_authed::<Paginated<RemoteInvoice>>(&path)
+    let path = format!("/invoices?company_id={company_id}");
+    crate::hooks::fetch::api::get_all_authed::<RemoteInvoice>(&path)
         .await
-        .map(|p| p.data)
-        .unwrap_or_default()
+        .unwrap_or_else(|e| {
+            // Best-effort: the picker still offers "(Unapplied payment)".
+            tracing::warn!("invoice load failed for company {company_id}: {e}");
+            Vec::new()
+        })
 }
 
 /// Build the Record Payment invoice options (MAPPS-191): a leading explicit
@@ -2385,13 +2392,13 @@ fn InvoiceEditModal(props: InvoiceEditModalProps) -> Element {
     // term was later deactivated (it stays selected because we seed by id).
     let terms_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<PaymentTermOpt>>(
-            "/payment-terms?per_page=100",
-        )
-        .await
-        .ok()
-        .map(|p| p.data)
-        .unwrap_or_default()
+        crate::hooks::fetch::api::get_all_authed::<PaymentTermOpt>("/payment-terms")
+            .await
+            .unwrap_or_else(|e| {
+                // Best-effort: the entry keeps its current term either way.
+                tracing::warn!("payment-term load failed: {e}");
+                Vec::new()
+            })
     });
     let current_term = payment_term_id.read().clone();
     // The server PUT does `payment_term_id = COALESCE($x, payment_term_id)`, so
@@ -3290,21 +3297,16 @@ fn PaymentGatewayConfigBody() -> Element {
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        // One row per provider; a single page covers every configured
-        // gateway.
-        crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteGateway>>(
-            "/payment-gateways?page=1&per_page=100",
-            &token,
-        )
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_with_auth::<RemoteGateway>("/payment-gateways", &token)
+            .await
+            .ok()
     });
 
     let snap = gateways_resource.read_unchecked();
     let is_loading = snap.is_none();
     let fetch_failed = matches!(*snap, Some(None));
     let rows: Vec<RemoteGateway> = match &*snap {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
 

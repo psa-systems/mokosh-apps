@@ -1139,31 +1139,31 @@ pub fn TicketNewPage() -> Element {
     // unavailable; the matching signal stays empty and the server
     // applies its defaults.
     let types_resource = use_resource(|| async move {
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketLookup>>(
-            "/tickets/types?per_page=100",
-        )
-        .await
-        .ok()
-        .map(|p| p.data)
-        .unwrap_or_default()
+        crate::hooks::fetch::api::get_all_authed::<RemoteTicketLookup>("/tickets/types")
+            .await
+            .unwrap_or_else(|e| {
+                // Best-effort: the server applies its default type.
+                tracing::warn!("ticket-type lookup failed: {e}");
+                Vec::new()
+            })
     });
     let categories_resource = use_resource(|| async move {
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketLookup>>(
-            "/tickets/categories?per_page=100",
-        )
-        .await
-        .ok()
-        .map(|p| p.data)
-        .unwrap_or_default()
+        crate::hooks::fetch::api::get_all_authed::<RemoteTicketLookup>("/tickets/categories")
+            .await
+            .unwrap_or_else(|e| {
+                // Best-effort: the server applies its default category.
+                tracing::warn!("ticket-category lookup failed: {e}");
+                Vec::new()
+            })
     });
     let users_resource = use_resource(|| async move {
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteUserLookup>>(
-            "/auth/users?per_page=100",
-        )
-        .await
-        .ok()
-        .map(|p| p.data)
-        .unwrap_or_default()
+        crate::hooks::fetch::api::get_all_authed::<RemoteUserLookup>("/auth/users")
+            .await
+            .unwrap_or_else(|e| {
+                // Best-effort: the assignee picker stays empty.
+                tracing::warn!("assignee lookup failed: {e}");
+                Vec::new()
+            })
     });
 
     let type_options: Vec<SelectOption> = {

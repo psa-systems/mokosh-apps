@@ -43,12 +43,6 @@ use crate::Route;
 /// Rows per page for the article list (mirrors contacts `PER_PAGE`).
 const PER_PAGE: usize = 25;
 
-/// How many articles to pull when a tag filter is active. The server
-/// cannot narrow on tags (its `q` filter ignores them), so the list fetches
-/// a broad page and filters by tag client-side. Matches the tree rail's
-/// broad fetch cap.
-const TAG_FETCH_LIMIT: usize = 200;
-
 /// How many recent articles the home page surfaces.
 const RECENT_LIMIT: usize = 5;
 
@@ -391,12 +385,9 @@ pub fn KBHomePage() -> Element {
         // landing page's primary content) auto-refetches on reconnect.
         let _reachable = crate::hooks::use_server_reachable();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_with_auth::<Paginated<KbCategory>>(
-            "/kb/categories?page=1&per_page=100",
-            &token,
-        )
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
+            .await
+            .ok()
     });
 
     // Category CRUD UI state (MAPPS-230). `category_form` drives the
@@ -437,7 +428,7 @@ pub fn KBHomePage() -> Element {
     let categories_snapshot = categories_resource.read_unchecked();
     let categories_loading = categories_snapshot.is_none();
     let categories: Vec<KbCategory> = match &*categories_snapshot {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
 
@@ -859,15 +850,12 @@ pub fn KBArticleListPage(
     let categories_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_with_auth::<Paginated<KbCategory>>(
-            "/kb/categories?page=1&per_page=100",
-            &token,
-        )
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
+            .await
+            .ok()
     });
     let categories: Vec<KbCategory> = match &*categories_resource.read_unchecked() {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
     let mut category_options = vec![SelectOption::new("", "All Categories")];
@@ -879,15 +867,12 @@ pub fn KBArticleListPage(
     let tree_articles_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(
-            "/kb/articles?page=1&per_page=200",
-            &token,
-        )
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_with_auth::<KbArticle>("/kb/articles", &token)
+            .await
+            .ok()
     });
     let tree_articles: Vec<KbArticle> = match &*tree_articles_resource.read_unchecked() {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
 
@@ -896,7 +881,7 @@ pub fn KBArticleListPage(
     // `use_resource` only subscribes to signals read within the closure;
     // values captured by value never subscribe (mirrors the contacts list,
     // MAPPS-148). When a tag filter is active the server cannot narrow on
-    // tags, so we pull a broad page and filter client-side below.
+    // tags, so we read every page and filter client-side below.
     let articles_resource = use_resource(move || {
         let q = search.read().trim().to_string();
         let category_id = category_filter.read().clone();
@@ -908,24 +893,40 @@ pub fn KBArticleListPage(
             // page's primary resource) auto-refetches on reconnect.
             let _reachable = crate::hooks::use_server_reachable();
             let token = crate::hooks::fetch::api::current_access_token()?;
-            let (page_param, per_page) = if tag.is_empty() {
-                (current_page, PER_PAGE)
-            } else {
-                (1, TAG_FETCH_LIMIT)
-            };
-            let mut path = format!("/kb/articles?page={page_param}&per_page={per_page}");
+            let mut filters = String::new();
             if !q.is_empty() {
-                path.push_str(&format!("&q={}", urlencoding_minimal(&q)));
+                filters.push_str(&format!("&q={}", urlencoding_minimal(&q)));
             }
             if !category_id.is_empty() {
-                path.push_str(&format!(
+                filters.push_str(&format!(
                     "&category_id={}",
                     urlencoding_minimal(&category_id)
                 ));
             }
-            crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(&path, &token)
-                .await
-                .ok()
+            if tag.is_empty() {
+                let path = format!("/kb/articles?page={current_page}&per_page={PER_PAGE}{filters}");
+                crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(&path, &token)
+                    .await
+                    .ok()
+                    .map(|resp| (resp.data, resp.meta.total))
+            } else {
+                // MAPPS-528: the server cannot narrow on tags, so the tag view
+                // reads the WHOLE list and filters below. The old broad
+                // `per_page=200` was clamped to 100 by the server, which
+                // dropped matching articles from the view with nothing to show
+                // for it.
+                let path = match filters.strip_prefix('&') {
+                    Some(rest) => format!("/kb/articles?{rest}"),
+                    None => "/kb/articles".to_string(),
+                };
+                crate::hooks::fetch::api::get_all_with_auth::<KbArticle>(&path, &token)
+                    .await
+                    .ok()
+                    .map(|rows| {
+                        let total = rows.len() as u64;
+                        (rows, total)
+                    })
+            }
         }
     });
 
@@ -953,12 +954,12 @@ pub fn KBArticleListPage(
         };
     }
     let (fetched_rows, fetched_total): (Vec<KbArticle>, u64) = match &*resource_snapshot {
-        Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
+        Some(Some((rows, total))) => (rows.clone(), *total),
         _ => (Vec::new(), 0),
     };
 
-    // With a tag filter active the fetch is broad and unpaginated by the
-    // server, so filter by tag and paginate client-side here.
+    // With a tag filter active the fetch covers every page, so filter by tag
+    // and paginate client-side here.
     let (page_rows, total, current_page): (Vec<KbArticle>, u64, usize) = if tag_active {
         let matching: Vec<KbArticle> = fetched_rows
             .into_iter()
@@ -1232,8 +1233,10 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
 
     let mut versions_resource = use_resource(use_reactive!(|id_for_versions| async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<KbArticleVersion>>(&format!(
-            "/kb/articles/{id_for_versions}/versions?page=1&per_page=50"
+        // MAPPS-528: every version, not the first page of them; a history
+        // that stops at an arbitrary row reads as the whole history.
+        crate::hooks::fetch::api::get_all_authed::<KbArticleVersion>(&format!(
+            "/kb/articles/{id_for_versions}/versions"
         ))
         .await
         .ok()
@@ -1243,32 +1246,26 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     let categories_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_with_auth::<Paginated<KbCategory>>(
-            "/kb/categories?page=1&per_page=100",
-            &token,
-        )
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
+            .await
+            .ok()
     });
 
     // Article list feeding the left tree rail.
     let tree_articles_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_with_auth::<Paginated<KbArticle>>(
-            "/kb/articles?page=1&per_page=200",
-            &token,
-        )
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_with_auth::<KbArticle>("/kb/articles", &token)
+            .await
+            .ok()
     });
 
     let categories: Vec<KbCategory> = match &*categories_resource.read_unchecked() {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
     let tree_articles: Vec<KbArticle> = match &*tree_articles_resource.read_unchecked() {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
 
@@ -1665,7 +1662,7 @@ fn MeasuredDurationCard(article_id: String) -> Element {
 #[component]
 fn VersionHistoryCard(
     article_id: String,
-    versions_resource: Resource<Option<Paginated<KbArticleVersion>>>,
+    versions_resource: Resource<Option<Vec<KbArticleVersion>>>,
     on_restored: EventHandler<()>,
 ) -> Element {
     let snap = versions_resource.read_unchecked();
@@ -1685,11 +1682,11 @@ fn VersionHistoryCard(
                 Some(None) => rsx! {
                     p { class: "px-3 py-3 text-xs text-red-600 dark:text-red-300", "Could not load version history." }
                 },
-                Some(Some(page)) if page.data.is_empty() => rsx! {
+                Some(Some(page)) if page.is_empty() => rsx! {
                     p { class: "px-3 py-3 text-xs text-subtle", "No prior versions." }
                 },
                 Some(Some(page)) => {
-                    let rows = page.data.clone();
+                    let rows = page.clone();
                     let article_id = article_id.clone();
                     rsx! {
                         ul { class: "divide-y divide-line",
@@ -1945,15 +1942,12 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     let categories_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_with_auth::<Paginated<KbCategory>>(
-            "/kb/categories?page=1&per_page=100",
-            &token,
-        )
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_with_auth::<KbCategory>("/kb/categories", &token)
+            .await
+            .ok()
     });
     let categories: Vec<KbCategory> = match &*categories_resource.read_unchecked() {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
     let mut category_options = vec![SelectOption::new("", "Uncategorized")];

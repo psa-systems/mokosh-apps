@@ -138,6 +138,15 @@ jobs:
           bash scripts/check-sort-keys.sh --self-test
           bash scripts/check-sort-keys.sh
 
+      # MAPPS-528: the server clamps an over-cap `per_page` instead of
+      # rejecting it, so a page that asked for 200 got 100 rows and read them
+      # as the whole list. Fifteen sites did that, across three parity audits,
+      # and nothing in review or in a normal run showed it.
+      - name: per_page cap guard
+        run: |
+          bash scripts/check-per-page-cap.sh --self-test
+          bash scripts/check-per-page-cap.sh
+
       # MAPPS-525: mokosh-types is a bare git dependency with no rev/tag/branch,
       # so the only thing holding it still is the commit Cargo.lock resolved to,
       # and nothing advances that commit. A wire-format change on mokosh-server

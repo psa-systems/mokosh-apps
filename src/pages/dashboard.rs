@@ -527,11 +527,13 @@ pub fn DashboardTvPage() -> Element {
         let _tick = tick();
         #[cfg(feature = "web")]
         {
-            crate::hooks::fetch::api::get_authed::<Paginated<TvUser>>("/auth/users?per_page=100")
+            crate::hooks::fetch::api::get_all_authed::<TvUser>("/auth/users")
                 .await
-                .ok()
-                .map(|p| p.data)
-                .unwrap_or_default()
+                .unwrap_or_else(|e| {
+                    // Best-effort: the board falls back to short ids.
+                    tracing::warn!("technician-name load failed: {e}");
+                    Vec::new()
+                })
         }
         #[cfg(not(feature = "web"))]
         {

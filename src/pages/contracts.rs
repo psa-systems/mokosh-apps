@@ -33,11 +33,6 @@ use crate::Route;
 /// Rows per page for the contract list (mirrors `contacts.rs` PER_PAGE).
 const PER_PAGE: usize = 25;
 
-/// Detail sub-lists (items, hour-balance, rate-card items) are not
-/// paginated in the UI; request a large page so a single fetch covers
-/// every row a contract or rate card realistically has.
-const SUBLIST_PER_PAGE: usize = 100;
-
 /// Contract-type enum tags (`managed_services`, `block_hours`,
 /// `time_and_materials`, `fixed_price`, ...) to a title-case label. Also maps
 /// line-item types (`recurring_service`, `retainer`, `product`, `one_time`).
@@ -162,16 +157,16 @@ fn ContractListBody() -> Element {
     // Company filter is a dropdown populated from the companies endpoint.
     let companies_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<CompanyOption>>(&format!(
-            "/contacts/companies?page=1&per_page=100&{COMPANIES_BY_NAME_SORT}"
+        crate::hooks::fetch::api::get_all_authed::<CompanyOption>(&format!(
+            "/contacts/companies?{COMPANIES_BY_NAME_SORT}"
         ))
         .await
         .ok()
     });
     let company_options = {
         let mut opts = vec![SelectOption::new("", "All Companies")];
-        if let Some(Some(resp)) = &*companies_resource.read_unchecked() {
-            for c in &resp.data {
+        if let Some(Some(rows)) = &*companies_resource.read_unchecked() {
+            for c in rows {
                 opts.push(SelectOption::new(c.id.to_string(), c.name.clone()));
             }
         }
@@ -765,16 +760,16 @@ fn ContractForm(props: ContractFormProps) -> Element {
     // server forbids changing it on update so the edit flow disables it).
     let companies_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<CompanyOption>>(&format!(
-            "/contacts/companies?page=1&per_page=100&{COMPANIES_BY_NAME_SORT}"
+        crate::hooks::fetch::api::get_all_authed::<CompanyOption>(&format!(
+            "/contacts/companies?{COMPANIES_BY_NAME_SORT}"
         ))
         .await
         .ok()
     });
     let company_options = {
         let mut opts = vec![SelectOption::new("", "Select a company")];
-        if let Some(Some(resp)) = &*companies_resource.read_unchecked() {
-            for c in &resp.data {
+        if let Some(Some(rows)) = &*companies_resource.read_unchecked() {
+            for c in rows {
                 opts.push(SelectOption::new(c.id.to_string(), c.name.clone()));
             }
         }
@@ -1481,8 +1476,10 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
         let id = id_for_items.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<ContractItemResponse>>(&format!(
-                "/contracts/{id}/items?page=1&per_page={SUBLIST_PER_PAGE}"
+            // MAPPS-528: detail sub-lists are not paginated in the UI, so
+            // they page to the end rather than asking for one big page.
+            crate::hooks::fetch::api::get_all_authed::<ContractItemResponse>(&format!(
+                "/contracts/{id}/items"
             ))
             .await
             .ok()
@@ -1492,9 +1489,9 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
         let id = id_for_balance.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<ContractHourBalanceResponse>>(
-                &format!("/contracts/{id}/hour-balance?page=1&per_page={SUBLIST_PER_PAGE}"),
-            )
+            crate::hooks::fetch::api::get_all_authed::<ContractHourBalanceResponse>(&format!(
+                "/contracts/{id}/hour-balance"
+            ))
             .await
             .ok()
         }
@@ -1731,7 +1728,7 @@ pub fn ContractDetailPage(props: ContractDetailPageProps) -> Element {
 
 #[component]
 fn ContractItemsCard(
-    items_resource: Resource<Option<Paginated<ContractItemResponse>>>,
+    items_resource: Resource<Option<Vec<ContractItemResponse>>>,
     editing_item: Signal<Option<ContractItemFormState>>,
     // MAPPS-357: false while the server is unreachable, so the Add Item
     // affordance (which opens a POST/PUT/DELETE modal) disables.
@@ -1741,7 +1738,7 @@ fn ContractItemsCard(
     let snap = items_resource.read_unchecked();
     // Newly added items sort after the existing rows.
     let next_sort_order = match &*snap {
-        Some(Some(resp)) => resp.data.len() as i32,
+        Some(Some(rows)) => rows.len() as i32,
         _ => 0,
     };
     rsx! {
@@ -1774,11 +1771,11 @@ fn ContractItemsCard(
                     Some(None) => rsx! {
                         TableEmpty { columns: 5, message: "Could not load line items.".to_string() }
                     },
-                    Some(Some(resp)) if resp.data.is_empty() => rsx! {
+                    Some(Some(rows)) if rows.is_empty() => rsx! {
                         TableEmpty { columns: 5, message: "No line items on this contract yet.".to_string() }
                     },
-                    Some(Some(resp)) => {
-                        let rows = resp.data.clone();
+                    Some(Some(rows)) => {
+                        let rows = rows.clone();
                         rsx! {
                             TableBody {
                                 for item in rows.into_iter() {
@@ -2149,8 +2146,8 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
 
 #[component]
 fn ContractHourBalanceCard(
-    balance_resource: Resource<Option<Paginated<ContractHourBalanceResponse>>>,
-    items_resource: Resource<Option<Paginated<ContractItemResponse>>>,
+    balance_resource: Resource<Option<Vec<ContractHourBalanceResponse>>>,
+    items_resource: Resource<Option<Vec<ContractItemResponse>>>,
     // MAPPS-357: false while the server is unreachable, so the Edit Allotment
     // affordance (which PUTs the block-hours item) disables.
     can_mutate: bool,
@@ -2170,11 +2167,7 @@ fn ContractHourBalanceCard(
     // (f2-hours-balance-be data model), so editing the allotment means
     // editing that item. Find it; absence hides the edit affordance.
     let block_item: Option<ContractItemResponse> = match &*items_snap {
-        Some(Some(resp)) => resp
-            .data
-            .iter()
-            .find(|i| i.item_type == "block_hours")
-            .cloned(),
+        Some(Some(rows)) => rows.iter().find(|i| i.item_type == "block_hours").cloned(),
         _ => None,
     };
 
@@ -2182,7 +2175,7 @@ fn ContractHourBalanceCard(
     // headline so "X of Y hours remaining" reflects the live period rather
     // than an arbitrary table row.
     let headline: Option<(String, String)> = match &*snap {
-        Some(Some(resp)) => resp.data.iter().max_by_key(|b| b.period_start).map(|p| {
+        Some(Some(rows)) => rows.iter().max_by_key(|b| b.period_start).map(|p| {
             (
                 p.hours_remaining.normalize().to_string(),
                 p.hours_included.normalize().to_string(),
@@ -2235,11 +2228,11 @@ fn ContractHourBalanceCard(
                     Some(None) => rsx! {
                         TableEmpty { columns: 5, message: "Could not load hour balance.".to_string() }
                     },
-                    Some(Some(resp)) if resp.data.is_empty() => rsx! {
+                    Some(Some(rows)) if rows.is_empty() => rsx! {
                         TableEmpty { columns: 5, message: "No hour-balance periods for this contract.".to_string() }
                     },
-                    Some(Some(resp)) => {
-                        let rows = resp.data.clone();
+                    Some(Some(rows)) => {
+                        let rows = rows.clone();
                         rsx! {
                             TableBody {
                                 for bal in rows.into_iter() {
@@ -2665,20 +2658,18 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             // MAPPS-357: re-run on reconnect so the outage state self-heals.
             let _reachable = crate::hooks::use_server_reachable();
-            let resp = crate::hooks::fetch::api::get_authed::<Paginated<RateCardResponse>>(
-                "/rate-cards?page=1&per_page=100",
-            )
-            .await
-            .ok()?;
-            resp.data.into_iter().find(|c| c.id.to_string() == id)
+            let rows = crate::hooks::fetch::api::get_all_authed::<RateCardResponse>("/rate-cards")
+                .await
+                .ok()?;
+            rows.into_iter().find(|c| c.id.to_string() == id)
         }
     });
     let mut items_resource = use_resource(move || {
         let id = id_for_items.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<RateCardItemResponse>>(&format!(
-                "/rate-cards/{id}/items?page=1&per_page={SUBLIST_PER_PAGE}"
+            crate::hooks::fetch::api::get_all_authed::<RateCardItemResponse>(&format!(
+                "/rate-cards/{id}/items"
             ))
             .await
             .ok()
@@ -2688,11 +2679,13 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
     // the rate editor's work-type picker.
     let work_types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOpt>>("/work-types?per_page=100")
+        crate::hooks::fetch::api::get_all_authed::<WorkTypeOpt>("/work-types")
             .await
-            .ok()
-            .map(|p| p.data)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                // Best-effort: rate rows fall back to a bare work-type id.
+                tracing::warn!("work-type load failed: {e}");
+                Vec::new()
+            })
     });
 
     let card_snapshot = card_resource.read_unchecked();
@@ -2716,11 +2709,7 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
     // (the server upsert would otherwise silently overwrite an existing row).
     let items_snap = items_resource.read_unchecked();
     let used_work_type_ids: Vec<String> = match &*items_snap {
-        Some(Some(resp)) => resp
-            .data
-            .iter()
-            .map(|i| i.work_type_id.to_string())
-            .collect(),
+        Some(Some(rows)) => rows.iter().map(|i| i.work_type_id.to_string()).collect(),
         _ => Vec::new(),
     };
 
@@ -2867,7 +2856,7 @@ pub fn RateCardDetailPage(props: RateCardDetailPageProps) -> Element {
 
 #[component]
 fn RateCardItemsCard(
-    items_resource: Resource<Option<Paginated<RateCardItemResponse>>>,
+    items_resource: Resource<Option<Vec<RateCardItemResponse>>>,
     can_edit: bool,
     // MAPPS-357: false while the server is unreachable, so the Add Rate
     // affordance (which POSTs a rate) disables on top of the can_add gate.
@@ -2883,7 +2872,7 @@ fn RateCardItemsCard(
     // nothing left to add: disable the button rather than open a modal whose
     // picker is empty.
     let used_count = match &*snap {
-        Some(Some(resp)) => resp.data.len(),
+        Some(Some(rows)) => rows.len(),
         _ => 0,
     };
     let can_add = !work_types.is_empty() && used_count < work_types.len();
@@ -2943,11 +2932,11 @@ fn RateCardItemsCard(
                     Some(None) => rsx! {
                         TableEmpty { columns: 4, message: "Could not load rates.".to_string() }
                     },
-                    Some(Some(resp)) if resp.data.is_empty() => rsx! {
+                    Some(Some(rows)) if rows.is_empty() => rsx! {
                         TableEmpty { columns: 4, message: "No rates on this card yet.".to_string() }
                     },
-                    Some(Some(resp)) => {
-                        let rows = resp.data.clone();
+                    Some(Some(rows)) => {
+                        let rows = rows.clone();
                         rsx! {
                             TableBody {
                                 for item in rows.into_iter() {

@@ -160,16 +160,16 @@ fn QuoteListBody() -> Element {
 
     let companies_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<CompanyOption>>(&format!(
-            "/contacts/companies?page=1&per_page=100&{COMPANIES_BY_NAME_SORT}"
+        crate::hooks::fetch::api::get_all_authed::<CompanyOption>(&format!(
+            "/contacts/companies?{COMPANIES_BY_NAME_SORT}"
         ))
         .await
         .ok()
     });
     let company_options = {
         let mut opts = vec![SelectOption::new("", "All Companies")];
-        if let Some(Some(resp)) = &*companies_resource.read_unchecked() {
-            for c in &resp.data {
+        if let Some(Some(rows)) = &*companies_resource.read_unchecked() {
+            for c in rows {
                 opts.push(SelectOption::new(c.id.to_string(), c.name.clone()));
             }
         }

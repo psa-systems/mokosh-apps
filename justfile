@@ -47,7 +47,7 @@ pre-commit: css-build
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-web check-desktop check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-types-pin
+check: check-web check-desktop check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin
 
 # Check web/WASM compilation
 [group: 'check']
@@ -145,6 +145,12 @@ check-dev-sso-scheme:
 check-sort-keys:
     bash scripts/check-sort-keys.sh --self-test
     bash scripts/check-sort-keys.sh
+
+# MAPPS-528: no call site asks for a page at or above the server's per_page cap; whole-collection reads go through the paging helpers in src/hooks/fetch.rs. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-per-page-cap:
+    bash scripts/check-per-page-cap.sh --self-test
+    bash scripts/check-per-page-cap.sh
 
 # MAPPS-525: fail when `cargo update --package mokosh-types` moves Cargo.lock, so a shared-DTO change on mokosh-server main cannot sit unnoticed behind a pin nobody advances. Needs network. --self-test first, so a guard that stopped guarding fails loudly.
 [group: 'check']

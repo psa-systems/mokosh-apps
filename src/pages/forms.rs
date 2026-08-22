@@ -30,13 +30,7 @@ use crate::modules::kb::KbArticle;
 // PMS-744: the preview renders through the client page's own component and
 // DTOs, so what an operator signs off on is what a client is served.
 use crate::pages::request_form::{PublicField, PublicForm, PublicRule, RequestFormBody};
-use crate::utils::Paginated;
 use crate::Route;
-
-/// Articles offered in the procedure picker. Definitions are few and the
-/// picker is a plain `Select` per docs/form-conventions.md (a tenant's
-/// published article set is bounded, unlike companies).
-const ARTICLE_PAGE_SIZE: usize = 200;
 
 /// Admin-gated request-form builder.
 ///
@@ -1469,17 +1463,18 @@ fn FormEditorModal(
     let (tenant_name, tenant_logo) = use_org_identity();
 
     // Published articles for the procedure picker.
+    // MAPPS-528: every published article, paged. The picker is a plain
+    // `Select` per docs/form-conventions.md, and the old single
+    // `per_page=200` ask was clamped to 100 by the server, so a tenant past
+    // 100 articles could not pick the ones that fell off the page.
     let articles = use_resource(|| async {
         let _token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_authed_typed::<Paginated<KbArticle>>(&format!(
-            "/kb/articles?page=1&per_page={ARTICLE_PAGE_SIZE}"
-        ))
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_authed::<KbArticle>("/kb/articles")
+            .await
+            .ok()
     });
     let article_options: Vec<SelectOption> = match &*articles.read_unchecked() {
-        Some(Some(page)) => page
-            .data
+        Some(Some(rows)) => rows
             .iter()
             .map(|a| SelectOption::new(a.id.to_string(), a.title.clone()))
             .collect(),

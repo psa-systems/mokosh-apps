@@ -793,6 +793,60 @@ pub mod api {
         }
     }
 
+    // --- Whole-list reads (MAPPS-528) ------------------------------------
+    //
+    // mokosh-server caps `per_page` at `PaginationParams::MAX_PER_PAGE` and
+    // CLAMPS anything larger instead of rejecting it, so a page that asked
+    // for 200 got 100 rows and no sign that the rest existed. Fifteen call
+    // sites asked for 200 or 500 and read `resp.data` once. These helpers
+    // are the single way to read a whole collection: they request the cap
+    // and keep going until a short page arrives.
+
+    /// The server's `per_page` ceiling. Mirrors
+    /// `PaginationParams::MAX_PER_PAGE`, which is itself the client's copy
+    /// of the server's constant.
+    pub const MAX_PER_PAGE: u32 = crate::utils::PaginationParams::MAX_PER_PAGE;
+
+    /// Page ceiling for the `get_all_*` helpers: 100 pages at the cap is
+    /// 10,000 rows. Reaching it means either a list no screen can use or an
+    /// endpoint that ignores `page`, so the helper fails loudly rather than
+    /// handing back a list that is short for a reason nobody can see.
+    #[cfg(feature = "web")]
+    const MAX_PAGES: u32 = 100;
+
+    /// Append the paging query the `get_all_*` helpers drive, preserving any
+    /// filters the caller already put on `path`.
+    #[cfg(feature = "web")]
+    pub(crate) fn paged_path(path: &str, page: u32) -> String {
+        let sep = if path.contains('?') { '&' } else { '?' };
+        format!("{path}{sep}page={page}&per_page={MAX_PER_PAGE}")
+    }
+
+    /// Read every page of a list endpoint with an explicit bearer.
+    ///
+    /// `path` carries the endpoint's own filters and must NOT spell `page`
+    /// or `per_page`; both are appended per request.
+    #[cfg(feature = "web")]
+    pub async fn get_all_with_auth<T: DeserializeOwned>(
+        path: &str,
+        token: &str,
+    ) -> Result<Vec<T>, String> {
+        let mut rows: Vec<T> = Vec::new();
+        for page in 1..=MAX_PAGES {
+            let resp: crate::utils::Paginated<T> =
+                get_with_auth(&paged_path(path, page), token).await?;
+            let full = resp.data.len() as u32 >= MAX_PER_PAGE;
+            rows.extend(resp.data);
+            if !full {
+                return Ok(rows);
+            }
+        }
+        Err(format!(
+            "{path} returned more than {MAX_PAGES} full pages of {MAX_PER_PAGE} rows; \
+             refusing to render a list that is silently short"
+        ))
+    }
+
     /// Post request
     #[cfg(feature = "web")]
     pub async fn post<T: DeserializeOwned, B: Serialize>(
@@ -1016,6 +1070,15 @@ pub mod api {
         }
     }
 
+    /// Auto-authed sibling of [`get_all_with_auth`]: reads a whole list,
+    /// paging until a short page (MAPPS-528).
+    #[cfg(feature = "web")]
+    pub async fn get_all_authed<T: DeserializeOwned>(path: &str) -> Result<Vec<T>, String> {
+        ensure_fresh_access_token().await;
+        let t = current_access_token().ok_or_else(|| "not authenticated".to_string())?;
+        get_all_with_auth(path, &t).await
+    }
+
     #[cfg(feature = "web")]
     pub async fn post_authed<T: DeserializeOwned, B: Serialize>(
         path: &str,
@@ -1086,6 +1149,14 @@ pub mod api {
     pub async fn get_portal_authed<T: DeserializeOwned>(path: &str) -> Result<T, String> {
         let t = current_portal_access_token().ok_or_else(portal_not_signed_in)?;
         get_with_auth(path, &t).await
+    }
+
+    /// Portal sibling of [`get_all_authed`]: reads a whole `/portal/*` list
+    /// on the portal bearer, paging until a short page (MAPPS-528).
+    #[cfg(feature = "web")]
+    pub async fn get_all_portal_authed<T: DeserializeOwned>(path: &str) -> Result<Vec<T>, String> {
+        let t = current_portal_access_token().ok_or_else(portal_not_signed_in)?;
+        get_all_with_auth(path, &t).await
     }
 
     #[cfg(feature = "web")]
@@ -1550,6 +1621,7 @@ mod tests {
         "current_portal_access_token",
         "has_portal_session",
         "get_portal_authed",
+        "get_all_portal_authed",
         "post_portal_authed",
         "post_portal_authed_typed",
     ];
@@ -1681,7 +1753,14 @@ mod tests {
         for name in UNAUTHENTICATED_HELPERS
             .iter()
             .chain(PORTAL_BEARER_SENDERS)
-            .chain(["get_portal_authed", "post_portal_authed"].iter())
+            .chain(
+                [
+                    "get_portal_authed",
+                    "get_all_portal_authed",
+                    "post_portal_authed",
+                ]
+                .iter(),
+            )
         {
             let body = body_of(name);
             assert!(
@@ -1815,6 +1894,64 @@ mod tests {
         assert_eq!(
             normalize_api_base("https://api.example.test/api/v1///"),
             "https://api.example.test/api/v1"
+        );
+    }
+
+    /// MAPPS-528: the client's copy of the cap is the server's constant, not
+    /// a number typed twice. If mokosh-server moves `MAX_PER_PAGE`, the
+    /// mirror in `src/utils/pagination.rs` moves with it and the `get_all_*`
+    /// helpers follow, instead of silently asking over the new cap.
+    #[cfg(feature = "web")]
+    #[test]
+    fn the_paging_cap_is_the_servers_cap() {
+        assert_eq!(
+            super::api::MAX_PER_PAGE,
+            crate::utils::PaginationParams::MAX_PER_PAGE
+        );
+    }
+
+    /// The `get_all_*` helpers own `page` / `per_page`, so a caller's own
+    /// filters must survive and the cap must be what goes on the wire. An
+    /// endpoint with no filters must not gain a `?&`, which is not a query
+    /// string the server's `Query<PaginationParams>` extractor accepts.
+    #[cfg(feature = "web")]
+    #[test]
+    fn the_paging_helpers_append_the_cap_to_any_path() {
+        use super::api::{paged_path, MAX_PER_PAGE};
+        assert_eq!(
+            paged_path("/auth/users", 1),
+            format!("/auth/users?page=1&per_page={MAX_PER_PAGE}"),
+            "a bare path opens its own query string"
+        );
+        assert_eq!(
+            paged_path("/invoices?company_id=abc", 3),
+            format!("/invoices?company_id=abc&page=3&per_page={MAX_PER_PAGE}"),
+            "an existing filter is kept and the paging is appended to it"
+        );
+    }
+
+    /// The page loop stops on the first SHORT page, so the guard the pages
+    /// are compared against has to be the cap itself. Pinning it here keeps
+    /// the "is this page full?" test and the page size that was requested
+    /// from drifting apart, which would either truncate the list (stopping on
+    /// a full page) or spin to `MAX_PAGES` on every read.
+    #[cfg(feature = "web")]
+    #[test]
+    fn the_page_loop_measures_a_short_page_against_the_requested_size() {
+        let body = production_src()
+            .split("pub async fn get_all_with_auth")
+            .nth(1)
+            .expect("get_all_with_auth is defined in this file");
+        let body = &body[..body.find("\n    /// Post request").unwrap_or(body.len())];
+        assert!(
+            body.contains("resp.data.len() as u32 >= MAX_PER_PAGE"),
+            "the loop must compare the page it got against the page it asked \
+             for; anything else silently truncates or never terminates: {body}"
+        );
+        assert!(
+            body.contains("MAX_PAGES"),
+            "the loop must be bounded, so an endpoint that ignores `page` \
+             fails loudly instead of spinning: {body}"
         );
     }
 }

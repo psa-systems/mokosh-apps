@@ -5405,21 +5405,21 @@ fn TicketCategoriesSettingsBody() -> Element {
 
     // The full category set, independent of the table's current page, so
     // the Parent column and the parent picker can resolve a parent that
-    // lives on another page. Server caps per_page at 100; categories
-    // beyond that are not expected for a single tenant.
+    // lives on another page. MAPPS-528: paged to the end, because the
+    // server caps per_page at 100 and a tenant past that lost parents.
     let mut all_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         // MAPPS-357: secondary lookup (parent-name resolution + parent picker);
         // subscribe so it also repopulates on reconnect. It still degrades to
         // an empty set on failure - the primary resource drives the outage view.
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_authed::<Paginated<TicketCategoryRow>>(
-            "/tickets/categories?per_page=100",
-        )
-        .await
-        .ok()
-        .map(|p| p.data)
-        .unwrap_or_default()
+        crate::hooks::fetch::api::get_all_authed::<TicketCategoryRow>("/tickets/categories")
+            .await
+            .unwrap_or_else(|e| {
+                // Best-effort: the primary resource drives the outage view.
+                tracing::warn!("category parent lookup failed: {e}");
+                Vec::new()
+            })
     });
 
     let snap = resource.read_unchecked();
@@ -6367,12 +6367,9 @@ fn RmmDeviceMappingsSettingsBody() -> Element {
         // dropdown; subscribe so it repopulates on reconnect. It degrades to an
         // empty set on failure - the primary resource drives the outage view.
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_authed::<Paginated<RmmConnectionRow>>(
-            "/rmm/connections?page=1&per_page=100",
-        )
-        .await
-        .ok()
-        .map(|p| p.data)
+        crate::hooks::fetch::api::get_all_authed::<RmmConnectionRow>("/rmm/connections")
+            .await
+            .ok()
     });
     let connections: Vec<RmmConnectionRow> = conns_resource
         .read_unchecked()
@@ -6829,12 +6826,9 @@ fn RmmAlertRulesSettingsBody() -> Element {
         // dropdown; subscribe so it repopulates on reconnect. It degrades to an
         // empty set on failure - the primary resource drives the outage view.
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_authed::<Paginated<RmmConnectionRow>>(
-            "/rmm/connections?page=1&per_page=100",
-        )
-        .await
-        .ok()
-        .map(|p| p.data)
+        crate::hooks::fetch::api::get_all_authed::<RmmConnectionRow>("/rmm/connections")
+            .await
+            .ok()
     });
     let connections: Vec<RmmConnectionRow> = conns_resource
         .read_unchecked()
