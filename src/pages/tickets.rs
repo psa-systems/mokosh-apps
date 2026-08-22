@@ -463,8 +463,8 @@ pub fn TicketListPage() -> Element {
     let mut search = use_signal(String::new);
     let mut status_filter = use_signal(String::new);
     let mut priority_filter = use_signal(String::new);
-    // MAPPS-289: sortable-column state. Default sort matches the existing
-    // list query (`?sort=-updated_at`) so the first paint is unchanged.
+    // MAPPS-289: sortable-column state. Sorting here is entirely client-side
+    // over the fetched page; the list query sends no `?sort=` at all.
     let mut sort = use_signal(|| Some((TicketSortKey::Updated, SortDirection::Descending)));
     // MAPPS-290: page-scoped bulk selection. The header `SelectAllHeader`
     // toggles every visible row in/out; per-row `SelectRowCell` toggles
@@ -585,10 +585,9 @@ pub fn TicketListPage() -> Element {
         .cloned()
         .collect();
 
-    // MAPPS-289: client-side sort over the filtered set. The list query
-    // already asks the server for `?sort=-updated_at`, so the default
-    // sort signal matches that and the first paint is unchanged; a
-    // header click re-orders without an extra round trip.
+    // MAPPS-289: client-side sort over the filtered set, so a header click
+    // re-orders without a round trip. MAPPS-527: these keys are never sent to
+    // the server, so they are not bound by its sort allow-list.
     {
         let snap = *sort.read();
         if let Some((key, dir)) = snap {

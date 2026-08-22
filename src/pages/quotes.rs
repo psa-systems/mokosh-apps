@@ -34,6 +34,7 @@ use crate::modules::quotes::{
     UpdateQuoteRequest,
 };
 use crate::utils::money::format_money;
+use crate::utils::sort_keys::COMPANIES_BY_NAME_SORT;
 use crate::utils::url::urlencoding_minimal;
 use crate::utils::validation::Rule;
 use crate::utils::{FormGuard, Paginated};
@@ -159,9 +160,9 @@ fn QuoteListBody() -> Element {
 
     let companies_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<CompanyOption>>(
-            "/contacts/companies?page=1&per_page=100&sort=name&sort_dir=asc",
-        )
+        crate::hooks::fetch::api::get_authed::<Paginated<CompanyOption>>(&format!(
+            "/contacts/companies?page=1&per_page=100&{COMPANIES_BY_NAME_SORT}"
+        ))
         .await
         .ok()
     });
