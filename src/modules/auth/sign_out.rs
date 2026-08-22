@@ -46,9 +46,9 @@ pub fn logout_redirect_url() -> String {
 
 /// Revoke the mokosh session server-side with the bearer the SPA still holds.
 ///
-/// Nothing to revoke when no bearer is held (the portal identity signs in on
-/// its own token, and mokosh-server has no `/portal/auth/logout`), so that is
-/// a quiet return rather than an error.
+/// Nothing to revoke when no agent bearer is held, so that is a quiet return
+/// rather than an error. A portal contact holds a different token entirely and
+/// ends their session through [`sign_out_portal`].
 async fn revoke_mokosh_session() {
     #[cfg(feature = "web")]
     {
@@ -97,6 +97,64 @@ pub async fn sign_out() {
     crate::platform::location::replace(&logout_redirect_url());
 }
 
+/// Where a portal sign-out lands: this SPA's own `/portal/login`.
+///
+/// Never the OP's logout endpoint. A portal identity is a `contacts` row that
+/// has no bunyip account at all, so sending it to bunyip's sign-in page was
+/// sending a customer somewhere they cannot sign in (MAPPS-532).
+///
+/// The account name the login form wants is not carried over: `tenant_slug` is
+/// part of the portal credential and this SPA never stored the one that was
+/// used, so the customer retypes it. Better than the alternative, which was
+/// landing them on the wrong product entirely.
+pub fn portal_login_url() -> String {
+    crate::platform::location::origin()
+        .map(|origin| format!("{}/portal/login", origin.trim_end_matches('/')))
+        .unwrap_or_else(|| "/portal/login".to_string())
+}
+
+/// Revoke the portal session server-side (MAPPS-532).
+///
+/// `POST /portal/auth/logout` stamps a cutoff on the contact, so every portal
+/// token they hold stops being accepted; without this the token stayed valid
+/// for the rest of its 8-hour life after the customer clicked Logout.
+///
+/// Runs before the holder is cleared, because it needs the token it is
+/// revoking.
+async fn revoke_portal_session() {
+    #[cfg(feature = "web")]
+    {
+        use crate::hooks::fetch::api;
+
+        if !api::has_portal_session() {
+            return;
+        }
+        if let Err(e) = api::post_portal_authed_no_content("/portal/auth/logout").await {
+            crate::platform::log::error(&format!(
+                "sign-out: revoking the portal session failed, signing out anyway: {e}"
+            ));
+        }
+    }
+}
+
+/// End the portal session and leave for [`portal_login_url`].
+///
+/// The portal's own sequence, not a branch inside [`sign_out`], because both
+/// token holders can be populated in one tab: an agent who opens
+/// `/portal/login` and signs in as a contact holds an agent bearer AND a
+/// portal token, so a global `has_portal_session()` test would route that
+/// agent's own sign-out down this path. Which menu was clicked is the fact
+/// that decides, and only the caller knows it.
+///
+/// Same failure posture as [`sign_out`]: a failed revoke is logged and does
+/// not block the exit.
+pub async fn sign_out_portal() {
+    revoke_portal_session().await;
+    #[cfg(feature = "web")]
+    crate::hooks::fetch::api::set_portal_access_token(None);
+    crate::platform::location::replace(&portal_login_url());
+}
+
 #[cfg(test)]
 mod tests {
     /// Every component that ends a session. A new one added here without a
@@ -129,5 +187,118 @@ mod tests {
                 "{name} is listed as a sign-out site but never calls the shared helper"
             );
         }
+    }
+
+    /// This module's own source, minus its tests (which name the same symbols
+    /// in their assertion messages).
+    fn production_src() -> &'static str {
+        include_str!("sign_out.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("split always yields a first segment")
+    }
+
+    /// The body of a `fn` declared at module level here: from its signature to
+    /// the next one.
+    fn body_of(name: &str) -> String {
+        let needle = format!("fn {name}(");
+        let start = production_src()
+            .find(&needle)
+            .unwrap_or_else(|| panic!("{name} is defined in this file"));
+        let rest = &production_src()[start + needle.len()..];
+        let end = rest
+            .find("\nfn ")
+            .or_else(|| rest.find("\npub "))
+            .unwrap_or(rest.len());
+        rest[..end].to_string()
+    }
+
+    /// MAPPS-532: the portal identity has no bunyip account, so its sign-out
+    /// must never hand the browser to the OP. The two exits are separate
+    /// functions precisely so this is checkable.
+    #[test]
+    fn the_portal_sign_out_never_leaves_for_the_provider() {
+        let portal = body_of("sign_out_portal");
+        assert!(
+            !portal.contains("logout_redirect_url"),
+            "sign_out_portal sends a `contacts` identity to the OP's logout \
+             endpoint, which is a sign-in page for an account they do not have"
+        );
+        assert!(
+            portal.contains("portal_login_url"),
+            "sign_out_portal must land on this SPA's own /portal/login"
+        );
+    }
+
+    /// MAPPS-532: the revoke is the point of the change. Without the call the
+    /// portal token stays valid for the rest of its 8-hour TTL, which is the
+    /// defect this module already exists to prevent on the agent side.
+    #[test]
+    fn the_portal_sign_out_revokes_before_it_clears_and_leaves() {
+        let revoke = body_of("revoke_portal_session");
+        assert!(
+            revoke.contains("/portal/auth/logout"),
+            "nothing calls the portal revoke endpoint"
+        );
+
+        let portal = body_of("sign_out_portal");
+        let revoked = portal
+            .find("revoke_portal_session")
+            .expect("sign_out_portal revokes the session");
+        let cleared = portal
+            .find("set_portal_access_token")
+            .expect("sign_out_portal clears the portal token holder");
+        let left = portal
+            .find("location::replace")
+            .expect("sign_out_portal leaves the page");
+        assert!(
+            revoked < cleared && cleared < left,
+            "the revoke needs the token it is revoking, and the navigation never \
+             returns control to this SPA, so the order is revoke, clear, leave"
+        );
+    }
+
+    /// MAPPS-532: which menu calls which sequence is the whole fix, and
+    /// `layout.rs` holds both menus, so the file-level scan above cannot see
+    /// it. This one reads the portal menu's own body.
+    ///
+    /// The agent sequence is not merely wrong here, it is inert: a `contacts`
+    /// identity holds no agent bearer to revoke and no OIDC refresh token to
+    /// revoke, so every step of it no-ops and the customer is handed to an
+    /// identity provider they have no account with.
+    #[test]
+    fn the_portal_menu_runs_the_portal_sequence() {
+        const LAYOUT: &str = include_str!("../../components/layout.rs");
+        let start = LAYOUT
+            .find("fn PortalUserMenu(")
+            .expect("layout.rs defines PortalUserMenu");
+        let rest = &LAYOUT[start..];
+        let body = &rest[..rest.find("\n#[component]").unwrap_or(rest.len())];
+
+        assert!(
+            body.contains("sign_out::sign_out_portal()"),
+            "PortalUserMenu must run the portal sign-out sequence"
+        );
+        assert!(
+            !body.contains("sign_out::sign_out()"),
+            "PortalUserMenu runs the agent sign-out, which revokes nothing for a \
+             portal identity and lands the customer on the OP"
+        );
+    }
+
+    /// The fallback matters as much as the happy path: a host with no
+    /// `window` (the desktop build) must still get an origin-relative portal
+    /// route, never the hub URL the agent path falls back to.
+    #[test]
+    fn the_portal_login_url_is_this_origins_own_route() {
+        let url = super::portal_login_url();
+        assert!(
+            url.ends_with("/portal/login"),
+            "portal sign-out must land on /portal/login, got {url}"
+        );
+        assert!(
+            !url.contains("v1/auth/logout"),
+            "portal sign-out must not land on the OP, got {url}"
+        );
     }
 }

@@ -1188,12 +1188,15 @@ fn PortalUserMenu() -> Element {
     // email, password, MFA), so it is a top-level `<a>` rather than an
     // in-SPA `Link`.
     let hub_account_settings = cfg.hub_url("/settings");
-    // MAPPS-522: the same shared sign-out sequence the app-side `UserMenu`
-    // runs, so the portal cannot be the path that skips the mokosh revoke.
+    // MAPPS-522 routed this through the shared sign-out module; MAPPS-532
+    // pointed it at the portal sequence inside that module. The agent one
+    // revoked nothing here (a contact holds no agent bearer and no OIDC
+    // refresh token) and handed the customer to bunyip's sign-in page, which
+    // is for an account they do not have.
     let logout = move |_| {
         open.set(false);
         spawn(async move {
-            crate::modules::auth::sign_out::sign_out().await;
+            crate::modules::auth::sign_out::sign_out_portal().await;
         });
     };
 
