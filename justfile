@@ -47,7 +47,7 @@ pre-commit: css-build
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-web check-desktop check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance
+check: check-web check-desktop check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme
 
 # Check web/WASM compilation
 [group: 'check']
@@ -133,6 +133,12 @@ check-no-demo-rows:
 check-email-affordance:
     bash scripts/check-email-affordance.sh --self-test
     bash scripts/check-email-affordance.sh
+
+# MAPPS-530: keep every absolute URL in the TLS-routed dev-SSO overlay on https, so the SPA never fetches mixed content. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-dev-sso-scheme:
+    bash scripts/check-dev-sso-scheme.sh --self-test
+    bash scripts/check-dev-sso-scheme.sh
 
 # Run clippy lints
 [group: 'check']
