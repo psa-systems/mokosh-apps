@@ -47,7 +47,7 @@ pre-commit: css-build
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-web check-desktop check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin
+check: check-ci-parity check-web check-desktop check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin
 
 # Check web/WASM compilation
 [group: 'check']
@@ -151,6 +151,12 @@ check-sort-keys:
 check-per-page-cap:
     bash scripts/check-per-page-cap.sh --self-test
     bash scripts/check-per-page-cap.sh
+
+# MAPPS-534: `.forgejo/workflows/check.yml` says it mirrors this recipe, and it had drifted in four places with nothing able to notice. Fails if a command any recipe in the `check` list runs has no `run:` line in the workflow. Compares command lines, not recipe names, because two of those four drifts were steps present but invoked without their --self-test. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-ci-parity:
+    bash scripts/check-ci-parity.sh --self-test
+    bash scripts/check-ci-parity.sh
 
 # MAPPS-525: fail when a shared-DTO change on mokosh-server main would otherwise sit unnoticed behind a pin nobody advances. MAPPS-537 narrowed it to moves where crates/mokosh-types actually differs, so another repository merging anything at all no longer turns this red. Needs network. --self-test first, so a guard that stopped guarding fails loudly.
 [group: 'check']
