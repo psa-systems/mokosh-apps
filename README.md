@@ -59,6 +59,7 @@ just check-web        # cargo check --target wasm32-unknown-unknown
 just check-desktop    # cargo check for the native desktop build
 just check-clippy     # cargo clippy --all-targets
 just check-fmt        # cargo fmt --all --check
+just check-types-pin  # fail if the mokosh-types pin is behind the server head (needs network)
 just fmt              # cargo fmt --all
 just test             # cargo test
 just build            # release WASM bundle (dx build --release)
