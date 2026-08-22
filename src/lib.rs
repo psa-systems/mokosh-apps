@@ -645,10 +645,13 @@ pub enum Route {
     // Admin surfaces under /admin/*, gated at runtime by the user's role
     // inside each page (matching the server's RequireAdmin), available in
     // every build since the server endpoints exist regardless of tenancy.
+    // MAPPS-526: that gate is enforced by the `admin_route_role_gates` tests
+    // at the bottom of this file, not by this comment - /admin/forms went a
+    // release without one while the comment claimed otherwise.
     #[route("/admin/audit")]
     AuditLog {},
     // PMS-731: request-form builder. Admin config, so it lives with the
-    // other /admin/* surfaces and is role-gated the same way.
+    // other /admin/* surfaces.
     #[route("/admin/forms")]
     FormsBuilder {},
     #[route("/admin/sla")]
@@ -1458,6 +1461,110 @@ mod portal_login_route {
             matches!(route, Route::PortalLogin {}),
             "/portal/login must resolve to PortalLogin, got {route:?}"
         );
+    }
+}
+
+/// MAPPS-526: every `/admin/*` route's page carries the role gate the route
+/// table above claims it does. `/admin/forms` was added by PMS-731 with the
+/// comment and no gate, so a technician reached a full form editor whose every
+/// save 403s server-side. The claim is a test now: a new `/admin/*` route
+/// added without a gate fails here rather than shipping.
+///
+/// The check is a source scan rather than a render, because the pages are
+/// Dioxus components that need a running virtual DOM and an auth context to
+/// render at all, and what is being asserted is structural: the page consults
+/// the role before deciding what to show.
+#[cfg(test)]
+mod admin_route_role_gates {
+    use std::collections::BTreeSet;
+
+    /// (route path, page source path, page source). One entry per `/admin/*`
+    /// route in the `Route` enum, `#[cfg]`-gated ones included.
+    const ADMIN_ROUTE_PAGES: &[(&str, &str, &str)] = &[
+        (
+            "/admin/audit",
+            "src/pages/audit_log.rs",
+            include_str!("pages/audit_log.rs"),
+        ),
+        (
+            "/admin/forms",
+            "src/pages/forms.rs",
+            include_str!("pages/forms.rs"),
+        ),
+        (
+            "/admin/sla",
+            "src/pages/sla.rs",
+            include_str!("pages/sla.rs"),
+        ),
+        (
+            "/admin/team",
+            "src/pages/team.rs",
+            include_str!("pages/team.rs"),
+        ),
+        (
+            "/admin/tenants",
+            "src/pages/admin.rs",
+            include_str!("pages/admin.rs"),
+        ),
+    ];
+
+    /// `/admin/*` paths declared in this file's `Route` enum. Read from the
+    /// source rather than from `Route`, so a `#[cfg]`-gated route counts in
+    /// every build instead of vanishing from the check with its feature.
+    fn declared_admin_routes() -> BTreeSet<String> {
+        include_str!("lib.rs")
+            .lines()
+            .filter_map(|line| {
+                let rest = line.trim().strip_prefix("#[route(\"/admin/")?;
+                let path = rest.split('"').next()?;
+                Some(format!("/admin/{path}"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_admin_route_has_a_table_entry() {
+        let declared = declared_admin_routes();
+        let tabled: BTreeSet<String> = ADMIN_ROUTE_PAGES
+            .iter()
+            .map(|(route, _, _)| (*route).to_string())
+            .collect();
+
+        let missing: Vec<&String> = declared.difference(&tabled).collect();
+        assert!(
+            missing.is_empty(),
+            "these /admin/* routes have no entry in ADMIN_ROUTE_PAGES, so nothing checks their role gate: {missing:?}"
+        );
+
+        let stale: Vec<&String> = tabled.difference(&declared).collect();
+        assert!(
+            stale.is_empty(),
+            "ADMIN_ROUTE_PAGES lists routes the Route enum no longer declares: {stale:?}"
+        );
+    }
+
+    /// How a page reads the caller's role. `/admin/tenants` reads super-admin
+    /// because its server endpoint takes `RequireSuperAdmin`, not `RequireAdmin`.
+    const ROLE_READS: &[&str] = &["is_admin", "is_super_admin"];
+
+    /// How a page refuses on that role. The gate has to be a refusal: reading
+    /// the role and rendering the page anyway is what `/admin/forms` did.
+    const ROLE_REFUSALS: &[&str] = &["if !is_admin", "if !use_is_admin()", "if !is_super_admin"];
+
+    #[test]
+    fn every_admin_page_has_a_role_gate() {
+        for (route, path, source) in ADMIN_ROUTE_PAGES {
+            assert!(
+                ROLE_READS.iter().any(|pat| source.contains(pat)),
+                "{route} renders {path}, which never reads the user's role. \
+                 Gate it like src/pages/audit_log.rs does (`u.role.is_admin()`)."
+            );
+            assert!(
+                ROLE_REFUSALS.iter().any(|pat| source.contains(pat)),
+                "{route} renders {path}, which reads the user's role but never refuses on it. \
+                 Return the access-denied view for a non-admin, as src/pages/audit_log.rs does."
+            );
+        }
     }
 }
 

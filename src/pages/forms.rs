@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use dioxus::prelude::*;
 
 use crate::components::{
-    use_page_title, ArrowDownIcon, ArrowUpIcon, Badge, BadgeVariant, Button, ButtonVariant,
+    use_page_title, ArrowDownIcon, ArrowUpIcon, Badge, BadgeVariant, Button, ButtonVariant, Card,
     Checkbox, ChevronDownIcon, ChevronRightIcon, DataTable, DragHandleIcon, ErrorBanner,
     IconButton, IconSize, Input, PageHeader, Select, SelectOption, Table, TableBody, TableCell,
     TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea, TrashIcon,
@@ -38,8 +38,54 @@ use crate::Route;
 /// published article set is bounded, unlike companies).
 const ARTICLE_PAGE_SIZE: usize = 200;
 
+/// Admin-gated request-form builder.
+///
+/// This outer component holds only the role gate so its hook order stays
+/// stable across renders (rules of hooks), matching `audit_log.rs`. Every
+/// fetch lives in [`FormsBuilderContent`], which a non-admin never mounts.
+///
+/// MAPPS-526: the page shipped without this gate (PMS-731) while the server
+/// has always required admin to author a definition, so a technician got a
+/// working editor whose every save 403s, including the draft autosave that
+/// exists so half-built work survives.
 #[component]
 pub fn FormsBuilderPage() -> Element {
+    use_page_title("Request Forms");
+    let auth = crate::hooks::use_auth();
+    // Matches mokosh-server's `RequireAdminUser` on create / update /
+    // delete_one and the three draft handlers. Loading auth resolves to
+    // `false`, which shows the notice until the user is known; the server
+    // still enforces the real check.
+    let is_admin = auth
+        .read()
+        .user
+        .as_ref()
+        .map(|u| u.role.is_admin())
+        .unwrap_or(false);
+
+    if !is_admin {
+        return rsx! {
+            PageHeader { title: "Request Forms", subtitle: "Forms clients fill in to raise a request" }
+            Card {
+                div { class: "py-12 text-center",
+                    p { class: "text-sm font-medium text-content mb-1",
+                        "Admins only"
+                    }
+                    p { class: "text-sm text-muted",
+                        "You do not have permission to manage request forms."
+                    }
+                }
+            }
+        };
+    }
+
+    rsx! { FormsBuilderContent {} }
+}
+
+/// The builder itself. Mounted only for admins by [`FormsBuilderPage`], so
+/// every data-fetching hook below sits behind the role gate.
+#[component]
+fn FormsBuilderContent() -> Element {
     use_page_title("Request Forms");
 
     let mut forms = use_resource(|| async {
