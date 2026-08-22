@@ -26,6 +26,16 @@
 //! `POST /api/v1/auth/me/complete-onboarding` to stamp the profile. Contact
 //! name and phone are MAPPS-429: they need somewhere to be written first.
 //!
+//! MAPPS-524: the organisation half of that is asked only of admins.
+//! `PUT /tenants/current` is admin-gated on mokosh-server (PMS-751: the name
+//! is customer-facing, so it is tenant-wide configuration), and every invite
+//! goes out as the lowest-privilege role (`src/pages/team.rs`). A technician
+//! with no bunyip name claims therefore filled this screen in, read "Could not
+//! save: Access denied" from the org save, and never reached the stamp that
+//! releases the AuthGuard: MAPPS-430's failure mode, narrowed to the
+//! population invites create. A non-admin now gets the confirmation screen and
+//! the stamp alone.
+//!
 //! Why a dedicated page (not a modal on the dashboard): the gate must
 //! be impossible to bypass via direct URL or refresh, and the
 //! AuthGuard render-time redirect achieves that only when the user is
@@ -72,10 +82,55 @@ struct OnboardingResponse {
     profile_completed: bool,
 }
 
+/// One request this screen issues when its button is pressed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OnboardingCall {
+    /// `PUT /tenants/current`, admin-gated on the server.
+    SaveOrganization,
+    /// `PUT /tenants/current/logo`, optional and non-blocking.
+    UploadLogo,
+    /// `POST /auth/me/complete-onboarding`, the stamp that releases the gate.
+    CompleteOnboarding,
+}
+
+/// MAPPS-524: what submitting the screen sends, in order. The submit handler
+/// executes exactly this list, so the role branch is one testable decision
+/// rather than conditions scattered through an async block.
+///
+/// A non-admin sends the stamp alone: the org save would 403, and the page
+/// refuses (deliberately) to stamp after a failed org save, so including it
+/// would trap the user on this screen.
+fn planned_calls(is_admin: bool, has_logo: bool) -> Vec<OnboardingCall> {
+    if !is_admin {
+        return vec![OnboardingCall::CompleteOnboarding];
+    }
+    let mut calls = vec![OnboardingCall::SaveOrganization];
+    if has_logo {
+        calls.push(OnboardingCall::UploadLogo);
+    }
+    calls.push(OnboardingCall::CompleteOnboarding);
+    calls
+}
+
 #[component]
 pub fn Onboarding() -> Element {
     let mut auth = crate::hooks::use_auth();
     let nav = use_navigator();
+
+    // MAPPS-524: the role decides which screen this is. Read with the same
+    // `use_auth()` shape as `src/pages/settings.rs`, but gated on
+    // `server_loaded` (MAPPS-317): the optimistic rehydrate seeds
+    // `UserRole::default()` (Technician), so an admin who lands here before
+    // /me reconciles would otherwise be shown the non-admin screen and could
+    // press through it, skipping the organisation entirely.
+    let (server_loaded, is_admin, org) = {
+        let a = auth.read();
+        (
+            a.server_loaded,
+            a.user.as_ref().map(|u| u.role.is_admin()).unwrap_or(false),
+            a.active_org_name().map(str::to_string),
+        )
+    };
 
     let mut org_name = use_signal(String::new);
     let mut contact_name = use_signal(String::new);
@@ -127,22 +182,30 @@ pub fn Onboarding() -> Element {
 
         // PMS-518: validate through the shared FormGuard so every missing field
         // surfaces at once, each in its own slot, and the first is focused.
-        let mut guard = FormGuard::new();
-        org_name_error.set(guard.field("org_name", &name, "Organization name", &[Rule::Required]));
-        contact_name_error.set(guard.field(
-            "contact_name",
-            &contact,
-            "Contact name",
-            &[Rule::Required],
-        ));
-        contact_phone_error.set(guard.field(
-            "contact_phone",
-            &phone,
-            "Contact phone",
-            &[Rule::Required],
-        ));
-        if guard.blocked() {
-            return;
+        // MAPPS-524: only the admin screen has these fields to validate.
+        if is_admin {
+            let mut guard = FormGuard::new();
+            org_name_error.set(guard.field(
+                "org_name",
+                &name,
+                "Organization name",
+                &[Rule::Required],
+            ));
+            contact_name_error.set(guard.field(
+                "contact_name",
+                &contact,
+                "Contact name",
+                &[Rule::Required],
+            ));
+            contact_phone_error.set(guard.field(
+                "contact_phone",
+                &phone,
+                "Contact phone",
+                &[Rule::Required],
+            ));
+            if guard.blocked() {
+                return;
+            }
         }
         saving.set(true);
         error.set(String::new());
@@ -150,89 +213,162 @@ pub fn Onboarding() -> Element {
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                // The organisation name first. If this fails, the profile is
-                // deliberately NOT stamped: completing onboarding without the
-                // one value it exists to collect would send the user on with a
-                // tenant still called "My workspace" and no prompt to fix it.
-                let body = OrganizationRequest {
-                    name: name.clone(),
-                    branding: OnboardingBranding {
-                        support_contact_name: contact.clone(),
-                        support_phone: phone.clone(),
-                        support_email: email.clone(),
-                    },
-                };
-                let saved = crate::hooks::fetch::api::put_authed_typed::<serde_json::Value, _>(
-                    "/tenants/current",
-                    &body,
-                )
-                .await;
-                if let Err(e) = saved {
-                    match e.field_message("name") {
-                        Some(m) => org_name_error.set(m),
-                        None => error.set(format!("Could not save: {}", e.user_message())),
-                    }
-                    saving.set(false);
-                    return;
-                }
-
-                // MAPPS-429: the logo, if one was chosen. After the details and
-                // before the stamp, and a failure here does NOT block the rest:
-                // a logo is the one optional thing on this screen, and refusing
-                // to complete onboarding over it would trap the user.
-                if let Some((file_name, mime, bytes)) = logo.read().clone() {
-                    if let Err(e) = crate::hooks::fetch::api::put_file_authed::<serde_json::Value>(
-                        "/tenants/current/logo",
-                        &file_name,
-                        &mime,
-                        &bytes,
-                    )
-                    .await
-                    {
-                        crate::hooks::push_toast(
-                            crate::components::AlertType::Warning,
-                            format!(
-                                "Saved, but the logo could not be uploaded: {}",
-                                e.user_message()
-                            ),
-                        );
-                    }
-                }
-
-                // Then the stamp. Separate call because the two are different
-                // records: one is the tenant, one is the user.
-                match crate::hooks::fetch::api::post_authed_typed::<OnboardingResponse, _>(
-                    "/auth/me/complete-onboarding",
-                    &serde_json::json!({}),
-                )
-                .await
-                {
-                    Ok(resp) => {
-                        // Reflect the server's authoritative value back into
-                        // the in-memory CurrentUser so the gate's next render
-                        // sees `profile_completed = true` and the redirect
-                        // below lands cleanly.
-                        let mut a = auth.write();
-                        if let Some(u) = a.user.as_mut() {
-                            u.profile_completed = resp.profile_completed;
+                // The order is the plan's order: the organisation first, then
+                // the logo, then the stamp.
+                for call in planned_calls(is_admin, logo.read().is_some()) {
+                    match call {
+                        // If this fails, the profile is deliberately NOT
+                        // stamped: completing onboarding without the one value
+                        // it exists to collect would send the user on with a
+                        // tenant still called "My workspace" and no prompt to
+                        // fix it.
+                        OnboardingCall::SaveOrganization => {
+                            let body = OrganizationRequest {
+                                name: name.clone(),
+                                branding: OnboardingBranding {
+                                    support_contact_name: contact.clone(),
+                                    support_phone: phone.clone(),
+                                    support_email: email.clone(),
+                                },
+                            };
+                            let saved = crate::hooks::fetch::api::put_authed_typed::<
+                                serde_json::Value,
+                                _,
+                            >("/tenants/current", &body)
+                            .await;
+                            if let Err(e) = saved {
+                                match e.field_message("name") {
+                                    Some(m) => org_name_error.set(m),
+                                    None => {
+                                        error.set(format!("Could not save: {}", e.user_message()))
+                                    }
+                                }
+                                saving.set(false);
+                                return;
+                            }
                         }
-                        drop(a);
-                        nav.replace(Route::Dashboard {});
-                    }
-                    Err(e) => {
-                        error.set(format!("Could not save: {}", e.user_message()));
+
+                        // MAPPS-429: the logo, if one was chosen. After the
+                        // details and before the stamp, and a failure here does
+                        // NOT block the rest: a logo is the one optional thing
+                        // on this screen, and refusing to complete onboarding
+                        // over it would trap the user.
+                        OnboardingCall::UploadLogo => {
+                            if let Some((file_name, mime, bytes)) = logo.read().clone() {
+                                if let Err(e) = crate::hooks::fetch::api::put_file_authed::<
+                                    serde_json::Value,
+                                >(
+                                    "/tenants/current/logo", &file_name, &mime, &bytes
+                                )
+                                .await
+                                {
+                                    crate::hooks::push_toast(
+                                        crate::components::AlertType::Warning,
+                                        format!(
+                                            "Saved, but the logo could not be uploaded: {}",
+                                            e.user_message()
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+
+                        // Then the stamp. Separate call because the two are
+                        // different records: one is the tenant, one is the
+                        // user.
+                        OnboardingCall::CompleteOnboarding => {
+                            match crate::hooks::fetch::api::post_authed_typed::<OnboardingResponse, _>(
+                                "/auth/me/complete-onboarding",
+                                &serde_json::json!({}),
+                            )
+                            .await
+                            {
+                                Ok(resp) => {
+                                    // Reflect the server's authoritative value
+                                    // back into the in-memory CurrentUser so the
+                                    // gate's next render sees
+                                    // `profile_completed = true` and the
+                                    // redirect below lands cleanly.
+                                    let mut a = auth.write();
+                                    if let Some(u) = a.user.as_mut() {
+                                        u.profile_completed = resp.profile_completed;
+                                    }
+                                    drop(a);
+                                    nav.replace(Route::Dashboard {});
+                                }
+                                Err(e) => {
+                                    error.set(format!("Could not save: {}", e.user_message()));
+                                }
+                            }
+                        }
                     }
                 }
             }
             #[cfg(not(feature = "web"))]
             {
-                let _ = (name, contact, phone, email);
+                let _ = (name, contact, phone, email, is_admin);
             }
             saving.set(false);
         });
     };
 
     let brand = crate::branding::product_name();
+
+    // MAPPS-524: hold the screen until /me has reconciled, so the branch below
+    // reads the authoritative role rather than the rehydrate's default.
+    if !server_loaded {
+        return rsx! {
+            AuthLayout {
+                p { class: "text-center text-sm text-muted", "Setting up your profile…" }
+            }
+        };
+    }
+
+    // MAPPS-524: a non-admin is not asked for the organisation, the contact or
+    // the logo, because the server would refuse every one of those writes. The
+    // only action left on the screen is the stamp that releases the gate.
+    if !is_admin {
+        let org_line = match org.as_deref() {
+            Some(name) => format!("Your account is set up under {name}."),
+            None => "Your account is set up.".to_string(),
+        };
+        return rsx! {
+            AuthLayout {
+                div { class: "text-center mb-6",
+                    h1 { class: "text-2xl font-semibold text-content",
+                        "Welcome to {brand}"
+                    }
+                    p { class: "mt-2 text-sm text-content",
+                        "You are all set. {org_line}"
+                    }
+                }
+
+                p { class: "text-sm text-muted text-center",
+                    "Your organization's details are set up by an administrator, so there is nothing for you to fill in here."
+                }
+
+                if !error().is_empty() {
+                    p { role: "alert", class: "mt-4 text-sm text-red-600 dark:text-red-400", "{error}" }
+                }
+
+                div { class: "pt-6",
+                    Button {
+                        variant: ButtonVariant::Primary,
+                        disabled: saving(),
+                        loading: saving(),
+                        class: "w-full".to_string(),
+                        onclick: move |_| handle_submit(()),
+                        "Continue"
+                    }
+                }
+
+                p { class: "mt-6 text-center text-xs text-muted",
+                    "Your name comes from the account you signed in with. Other settings (timezone, preferences) can be edited later from Profile."
+                }
+            }
+        };
+    }
+
     rsx! {
         AuthLayout {
                     div { class: "text-center mb-6",
@@ -359,5 +495,38 @@ pub fn Onboarding() -> Element {
                         "Your name comes from the account you signed in with. Other settings (timezone, preferences) can be edited later from Profile."
                     }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OnboardingCall::*;
+    use super::*;
+
+    /// MAPPS-524: `PUT /tenants/current` is admin-gated on mokosh-server, and
+    /// this page will not stamp a profile after a failed org save, so a
+    /// non-admin who sent it would be stuck on this screen for good.
+    #[test]
+    fn a_non_admin_only_stamps_the_profile() {
+        assert_eq!(planned_calls(false, false), vec![CompleteOnboarding]);
+        assert_eq!(
+            planned_calls(false, true),
+            vec![CompleteOnboarding],
+            "the non-admin screen has no logo field, and the logo endpoint is admin-gated too"
+        );
+    }
+
+    /// The admin path is unchanged: the organisation is saved before the
+    /// profile is stamped, with the optional logo in between.
+    #[test]
+    fn an_admin_saves_the_organisation_before_the_stamp() {
+        assert_eq!(
+            planned_calls(true, false),
+            vec![SaveOrganization, CompleteOnboarding]
+        );
+        assert_eq!(
+            planned_calls(true, true),
+            vec![SaveOrganization, UploadLogo, CompleteOnboarding]
+        );
     }
 }
