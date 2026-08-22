@@ -806,58 +806,17 @@ fn UserMenu() -> Element {
     // hidden for now (multi-app switching isn't a flow we want to surface
     // yet). Restore by reinstating this binding and the `a` block below.
     // let hub_dashboard = cfg.hub_url("/dashboard");
-    // RP-initiated logout via bunyip-api's `OptionalUser`-backed
-    // endpoint. bunyip-api's `GET /v1/auth/logout?url=<absolute>`
-    // clears the .a8n.systems-scoped cookies via Set-Cookie, then
-    // 302s the browser straight to `url`. The companion bunyip change
-    // (fix/logout-honors-final-url) replaced the old "bounce through
-    // /login" handler with a direct redirect, so this URL is now the
-    // user's actual landing page after logout.
-    //
-    // Land them on this SPA's own origin root (msp.<tld>/) so they
-    // see mokosh's public landing page, signed out. Falls back to
-    // the hub root when the browser origin is somehow unavailable
-    // (server-side render path, mostly unreachable in `web` builds).
-    let issuer = cfg.issuer.trim_end_matches('/');
-    let post_logout_target = crate::platform::location::origin()
-        .map(|origin| format!("{}/", origin.trim_end_matches('/')))
-        .unwrap_or_else(|| cfg.hub_url("/"));
-    let hub_logout = format!(
-        "{issuer}/v1/auth/logout?url={}",
-        crate::utils::url::encode_uri_component(&post_logout_target)
-    );
 
+    // MAPPS-522: the whole sign-out sequence (revoke the mokosh session,
+    // revoke the OP refresh-token family, clear local storage, redirect off
+    // this origin) lives in `modules::auth::sign_out`, shared with the portal
+    // menu and the account-deleted overlay. It runs on a task so the closure
+    // stays sync; every step is awaited before it navigates away.
     let logout = move |_| {
         open.set(false);
-        // Order matters here: any write to the auth signal BEFORE
-        // `location.replace` schedules
-        // a Dioxus re-render. On that re-render `use_require_auth` (the
-        // route guard) sees `user = None` on `/dashboard` and calls
-        // `navigator.push(Route::Login {})`, which puts `/login` on TOP
-        // of `/dashboard` in history. The subsequent `location.replace`
-        // then races with the router push; the user ends up navigated
-        // away from the hub logout URL and back onto an authenticated-
-        // looking dashboard view. So: clear sessionStorage, navigate
-        // away, let the full page reload reset all in-memory state.
-        //
-        // MAPPS-336: revoke the refresh token family at the OP BEFORE
-        // wiping local sessionStorage. The local clear alone left the
-        // rotated-but-not-revoked family alive until natural expiry, so
-        // a leaked / stolen refresh token survived the user clicking
-        // "Log out". `revoke_refresh_token` is fire-and-forget per RFC
-        // 7009 (`/oauth2/revoke` returns 200 for unknown tokens too) so
-        // a transient network failure doesn't block the local cleanup.
-        // The await runs on a fresh task so the closure stays sync.
-        if let Some(tokens) = crate::modules::oidc::storage::load_auth() {
-            if let Some(refresh) = tokens.refresh_token {
-                let cfg = crate::modules::oidc::OidcConfig::for_current_origin();
-                spawn(async move {
-                    let _ = crate::modules::oidc::flow::revoke_refresh_token(&cfg, &refresh).await;
-                });
-            }
-        }
-        crate::modules::oidc::storage::clear_auth();
-        crate::platform::location::replace(&hub_logout);
+        spawn(async move {
+            crate::modules::auth::sign_out::sign_out().await;
+        });
     };
 
     rsx! {
@@ -1229,25 +1188,13 @@ fn PortalUserMenu() -> Element {
     // email, password, MFA), so it is a top-level `<a>` rather than an
     // in-SPA `Link`.
     let hub_account_settings = cfg.hub_url("/settings");
-    // RP-initiated logout, identical to the app-side `UserMenu`: bunyip's
-    // `GET /v1/auth/logout?url=<absolute>` clears the shared cookies and
-    // 302s back to this SPA's origin root, signed out.
-    let issuer = cfg.issuer.trim_end_matches('/');
-    let post_logout_target = crate::platform::location::origin()
-        .map(|origin| format!("{}/", origin.trim_end_matches('/')))
-        .unwrap_or_else(|| cfg.hub_url("/"));
-    let hub_logout = format!(
-        "{issuer}/v1/auth/logout?url={}",
-        crate::utils::url::encode_uri_component(&post_logout_target)
-    );
-
+    // MAPPS-522: the same shared sign-out sequence the app-side `UserMenu`
+    // runs, so the portal cannot be the path that skips the mokosh revoke.
     let logout = move |_| {
         open.set(false);
-        // Same ordering rule as `UserMenu::logout`: clear storage, then
-        // hard-navigate so the full reload resets in-memory auth state
-        // without a router re-render racing the redirect.
-        crate::modules::oidc::storage::clear_auth();
-        crate::platform::location::replace(&hub_logout);
+        spawn(async move {
+            crate::modules::auth::sign_out::sign_out().await;
+        });
     };
 
     rsx! {
