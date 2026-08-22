@@ -20,6 +20,7 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{Badge, BadgeVariant, ClockIcon, IconSize};
+use crate::utils::sort_keys::TICKETS_RECENT_SORT;
 use crate::utils::Paginated;
 
 const DEFAULT_REFRESH_SECS: u32 = 30;
@@ -152,9 +153,9 @@ pub fn BigTicketsPage() -> Element {
         // Subscribe to the tick so Dioxus re-fetches on every interval
         // firing. The value is otherwise unused.
         let _ = *tick.read();
-        crate::hooks::fetch::api::get_authed::<Paginated<BigTicketRow>>(
-            "/tickets?per_page=50&sort=-updated_at",
-        )
+        crate::hooks::fetch::api::get_authed::<Paginated<BigTicketRow>>(&format!(
+            "/tickets?per_page=50&{TICKETS_RECENT_SORT}"
+        ))
         .await
         .map(|p| p.data)
     });

@@ -12,6 +12,7 @@ use crate::components::{
 };
 use crate::modules::contacts::Address;
 use crate::utils::money::format_money_str;
+use crate::utils::sort_keys::TICKETS_RECENT_SORT;
 use crate::utils::url::{safe_href, urlencoding_minimal};
 use crate::utils::{FormGuard, Paginated};
 use crate::Route;
@@ -93,17 +94,36 @@ struct IndustryOption {
 }
 
 /// Sortable columns on the company list (F3).
+///
+/// MAPPS-527: only columns whose sort key is in `COMPANY_SORT_KEYS` belong
+/// here. `Type` mapped to `company_type`, which the server discards, so the
+/// header rendered a sort the rows never had; its affordance is gone until
+/// the server allow-lists the key.
 #[derive(Clone, Copy, PartialEq)]
 enum CompanySortKey {
     Company,
-    Type,
+}
+
+impl CompanySortKey {
+    /// Every variant, for the allow-list test. `company_sort_query` matches
+    /// exhaustively, so a new variant fails to compile until it is mapped.
+    #[cfg(test)]
+    const ALL: &'static [Self] = &[Self::Company];
 }
 
 /// Sortable columns on the contact list (F3).
+///
+/// MAPPS-527: `Company` mapped to `company_name`, which is absent from
+/// `CONTACT_SORT_KEYS`, so it is no longer offered.
 #[derive(Clone, Copy, PartialEq)]
 enum ContactSortKey {
     Name,
-    Company,
+}
+
+impl ContactSortKey {
+    /// Every variant, for the allow-list test.
+    #[cfg(test)]
+    const ALL: &'static [Self] = &[Self::Name];
 }
 
 /// First click sorts ascending; clicking the active column toggles
@@ -135,7 +155,6 @@ fn company_sort_query(
     let (key, dir) = current?;
     let field = match key {
         CompanySortKey::Company => "name",
-        CompanySortKey::Type => "company_type",
     };
     let dir = match dir {
         SortDirection::Ascending => "asc",
@@ -150,7 +169,6 @@ fn contact_sort_query(
     let (key, dir) = current?;
     let field = match key {
         ContactSortKey::Name => "last_name",
-        ContactSortKey::Company => "company_name",
     };
     let dir = match dir {
         SortDirection::Ascending => "asc",
@@ -430,12 +448,7 @@ pub fn CompanyListPage() -> Element {
                             onsort: move |_| toggle_sort(&mut sort, CompanySortKey::Company, &mut page),
                             "Company"
                         }
-                        TableHeader {
-                            sortable: true,
-                            sort_direction: sort_dir_for(&sort_snapshot, CompanySortKey::Type),
-                            onsort: move |_| toggle_sort(&mut sort, CompanySortKey::Type, &mut page),
-                            "Type"
-                        }
+                        TableHeader { "Type" }
                         TableHeader { "Account Manager" }
                         TableHeader { "Open Tickets" }
                     }
@@ -1705,7 +1718,7 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             crate::hooks::fetch::api::get_authed::<PaginatedTicketSummaries>(&format!(
-                "/tickets?company_id={id}&per_page=5&sort=-updated_at"
+                "/tickets?company_id={id}&per_page=5&{TICKETS_RECENT_SORT}"
             ))
             .await
             .ok()
@@ -3798,12 +3811,7 @@ pub fn ContactListPage() -> Element {
                             onsort: move |_| toggle_sort(&mut sort, ContactSortKey::Name, &mut page),
                             "Name"
                         }
-                        TableHeader {
-                            sortable: true,
-                            sort_direction: sort_dir_for(&sort_snapshot, ContactSortKey::Company),
-                            onsort: move |_| toggle_sort(&mut sort, ContactSortKey::Company, &mut page),
-                            "Company"
-                        }
+                        TableHeader { "Company" }
                         TableHeader { "Email" }
                         TableHeader { "Phone" }
                         TableHeader { "Role" }
@@ -5042,7 +5050,7 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             crate::hooks::fetch::api::get_authed::<PaginatedTicketSummaries>(&format!(
-                "/tickets?contact_id={id}&per_page=5&sort=-updated_at"
+                "/tickets?contact_id={id}&per_page=5&{TICKETS_RECENT_SORT}"
             ))
             .await
             .ok()
@@ -6347,5 +6355,47 @@ mod contact_round_trip_tests {
             Some("Globex"),
         );
         assert_eq!(reloaded_companies, saved_companies);
+    }
+}
+
+/// MAPPS-527: every sort key these lists can send must be one the server
+/// allow-lists, or the header renders a sort the rows never got.
+#[cfg(test)]
+mod sort_key_tests {
+    use super::{
+        company_sort_query, contact_sort_query, CompanySortKey, ContactSortKey, SortDirection,
+    };
+    use crate::utils::sort_keys::{COMPANY_SORT_KEYS, CONTACT_SORT_KEYS};
+
+    #[test]
+    fn every_company_sort_key_is_server_accepted() {
+        for key in CompanySortKey::ALL {
+            let (field, _) =
+                company_sort_query(Some((*key, SortDirection::Ascending))).expect("maps to a key");
+            assert!(
+                COMPANY_SORT_KEYS.contains(&field),
+                "`{field}` is not in the server's company sort allow-list"
+            );
+        }
+    }
+
+    #[test]
+    fn every_contact_sort_key_is_server_accepted() {
+        for key in ContactSortKey::ALL {
+            let (field, _) =
+                contact_sort_query(Some((*key, SortDirection::Ascending))).expect("maps to a key");
+            assert!(
+                CONTACT_SORT_KEYS.contains(&field),
+                "`{field}` is not in the server's contact sort allow-list"
+            );
+        }
+    }
+
+    /// The two keys MAPPS-527 withdrew. Neither is accepted, so neither may
+    /// come back as a column affordance without a server change first.
+    #[test]
+    fn the_withdrawn_keys_are_still_not_accepted() {
+        assert!(!COMPANY_SORT_KEYS.contains(&"company_type"));
+        assert!(!CONTACT_SORT_KEYS.contains(&"company_name"));
     }
 }

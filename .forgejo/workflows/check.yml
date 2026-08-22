@@ -129,6 +129,15 @@ jobs:
           bash scripts/check-dev-sso-scheme.sh --self-test
           bash scripts/check-dev-sso-scheme.sh
 
+      # MAPPS-527: the server drops a `?sort=` key it does not allow-list and
+      # answers in its default order, so an invented key paints a sorted header
+      # over rows that never moved. `company_type`, `company_name` and
+      # `-updated_at` all shipped that way and survived three parity audits.
+      - name: Sort-key guard
+        run: |
+          bash scripts/check-sort-keys.sh --self-test
+          bash scripts/check-sort-keys.sh
+
       - name: Check formatting
         run: cargo fmt --all --check
 

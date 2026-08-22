@@ -25,6 +25,7 @@ use crate::modules::contracts::{
     RateCardItemResponse, RateCardResponse, UpdateContractRequest, UpsertRateCardItemRequest,
     UpsertRateCardRequest,
 };
+use crate::utils::sort_keys::COMPANIES_BY_NAME_SORT;
 use crate::utils::url::urlencoding_minimal;
 use crate::utils::{FormGuard, Paginated};
 use crate::Route;
@@ -161,9 +162,9 @@ fn ContractListBody() -> Element {
     // Company filter is a dropdown populated from the companies endpoint.
     let companies_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<CompanyOption>>(
-            "/contacts/companies?page=1&per_page=100&sort=name&sort_dir=asc",
-        )
+        crate::hooks::fetch::api::get_authed::<Paginated<CompanyOption>>(&format!(
+            "/contacts/companies?page=1&per_page=100&{COMPANIES_BY_NAME_SORT}"
+        ))
         .await
         .ok()
     });
@@ -764,9 +765,9 @@ fn ContractForm(props: ContractFormProps) -> Element {
     // server forbids changing it on update so the edit flow disables it).
     let companies_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<CompanyOption>>(
-            "/contacts/companies?page=1&per_page=100&sort=name&sort_dir=asc",
-        )
+        crate::hooks::fetch::api::get_authed::<Paginated<CompanyOption>>(&format!(
+            "/contacts/companies?page=1&per_page=100&{COMPANIES_BY_NAME_SORT}"
+        ))
         .await
         .ok()
     });
