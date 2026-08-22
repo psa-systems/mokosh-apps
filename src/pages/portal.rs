@@ -390,11 +390,13 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
         // MAPPS-357: subscribe to reachability so the thread auto-refetches
         // the instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_portal_authed::<crate::utils::Paginated<PortalNote>>(
-            &format!("/portal/tickets/{id_for_fetch}/notes?page=1&per_page=200"),
-        )
+        // MAPPS-528: read every page of the thread. The old `per_page=200`
+        // was clamped to 100 by the server, so a long thread lost its oldest
+        // notes with nothing on screen to say so.
+        crate::hooks::fetch::api::get_all_portal_authed::<PortalNote>(&format!(
+            "/portal/tickets/{id_for_fetch}/notes"
+        ))
         .await
-        .map(|p| p.data)
         .ok()
     }));
 
@@ -914,14 +916,6 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
     }
 }
 
-/// Server-side paginated envelope (`PaginatedResponse<KbArticleResponse>`)
-/// for the portal KB feed. Only the fields the portal renders are pulled;
-/// serde drops the rest.
-#[derive(Clone, Debug, serde::Deserialize)]
-struct PortalKbFeed {
-    data: Vec<PortalKbArticle>,
-}
-
 /// `KbArticleResponse` subset for the portal reader. Mirrors the agent
 /// `KbArticle` DTO but local to the portal page (the portal feed reuses
 /// the same server response type).
@@ -953,11 +947,9 @@ pub fn PortalKBPage() -> Element {
         // MAPPS-357: subscribe to reachability so the feed auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_portal_authed::<PortalKbFeed>(
-            "/portal/kb?page=1&per_page=100",
-        )
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_portal_authed::<PortalKbArticle>("/portal/kb")
+            .await
+            .ok()
     });
 
     let snap = feed_resource.read_unchecked();
@@ -980,7 +972,6 @@ pub fn PortalKBPage() -> Element {
     let search_text = search.read().trim().to_lowercase();
     let articles: Vec<PortalKbArticle> = match &*snap {
         Some(Some(feed)) => feed
-            .data
             .iter()
             .filter(|a| {
                 search_text.is_empty()
@@ -1076,7 +1067,6 @@ fn PortalArticleItem(props: PortalArticleItemProps) -> Element {
 
 use crate::modules::quotes::{status as quote_status, PortalQuoteDecisionRequest, QuoteResponse};
 use crate::utils::money::format_money;
-use crate::utils::Paginated;
 
 /// Colour for a client-facing quote status. Narrower than the staff
 /// palette because the internal states never reach the portal.
@@ -1096,18 +1086,16 @@ pub fn PortalQuoteListPage() -> Element {
     let quotes_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_portal_authed::<Paginated<QuoteResponse>>(
-            "/portal/quotes?page=1&per_page=50",
-        )
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_portal_authed::<QuoteResponse>("/portal/quotes")
+            .await
+            .ok()
     });
 
     let snap = quotes_resource.read_unchecked();
     let loading = snap.is_none();
     let fetch_failed = matches!(*snap, Some(None));
     let rows: Vec<QuoteResponse> = match &*snap {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
 

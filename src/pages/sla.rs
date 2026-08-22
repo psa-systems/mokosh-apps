@@ -27,12 +27,11 @@ use crate::components::{
 use crate::modules::sla::{
     BusinessHours, HolidayCalendar, SlaPolicy, SlaTarget, TicketPriorityOption,
 };
-use crate::utils::Paginated;
 
-/// Rows per page for the SLA list views. SLA config sets are small, so a
-/// single page is almost always enough; the pager still appears if a
-/// tenant defines more than this.
-const PER_PAGE: usize = 100;
+// MAPPS-528: the SLA views have no pager of their own, so each list reads
+// every page and renders the lot. The old `per_page=100` single ask was the
+// server's cap, and a tenant past it lost rows with nothing on screen to say
+// so.
 
 /// Which SLA config surface is active. Tabs rather than separate routes:
 /// the three sets are small and admins flip between them constantly when
@@ -173,11 +172,9 @@ fn SlaPoliciesTab(tab: Signal<SlaTab>) -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _reachable = crate::hooks::use_server_reachable();
         let _token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_authed_typed::<Paginated<SlaPolicy>>(&format!(
-            "/sla/policies?page=1&per_page={PER_PAGE}"
-        ))
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_authed::<SlaPolicy>("/sla/policies")
+            .await
+            .ok()
     });
 
     // Editing state: Some(None-id) => create, Some(Some(id)) => edit.
@@ -189,13 +186,11 @@ fn SlaPoliciesTab(tab: Signal<SlaTab>) -> Element {
     let is_loading = snap.is_none();
     let fetch_failed = matches!(*snap, Some(None));
     let rows: Vec<SlaPolicy> = match &*snap {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
-    let total = match &*snap {
-        Some(Some(resp)) => resp.meta.total as usize,
-        _ => 0,
-    };
+    // Every page was read, so the row count IS the total.
+    let total = rows.len();
 
     // MAPPS-357: a failed load while the server is flagged down is an outage,
     // not an empty policy set - render the honest unavailable page (which keeps
@@ -231,7 +226,7 @@ fn SlaPoliciesTab(tab: Signal<SlaTab>) -> Element {
             loading: is_loading,
             total_items: total,
             current_page: 1,
-            per_page: PER_PAGE,
+            per_page: if total == 0 { 25 } else { total },
             columns: 4,
             Table {
                 TableHead {
@@ -381,15 +376,12 @@ fn PolicyFormModal(props: PolicyFormModalProps) -> Element {
     let bh_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let _token = crate::hooks::fetch::api::current_access_token()?;
-        crate::hooks::fetch::api::get_authed_typed::<Paginated<BusinessHours>>(&format!(
-            "/sla/business-hours?page=1&per_page={PER_PAGE}"
-        ))
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_authed::<BusinessHours>("/sla/business-hours")
+            .await
+            .ok()
     });
     let bh_options: Vec<(String, String)> = match &*bh_resource.read_unchecked() {
-        Some(Some(resp)) => resp
-            .data
+        Some(Some(rows)) => rows
             .iter()
             .map(|b| (b.id.to_string(), b.name.clone()))
             .collect(),
@@ -556,15 +548,15 @@ fn TargetsModal(props: TargetsModalProps) -> Element {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             #[cfg(feature = "web")]
             {
-                let path = format!("/sla/policies/{pid}/targets?page=1&per_page={PER_PAGE}");
-                crate::hooks::fetch::api::get_authed_typed::<Paginated<SlaTarget>>(&path)
+                let path = format!("/sla/policies/{pid}/targets");
+                crate::hooks::fetch::api::get_all_authed::<SlaTarget>(&path)
                     .await
                     .ok()
             }
             #[cfg(not(feature = "web"))]
             {
                 let _ = pid;
-                None::<Paginated<SlaTarget>>
+                None::<Vec<SlaTarget>>
             }
         }
     });
@@ -574,15 +566,13 @@ fn TargetsModal(props: TargetsModalProps) -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         #[cfg(feature = "web")]
         {
-            crate::hooks::fetch::api::get_authed_typed::<Paginated<TicketPriorityOption>>(&format!(
-                "/tickets/priorities?page=1&per_page={PER_PAGE}"
-            ))
-            .await
-            .ok()
+            crate::hooks::fetch::api::get_all_authed::<TicketPriorityOption>("/tickets/priorities")
+                .await
+                .ok()
         }
         #[cfg(not(feature = "web"))]
         {
-            None::<Paginated<TicketPriorityOption>>
+            None::<Vec<TicketPriorityOption>>
         }
     });
 
@@ -590,11 +580,11 @@ fn TargetsModal(props: TargetsModalProps) -> Element {
     let priorities_snap = priorities.read_unchecked();
 
     let priority_rows: Vec<TicketPriorityOption> = match &*priorities_snap {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
     let existing: Vec<SlaTarget> = match &*targets_snap {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
     let loading = targets_snap.is_none() || priorities_snap.is_none();
@@ -939,15 +929,13 @@ fn BusinessHoursTab(tab: Signal<SlaTab>) -> Element {
         #[cfg(feature = "web")]
         {
             let _token = crate::hooks::fetch::api::current_access_token()?;
-            crate::hooks::fetch::api::get_authed_typed::<Paginated<BusinessHours>>(&format!(
-                "/sla/business-hours?page=1&per_page={PER_PAGE}"
-            ))
-            .await
-            .ok()
+            crate::hooks::fetch::api::get_all_authed::<BusinessHours>("/sla/business-hours")
+                .await
+                .ok()
         }
         #[cfg(not(feature = "web"))]
         {
-            None::<Paginated<BusinessHours>>
+            None::<Vec<BusinessHours>>
         }
     });
 
@@ -957,13 +945,11 @@ fn BusinessHoursTab(tab: Signal<SlaTab>) -> Element {
     let is_loading = snap.is_none();
     let fetch_failed = matches!(*snap, Some(None));
     let rows: Vec<BusinessHours> = match &*snap {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
-    let total = match &*snap {
-        Some(Some(resp)) => resp.meta.total as usize,
-        _ => 0,
-    };
+    // Every page was read, so the row count IS the total.
+    let total = rows.len();
 
     // MAPPS-357: outage (failed load while flagged down) -> honest unavailable
     // page, not an empty set. A reachable 4xx keeps the inline banner below.
@@ -999,7 +985,7 @@ fn BusinessHoursTab(tab: Signal<SlaTab>) -> Element {
             loading: is_loading,
             total_items: total,
             current_page: 1,
-            per_page: PER_PAGE,
+            per_page: if total == 0 { 25 } else { total },
             columns: 4,
             Table {
                 TableHead {
@@ -1313,15 +1299,13 @@ fn HolidayCalendarsTab(tab: Signal<SlaTab>) -> Element {
         #[cfg(feature = "web")]
         {
             let _token = crate::hooks::fetch::api::current_access_token()?;
-            crate::hooks::fetch::api::get_authed_typed::<Paginated<HolidayCalendar>>(&format!(
-                "/sla/holiday-calendars?page=1&per_page={PER_PAGE}"
-            ))
-            .await
-            .ok()
+            crate::hooks::fetch::api::get_all_authed::<HolidayCalendar>("/sla/holiday-calendars")
+                .await
+                .ok()
         }
         #[cfg(not(feature = "web"))]
         {
-            None::<Paginated<HolidayCalendar>>
+            None::<Vec<HolidayCalendar>>
         }
     });
 
@@ -1331,13 +1315,11 @@ fn HolidayCalendarsTab(tab: Signal<SlaTab>) -> Element {
     let is_loading = snap.is_none();
     let fetch_failed = matches!(*snap, Some(None));
     let rows: Vec<HolidayCalendar> = match &*snap {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
-    let total = match &*snap {
-        Some(Some(resp)) => resp.meta.total as usize,
-        _ => 0,
-    };
+    // Every page was read, so the row count IS the total.
+    let total = rows.len();
 
     // MAPPS-357: outage (failed load while flagged down) -> honest unavailable
     // page, not an empty set. A reachable 4xx keeps the inline banner below.
@@ -1373,7 +1355,7 @@ fn HolidayCalendarsTab(tab: Signal<SlaTab>) -> Element {
             loading: is_loading,
             total_items: total,
             current_page: 1,
-            per_page: PER_PAGE,
+            per_page: if total == 0 { 25 } else { total },
             columns: 3,
             Table {
                 TableHead {

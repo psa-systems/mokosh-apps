@@ -716,19 +716,19 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     // (Settings > Company Industries), not a hardcoded list. Active names only.
     let industry_options = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<IndustryOption>>(
-            "/contacts/company-industries?per_page=200",
-        )
-        .await
-        .ok()
-        .map(|p| {
-            p.data
-                .into_iter()
-                .filter(|o| o.is_active)
-                .map(|o| o.name)
-                .collect::<Vec<String>>()
-        })
-        .unwrap_or_default()
+        crate::hooks::fetch::api::get_all_authed::<IndustryOption>("/contacts/company-industries")
+            .await
+            .map(|rows| {
+                rows.into_iter()
+                    .filter(|o| o.is_active)
+                    .map(|o| o.name)
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_else(|e| {
+                // Best-effort: the field stays free-text without suggestions.
+                tracing::warn!("industry suggestion load failed: {e}");
+                Vec::new()
+            })
     });
     let industry_suggestions = industry_options
         .read_unchecked()
@@ -1703,11 +1703,11 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
             // "View all" link to escape to (unlike Contacts /
             // Tickets / Contracts on the same page). Sites per
             // company are small in practice (typical 1-20), so
-            // dropping the cap to a high ceiling is the right
-            // shape: every site renders inline, no separate list
-            // page needed.
-            crate::hooks::fetch::api::get_authed::<PaginatedSites>(&format!(
-                "/contacts/companies/{id}/sites?per_page=200"
+            // every site renders inline, no separate list page
+            // needed. MAPPS-528: paged, because the old
+            // `per_page=200` was clamped to 100 by the server.
+            crate::hooks::fetch::api::get_all_authed::<SiteSummary>(&format!(
+                "/contacts/companies/{id}/sites"
             ))
             .await
             .ok()
@@ -1777,11 +1777,9 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     // a human-readable type name in the Assets card.
     let asset_types_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<AssetTypeOption>>(
-            "/asset-types?per_page=100",
-        )
-        .await
-        .ok()
+        crate::hooks::fetch::api::get_all_authed::<AssetTypeOption>("/asset-types")
+            .await
+            .ok()
     });
 
     // Statistics counts pulled from each list envelope's `meta.total`.
@@ -2134,15 +2132,6 @@ struct SiteSummary {
     phone: Option<String>,
     #[serde(default)]
     timezone: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct PaginatedSites {
-    data: Vec<SiteSummary>,
-    // MAPPS-247: capped preview fetch carries the full count in `meta.total`
-    // so the collapsible Sites card can show how many sites exist.
-    #[serde(default)]
-    meta: PaginationMeta,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2556,7 +2545,7 @@ fn AddContactModal(
 #[component]
 fn CompanySitesCard(
     company_id: String,
-    mut sites_resource: Resource<Option<PaginatedSites>>,
+    mut sites_resource: Resource<Option<Vec<SiteSummary>>>,
     // The Statistics counters (Sites, Contacts, Open Tickets) read denormalized
     // counts off `company_resource`, not the child table resources. Restart it
     // after an add so the Sites counter refreshes in the same render cycle
@@ -2564,10 +2553,10 @@ fn CompanySitesCard(
     mut company_resource: Resource<Option<CompanyDetail>>,
 ) -> Element {
     let snap = sites_resource.read_unchecked();
-    // MAPPS-247: full count from the capped preview envelope feeds the
-    // collapsible header badge.
+    // MAPPS-528: every site is fetched, so the row count IS the full count
+    // that feeds the collapsible header badge.
     let count = match &*snap {
-        Some(Some(page)) => Some(page.meta.total),
+        Some(Some(rows)) => Some(rows.len() as u64),
         _ => None,
     };
     let mut editing = use_signal(|| None::<SiteFormState>);
@@ -2601,7 +2590,7 @@ fn CompanySitesCard(
                 match &*snap {
                     None => rsx! { TableLoading { columns: 4, rows: 2 } },
                     Some(None) => rsx! { TableEmpty { columns: 4, message: "Could not load sites.".to_string() } },
-                    Some(Some(page)) if page.data.is_empty() => rsx! {
+                    Some(Some(page)) if page.is_empty() => rsx! {
                         TableEmpty { columns: 4, message: "No sites for this company yet.".to_string() }
                     },
                     Some(Some(page)) => {
@@ -2610,7 +2599,7 @@ fn CompanySitesCard(
                         // the previous `.take(3)` capped the user
                         // out of seeing the rest because Sites has
                         // no "View all" escape link.
-                        let rows: Vec<_> = page.data.clone();
+                        let rows: Vec<_> = page.clone();
                         let company_id = company_id.clone();
                         rsx! {
                             TableBody {
@@ -3529,7 +3518,7 @@ fn CompanyInvoicesCard(
 fn CompanyAssetsCard(
     company_id: String,
     mut assets_resource: Resource<Option<Paginated<AssetSummary>>>,
-    asset_types_resource: Resource<Option<Paginated<AssetTypeOption>>>,
+    asset_types_resource: Resource<Option<Vec<AssetTypeOption>>>,
 ) -> Element {
     let snap = assets_resource.read_unchecked();
     let count = match &*snap {
@@ -3548,8 +3537,7 @@ fn CompanyAssetsCard(
     let type_name = |id: &Option<uuid::Uuid>| -> String {
         match id {
             Some(tid) => match &*types_snap {
-                Some(Some(page)) => page
-                    .data
+                Some(Some(types)) => types
                     .iter()
                     .find(|t| &t.id == tid)
                     .map(|t| t.name.clone())

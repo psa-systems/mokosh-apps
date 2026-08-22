@@ -310,14 +310,15 @@ fn AuditLogContent() -> Element {
     // switch via the generation read; an error just leaves ids unresolved.
     let users_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        // PMS-584: pull a full page so the user-name filter dropdown (and the
-        // diff FK resolution) cover every user, not just the default page.
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteUser>>("/auth/users?per_page=200")
+        // PMS-584: pull every user so the user-name filter dropdown (and the
+        // diff FK resolution) cover the whole tenant, not just the default
+        // page. MAPPS-528: the old `per_page=200` was clamped to 100.
+        crate::hooks::fetch::api::get_all_authed::<RemoteUser>("/auth/users")
             .await
             .ok()
     });
     let users: Vec<RemoteUser> = match &*users_resource.read_unchecked() {
-        Some(Some(resp)) => resp.data.clone(),
+        Some(Some(rows)) => rows.clone(),
         _ => Vec::new(),
     };
 

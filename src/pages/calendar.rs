@@ -140,23 +140,6 @@ impl RemoteUser {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
-struct PaginatedUsers {
-    #[serde(default)]
-    data: Vec<RemoteUser>,
-}
-
-/// Subset of the server's `PaginatedResponse<SchedulingTemplateResponse>`
-/// envelope (MAPPS-253). The scheduling-templates list endpoint wraps its
-/// rows in `{ data, meta }` like the other list endpoints; we only read
-/// `data` (the picker fetches up to `per_page=100`, which covers any
-/// realistic per-tenant template count).
-#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
-struct PaginatedTemplates {
-    #[serde(default)]
-    data: Vec<SchedulingTemplateResponse>,
-}
-
 /// Add `delta` months to `date`, anchored on day 1 of the result (the
 /// grid is regenerated from the month, so the day-of-month is moot).
 fn shift_months(date: NaiveDate, delta: i32) -> NaiveDate {
@@ -652,13 +635,16 @@ fn use_templates_resource(kind: Option<&'static str>) -> Resource<Vec<Scheduling
         #[cfg(feature = "web")]
         {
             let path = match kind {
-                Some(k) => format!("/scheduling-templates?kind={k}&per_page=100"),
-                None => "/scheduling-templates?per_page=100".to_string(),
+                Some(k) => format!("/scheduling-templates?kind={k}"),
+                None => "/scheduling-templates".to_string(),
             };
-            crate::hooks::fetch::api::get_authed::<PaginatedTemplates>(&path)
+            crate::hooks::fetch::api::get_all_authed::<SchedulingTemplateResponse>(&path)
                 .await
-                .map(|p| p.data)
-                .unwrap_or_default()
+                .unwrap_or_else(|e| {
+                    // Best-effort: the picker falls back to the blank default.
+                    tracing::warn!("scheduling-template load failed: {e}");
+                    Vec::new()
+                })
         }
         #[cfg(not(feature = "web"))]
         {
@@ -691,10 +677,13 @@ fn use_users_resource() -> Resource<Vec<RemoteUser>> {
         }
         #[cfg(feature = "web")]
         {
-            crate::hooks::fetch::api::get_authed::<PaginatedUsers>("/auth/users?per_page=100")
+            crate::hooks::fetch::api::get_all_authed::<RemoteUser>("/auth/users")
                 .await
-                .map(|p| p.data)
-                .unwrap_or_default()
+                .unwrap_or_else(|e| {
+                    // Best-effort: the dropdown falls back to "Me".
+                    tracing::warn!("user load failed: {e}");
+                    Vec::new()
+                })
         }
         #[cfg(not(feature = "web"))]
         {
@@ -2922,11 +2911,10 @@ pub fn SchedulingTemplatesPage() -> Element {
         let _reachable = crate::hooks::use_server_reachable();
         #[cfg(feature = "web")]
         {
-            crate::hooks::fetch::api::get_authed::<PaginatedTemplates>(
-                "/scheduling-templates?per_page=100",
+            crate::hooks::fetch::api::get_all_authed::<SchedulingTemplateResponse>(
+                "/scheduling-templates",
             )
             .await
-            .map(|p| p.data)
             .ok()
         }
         #[cfg(not(feature = "web"))]

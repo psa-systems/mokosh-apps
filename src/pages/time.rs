@@ -214,13 +214,14 @@ pub fn TimeEntryListPage() -> Element {
     // client-side from a fetched lookup list.
     let work_types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOption>>(
-            "/work-types?per_page=100",
-        )
-        .await
-        .ok()
-        .map(|p| p.data)
-        .unwrap_or_default()
+        crate::hooks::fetch::api::get_all_authed::<WorkTypeOption>("/work-types")
+            .await
+            .unwrap_or_else(|e| {
+                // Best-effort: entries still render, with a bare id for the
+                // work type instead of its name.
+                tracing::warn!("work-type load failed: {e}");
+                Vec::new()
+            })
     });
     let work_type_name_by_id: std::collections::HashMap<uuid::Uuid, String> = work_types_resource
         .read_unchecked()
@@ -495,13 +496,14 @@ pub fn TimeEntryNewPage() -> Element {
     });
     let work_types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOption>>(
-            "/work-types?per_page=100",
-        )
-        .await
-        .ok()
-        .map(|p| p.data)
-        .unwrap_or_default()
+        crate::hooks::fetch::api::get_all_authed::<WorkTypeOption>("/work-types")
+            .await
+            .unwrap_or_else(|e| {
+                // Best-effort: entries still render, with a bare id for the
+                // work type instead of its name.
+                tracing::warn!("work-type load failed: {e}");
+                Vec::new()
+            })
     });
     // Tasks for the selected project (only when a project work item is
     // picked); re-runs when `work_item` changes.
@@ -558,13 +560,14 @@ pub fn TimeEntryNewPage() -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let today = Utc::now().date_naive();
         let user_id = auth.read().user.as_ref().map(|u| u.id)?;
-        let path = format!(
-            "/time-entries?user_id={user_id}&date_from={today}&date_to={today}&per_page=500"
-        );
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimeEntry>>(&path)
+        // MAPPS-528: page the whole day. The old `per_page=500` was clamped
+        // to 100 by the server, so a busy day undercounted its own total and
+        // the cap check silently passed.
+        let path = format!("/time-entries?user_id={user_id}&date_from={today}&date_to={today}");
+        crate::hooks::fetch::api::get_all_authed::<RemoteTimeEntry>(&path)
             .await
             .ok()
-            .map(|p| p.data.iter().map(|e| e.duration_minutes).sum::<i64>())
+            .map(|rows| rows.iter().map(|e| e.duration_minutes).sum::<i64>())
     });
 
     let tickets = tickets_resource
@@ -999,12 +1002,10 @@ pub fn TimesheetsPage() -> Element {
         let start = week_start();
         let end = start + Duration::days(6);
         let user_id = auth.read().user.as_ref().map(|u| u.id)?;
-        let path =
-            format!("/time-entries?user_id={user_id}&date_from={start}&date_to={end}&per_page=500");
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimeEntry>>(&path)
+        let path = format!("/time-entries?user_id={user_id}&date_from={start}&date_to={end}");
+        crate::hooks::fetch::api::get_all_authed::<RemoteTimeEntry>(&path)
             .await
             .ok()
-            .map(|p| p.data)
     });
 
     // The week summary, for the approval-status badge.
@@ -1797,15 +1798,16 @@ pub fn TimesheetApprovalsPage() -> Element {
         let path = if *range_mode.read() {
             let from = range_from();
             let to = range_to();
-            format!("/timesheets?from={from}&to={to}&status={status}&per_page=200")
+            format!("/timesheets?from={from}&to={to}&status={status}")
         } else {
             let start = week_start();
-            format!("/timesheets?week={start}&status={status}&per_page=200")
+            format!("/timesheets?week={start}&status={status}")
         };
-        crate::hooks::fetch::api::get_authed::<Paginated<ApprovalSummary>>(&path)
+        // MAPPS-528: the approval queue is the page's whole point, so it pages
+        // to the end. The old `per_page=200` was clamped to 100.
+        crate::hooks::fetch::api::get_all_authed::<ApprovalSummary>(&path)
             .await
             .ok()
-            .map(|p| p.data)
     });
 
     // Names for the user_ids in the summaries.
@@ -1819,11 +1821,13 @@ pub fn TimesheetApprovalsPage() -> Element {
         if !can {
             return Vec::<ApprovalUser>::new();
         }
-        crate::hooks::fetch::api::get_authed::<Paginated<ApprovalUser>>("/auth/users?per_page=100")
+        crate::hooks::fetch::api::get_all_authed::<ApprovalUser>("/auth/users")
             .await
-            .ok()
-            .map(|p| p.data)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                // Best-effort: rows fall back to the bare user id.
+                tracing::warn!("approval user-name load failed: {e}");
+                Vec::new()
+            })
     });
 
     // MAPPS-377: read reachability before the manager / outage early returns
@@ -2371,12 +2375,10 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
     let entries_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let end = week + Duration::days(6);
-        let path =
-            format!("/time-entries?user_id={uid}&date_from={week}&date_to={end}&per_page=500");
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimeEntry>>(&path)
+        let path = format!("/time-entries?user_id={uid}&date_from={week}&date_to={end}");
+        crate::hooks::fetch::api::get_all_authed::<RemoteTimeEntry>(&path)
             .await
             .ok()
-            .map(|p| p.data)
     });
 
     // AC2: the applicable per-day max-hours cap (a JSON integer setting;
@@ -2392,23 +2394,17 @@ fn TimesheetHistoryModal(props: TimesheetHistoryModalProps) -> Element {
         .filter(|h| (1..=24).contains(h))
     });
 
-    // AC2: the tenant rounding rules. The endpoint returns a bare array today;
-    // decode to a Value first so a future paginated `{data:[...]}` shape is
-    // tolerated too. Any failure yields an empty list (the panel omits it).
+    // AC2: the tenant rounding rules. Rows decode through `Value` so a field
+    // the client does not model cannot fail the whole list. Any failure
+    // yields an empty list (the panel omits it).
     let rules_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        let v = crate::hooks::fetch::api::get_authed::<serde_json::Value>(
-            "/time-rounding-rules?per_page=100",
-        )
-        .await
-        .ok()?;
-        let arr = v
-            .get("data")
-            .and_then(|d| d.as_array())
-            .cloned()
-            .or_else(|| v.as_array().cloned())?;
+        let rows =
+            crate::hooks::fetch::api::get_all_authed::<serde_json::Value>("/time-rounding-rules")
+                .await
+                .ok()?;
         Some(
-            arr.into_iter()
+            rows.into_iter()
                 .filter_map(|item| serde_json::from_value::<RoundingRuleRow>(item).ok())
                 .collect::<Vec<_>>(),
         )
@@ -2592,13 +2588,14 @@ fn TimeEntryEditModal(props: TimeEntryEditModalProps) -> Element {
 
     let work_types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<WorkTypeOption>>(
-            "/work-types?per_page=100",
-        )
-        .await
-        .ok()
-        .map(|p| p.data)
-        .unwrap_or_default()
+        crate::hooks::fetch::api::get_all_authed::<WorkTypeOption>("/work-types")
+            .await
+            .unwrap_or_else(|e| {
+                // Best-effort: entries still render, with a bare id for the
+                // work type instead of its name.
+                tracing::warn!("work-type load failed: {e}");
+                Vec::new()
+            })
     });
     let work_types = work_types_resource
         .read_unchecked()
