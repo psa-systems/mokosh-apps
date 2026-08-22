@@ -84,6 +84,15 @@ struct RemoteTicketDetail {
     asset_id: Option<uuid::Uuid>,
     #[serde(default)]
     asset_name: Option<String>,
+    /// PMS-730: the KB article describing HOW to perform this ticket's
+    /// work, stamped by the request-form flow. The server joins the
+    /// title on every read so the sidebar links it without a second
+    /// fetch. Not `source_kb_article_id`, which is the article the
+    /// ticket was opened FROM (server migration 099 keeps them apart).
+    #[serde(default)]
+    procedure_kb_article_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    procedure_kb_article_title: Option<String>,
     #[serde(default)]
     created_by_name: String,
     created_at: DateTime<Utc>,
@@ -2459,6 +2468,31 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                                     }
                                 }
                             }
+                            // PMS-730 / MAPPS-529: the procedure article the
+                            // request form attached, read-only because the
+                            // server has no update path for the column outside
+                            // that flow. Absent on every other ticket, so the
+                            // row is omitted rather than left blank.
+                            if let Some(pid) = t.procedure_kb_article_id {
+                                DetailItem {
+                                    label: "Procedure",
+                                    value: rsx! {
+                                        Link {
+                                            to: Route::KBArticleDetail { id: pid.to_string() },
+                                            class: "text-accent hover:opacity-90",
+                                            // The title comes joined off the same read; fall
+                                            // back to a label rather than an empty link if the
+                                            // article is gone.
+                                            {
+                                                t.procedure_kb_article_title
+                                                    .clone()
+                                                    .filter(|s| !s.trim().is_empty())
+                                                    .unwrap_or_else(|| "View procedure".to_string())
+                                            }
+                                        }
+                                    },
+                                }
+                            }
                             if !t.company_name.is_empty() {
                                 DetailItem {
                                     label: "Company",
@@ -3215,5 +3249,49 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod procedure_kb_tests {
+    use super::RemoteTicketDetail;
+
+    /// A minimal `TicketResponse` body plus whatever extra fields the
+    /// case under test needs.
+    fn detail(extra: &str) -> RemoteTicketDetail {
+        let body = format!(
+            r#"{{"ticket_number":"T-1","title":"t","company_name":"c","queue_name":"q","created_at":"2026-08-14T00:00:00Z"{extra}}}"#
+        );
+        serde_json::from_str(&body).expect("deserialise ticket detail")
+    }
+
+    #[test]
+    fn reads_the_procedure_pair() {
+        let t = detail(
+            r#","procedure_kb_article_id":"11111111-1111-4111-8111-111111111111","procedure_kb_article_title":"How to add a mailbox""#,
+        );
+        assert_eq!(
+            t.procedure_kb_article_id.map(|u| u.to_string()).as_deref(),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+        assert_eq!(
+            t.procedure_kb_article_title.as_deref(),
+            Some("How to add a mailbox")
+        );
+    }
+
+    #[test]
+    fn absent_procedure_stays_none() {
+        let t = detail("");
+        assert!(t.procedure_kb_article_id.is_none());
+        assert!(t.procedure_kb_article_title.is_none());
+    }
+
+    #[test]
+    fn source_article_is_not_the_procedure() {
+        // PMS-452's `source_kb_article_id` is the article the ticket was
+        // opened FROM; it must never feed the Procedure row.
+        let t = detail(r#","source_kb_article_id":"22222222-2222-4222-8222-222222222222""#);
+        assert!(t.procedure_kb_article_id.is_none());
     }
 }
