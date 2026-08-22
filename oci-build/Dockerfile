@@ -69,9 +69,18 @@ ENV GIT_SHA=${GIT_SHA}
 RUN bun x @tailwindcss/cli --input input.css --output assets/styles.css --minify
 
 # Build fullstack client (WASM bundle + static assets)
+#
+# PMS-884: `--features web-renderer` is not optional. `dx` does not build with
+# this crate's default features; it substitutes a list of its own, picking the
+# crate feature whose name matches the target platform. Since MAPPS-504 the
+# feature named `web` is the app-runtime gate and enables no renderer, so a
+# plain `dx build --release` compiled and shipped a bundle that panicked on
+# `dioxus::launch` with "No platform feature enabled" and rendered a blank
+# page. `src/main.rs` now refuses to compile that combination, so this line
+# and that guard fail together rather than shipping.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    dx build --release
+    dx build --release --features web-renderer
 
 # Caddy binary, declared as its own stage so the Caddy image is
 # resolved at the build target platform (i.e. per-arch) instead of
