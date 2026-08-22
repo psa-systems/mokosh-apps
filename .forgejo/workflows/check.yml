@@ -138,6 +138,19 @@ jobs:
           bash scripts/check-sort-keys.sh --self-test
           bash scripts/check-sort-keys.sh
 
+      # MAPPS-525: mokosh-types is a bare git dependency with no rev/tag/branch,
+      # so the only thing holding it still is the commit Cargo.lock resolved to,
+      # and nothing advances that commit. A wire-format change on mokosh-server
+      # main therefore never reaches this build: the audits measured the pin 92,
+      # then 138, then 214 commits stale while every check stayed green. This
+      # step is the gate the shared crate was adopted for. It fails on any
+      # mokosh-server commit, not only a crate change (MAPPS-537); the fix is
+      # `cargo update --package mokosh-types`, reviewed with the diff.
+      - name: mokosh-types pin guard
+        run: |
+          bash scripts/check-types-pin.sh --self-test
+          bash scripts/check-types-pin.sh
+
       - name: Check formatting
         run: cargo fmt --all --check
 

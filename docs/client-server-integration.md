@@ -37,26 +37,60 @@ src/modules/contacts/mod.rs      -> pub use mokosh_types::contacts::*;
 src/modules/time_tracking/mod.rs -> pub use mokosh_types::time_tracking::*;
 ```
 
-The remaining shared modules are still hand-copied under
-`src/modules/<module>/models.rs` and can silently drift the moment one
-side is edited without porting:
+`src/modules/tenants/models.rs` has since joined them and is now
+nothing but a `pub use` of six types. The modules below still declare
+wire types by hand and can silently drift the moment one side is
+edited without porting:
 
 ```
-src/modules/auth/models.rs
-src/modules/tenants/models.rs
-src/modules/tickets/models.rs
+src/modules/auth/models.rs     -> partial; re-exports CurrentUser + UserRole  (MAPPS-536)
+src/modules/tickets/models.rs  -> partial; re-exports TicketNote + Response   (MAPPS-536)
+src/modules/forms/models.rs    -> whole module hand-copied                    (MAPPS-535)
 ```
 
-Those copies use `#[cfg(feature = "server")]` on the handler / service
-files so the WASM build keeps only the model types. Note that the
-`server` feature cannot actually compile here: this crate has no axum
-or sqlx dependency, so those files are dead weight and are deleted as
-each module moves to `mokosh-types`.
+Where a module still carries handler / service files copied from the
+server (`tenants`, `billing`), they sit behind a `server` cargo
+feature so the WASM build keeps only the model types. Note that
+the `server` feature cannot actually compile here: this crate has no
+axum or sqlx dependency, so those files are dead weight and are
+deleted as each module moves to `mokosh-types`.
+
+The forms copies are the awkward case, because the server keeps those
+wire types in its own `src/modules/forms/models.rs` rather than in the
+crate, so there is nothing to re-export yet, and
+`src/pages/request_form.rs` carries a second copy of the public subset
+on top. Moving them into `crates/mokosh-types/src/forms.rs` and
+re-exporting both is MAPPS-535, which is blocked on the mokosh-server
+half landing first.
 
 Direction of travel: migrate the remaining three the same way. The
 crate is fetched over anonymous HTTPS rather than `ssh://`, because
 neither the pre-commit container nor the Forgejo check runner carries
 SSH credentials.
+
+The dependency names no `rev`, `tag` or `branch`, so the resolved
+commit in `Cargo.lock` is the whole pin, and for three parity audits
+running nothing advanced it: the compile-time gate the crate was
+adopted for never fired, because the client was still compiling
+against the shape the crate had three weeks and 214 server commits
+earlier. `scripts/check-types-pin.sh` (a `just check` recipe and a
+`check.yml` step) closes that. It runs `cargo update
+--package mokosh-types`, fails if `Cargo.lock` moved, and prints the
+pinned revision, the server head, and the `crates/mokosh-types`
+commits in between. Bumping the pin is therefore a reviewed edit that
+lands with whatever source changes the new DTOs require. The guard
+needs network access to `dev.a8n.run`, the same access the git
+dependency itself already needs.
+
+Because the dependency names no revision, `cargo update` resolves it
+to the head of mokosh-server's default branch, so the guard is red
+whenever that branch has moved at all, not only when the crate
+changed. Over the window the stale pin covered, 214 mokosh-server
+commits produced 6 that touched `crates/mokosh-types`, so most red
+runs are a catch-up bump rather than a DTO change, and a mokosh-apps
+PR can go red after review because another repository merged.
+Narrowing the rule to crate-touching commits, with a scheduled
+backstop so the distance cannot accumulate again, is MAPPS-537.
 
 ## Section-by-section gap
 
@@ -97,8 +131,10 @@ exists.
    removing every `// TODO: Call API` stub. Highest-leverage single
    move in either repo.
 2. **DTO sharing is half copy-paste.** `contacts` and `time_tracking`
-   come from the `mokosh-types` crate; `auth`, `tenants`, and
-   `tickets` are still hand-copied. See
+   and `tenants` come from the `mokosh-types` crate; `auth` and
+   `tickets` are half migrated (MAPPS-536) and `forms` is hand-copied
+   twice over (MAPPS-535). What the crate does cover is now pinned to
+   the server head by `scripts/check-types-pin.sh`. See
    [DTO sharing](#dto-sharing) above.
 3. **Auth bypass + mocked client = the server is never exercised
    end-to-end.** The client has a hardcoded login bypass at

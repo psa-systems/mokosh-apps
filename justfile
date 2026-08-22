@@ -47,7 +47,7 @@ pre-commit: css-build
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-web check-desktop check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys
+check: check-web check-desktop check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-types-pin
 
 # Check web/WASM compilation
 [group: 'check']
@@ -145,6 +145,12 @@ check-dev-sso-scheme:
 check-sort-keys:
     bash scripts/check-sort-keys.sh --self-test
     bash scripts/check-sort-keys.sh
+
+# MAPPS-525: fail when `cargo update --package mokosh-types` moves Cargo.lock, so a shared-DTO change on mokosh-server main cannot sit unnoticed behind a pin nobody advances. Needs network. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-types-pin:
+    bash scripts/check-types-pin.sh --self-test
+    bash scripts/check-types-pin.sh
 
 # Run clippy lints
 [group: 'check']
