@@ -1398,8 +1398,14 @@ fn NotFound(route: Vec<String>) -> Element {
 /// since PMS-136 with no page behind it.
 ///
 /// The list is the full set of emitters on mokosh-server `main`, verified at
-/// 38c8945. Adding an emailed link server-side without adding its route here
+/// ff429b3c. Adding an emailed link server-side without adding its route here
 /// fails this test.
+///
+/// One emitter is deliberately absent: `portal::send_reset_email`
+/// (mokosh-server `src/modules/portal/service.rs`, PMS-820) emails
+/// `/portal/reset-password?token=...`, and this SPA has no such route, so
+/// listing it would fail the test rather than describe it. Building that page
+/// is MAPPS-538; its entry lands with it.
 #[cfg(test)]
 mod emailed_link_routes {
     use super::Route;
@@ -1421,6 +1427,13 @@ mod emailed_link_routes {
         (
             "quotes::send_quote_ready",
             "/portal/quotes/2f1c2f1e-0000-4000-8000-00000000abcd",
+        ),
+        // src/modules/billing/service.rs: invoice "Pay Now" link, sent to the
+        // billing contact on the send transition (PMS-711). The page it lands
+        // on got its Pay control in MAPPS-523.
+        (
+            "billing::notify_invoice_pay_now",
+            "/portal/invoices/2f1c2f1e-0000-4000-8000-00000000abcd",
         ),
         // src/modules/auth/service.rs: password reset + staff welcome links.
         (
