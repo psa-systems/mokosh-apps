@@ -121,6 +121,14 @@ jobs:
           bash scripts/check-no-demo-rows.sh --self-test
           bash scripts/check-no-demo-rows.sh
 
+      # MAPPS-530: the dev-SSO overlay routes the SPA over TLS, so a plain-http
+      # URL baked into it is mixed content the browser blocks. MOKOSH_HUB_BASE_URL
+      # was http for two parity audits running; nothing in review catches a scheme.
+      - name: dev-SSO scheme guard
+        run: |
+          bash scripts/check-dev-sso-scheme.sh --self-test
+          bash scripts/check-dev-sso-scheme.sh
+
       - name: Check formatting
         run: cargo fmt --all --check
 
