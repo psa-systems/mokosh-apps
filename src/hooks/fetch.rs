@@ -1168,6 +1168,20 @@ pub mod api {
         post_with_auth(path, body, &t).await
     }
 
+    /// Portal sibling of [`post_authed_no_content`], for `/portal/*` endpoints
+    /// that answer 204 (MAPPS-532: `POST /portal/auth/logout`).
+    ///
+    /// No `ensure_fresh_access_token` on the way in, unlike the agent one: the
+    /// portal token is memory-only with no refresh token behind it, so there
+    /// is nothing to renew. `post_no_content_with_auth` sees a bearer that is
+    /// not the agent holder's and passes it straight through, which is what
+    /// keeps a portal 401 out of the agent sign-out path.
+    #[cfg(feature = "web")]
+    pub async fn post_portal_authed_no_content(path: &str) -> Result<(), String> {
+        let t = current_portal_access_token().ok_or_else(portal_not_signed_in)?;
+        post_no_content_with_auth(path, &t).await
+    }
+
     /// Typed sibling of [`post_portal_authed`], for the portal call sites that
     /// need the status code (the ticket reply form).
     #[cfg(feature = "web")]
@@ -1624,6 +1638,7 @@ mod tests {
         "get_all_portal_authed",
         "post_portal_authed",
         "post_portal_authed_typed",
+        "post_portal_authed_no_content",
     ];
 
     /// Agent-token helpers. None of them may appear in the portal page: a
@@ -1758,6 +1773,7 @@ mod tests {
                     "get_portal_authed",
                     "get_all_portal_authed",
                     "post_portal_authed",
+                    "post_portal_authed_no_content",
                 ]
                 .iter(),
             )
