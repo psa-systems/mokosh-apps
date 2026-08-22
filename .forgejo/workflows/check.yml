@@ -159,9 +159,13 @@ jobs:
       # and nothing advances that commit. A wire-format change on mokosh-server
       # main therefore never reaches this build: the audits measured the pin 92,
       # then 138, then 214 commits stale while every check stayed green. This
-      # step is the gate the shared crate was adopted for. It fails on any
-      # mokosh-server commit, not only a crate change (MAPPS-537); the fix is
-      # `cargo update --package mokosh-types`, reviewed with the diff.
+      # step is the gate the shared crate was adopted for. The fix for a red
+      # run is `cargo update --package mokosh-types`, reviewed with the diff.
+      #
+      # MAPPS-537: it fails only when crates/mokosh-types actually differs. A
+      # pin that is merely behind passes here and is chased by the weekly
+      # types-pin-drift.yml instead, so another repository merging a docs typo
+      # can no longer turn a reviewed PR red.
       - name: mokosh-types pin guard
         run: |
           bash scripts/check-types-pin.sh --self-test

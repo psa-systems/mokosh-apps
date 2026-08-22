@@ -83,14 +83,32 @@ needs network access to `dev.a8n.run`, the same access the git
 dependency itself already needs.
 
 Because the dependency names no revision, `cargo update` resolves it
-to the head of mokosh-server's default branch, so the guard is red
-whenever that branch has moved at all, not only when the crate
-changed. Over the window the stale pin covered, 214 mokosh-server
-commits produced 6 that touched `crates/mokosh-types`, so most red
-runs are a catch-up bump rather than a DTO change, and a mokosh-apps
-PR can go red after review because another repository merged.
-Narrowing the rule to crate-touching commits, with a scheduled
-backstop so the distance cannot accumulate again, is MAPPS-537.
+to the head of mokosh-server's default branch, so the rule as first
+written was red whenever that branch had moved at all, not only when
+the crate changed. Over the window the stale pin covered, 214
+mokosh-server commits produced 6 that touched `crates/mokosh-types`,
+so about 97% of the red runs were a catch-up bump rather than a DTO
+change, and a reviewed, green mokosh-apps PR went red because another
+repository merged. MAPPS-532 paid that twice inside an hour, the
+second time for a documentation-only server commit.
+
+MAPPS-537 narrowed it. The guard reads the `crates/mokosh-types` diff
+between the pinned revision and the head off the cargo git mirror it
+already consults for the commit list, and fails only when that diff is
+non-empty. A move with no crate change passes with a note naming both
+revisions and the catch-up distance. A mirror that cannot answer is a
+failure, not a pass: "I could not tell" and "nothing changed" must not
+produce the same green check.
+
+What that gives up is the pressure that stopped the pin drifting, so
+`.forgejo/workflows/types-pin-drift.yml` keeps it. It runs
+`check-types-pin.sh --strict` (`just check-types-pin-strict`, the
+pre-MAPPS-537 rule where any move is a finding) at 07:00 UTC on
+Mondays, plus on demand via `workflow_dispatch`. It gates no pull
+request and is allowed to be red, so closing the distance is scheduled
+work rather than a toll on whoever opened a PR that morning. Filing
+the catch-up as an issue is deliberately not automated: CI holds no
+YouTrack credential, and a red weekly run is the signal.
 
 ## Section-by-section gap
 
