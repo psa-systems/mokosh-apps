@@ -3,9 +3,9 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    invoice_status_badge, Badge, BadgeVariant, BookIcon, Button, ButtonVariant, Card, CurrencyIcon,
-    IconSize, PlusIcon, PortalLayout, SearchInput, Table, TableBody, TableCell, TableEmptyRow,
-    TableHead, TableHeader, TableRow,
+    invoice_status_badge, Badge, BadgeVariant, BannerTone, BookIcon, Button, ButtonVariant, Card,
+    CurrencyIcon, IconSize, PlusIcon, PortalLayout, SearchInput, StatusBanner, Table, TableBody,
+    TableCell, TableEmptyRow, TableHead, TableHeader, TableRow,
 };
 use crate::Route;
 
@@ -615,6 +615,58 @@ struct PortalInvoiceLine {
     total: String,
 }
 
+/// `PayInvoiceResponse` from mokosh-server (`src/modules/billing/models.rs`),
+/// the body of `POST /api/v1/portal/invoices/{id}/pay`. The URL is a hosted
+/// checkout session the server minted with the tenant's own gateway
+/// credentials; the SPA can only follow it (MAPPS-523).
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+struct PortalPayResponse {
+    #[serde(default)]
+    checkout_url: String,
+}
+
+/// Statuses the server refuses to mint a checkout session for
+/// (`create_invoice_checkout_session`: `Void | WrittenOff` is a 409). The Pay
+/// control is hidden for them rather than offered and then rejected.
+const UNPAYABLE_INVOICE_STATUSES: &[&str] = &["void", "written_off"];
+
+/// Does this invoice still owe money? `balance_due` arrives as a decimal
+/// string and defaults to empty on a thinner payload, so an unreadable value
+/// hides the control (the server would refuse anyway) and is logged rather
+/// than passed off as a zero balance.
+fn has_outstanding_balance(invoice_id: &str, balance_due: &str) -> bool {
+    let raw = balance_due.trim();
+    if raw.is_empty() {
+        return false;
+    }
+    match raw.parse::<f64>() {
+        Ok(amount) => amount > 0.0,
+        Err(e) => {
+            tracing::warn!(
+                "portal invoice {invoice_id}: balance_due {raw:?} is not a number ({e}); \
+                 hiding the Pay control"
+            );
+            false
+        }
+    }
+}
+
+/// The pay endpoint's refusals are specific and actionable ("Invoice INV-0007
+/// cannot be paid in status 'void'", "No active payment provider is configured
+/// for this account"), so they are shown verbatim. `user_message()` would
+/// replace a 404 with "The requested resource was not found." and the caller
+/// would learn nothing (MAPPS-523).
+#[cfg(feature = "web")]
+fn pay_refusal_message(e: &crate::hooks::fetch::api::ApiError) -> String {
+    use crate::hooks::fetch::api::ApiError;
+    match e {
+        ApiError::Status { message, .. } if !message.trim().is_empty() => {
+            message.trim().to_string()
+        }
+        other => other.user_message(),
+    }
+}
+
 /// Render an amount string as currency. Routes through the shared
 /// `format_money_str` helper (`src/utils/money.rs`) so portal invoice
 /// amounts get the same grouped-thousands + two-decimals format every
@@ -643,6 +695,19 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
         }
     });
 
+    // MAPPS-523: Pay Now. `paying` blocks a double mint while the POST is in
+    // flight; `pay_error` carries the server's own refusal text.
+    let mut paying = use_signal(|| false);
+    let mut pay_error = use_signal(String::new);
+    // The server's `success_url` is this page with `?paid=1`
+    // (mokosh-server `portal/routes.rs`, `pay_invoice`). The banner is a
+    // receipt for the redirect, not the invoice's payment state: the webhook
+    // reconciles that, and it may not have landed yet.
+    let payment_received = crate::utils::url::current_query_param("paid").as_deref() == Some("1");
+    // MAPPS-357: block the mint while the server is unreachable so a click
+    // cannot silently fail.
+    let can_mutate = crate::hooks::use_can_mutate();
+
     let snap = invoice_resource.read_unchecked();
     // `Some(None)` = fetch failed; `Some(Some(_))` = loaded; `None` = loading.
     let fetch_failed = matches!(*snap, Some(None));
@@ -665,6 +730,43 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
         };
     }
 
+    let id_for_pay = props.id.clone();
+    let handle_pay = move |_| {
+        if *paying.read() {
+            return;
+        }
+        paying.set(true);
+        pay_error.set(String::new());
+        let id = id_for_pay.clone();
+        spawn(async move {
+            #[cfg(feature = "web")]
+            {
+                match crate::hooks::fetch::api::post_portal_authed_typed::<PortalPayResponse, _>(
+                    &format!("/portal/invoices/{id}/pay"),
+                    &serde_json::json!({}),
+                )
+                .await
+                {
+                    // `safe_href` keeps a `javascript:` / `data:` URL out of a
+                    // navigation even though this one comes from our own
+                    // server (MAPPS-149's allowlist, same rule).
+                    Ok(resp) => match crate::utils::url::safe_href(&resp.checkout_url) {
+                        Some(url) => {
+                            if let Err(e) = crate::platform::location::set_href(&url) {
+                                pay_error.set(format!("Could not open the payment page: {e}"));
+                            }
+                        }
+                        None => pay_error.set(
+                            "The payment page address was not one this app can open.".to_string(),
+                        ),
+                    },
+                    Err(e) => pay_error.set(pay_refusal_message(&e)),
+                }
+            }
+            paying.set(false);
+        });
+    };
+
     rsx! {
         PortalLayout {
             div { class: "mb-6",
@@ -672,6 +774,12 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                     to: Route::PortalInvoiceList {},
                     class: "text-sm text-accent hover:opacity-90",
                     "Back to invoices"
+                }
+            }
+
+            if payment_received {
+                StatusBanner { tone: BannerTone::Success, class: "mb-6",
+                    "Payment received. Thank you. It can take a moment to show against this invoice."
                 }
             }
 
@@ -710,6 +818,15 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                     let subtotal = portal_money(&inv.subtotal);
                     let total = portal_money(&inv.total);
                     let lines = inv.lines.clone().unwrap_or_default();
+                    // MAPPS-523: offer Pay Now only where the server would
+                    // actually mint a checkout session, and never directly
+                    // under the receipt banner: the webhook has not
+                    // necessarily cleared `balance_due` yet, so a second
+                    // "Pay {amount}" there reads as an unpaid invoice and
+                    // invites paying twice.
+                    let can_pay = !payment_received
+                        && !UNPAYABLE_INVOICE_STATUSES.contains(&status_raw)
+                        && has_outstanding_balance(&props.id, &inv.balance_due);
                     rsx! {
                         Card {
                             div { class: "flex justify-between items-start mb-6",
@@ -765,6 +882,29 @@ pub fn PortalInvoiceDetailPage(props: PortalInvoiceDetailPageProps) -> Element {
                             div { class: "border-t border-line pt-4 text-right space-y-1",
                                 p { class: "text-sm text-muted", "Subtotal {subtotal}" }
                                 p { class: "text-2xl font-bold text-content", "Total {total}" }
+                            }
+
+                            // MAPPS-523: the control the "Pay Now" invoice
+                            // email has been asking clients to use. The
+                            // checkout session is minted server-side; this
+                            // only follows the URL it returns.
+                            if can_pay {
+                                div { class: "border-t border-line mt-6 pt-4",
+                                    if !pay_error().is_empty() {
+                                        StatusBanner { tone: BannerTone::Error, class: "mb-3", "{pay_error}" }
+                                    }
+                                    div { class: "flex justify-end",
+                                        Button {
+                                            variant: ButtonVariant::Primary,
+                                            disabled: *paying.read() || !can_mutate,
+                                            loading: *paying.read(),
+                                            title: (!can_mutate).then(|| "Can't start a payment while the server is unreachable".to_string()),
+                                            onclick: handle_pay,
+                                            CurrencyIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                            "Pay {amount_due}"
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1277,6 +1417,49 @@ pub fn PortalQuoteDetailPage(props: PortalQuoteDetailPageProps) -> Element {
                     }
                 }
             }
+        }
+    }
+}
+
+/// MAPPS-523: the Pay control's gate. `PortalInvoiceDetailPage` renders the
+/// button only where mokosh-server would actually mint a checkout session, so
+/// the two conditions it splits on are pinned here rather than left to a
+/// visual check. The component itself needs a running virtual DOM and a portal
+/// session to render, which is why the predicate is a free function.
+#[cfg(test)]
+mod pay_control_gate {
+    use super::{has_outstanding_balance, UNPAYABLE_INVOICE_STATUSES};
+
+    const ID: &str = "2f1c2f1e-0000-4000-8000-00000000abcd";
+
+    #[test]
+    fn only_a_positive_balance_is_payable() {
+        assert!(has_outstanding_balance(ID, "1200.00"));
+        assert!(has_outstanding_balance(ID, " 0.01 "));
+        assert!(!has_outstanding_balance(ID, "0.00"));
+        assert!(!has_outstanding_balance(ID, "-5.00"));
+    }
+
+    #[test]
+    fn an_unreadable_balance_hides_the_control() {
+        // `balance_due` is `#[serde(default)]`, so a thinner payload leaves it
+        // empty. Neither that nor junk may read as "money is owed".
+        assert!(!has_outstanding_balance(ID, ""));
+        assert!(!has_outstanding_balance(ID, "   "));
+        assert!(!has_outstanding_balance(ID, "n/a"));
+    }
+
+    /// `create_invoice_checkout_session` (mokosh-server
+    /// `src/modules/billing/service.rs`) 409s on exactly `Void | WrittenOff`.
+    /// A status this list misses would be offered and then refused.
+    #[test]
+    fn the_terminal_statuses_match_the_servers_refusal() {
+        assert_eq!(UNPAYABLE_INVOICE_STATUSES, &["void", "written_off"]);
+        for payable in ["draft", "pending", "sent", "overdue", "partially_paid"] {
+            assert!(
+                !UNPAYABLE_INVOICE_STATUSES.contains(&payable),
+                "{payable} is payable server-side and must keep the control"
+            );
         }
     }
 }
