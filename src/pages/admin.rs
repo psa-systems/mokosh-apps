@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, DataTable, ErrorBanner, PageHeader, StatCard, Table,
+    use_page_title, Badge, BadgeVariant, Card, DataTable, ErrorBanner, PageHeader, StatCard, Table,
     TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
 };
 
@@ -74,10 +74,49 @@ fn format_created(when: chrono::DateTime<chrono::Utc>) -> String {
     }
 }
 
-/// Tenant management page (multi-tenant mode only)
+/// Tenant management page (multi-tenant mode only). Role-gated.
+///
+/// MAPPS-526: the outer component holds only the role gate so its hook order
+/// stays stable across renders (rules of hooks), matching `audit_log.rs`. The
+/// roster fetch lives in [`TenantManagementContent`], which a user who cannot
+/// read the roster never mounts.
+///
+/// Super-admin rather than the `is_admin()` its `/admin/*` siblings use:
+/// mokosh-server's `GET /tenants` takes `RequireSuperAdmin`, so a plain admin
+/// would get the page and a 403 for its only fetch.
 #[cfg(feature = "multi-tenant")]
 #[component]
 pub fn TenantManagementPage() -> Element {
+    use_page_title("Tenant Management");
+    let auth = crate::hooks::use_auth();
+    let is_super_admin = auth
+        .read()
+        .has_role(crate::modules::auth::UserRole::SuperAdmin);
+
+    if !is_super_admin {
+        return rsx! {
+            PageHeader { title: "Tenant Management", subtitle: "Tenants on this deployment" }
+            Card {
+                div { class: "py-12 text-center",
+                    p { class: "text-sm font-medium text-content mb-1",
+                        "Super admins only"
+                    }
+                    p { class: "text-sm text-muted",
+                        "You do not have permission to manage tenants."
+                    }
+                }
+            }
+        };
+    }
+
+    rsx! { TenantManagementContent {} }
+}
+
+/// The tenant roster. Mounted only for super admins by
+/// [`TenantManagementPage`].
+#[cfg(feature = "multi-tenant")]
+#[component]
+fn TenantManagementContent() -> Element {
     use_page_title("Tenant Management");
     // MAPPS-438: `None` is a failed load, exactly like the other list pages.
     // The roster renders only what the backend returned.
