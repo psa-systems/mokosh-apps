@@ -45,8 +45,12 @@ jobs:
 
       # MAPPS-401: enforce the MAPPS-259 semantic tokens in CI. Without this
       # step the guard only ran locally, and hardcoded grays drifted back in.
+      # MAPPS-534: --self-test was on the local recipe and not here, so the
+      # guard could have stopped guarding in the one place that gates a merge.
       - name: Theme-token guard
-        run: bash scripts/check-theme-tokens.sh
+        run: |
+          bash scripts/check-theme-tokens.sh --self-test
+          bash scripts/check-theme-tokens.sh
 
       # MAPPS-433: a colour name input.css never defined emits no CSS at all,
       # so the mistake is invisible in the browser and passes the theme-token
@@ -83,8 +87,11 @@ jobs:
 
       # MAPPS-440: no DaisyUI class names, every full-screen auth surface on
       # AuthLayout, and the file-input class recipe only in FileField.
+      # MAPPS-534: --self-test, as above.
       - name: Kit-adoption guard
-        run: bash scripts/check-kit-adoption.sh
+        run: |
+          bash scripts/check-kit-adoption.sh --self-test
+          bash scripts/check-kit-adoption.sh
 
       # MAPPS-445: rendered text uses U+2026, never three ASCII periods. The
       # two spellings look alike in a diff, so the ASCII one kept coming back
@@ -160,6 +167,24 @@ jobs:
           bash scripts/check-types-pin.sh --self-test
           bash scripts/check-types-pin.sh
 
+      # MAPPS-534: a send button carries a MailIcon, a send action goes through
+      # EmailPreview, and every listed path still has a caller. This ran only
+      # in `just check` until now, so a PR that broke it merged green.
+      - name: Email-affordance guard
+        run: |
+          bash scripts/check-email-affordance.sh --self-test
+          bash scripts/check-email-affordance.sh
+
+      # MAPPS-534: the guard over this file. Every command in a `just check`
+      # recipe must appear in a `run:` block here, so the next guard added
+      # cannot be added to one of the two places and not the other. It compares
+      # command lines rather than recipe names, because two of the four drifts
+      # it was written for were steps present but invoked without --self-test.
+      - name: CI-parity guard
+        run: |
+          bash scripts/check-ci-parity.sh --self-test
+          bash scripts/check-ci-parity.sh
+
       - name: Check formatting
         run: cargo fmt --all --check
 
@@ -168,6 +193,14 @@ jobs:
 
       - name: Check web/WASM build
         run: cargo check --target wasm32-unknown-unknown
+
+      # MAPPS-534: CI had never compiled this feature combination. The steps
+      # above cover wasm and the host default, so a desktop-only break - a
+      # `#[cfg(feature = "desktop")]` arm, or a web-only import the desktop
+      # feature set does not satisfy - merged green and surfaced to whoever
+      # next built the desktop app.
+      - name: Check desktop build
+        run: cargo check --no-default-features --features web,multi-tenant,desktop
 
       - name: Unit tests
         run: cargo test --lib
