@@ -11,6 +11,22 @@ use mokosh_apps::hooks::{
 };
 use mokosh_apps::Route;
 
+// PMS-884: a wasm build without `web-renderer` compiles cleanly and then dies
+// on `dioxus::launch` with "No platform feature enabled", which reaches the
+// user as a blank page and a console panic. That is exactly what shipped to
+// staging, because `dx build` does not take this crate's default features: it
+// picks the crate feature whose name matches the platform, and since MAPPS-504
+// the feature named `web` is the app-runtime gate that enables no renderer.
+// Fail at compile time instead, so a bundle that cannot start cannot be built.
+#[cfg(all(target_arch = "wasm32", not(feature = "web-renderer")))]
+compile_error!(
+    "a wasm build needs the `web-renderer` feature (it is what enables \
+     `dioxus/web`); without it `dioxus::launch` panics at runtime. `dx` \
+     substitutes its own feature list for this crate's defaults, so every dx \
+     invocation that targets the browser has to pass `--features web-renderer` \
+     explicitly (see oci-build/Dockerfile, Dockerfile and the `build` recipe)."
+);
+
 fn main() {
     // MAPPS-299: install the wasm panic hook BEFORE anything else runs so
     // a panic during boot (snapshot_initial_search, the first render,

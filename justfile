@@ -287,10 +287,13 @@ fmt:
 test:
     cargo test
 
-# Build release WASM bundle
+# Build release WASM bundle. PMS-884: `--features web-renderer` because dx
+# substitutes its own feature list for this crate's defaults and the feature it
+# picks (`web`) enables no renderer; without it the bundle builds and then
+# panics on launch.
 [group: 'build']
 build: css-build
-    dx build --release
+    dx build --release --features web-renderer
 
 # MAPPS-504: run the desktop app against a local build.
 [group: 'dev']
