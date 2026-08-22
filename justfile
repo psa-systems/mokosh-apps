@@ -152,11 +152,17 @@ check-per-page-cap:
     bash scripts/check-per-page-cap.sh --self-test
     bash scripts/check-per-page-cap.sh
 
-# MAPPS-525: fail when `cargo update --package mokosh-types` moves Cargo.lock, so a shared-DTO change on mokosh-server main cannot sit unnoticed behind a pin nobody advances. Needs network. --self-test first, so a guard that stopped guarding fails loudly.
+# MAPPS-525: fail when a shared-DTO change on mokosh-server main would otherwise sit unnoticed behind a pin nobody advances. MAPPS-537 narrowed it to moves where crates/mokosh-types actually differs, so another repository merging anything at all no longer turns this red. Needs network. --self-test first, so a guard that stopped guarding fails loudly.
 [group: 'check']
 check-types-pin:
     bash scripts/check-types-pin.sh --self-test
     bash scripts/check-types-pin.sh
+
+# MAPPS-537: the pre-MAPPS-537 rule, where any lock move is a finding. What `types-pin-drift.yml` runs weekly, kept here so the catch-up distance can be read on demand. Not part of `just check`: it is deliberately allowed to be red.
+[group: 'check']
+check-types-pin-strict:
+    bash scripts/check-types-pin.sh --self-test
+    bash scripts/check-types-pin.sh --strict
 
 # Run clippy lints
 [group: 'check']
