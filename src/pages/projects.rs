@@ -9,7 +9,7 @@ use crate::components::{
     SelectOption, StatCard, Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
     Textarea,
 };
-use crate::utils::{FormGuard, Paginated, Rule};
+use crate::utils::{FormGuard, Rule};
 use crate::Route;
 
 /// A project (`GET /api/v1/projects`). Money/hours are decoded with a
@@ -455,19 +455,16 @@ pub fn ProjectListPage() -> Element {
         if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
             path.push_str(&format!("?company_id={company_id}"));
         }
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteProject>>(&path)
-            .await
-            .map(|p| p.data)
+        crate::hooks::fetch::api::get_all_authed::<RemoteProject>(&path).await
     });
     // Company names are a SECONDARY lookup: a missing list just renders
     // "Unknown company", so it keeps degrading to a default rather than
     // gating the whole page on an outage.
     let companies_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<CompanyOption>>("/contacts/companies")
+        crate::hooks::fetch::api::get_all_authed::<CompanyOption>("/contacts/companies")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
 
@@ -736,10 +733,9 @@ pub fn ProjectNewPage() -> Element {
     // and shape the Edit modal uses on the detail page.
     let users_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteUser>>("/auth/users")
+        crate::hooks::fetch::api::get_all_authed::<RemoteUser>("/auth/users")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
@@ -1089,29 +1085,24 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         let id = id_for_tasks.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<RemoteTask>>(&format!(
-                "/projects/{id}/tasks"
-            ))
-            .await
-            .ok()
-            .map(|p| p.data)
-            .unwrap_or_default()
+            crate::hooks::fetch::api::get_all_authed::<RemoteTask>(&format!("/projects/{id}/tasks"))
+                .await
+                .ok()
+                .unwrap_or_default()
         }
     });
     let statuses_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTaskStatus>>("/task-statuses")
+        crate::hooks::fetch::api::get_all_authed::<RemoteTaskStatus>("/task-statuses")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
     let users_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteUser>>("/auth/users")
+        crate::hooks::fetch::api::get_all_authed::<RemoteUser>("/auth/users")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
 
@@ -1142,12 +1133,11 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
         let id = id_for_proj_history.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<HistoryEntry>>(&format!(
+            crate::hooks::fetch::api::get_all_authed::<HistoryEntry>(&format!(
                 "/audit-log/entity/projects/{id}"
             ))
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
         }
     });
@@ -2104,28 +2094,23 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             let _reachable = crate::hooks::use_server_reachable();
-            crate::hooks::fetch::api::get_authed::<Paginated<RemoteTask>>(&format!(
-                "/projects/{id}/tasks"
-            ))
-            .await
-            .ok()
-            .map(|p| p.data)
+            crate::hooks::fetch::api::get_all_authed::<RemoteTask>(&format!("/projects/{id}/tasks"))
+                .await
+                .ok()
         }
     });
     let statuses_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTaskStatus>>("/task-statuses")
+        crate::hooks::fetch::api::get_all_authed::<RemoteTaskStatus>("/task-statuses")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
     let users_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteUser>>("/auth/users")
+        crate::hooks::fetch::api::get_all_authed::<RemoteUser>("/auth/users")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
 
@@ -2324,12 +2309,11 @@ fn TaskEditModal(props: TaskEditModalProps) -> Element {
 
     let history_resource = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<HistoryEntry>>(&format!(
+        crate::hooks::fetch::api::get_all_authed::<HistoryEntry>(&format!(
             "/audit-log/entity/tasks/{tid}"
         ))
         .await
         .ok()
-        .map(|p| p.data)
         .unwrap_or_default()
     });
     let task_history = history_resource

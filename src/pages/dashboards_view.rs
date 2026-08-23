@@ -557,13 +557,21 @@ struct TimeEntryLite {
 
 #[component]
 fn WidgetTimeThisWeek() -> Element {
+    // MAPPS-543: this widget sums a week, so it needs rows rather than a count -
+    // but only this week's. The server takes `date_from`, so the fetch is
+    // bounded by the window the tile reports instead of the tenant's whole time
+    // history. It previously read the server's default 25 rows and summed them
+    // as if they were the week, which reports a wrong number of hours rather
+    // than no number at all.
     let entries = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<TimeEntryLite>>("/time-entries")
-            .await
-            .ok()
-            .map(|p| p.data)
-            .unwrap_or_default()
+        let week_start = monday_of_week(Utc::now().date_naive());
+        crate::hooks::fetch::api::get_all_authed::<TimeEntryLite>(&format!(
+            "/time-entries?date_from={week_start}"
+        ))
+        .await
+        .ok()
+        .unwrap_or_default()
     });
     let rows = entries.read_unchecked().clone().unwrap_or_default();
     let week_start = monday_of_week(Utc::now().date_naive());

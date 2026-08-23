@@ -80,9 +80,8 @@ struct CompanyOption {
 /// Load the tenant's companies for the billing pickers (PMS-186).
 /// Best-effort: an empty list on error so a form still renders.
 async fn load_companies() -> Vec<CompanyOption> {
-    crate::hooks::fetch::api::get_authed::<Paginated<CompanyOption>>("/contacts/companies")
+    crate::hooks::fetch::api::get_all_authed::<CompanyOption>("/contacts/companies")
         .await
-        .map(|p| p.data)
         .unwrap_or_default()
 }
 
