@@ -200,10 +200,9 @@ pub fn TimeEntryListPage() -> Element {
         // MAPPS-357: subscribe to reachability so the list auto-refetches the
         // instant the server comes back (paired with the recovery poll).
         let _reachable = crate::hooks::use_server_reachable();
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimeEntry>>("/time-entries")
+        crate::hooks::fetch::api::get_all_authed::<RemoteTimeEntry>("/time-entries")
             .await
             .ok()
-            .map(|p| p.data)
     });
     // MAPPS-166: click-to-edit a time entry via the modal below.
     let mut selected_entry = use_signal(|| None::<RemoteTimeEntry>);
@@ -480,18 +479,16 @@ pub fn TimeEntryNewPage() -> Element {
     // select value is prefixed `ticket:` / `project:` to tell them apart.
     let tickets_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<TicketOption>>("/tickets")
+        crate::hooks::fetch::api::get_all_authed::<TicketOption>("/tickets")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
     let projects_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<ProjectPick>>("/projects")
+        crate::hooks::fetch::api::get_all_authed::<ProjectPick>("/projects")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
     let work_types_resource = use_resource(|| async {
@@ -513,12 +510,11 @@ pub fn TimeEntryNewPage() -> Element {
             if let Some(pid) = wi.strip_prefix("project:") {
                 let pid = pid.to_string();
                 let _gen = crate::hooks::fetch::active_tenant_generation();
-                crate::hooks::fetch::api::get_authed::<Paginated<TaskPick>>(&format!(
+                crate::hooks::fetch::api::get_all_authed::<TaskPick>(&format!(
                     "/projects/{pid}/tasks"
                 ))
                 .await
                 .ok()
-                .map(|p| p.data)
                 .unwrap_or_default()
             } else {
                 Vec::new()
@@ -1013,6 +1009,9 @@ pub fn TimesheetsPage() -> Element {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let start = week_start();
         let user_id = auth.read().user.as_ref().map(|u| u.id)?;
+        // MAPPS-543: not a collection read. This filters to one user's one
+        // week and takes the first match, so the server's default page size
+        // cannot truncate anything that would be rendered.
         let path = format!("/timesheets?user_id={user_id}&week={start}");
         crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimesheet>>(&path)
             .await
@@ -1023,18 +1022,16 @@ pub fn TimesheetsPage() -> Element {
     // Work-item labels: tickets and projects.
     let tickets_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<TicketOption>>("/tickets")
+        crate::hooks::fetch::api::get_all_authed::<TicketOption>("/tickets")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
     let projects_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<ProjectOption>>("/projects")
+        crate::hooks::fetch::api::get_all_authed::<ProjectOption>("/projects")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
     let tickets = tickets_resource

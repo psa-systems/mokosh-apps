@@ -418,25 +418,22 @@ pub fn AssetListPage() -> Element {
         if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
             path.push_str(&format!("?company_id={company_id}"));
         }
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteAsset>>(&path)
+        crate::hooks::fetch::api::get_all_authed::<RemoteAsset>(&path)
             .await
             .ok()
-            .map(|p| p.data)
     });
     let types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<AssetTypeOpt>>("/asset-types")
+        crate::hooks::fetch::api::get_all_authed::<AssetTypeOpt>("/asset-types")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
     let companies_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<CompanyOpt>>("/contacts/companies")
+        crate::hooks::fetch::api::get_all_authed::<CompanyOpt>("/contacts/companies")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
 
@@ -960,10 +957,9 @@ pub fn AssetNewPage() -> Element {
 
     let types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<AssetTypeOpt>>("/asset-types")
+        crate::hooks::fetch::api::get_all_authed::<AssetTypeOpt>("/asset-types")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
     // PMS-352 AC3: company is now chosen via CompanyPicker (which fetches and
@@ -1303,12 +1299,11 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         let id = id_for_rel.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<RemoteRelationship>>(&format!(
+            crate::hooks::fetch::api::get_all_authed::<RemoteRelationship>(&format!(
                 "/assets/{id}/relationships"
             ))
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
         }
     });
@@ -1317,12 +1312,11 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         let id = id_for_cfg.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<ConfigSummary>>(&format!(
+            crate::hooks::fetch::api::get_all_authed::<ConfigSummary>(&format!(
                 "/assets/{id}/configuration-items"
             ))
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
         }
     });
@@ -1331,12 +1325,11 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         let id = id_for_cred.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<CredSummary>>(&format!(
+            crate::hooks::fetch::api::get_all_authed::<CredSummary>(&format!(
                 "/assets/{id}/credentials"
             ))
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
         }
     });
@@ -1356,11 +1349,10 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         let id = id_for_audit.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<AuditEntry>>(&format!(
+            crate::hooks::fetch::api::get_all_authed::<AuditEntry>(&format!(
                 "/assets/{id}/audit-log"
             ))
             .await
-            .map(|p| p.data)
         }
     });
     // PMS-344: tickets that reference this asset. Server-side filter on
@@ -1399,10 +1391,9 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     });
     let users_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<UserOpt>>("/auth/users")
+        crate::hooks::fetch::api::get_all_authed::<UserOpt>("/auth/users")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
 
