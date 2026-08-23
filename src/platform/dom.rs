@@ -17,8 +17,22 @@
 
 /// Set the window/tab title.
 ///
-/// `dioxus::document` already abstracts this one: the web renderer sets
-/// `document.title`, the desktop renderer sets the OS window title.
+/// Direct `web_sys` write on the web target (PMS-892): `dioxus::document`'s
+/// `set_title` runs through its `eval`-based `Document::eval`, which needs
+/// `'unsafe-eval'` in the CSP. This SPA's CSP deliberately omits it
+/// (`oci-build/Caddyfile`, MAPPS-308), so that call was blocked and, because
+/// the wasm-bindgen glue behind it is not marked `catch`, the blocked call
+/// panicked the whole wasm instance on every title change - i.e. on most
+/// in-app navigation. The desktop renderer still goes through
+/// `dioxus::document`, which talks to the webview and is unaffected.
+#[cfg(target_arch = "wasm32")]
+pub fn set_title(title: &str) {
+    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+        doc.set_title(title);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub fn set_title(title: &str) {
     if !in_runtime() {
         return;
