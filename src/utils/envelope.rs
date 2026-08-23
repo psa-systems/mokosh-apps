@@ -25,6 +25,22 @@ pub struct Paginated<T> {
     pub meta: PaginatedMeta,
 }
 
+/// MAPPS-546: a hand-written `Default` rather than a derived one.
+///
+/// `#[derive(Default)]` would add a `T: Default` bound - the same spurious
+/// bound the `data` field's `default = "Vec::new"` exists to avoid on the
+/// serde side. An empty page is empty whatever its row type is, and without
+/// this a paged page cannot use `use_remote_resource`, which requires
+/// `T: Default` to render a loading state.
+impl<T> Default for Paginated<T> {
+    fn default() -> Self {
+        Self {
+            data: Vec::new(),
+            meta: PaginatedMeta::default(),
+        }
+    }
+}
+
 /// The subset of the server's pagination `meta` the client reads.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct PaginatedMeta {
