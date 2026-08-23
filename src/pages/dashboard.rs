@@ -60,11 +60,12 @@ struct DashTimeEntry {
     notes: Option<String>,
 }
 
+/// MAPPS-543: the active-project tile now reads `meta.total` off a one-row
+/// `?status=active` request, so no field of a project row is rendered. The type
+/// remains as the envelope's row parameter, deliberately empty: adding a field
+/// back would decode data nothing reads.
 #[derive(Clone, Debug, Deserialize)]
-struct DashProject {
-    #[serde(default)]
-    status: String,
-}
+struct DashProject {}
 
 fn monday_of_week(date: NaiveDate) -> NaiveDate {
     let offset = match date.weekday() {
@@ -103,22 +104,41 @@ pub fn DashboardPage() -> Element {
     let report_data = crate::hooks::use_remote_resource(|| async {
         crate::hooks::fetch::api::get_authed::<DashboardReport>("/reports/dashboard").await
     });
+    // MAPPS-543: each of these three read the server's default 25 rows and
+    // treated them as the whole table, so a tenant past 25 got a quietly wrong
+    // KPI rather than an absent one. Each is now asked for what its tile
+    // actually needs, which is a different answer in all three cases.
+    //
+    // Only the five most recent tickets are rendered ("Recent tickets"); the
+    // open-ticket count on the stat row comes from `/reports/dashboard`, which
+    // the server aggregates. So this is a deliberate top-5, not a whole-table
+    // read - paging every ticket in the tenant to show five of them would be
+    // the same bug in the other direction.
     let tickets = crate::hooks::use_remote_resource(|| async {
-        crate::hooks::fetch::api::get_authed::<Paginated<DashTicket>>("/tickets")
+        crate::hooks::fetch::api::get_authed::<Paginated<DashTicket>>("/tickets?per_page=5")
             .await
             .map(|p| p.data)
     })
     .value_or_default();
+    // Summed, not counted, so the rows are needed - but only this week's. The
+    // server takes `date_from`, so the sum is bounded by the same window the
+    // tile reports instead of pulling the tenant's entire time history.
     let time_entries = crate::hooks::use_remote_resource(|| async {
-        crate::hooks::fetch::api::get_authed::<Paginated<DashTimeEntry>>("/time-entries")
-            .await
-            .map(|p| p.data)
+        let week_start = monday_of_week(Utc::now().date_naive());
+        crate::hooks::fetch::api::get_all_authed::<DashTimeEntry>(&format!(
+            "/time-entries?date_from={week_start}"
+        ))
+        .await
     })
     .value_or_default();
-    let projects = crate::hooks::use_remote_resource(|| async {
-        crate::hooks::fetch::api::get_authed::<Paginated<DashProject>>("/projects")
-            .await
-            .map(|p| p.data)
+    // A count, and nothing else. `meta.total` off a one-row request is the
+    // whole answer; the rows themselves are never rendered.
+    let active_project_count = crate::hooks::use_remote_resource(|| async {
+        crate::hooks::fetch::api::get_authed::<Paginated<DashProject>>(
+            "/projects?status=active&per_page=1",
+        )
+        .await
+        .map(|p| p.meta.total)
     })
     .value_or_default();
 
@@ -139,8 +159,11 @@ pub fn DashboardPage() -> Element {
 
     // Stat values.
     let open_tickets: i64 = report.open_by_priority.iter().map(|b| b.count).sum();
-    let active_projects = projects.iter().filter(|p| p.status == "active").count();
+    let active_projects = active_project_count;
     let week_start = monday_of_week(Utc::now().date_naive());
+    // The fetch above already asks for `date_from=week_start`; this repeats the
+    // bound client-side so the tile cannot over-report if the server ever stops
+    // honouring the filter.
     let week_minutes: i64 = time_entries
         .iter()
         .filter(|e| e.date >= week_start)
@@ -462,10 +485,9 @@ pub fn DashboardTvPage() -> Element {
                 } else {
                     format!("/tickets?team_id={team}")
                 };
-                crate::hooks::fetch::api::get_authed::<Paginated<DashTicket>>(&path)
+                crate::hooks::fetch::api::get_all_authed::<DashTicket>(&path)
                     .await
                     .ok()
-                    .map(|p| p.data)
                     .unwrap_or_default()
             }
         })
