@@ -71,6 +71,63 @@ struct PlatformLoginResp {
 #[cfg(feature = "web")]
 const PLATFORM_TOKEN_KEY: &str = "mokosh:platform_token";
 
+/// MAPPS-549: request body for `POST /api/v1/auth/select-tenant`, used
+/// by the auto-pick step to complete a `needs_selection` response
+/// without navigating through `/pick-tenant`. Mirrors the pre-existing
+/// `pages::pick_tenant::SelectTenantBody`.
+#[cfg(feature = "web")]
+#[derive(Serialize)]
+struct SelectTenantBody {
+    identity_token: String,
+    tenant_id: String,
+}
+
+/// MAPPS-549: default tenant id (00000000-0000-0000-0000-000000000001).
+/// Used as a tiebreaker in `choose_membership` so the mokosh operator's
+/// canonical Default tenant wins when two same-role memberships come
+/// back.
+#[cfg(feature = "web")]
+const DEFAULT_TENANT_ID: &str = "00000000-0000-0000-0000-000000000001";
+
+/// MAPPS-549: role-precedence weight for auto-pick. Higher wins.
+#[cfg(feature = "web")]
+fn role_rank(role: &str) -> u8 {
+    match role {
+        "super_admin" => 100,
+        "admin" => 80,
+        "manager" => 60,
+        "technician" => 40,
+        "dispatcher" => 30,
+        "sales" => 20,
+        "finance" => 10,
+        _ => 0,
+    }
+}
+
+/// MAPPS-549: choose the membership the SPA auto-picks when
+/// `/auth/login` returns `needs_selection`. Prefers the highest role,
+/// ties broken by `DEFAULT_TENANT_ID` then iteration order. Returns
+/// `None` for an empty list (caller falls back to the picker route).
+#[cfg(feature = "web")]
+fn choose_membership(memberships: &[MembershipItem]) -> Option<&MembershipItem> {
+    memberships.iter().reduce(|best, next| {
+        let best_rank = role_rank(&best.role);
+        let next_rank = role_rank(&next.role);
+        if next_rank > best_rank {
+            return next;
+        }
+        if next_rank < best_rank {
+            return best;
+        }
+        // Tie on role: prefer DEFAULT_TENANT_ID, then leave the
+        // earlier iteration winner in place.
+        if next.tenant_id == DEFAULT_TENANT_ID && best.tenant_id != DEFAULT_TENANT_ID {
+            return next;
+        }
+        best
+    })
+}
+
 /// MAPPS-492 phase 3: one entry in the picker list.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 struct MembershipItem {
@@ -254,6 +311,16 @@ pub fn StandaloneLogin() -> Element {
                                 )
                                 .await
                             {
+                                // MAPPS-549: run the same auto-pick
+                                // step here so a chained login that
+                                // returns `needs_selection` still
+                                // lands a tenant admin session
+                                // alongside the platform bearer.
+                                // Without this the operator sees
+                                // the platform surface but the
+                                // Admin sidebar section stays
+                                // hidden because is_admin is false
+                                // (no tenant user).
                                 if let (Some(user), false, false, false, false) = (
                                     tenant_resp.user.clone(),
                                     tenant_resp.mfa_required,
@@ -267,6 +334,34 @@ pub fn StandaloneLogin() -> Element {
                                         tenant_resp.expires_at,
                                         user,
                                     );
+                                } else if tenant_resp.needs_selection {
+                                    let memberships =
+                                        tenant_resp.memberships.clone().unwrap_or_default();
+                                    if let (Some(m), Some(token)) = (
+                                        choose_membership(&memberships).cloned(),
+                                        tenant_resp.identity_token.clone(),
+                                    ) {
+                                        let body = SelectTenantBody {
+                                            identity_token: token,
+                                            tenant_id: m.tenant_id.clone(),
+                                        };
+                                        if let Ok(resp2) =
+                                            crate::hooks::fetch::api::post_typed::<LoginResp, _>(
+                                                "/auth/select-tenant",
+                                                &body,
+                                            )
+                                            .await
+                                        {
+                                            if let Some(user) = resp2.user {
+                                                install_session(
+                                                    resp2.access_token,
+                                                    resp2.refresh_token,
+                                                    resp2.expires_at,
+                                                    user,
+                                                );
+                                            }
+                                        }
+                                    }
                                 }
                             }
 
@@ -322,34 +417,72 @@ pub fn StandaloneLogin() -> Element {
                         error
                             .set("Enter the 6-digit code from your authenticator app.".to_string());
                     }
-                    // MAPPS-492 / MAPPS-497 item 6: identity resolved
-                    // but needs the picker step. Populate the
-                    // cross-page pending signal and navigate to the
-                    // dedicated `/pick-tenant` route (was inline
-                    // before item 6).
+                    // MAPPS-492 / MAPPS-497 item 6 / MAPPS-549:
+                    // identity resolved but the login response asks
+                    // for a picker step (multiple active
+                    // memberships). Rather than presenting the picker
+                    // by default, auto-pick the highest-role
+                    // membership (see `choose_membership`) and
+                    // complete `/auth/select-tenant` inline. On
+                    // success install the session and land on
+                    // Dashboard exactly as the auto-scope branch
+                    // does. On failure (no memberships, missing
+                    // identity_token, or the select-tenant call
+                    // itself fails) fall back to the pre-549
+                    // behavior: populate `PENDING_LOGIN` and
+                    // navigate to `/pick-tenant` so the manual UX
+                    // stays as a last-resort path for the small set
+                    // of consultants who have equal-role
+                    // memberships across multiple client MSPs.
                     Ok(resp) if resp.needs_selection => {
-                        let carried_memberships: Vec<
-                            crate::hooks::pending_login::PickerMembership,
-                        > = resp
-                            .memberships
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|m| crate::hooks::pending_login::PickerMembership {
-                                tenant_id: m.tenant_id,
-                                tenant_name: m.tenant_name,
-                                tenant_slug: m.tenant_slug,
-                                tenant_kind: m.tenant_kind,
-                                role: m.role,
-                                status: m.status,
-                                is_active: m.is_active,
-                            })
-                            .collect();
-                        *crate::hooks::pending_login::PENDING_LOGIN.write() =
-                            crate::hooks::pending_login::PendingLogin {
-                                identity_token: resp.identity_token,
-                                memberships: carried_memberships,
+                        let memberships = resp.memberships.clone().unwrap_or_default();
+                        let picked = choose_membership(&memberships).cloned();
+                        let identity_token = resp.identity_token.clone();
+                        let mut auto_picked = false;
+                        if let (Some(m), Some(token)) = (picked.as_ref(), identity_token.clone()) {
+                            let body = SelectTenantBody {
+                                identity_token: token,
+                                tenant_id: m.tenant_id.clone(),
                             };
-                        nav.push(Route::PickTenant {});
+                            if let Ok(resp2) = crate::hooks::fetch::api::post_typed::<LoginResp, _>(
+                                "/auth/select-tenant",
+                                &body,
+                            )
+                            .await
+                            {
+                                if let Some(user) = resp2.user {
+                                    install_session(
+                                        resp2.access_token,
+                                        resp2.refresh_token,
+                                        resp2.expires_at,
+                                        user,
+                                    );
+                                    auto_picked = true;
+                                }
+                            }
+                        }
+                        if !auto_picked {
+                            let carried_memberships: Vec<
+                                crate::hooks::pending_login::PickerMembership,
+                            > = memberships
+                                .into_iter()
+                                .map(|m| crate::hooks::pending_login::PickerMembership {
+                                    tenant_id: m.tenant_id,
+                                    tenant_name: m.tenant_name,
+                                    tenant_slug: m.tenant_slug,
+                                    tenant_kind: m.tenant_kind,
+                                    role: m.role,
+                                    status: m.status,
+                                    is_active: m.is_active,
+                                })
+                                .collect();
+                            *crate::hooks::pending_login::PENDING_LOGIN.write() =
+                                crate::hooks::pending_login::PendingLogin {
+                                    identity_token,
+                                    memberships: carried_memberships,
+                                };
+                            nav.push(Route::PickTenant {});
+                        }
                     }
                     // MAPPS-492 / MAPPS-497 item 6: identity resolved
                     // but holds zero memberships. Navigate to the
