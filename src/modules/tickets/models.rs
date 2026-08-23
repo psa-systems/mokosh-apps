@@ -202,22 +202,17 @@ mod tests {
         assert_eq!(AutomationTrigger::OnSlaBreach.as_str(), "on_sla_breach");
     }
 
-    /// MAPPS-536: this now pins the SHARED computation, which is what the SPA
-    /// actually sees: the server calls `compute_sla_status` itself
-    /// (`mokosh-server/src/modules/tickets/service.rs`) and sends the result on
-    /// the ticket payload. The copy this replaces implemented a different and
-    /// better algorithm that never once ran, because nothing in the SPA called
-    /// it. Two differences, both now recorded here rather than lost:
+    /// Pins the SHARED computation, which is what the SPA actually sees: the
+    /// server calls `compute_sla_status` itself and sends the result on the
+    /// ticket payload.
     ///
-    /// - The copy treated a resolved-but-not-closed ticket as `NotApplicable`.
-    ///   The shared one looks only at `closed_at`, so such a ticket keeps
-    ///   accruing and can report `Breached` after the work was done.
-    /// - The copy warned inside the final quarter of the target window, so the
-    ///   band scaled with the SLA. The shared one warns under a flat two hours,
-    ///   which is the whole window for a short SLA and a blink for a long one.
-    ///
-    /// Whether `compute_sla_status` should take `resolved_at` and scale its
-    /// band is a real question for mokosh-server, where it runs.
+    /// MAPPS-536 wrote this test against the two differences between the copy
+    /// it retired and the crate, and asked whether the crate should close them.
+    /// PMS-893 answered yes, and the answer arrived here the way it should: as
+    /// this test failing the moment the pin bumped. `resolved_at` now stops the
+    /// clock, and the warning band is 20% of the target window clamped to
+    /// [5m, 24h] instead of a flat two hours - the SLA sweep worker's numbers,
+    /// which the badge had been contradicting on every resolved ticket.
     #[test]
     fn sla_status_is_the_shared_computation() {
         // Create a test ticket
@@ -270,28 +265,29 @@ mod tests {
         // Test no SLA due date (should be NotApplicable)
         assert_eq!(ticket.sla_status(), SlaStatus::NotApplicable);
 
-        // Test on track (due date in future, more than 2 hours)
-        ticket.sla_due_date = Some(Utc::now() + chrono::Duration::hours(3));
+        // On track: a 10h window (created 1h ago, due in 9h) gives a 2h lead,
+        // and 9h left is well clear of it.
+        ticket.created_at = Utc::now() - chrono::Duration::hours(1);
+        ticket.sla_due_date = Some(Utc::now() + chrono::Duration::hours(9));
         assert_eq!(ticket.sla_status(), SlaStatus::OnTrack);
 
-        // Test warning: inside the final quarter of the SLA window. With a 4h
-        // target window (created 3h ago, due in 1h) the warn band is the last
-        // hour, so 1h remaining trips Warning.
-        // Warning: under two hours left, flat, regardless of how long the
-        // target window was.
+        // Warning: inside the final 20% of the window. PMS-893: the band is
+        // proportional, so a 3h40m window warns with 40 minutes left. Under the
+        // flat two hours this replaced, the same ticket was already amber when
+        // it opened.
         ticket.created_at = Utc::now() - chrono::Duration::hours(3);
-        ticket.sla_due_date = Some(Utc::now() + chrono::Duration::minutes(50));
+        ticket.sla_due_date = Some(Utc::now() + chrono::Duration::minutes(40));
         assert_eq!(ticket.sla_status(), SlaStatus::Warning);
 
         // Test breached (due date in past)
         ticket.sla_due_date = Some(Utc::now() - chrono::Duration::hours(2));
         assert_eq!(ticket.sla_status(), SlaStatus::Breached);
 
-        // Resolving does NOT stop the clock: only closing does. This is the
-        // difference described above, asserted rather than assumed so a change
-        // to it on the server side shows up here as a failing test.
+        // PMS-893: resolving stops the clock. This assertion said `Breached`
+        // until the pin bumped, which is the whole point of pinning it: the
+        // producer changed, and the consumer's build said so.
         ticket.resolved_at = Some(Utc::now());
-        assert_eq!(ticket.sla_status(), SlaStatus::Breached);
+        assert_eq!(ticket.sla_status(), SlaStatus::NotApplicable);
         ticket.resolved_at = None;
 
         // Test closed ticket (should be NotApplicable)
