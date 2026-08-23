@@ -37,16 +37,34 @@ src/modules/contacts/mod.rs      -> pub use mokosh_types::contacts::*;
 src/modules/time_tracking/mod.rs -> pub use mokosh_types::time_tracking::*;
 ```
 
-`src/modules/tenants/models.rs` has since joined them and is now
-nothing but a `pub use` of six types. The modules below still declare
-wire types by hand and can silently drift the moment one side is
-edited without porting:
+`src/modules/tenants/models.rs` has since joined them, and MAPPS-536
+finished `auth` and `tickets`, so five module trees now re-export the
+crate wholesale. One module still declares wire types by hand:
 
 ```
-src/modules/auth/models.rs     -> partial; re-exports CurrentUser + UserRole  (MAPPS-536)
-src/modules/tickets/models.rs  -> partial; re-exports TicketNote + Response   (MAPPS-536)
 src/modules/forms/models.rs    -> whole module hand-copied                    (MAPPS-535)
 ```
+
+MAPPS-536 is worth reading for what it did NOT buy, because the
+headline is misleading. Both files it retired were dead: nothing
+outside their own directories imported `Ticket`, `TicketFilter`,
+`AuthState`, `User` or `UserResponse`, so they were never a contract
+the compiler was checking. Deleting them removed 520 lines of copy and
+three real drifts (`Ticket::procedure_kb_article_id`,
+`UpdateTicketRequest::asset_id` as a clearable double option,
+`TicketFilter::my_teams` / `asset_id`), and it means anything written
+against those modules later inherits the live shape. It did not change
+what the running SPA deserialises.
+
+**Where the copies that matter actually live: `src/pages/`.** There are
+172 `Deserialize` derives across 29 page files, and three of those
+files mention `mokosh_types` at all. `src/pages/tickets.rs` is the
+pattern: its own ticket struct, deserialised straight off the server's
+`TicketResponse`, carrying `procedure_kb_article_id` and
+`asset_name` and a dozen more, with a comment explaining which field it
+deliberately dropped. Narrowing a payload to what a page renders is a
+defensible client design, and it is also a hand copy that no compiler
+compares against the producer. Nothing tracks that yet.
 
 Where a module still carries handler / service files copied from the
 server (`tenants`, `billing`), they sit behind a `server` cargo
@@ -63,7 +81,8 @@ on top. Moving them into `crates/mokosh-types/src/forms.rs` and
 re-exporting both is MAPPS-535, which is blocked on the mokosh-server
 half landing first.
 
-Direction of travel: migrate the remaining three the same way. The
+Direction of travel: migrate `forms` the same way, and decide what to
+do about the page-level structs. The
 crate is fetched over anonymous HTTPS rather than `ssh://`, because
 neither the pre-commit container nor the Forgejo check runner carries
 SSH credentials.
@@ -148,12 +167,13 @@ exists.
    `use_api()` hook with a base URL from env is prerequisite to
    removing every `// TODO: Call API` stub. Highest-leverage single
    move in either repo.
-2. **DTO sharing is half copy-paste.** `contacts` and `time_tracking`
-   and `tenants` come from the `mokosh-types` crate; `auth` and
-   `tickets` are half migrated (MAPPS-536) and `forms` is hand-copied
-   twice over (MAPPS-535). What the crate does cover is now pinned to
-   the server head by `scripts/check-types-pin.sh`. See
-   [DTO sharing](#dto-sharing) above.
+2. **DTO sharing covers the modules, not the pages.** `contacts`,
+   `time_tracking`, `tenants`, `auth` and `tickets` come from the
+   `mokosh-types` crate (MAPPS-536 finished the last two); `forms` is
+   hand-copied twice over (MAPPS-535). What the crate covers is pinned
+   to the server head by `scripts/check-types-pin.sh`. The larger gap
+   is that the SPA renders from per-page structs that no shared crate
+   sees at all. See [DTO sharing](#dto-sharing) above.
 3. **Auth bypass + mocked client = the server is never exercised
    end-to-end.** The client has a hardcoded login bypass at
    [`src/hooks/auth.rs:90-118`](../src/hooks/auth.rs#L90) that
