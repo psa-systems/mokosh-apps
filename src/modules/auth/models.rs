@@ -1,229 +1,61 @@
-//! Authentication models and types
+//! Authentication models.
+//!
+//! MAPPS-536: these are the shared wire DTOs, so they come from `mokosh-types`
+//! rather than being declared here. MAPPS-378 adopted `CurrentUser` and
+//! `UserRole`; this finishes the module.
+//!
+//! What was here was 200 lines of hand copy that nothing imported. `AuthState`,
+//! `UserStatus`, `User`, `UserResponse` and `RefreshTokenRequest` had no call
+//! sites anywhere in the SPA, so they were not a wire contract the compiler was
+//! checking - they were a snapshot of one, quietly ageing. Two had already
+//! drifted: the local `AuthState` was missing the crate's `deleted` flag
+//! (MAPPS-348, the tombstoned-account 410 path), and `LoginRequest` carried no
+//! validation attributes.
+//!
+//! Two signatures differ from the copy they replace, which matters to whoever
+//! writes the first caller. The crate's `AuthState::require_user` and
+//! `require_tenant` yield the `AuthRequired` marker rather than this crate's
+//! `AppError::Unauthorized`, because the shared crate cannot reach our error
+//! type; map it at the call site. And the crate's `AuthState` has the `deleted`
+//! field, so an exhaustive struct literal needs it.
+//!
+//! Where the SPA actually reads server payloads is `src/pages/`, in structs
+//! declared per page. Those are the hand copies that still matter, and this
+//! change does not touch them; see `docs/client-server-integration.md`.
 
-// These model enums expose `from_str(&str) -> Option<Self>` as a deliberate
-// infallible-style parser API; they intentionally do not implement
-// `std::str::FromStr` (which requires a `Result`).
-#![allow(clippy::should_implement_trait)]
-
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
-use validator::Validate;
-
-// MAPPS-378: `UserRole` and `CurrentUser` are the shared identity DTOs of the
-// client/server wire contract, so source them from the `mokosh-types` crate
-// instead of re-declaring them here. Drift now fails the build rather than
-// silently deserializing to a default. The prior hand-maintained copies were
-// field- and method-identical to the shared ones; the only local extra was an
-// unused `UserRole::parse_role` shim (zero call sites), which is dropped. The
-// SPA-owned `AuthState` (maps auth failure to the crate's own `AppError`),
-// `User`, `UserResponse`, `UserStatus`, and the request DTOs stay local below.
-pub use mokosh_types::auth::{CurrentUser, UserRole};
-
-/// User account status
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum UserStatus {
-    #[default]
-    Active,
-    Inactive,
-    Pending,
-}
-
-impl UserStatus {
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "active" => Some(Self::Active),
-            "inactive" => Some(Self::Inactive),
-            "pending" => Some(Self::Pending),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Active => "active",
-            Self::Inactive => "inactive",
-            Self::Pending => "pending",
-        }
-    }
-}
-
-/// Current authenticated user state
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AuthState {
-    /// Whether the user is authenticated
-    pub is_authenticated: bool,
-    /// The current user (if authenticated)
-    pub user: Option<CurrentUser>,
-    /// The current tenant ID
-    pub tenant_id: Option<Uuid>,
-}
-
-impl AuthState {
-    /// Create an authenticated state
-    pub fn authenticated(user: CurrentUser, tenant_id: Uuid) -> Self {
-        Self {
-            is_authenticated: true,
-            user: Some(user),
-            tenant_id: Some(tenant_id),
-        }
-    }
-
-    /// Get the current user or return an error
-    pub fn require_user(&self) -> Result<&CurrentUser, crate::utils::error::AppError> {
-        self.user
-            .as_ref()
-            .ok_or(crate::utils::error::AppError::Unauthorized)
-    }
-
-    /// Get the current tenant ID or return an error
-    pub fn require_tenant(&self) -> Result<Uuid, crate::utils::error::AppError> {
-        self.tenant_id
-            .ok_or(crate::utils::error::AppError::Unauthorized)
-    }
-
-    /// Check if the user has a specific role
-    pub fn has_role(&self, role: UserRole) -> bool {
-        self.user.as_ref().is_some_and(|u| u.role == role)
-    }
-
-    /// Check if the user has admin privileges
-    pub fn is_admin(&self) -> bool {
-        self.user.as_ref().is_some_and(|u| u.role.is_admin())
-    }
-}
-
-// `CurrentUser` (struct + `full_name` / `initials`) is re-exported from
-// `mokosh-types` at the top of this module (MAPPS-378).
-
-/// User database model
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct User {
-    pub id: Uuid,
-    pub tenant_id: Uuid,
-    pub email: String,
-    #[serde(skip_serializing)]
-    pub password_hash: Option<String>,
-    pub first_name: String,
-    pub last_name: String,
-    pub phone: Option<String>,
-    pub mobile: Option<String>,
-    pub title: Option<String>,
-    pub avatar_url: Option<String>,
-    pub timezone: String,
-    pub locale: String,
-    /// PMS-253: per-user date/time format string. See [`CurrentUser::date_format_string`].
-    #[serde(default)]
-    pub date_format_string: Option<String>,
-    pub role: UserRole,
-    pub status: UserStatus,
-    pub email_verified_at: Option<DateTime<Utc>>,
-    pub last_login_at: Option<DateTime<Utc>>,
-    pub mfa_enabled: bool,
-    #[serde(skip_serializing)]
-    pub mfa_secret: Option<String>,
-    pub notification_preferences: serde_json::Value,
-    pub settings: serde_json::Value,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-impl User {
-    /// Convert to CurrentUser for auth context
-    pub fn to_current_user(&self) -> CurrentUser {
-        CurrentUser {
-            id: self.id,
-            tenant_id: self.tenant_id,
-            email: self.email.clone(),
-            first_name: self.first_name.clone(),
-            last_name: self.last_name.clone(),
-            role: self.role,
-            timezone: self.timezone.clone(),
-            avatar_url: self.avatar_url.clone(),
-            // Client-side `User` is a legacy snapshot type with no
-            // profile_completed_at column; mirror the server's "default
-            // true on legacy paths" so a code path that touches this
-            // conversion never traps a user in onboarding.
-            profile_completed: true,
-            date_format_string: self.date_format_string.clone(),
-            // The client-side `User` snapshot carries no theme columns; the
-            // live values reach the SPA via the `/auth/me` payload.
-            theme_base_mode: None,
-            theme_accent_id: None,
-            // The client-side `User` is a legacy snapshot with no
-            // own-company column; the live value reaches the SPA via the
-            // `/auth/me` payload (see `MeBody` in hooks/auth.rs).
-            own_company_id: None,
-        }
-    }
-}
-
-/// Login request
-#[derive(Debug, Clone, Deserialize, Validate)]
-pub struct LoginRequest {
-    #[validate(email(message = "Invalid email address"))]
-    pub email: String,
-    #[validate(length(min = 1, message = "Password is required"))]
-    pub password: String,
-    /// Remember me for longer session
-    #[serde(default)]
-    pub remember_me: bool,
-    /// MFA code if required
-    pub mfa_code: Option<String>,
-}
-
-/// Refresh token request
-#[derive(Debug, Clone, Deserialize)]
-pub struct RefreshTokenRequest {
-    pub refresh_token: String,
-}
-
-/// User list response (for API)
-#[derive(Debug, Clone, Serialize)]
-pub struct UserResponse {
-    pub id: Uuid,
-    pub email: String,
-    pub first_name: String,
-    pub last_name: String,
-    pub full_name: String,
-    pub phone: Option<String>,
-    pub mobile: Option<String>,
-    pub title: Option<String>,
-    pub avatar_url: Option<String>,
-    pub timezone: String,
-    pub role: UserRole,
-    pub status: UserStatus,
-    pub mfa_enabled: bool,
-    pub last_login_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
-}
-
-impl From<User> for UserResponse {
-    fn from(user: User) -> Self {
-        Self {
-            id: user.id,
-            email: user.email,
-            first_name: user.first_name.clone(),
-            last_name: user.last_name.clone(),
-            full_name: format!("{} {}", user.first_name, user.last_name),
-            phone: user.phone,
-            mobile: user.mobile,
-            title: user.title,
-            avatar_url: user.avatar_url,
-            timezone: user.timezone,
-            role: user.role,
-            status: user.status,
-            mfa_enabled: user.mfa_enabled,
-            last_login_at: user.last_login_at,
-            created_at: user.created_at,
-        }
-    }
-}
+pub use mokosh_types::auth::*;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
+
+    /// MAPPS-536 guard, in the shape of `src/modules/contacts/mod.rs`: these
+    /// names must resolve to the shared crate's types. Re-declaring any of them
+    /// under this module breaks the identity conversions below at compile time,
+    /// which is the whole point of the re-export.
+    #[test]
+    fn dtos_are_the_shared_types() {
+        let _: fn(mokosh_types::auth::AuthState) -> super::AuthState = |v| v;
+        let _: fn(mokosh_types::auth::CurrentUser) -> super::CurrentUser = |v| v;
+        let _: fn(mokosh_types::auth::User) -> super::User = |v| v;
+        let _: fn(mokosh_types::auth::UserResponse) -> super::UserResponse = |v| v;
+        let _: fn(mokosh_types::auth::UserRole) -> super::UserRole = |v| v;
+        let _: fn(mokosh_types::auth::UserStatus) -> super::UserStatus = |v| v;
+        let _: fn(mokosh_types::auth::LoginRequest) -> super::LoginRequest = |v| v;
+        let _: fn(mokosh_types::auth::RefreshTokenRequest) -> super::RefreshTokenRequest = |v| v;
+    }
+
+    /// The drift this adoption closes: the hand-copied `AuthState` had no
+    /// `deleted` flag, so the SPA could not tell a tombstoned account
+    /// (MAPPS-348, answered 410) from an expired session (401).
+    #[test]
+    fn shared_auth_state_carries_the_deleted_flag() {
+        let deleted = super::AuthState::deleted();
+        assert!(deleted.deleted, "a tombstoned account is marked deleted");
+        assert!(!deleted.is_authenticated);
+        assert!(!super::AuthState::default().deleted);
+    }
 
     #[test]
     fn test_user_role_is_admin() {
