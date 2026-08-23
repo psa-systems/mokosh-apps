@@ -22,6 +22,7 @@ use crate::components::{
     IconButton, IconSize, Input, PageHeader, Select, SelectOption, Table, TableBody, TableCell,
     TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea, TrashIcon,
 };
+use crate::modules::forms::FieldTypeExt;
 use crate::modules::forms::{
     CreateFormDefinitionRequest, FieldType, FormDefinition, FormRule, UpdateFormDefinitionRequest,
     UpsertFormField,
@@ -578,7 +579,7 @@ impl EditorState {
                     when_field: when_field.clone(),
                     equals: equals.clone(),
                 }),
-                FormRule::Other => {
+                FormRule::Unknown => {
                     has_unknown_rule = true;
                     None
                 }
@@ -600,7 +601,7 @@ impl EditorState {
                     name: f.name.clone(),
                     label: f.label.clone(),
                     help_text: f.help_text.clone().unwrap_or_default(),
-                    field_type: FieldType::from_str(&f.field_type).unwrap_or(FieldType::Text),
+                    field_type: f.field_type,
                     is_required: f.is_required,
                     max_length: f.max_length.map(|m| m.to_string()).unwrap_or_default(),
                     options: f.options.clone().unwrap_or_default().join(", "),
@@ -779,6 +780,9 @@ impl DraftForm {
                     name: f.name,
                     label: f.label,
                     help_text: f.help_text,
+                    // MAPPS-535: the draft stores the wire value as a string;
+                    // an unrecognised one falls back rather than dropping the
+                    // row, since a draft is work in progress.
                     field_type: FieldType::from_str(&f.field_type).unwrap_or(FieldType::Text),
                     is_required: f.is_required,
                     max_length: f.max_length,
@@ -1621,7 +1625,7 @@ fn FormEditorModal(
                 name: f.name.trim().to_string(),
                 label: f.label.trim().to_string(),
                 help_text: optional(&f.help_text),
-                field_type: f.field_type.as_str().to_string(),
+                field_type: f.field_type,
                 is_required: f.is_required,
                 min_length: None,
                 max_length: f
@@ -1676,14 +1680,21 @@ fn FormEditorModal(
                         .map(|_| ())
                     }
                     Some(id) => {
+                        // MAPPS-535: the shared PATCH DTO is optional per
+                        // field - absent leaves a value alone, and a present
+                        // null clears it. The editor submits the whole form,
+                        // so every field is `Some`; the inner `None`s are what
+                        // now let a description or contact line be cleared
+                        // rather than only changed, which the hand copy could
+                        // not express at all.
                         let req = UpdateFormDefinitionRequest {
-                            name: name_v,
-                            description: desc_v,
-                            contact_info: contact_v,
-                            kb_article_id: article,
-                            rules: upsert_rules,
-                            is_active: active_v,
-                            fields: upsert_fields,
+                            name: Some(name_v),
+                            description: Some(desc_v),
+                            contact_info: Some(contact_v),
+                            kb_article_id: Some(article),
+                            rules: Some(upsert_rules),
+                            is_active: Some(active_v),
+                            fields: Some(upsert_fields),
                         };
                         crate::hooks::fetch::api::patch_authed_typed::<FormDefinition, _>(
                             &format!("/forms/{id}"),
@@ -2170,7 +2181,7 @@ fn FormEditorModal(
 /// the client is served them sorted, so a preview that showed them otherwise
 /// would be wrong about the one thing the list column cannot tell you.
 ///
-/// A rule this build cannot represent (`FormRule::Other`, authored by a newer
+/// A rule this build cannot represent (`FormRule::Unknown`, authored by a newer
 /// server) is dropped. It cannot be rendered honestly, and the editor already
 /// refuses to save a definition carrying one.
 fn preview_from_definition(
@@ -2212,7 +2223,7 @@ fn preview_from_definition(
                     when_field: when_field.clone(),
                     equals: equals.clone(),
                 }),
-                FormRule::Other => None,
+                FormRule::Unknown => None,
             })
             .collect(),
         fields: fields
@@ -2229,7 +2240,7 @@ fn preview_from_definition(
                     .clone()
                     .map(|h| h.trim().to_string())
                     .filter(|h| !h.is_empty()),
-                field_type: f.field_type.clone(),
+                field_type: f.field_type,
                 is_required: f.is_required,
                 min_length: f.min_length,
                 max_length: f.max_length,
@@ -2305,7 +2316,7 @@ fn preview_form(
                     f.label.trim().to_string()
                 },
                 help_text: (!f.help_text.trim().is_empty()).then(|| f.help_text.trim().to_string()),
-                field_type: f.field_type.as_str().to_string(),
+                field_type: f.field_type,
                 is_required: f.is_required,
                 min_length: None,
                 max_length: f.max_length.trim().parse::<i32>().ok(),
@@ -3205,7 +3216,7 @@ mod tests {
             name: name.into(),
             label: String::new(),
             help_text: None,
-            field_type: "text".into(),
+            field_type: FieldType::Text,
             is_required: false,
             min_length: None,
             max_length: None,
@@ -3222,7 +3233,7 @@ mod tests {
             kb_article_id: None,
             kb_article_title: None,
             rules: vec![
-                FormRule::Other,
+                FormRule::Unknown,
                 FormRule::RequiredIf {
                     field: "b".into(),
                     when_field: "a".into(),
@@ -3230,6 +3241,9 @@ mod tests {
                 },
             ],
             is_active: true,
+            created_by_id: uuid::Uuid::nil(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
             // Arrival order deliberately not sort order: the client is served
             // them sorted, so the preview must sort too.
             fields: vec![field("b", 2), field("a", 1)],
@@ -3349,6 +3363,9 @@ mod tests {
             kb_article_title: None,
             rules: Vec::new(),
             is_active: false,
+            created_by_id: uuid::Uuid::nil(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
             fields: Vec::new(),
         };
         assert!(
@@ -3371,8 +3388,11 @@ mod tests {
             contact_info: None,
             kb_article_id: None,
             kb_article_title: None,
-            rules: vec![FormRule::Other],
+            rules: vec![FormRule::Unknown],
             is_active: true,
+            created_by_id: uuid::Uuid::nil(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
             fields: Vec::new(),
         };
         let state = EditorState::from_existing(&def);

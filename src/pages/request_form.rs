@@ -30,67 +30,20 @@ use crate::components::{
     AuthLayout, Button, ButtonVariant, Checkbox, DateField, Input, Select, SelectOption, Textarea,
 };
 
-/// One field of the form, mirroring mokosh-server's `PublicFormField`.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub(crate) struct PublicField {
-    pub(crate) name: String,
-    pub(crate) label: String,
-    #[serde(default)]
-    pub(crate) help_text: Option<String>,
-    pub(crate) field_type: String,
-    #[serde(default)]
-    pub(crate) is_required: bool,
-    #[serde(default)]
-    pub(crate) min_length: Option<i32>,
-    #[serde(default)]
-    pub(crate) max_length: Option<i32>,
-    #[serde(default)]
-    pub(crate) options: Option<Vec<String>>,
-    #[serde(default)]
-    pub(crate) date_not_in_past: bool,
-}
-
-/// A cross-field rule, mirroring mokosh-server's `FormRule`. One kind exists
-/// (`required_if`); an unknown kind deserialises into `Other` and is ignored
-/// here, so a server that grows a rule this build predates degrades to
-/// server-side enforcement rather than failing to render the form.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum PublicRule {
-    RequiredIf {
-        field: String,
-        when_field: String,
-        equals: String,
-    },
-    #[serde(other)]
-    Other,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub(crate) struct PublicForm {
-    pub(crate) name: String,
-    #[serde(default)]
-    pub(crate) description: Option<String>,
-    /// PMS-748: the MSP asking. This page is reached from an email by someone
-    /// with no account here, so it carries its own attribution rather than
-    /// assuming the message that linked to it is still open. `#[serde(default)]`
-    /// so a build talking to a server that predates PMS-748 renders the form
-    /// unattributed instead of failing to render it.
-    #[serde(default)]
-    pub(crate) tenant_name: String,
-    /// PMS-748: how to reach that MSP, when the form carries it. MAPPS-429:
-    /// falls back to the organisation's own contact, server-side.
-    #[serde(default)]
-    pub(crate) contact_info: Option<String>,
-    /// MAPPS-429: path to the MSP's logo, relative to the API base. Joined here
-    /// rather than server-side, because the server cannot know which origin
-    /// this page resolved the API to.
-    #[serde(default)]
-    pub(crate) logo_url: Option<String>,
-    #[serde(default)]
-    pub(crate) rules: Vec<PublicRule>,
-    pub(crate) fields: Vec<PublicField>,
-}
+// MAPPS-535: `PublicField`, `PublicRule` and `PublicForm` used to be declared
+// here, a second hand copy of the public projection on top of the one in
+// `modules/forms`. They come from `mokosh_types::forms` now (PMS-898), which
+// carries the `#[serde(default)]` tolerances this page relied on, so a server
+// that predates PMS-748 or MAPPS-429 still renders the form unattributed
+// rather than not at all.
+//
+// The local `PublicRule::Unknown` is gone with them: PMS-898 put the catch-all
+// in the shared `FormRule` and made the SERVER refuse an unnamed rule on a
+// write, so the read stays tolerant without this page owning an enum for it.
+use mokosh_types::forms::FieldType;
+pub(crate) use mokosh_types::forms::{
+    FormRule as PublicRule, PublicFormField as PublicField, PublicFormResponse as PublicForm,
+};
 
 #[derive(Serialize)]
 struct SubmitBody {
@@ -197,7 +150,7 @@ pub fn RequestFormPage(token: String) -> Element {
                     .unwrap_or(false);
                 // A boolean is answered by existing: `false` is a real answer,
                 // so an unticked required checkbox is still "answered".
-                let answered = answered || f.field_type == "boolean";
+                let answered = answered || f.field_type == FieldType::Boolean;
                 if (f.is_required || required_by_rule(&def.rules, &f.name, &current)) && !answered {
                     errs.insert(f.name.clone(), format!("{} is required", f.label));
                 }
@@ -454,8 +407,8 @@ fn FieldInput(
         }
     };
 
-    match field.field_type.as_str() {
-        "textarea" => rsx! {
+    match field.field_type {
+        FieldType::Textarea => rsx! {
             Textarea {
                 name: field.name.clone(),
                 label: field.label.clone(),
@@ -468,7 +421,7 @@ fn FieldInput(
                 oninput: move |e: FormEvent| set(e.value()),
             }
         },
-        "date" => rsx! {
+        FieldType::Date => rsx! {
             DateField {
                 name: field.name.clone(),
                 label: field.label.clone(),
@@ -480,7 +433,7 @@ fn FieldInput(
                 oninput: move |e: FormEvent| set(e.value()),
             }
         },
-        "select" => rsx! {
+        FieldType::Select => rsx! {
             Select {
                 name: field.name.clone(),
                 label: field.label.clone(),
@@ -500,7 +453,7 @@ fn FieldInput(
                 onchange: move |e: FormEvent| set(e.value()),
             }
         },
-        "boolean" => rsx! {
+        FieldType::Boolean => rsx! {
             Checkbox {
                 name: field.name.clone(),
                 label: field.label.clone(),
@@ -525,7 +478,7 @@ fn FieldInput(
             Input {
                 name: field.name.clone(),
                 label: field.label.clone(),
-                r#type: if field.field_type == "email" { "email".to_string() } else { "text".to_string() },
+                r#type: if field.field_type == FieldType::Email { "email".to_string() } else { "text".to_string() },
                 value,
                 required,
                 disabled,
@@ -555,7 +508,7 @@ fn required_by_rule(rules: &[PublicRule], field: &str, answers: &HashMap<String,
                     .map(|v| v.trim() == equals)
                     .unwrap_or(false)
         }
-        PublicRule::Other => false,
+        PublicRule::Unknown => false,
     })
 }
 
@@ -568,7 +521,7 @@ fn build_payload(def: &PublicForm, answers: &HashMap<String, String>) -> serde_j
         let Some(raw) = answers.get(&f.name) else {
             continue;
         };
-        if f.field_type == "boolean" {
+        if f.field_type == FieldType::Boolean {
             out.insert(f.name.clone(), serde_json::Value::Bool(raw == "true"));
             continue;
         }
@@ -607,7 +560,7 @@ mod tests {
                     name: "employee_name".into(),
                     label: "Employee name".into(),
                     help_text: None,
-                    field_type: "text".into(),
+                    field_type: FieldType::Text,
                     is_required: true,
                     min_length: None,
                     max_length: None,
@@ -618,7 +571,7 @@ mod tests {
                     name: "equipment_moves".into(),
                     label: "Equipment moves".into(),
                     help_text: None,
-                    field_type: "boolean".into(),
+                    field_type: FieldType::Boolean,
                     is_required: false,
                     min_length: None,
                     max_length: None,
@@ -646,7 +599,7 @@ mod tests {
         let rules: Vec<PublicRule> =
             serde_json::from_str(r#"[{"kind":"invented_later","field":"x"}]"#)
                 .expect("an unknown rule kind still deserialises");
-        assert_eq!(rules, vec![PublicRule::Other]);
+        assert_eq!(rules, vec![PublicRule::Unknown]);
         assert!(!required_by_rule(&rules, "x", &HashMap::new()));
     }
 

@@ -28,6 +28,7 @@ use crate::components::{
     Input, MailIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
     TableHeader, TableLoading, TableRow,
 };
+use crate::modules::forms::RequestLinkExt;
 use crate::modules::forms::{
     FormDefinition, IssueRequestLinkRequest, RequestLink, RequestLinkStatus,
 };
