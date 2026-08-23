@@ -116,7 +116,10 @@ fn format_created(when: chrono::DateTime<chrono::Utc>) -> String {
 #[cfg(feature = "multi-tenant")]
 #[component]
 pub fn TenantManagementPage() -> Element {
-    use_page_title("Tenant Management");
+    // MAPPS-547: user-facing rename Tenants -> Clients. Route + component
+    // name + Rust types stay `TenantManagement` / `Tenant*` / `tenant_id`
+    // (schema jargon), only strings the operator sees flip.
+    use_page_title("Client Management");
     // MAPPS-518: this whole surface (list / create / suspend /
     // activate / resend welcome / edit tenant admin) is gated on
     // the platform-admin bearer server-side. If the operator has not
@@ -187,7 +190,7 @@ pub fn TenantManagementPage() -> Element {
     // reconnect (the resource subscribes to reachability above).
     if !crate::hooks::use_server_reachable() && source == TenantSource::Demo && !is_loading {
         return rsx! {
-            crate::components::ContentUnavailable { title: "Tenant Management".to_string() }
+            crate::components::ContentUnavailable { title: "Client Management".to_string() }
         };
     }
 
@@ -228,25 +231,25 @@ pub fn TenantManagementPage() -> Element {
 
     rsx! {
         PageHeader {
-            title: "Tenant Management",
-            subtitle: "Manage tenants and subscriptions",
+            title: "Client Management",
+            subtitle: "Manage clients and subscriptions",
             // MAPPS-396: super-admin add-tenant flow. Server side is
-            // `POST /api/v1/tenants` (RequireSuperAdmin) which now
-            // accepts optional branding on the initial insert.
+            // `POST /api/v1/tenants` (RequirePlatformAdmin post-MAPPS-518)
+            // which now accepts optional branding on the initial insert.
             actions: rsx! {
                 Button {
                     variant: ButtonVariant::Primary,
                     disabled: !can_mutate,
-                    title: (!can_mutate).then(|| "Can't create tenants while the server is unreachable".to_string()),
+                    title: (!can_mutate).then(|| "Can't create clients while the server is unreachable".to_string()),
                     onclick: move |_| show_create.set(true),
-                    "Create tenant"
+                    "Create client"
                 }
             },
         }
 
         // Stats
         div { class: "grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 mb-6",
-            StatCard { label: "Total Tenants", value: "{total_tenants_label}" }
+            StatCard { label: "Total Clients", value: "{total_tenants_label}" }
             StatCard { label: "Active", value: "{active_label}" }
             StatCard { label: "Trial", value: "{trial_label}" }
             StatCard { label: "MRR", value: "-" }
@@ -255,7 +258,7 @@ pub fn TenantManagementPage() -> Element {
         if source == TenantSource::Demo && !is_loading {
             div {
                 class: "mb-3 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-md px-3 py-2",
-                "Backend tenants API not reachable - showing demo rows."
+                "Backend clients API not reachable - showing demo rows."
             }
         }
 
@@ -268,7 +271,7 @@ pub fn TenantManagementPage() -> Element {
             Table {
                 TableHead {
                     TableRow {
-                        TableHeader { sortable: true, "Tenant" }
+                        TableHeader { sortable: true, "Client" }
                         TableHeader { "Plan" }
                         TableHeader { sortable: true, "Users" }
                         TableHeader { "MRR" }
@@ -284,7 +287,7 @@ pub fn TenantManagementPage() -> Element {
                     TableEmpty {
                         columns: 7,
                         title: "No tenants yet".to_string(),
-                        description: "Tenants will appear here once they sign up or are provisioned.".to_string(),
+                        description: "Clients will appear here once they sign up or are provisioned.".to_string(),
                     }
                 } else {
                     TableBody {
@@ -530,11 +533,11 @@ fn TenantRow(props: TenantRowProps) -> Element {
                                             {
                                                 let msg = if suspend {
                                                     format!(
-                                                        "Suspend tenant \"{name}\"? Signed-in users will be forced out on their next request and the tenant's portal will stop resolving.",
+                                                        "Suspend client \"{name}\"? Signed-in users will be forced out on their next request and the client's portal will stop resolving.",
                                                     )
                                                 } else {
                                                     format!(
-                                                        "Reactivate tenant \"{name}\"? The tenant will resume normal access on their next request.",
+                                                        "Reactivate client \"{name}\"? The client will resume normal access on their next request.",
                                                     )
                                                 };
                                                 let confirmed = web_sys::window()
@@ -554,9 +557,9 @@ fn TenantRow(props: TenantRowProps) -> Element {
                                                     match crate::hooks::fetch::api::post_platform_authed_no_content(&path).await {
                                                         Ok(_) => {
                                                             let toast = if suspend {
-                                                                format!("Tenant \"{name}\" suspended.")
+                                                                format!("Client \"{name}\" suspended.")
                                                             } else {
-                                                                format!("Tenant \"{name}\" reactivated.")
+                                                                format!("Client \"{name}\" reactivated.")
                                                             };
                                                             crate::hooks::toast::push_toast(
                                                                 crate::components::AlertType::Success,
@@ -765,7 +768,7 @@ fn CreateTenantModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> El
         let s = slug.read().trim().to_ascii_lowercase();
         let ae = admin_email.read().trim().to_string();
         if n.is_empty() || s.is_empty() || ae.is_empty() {
-            error.set("Tenant name, slug and admin email are required.".to_string());
+            error.set("Client name, slug and admin email are required.".to_string());
             return;
         }
         let body = CreateTenantBody {
@@ -830,9 +833,9 @@ fn CreateTenantModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> El
     let created_admin_email_str = created_admin_email.read().clone();
 
     let modal_title = if is_created {
-        "Tenant created".to_string()
+        "Client created".to_string()
     } else {
-        "Create tenant".to_string()
+        "Create client".to_string()
     };
     let modal_footer = if is_created {
         rsx! {
@@ -906,7 +909,7 @@ fn CreateTenantModal(onclose: EventHandler<()>, onsaved: EventHandler<()>) -> El
                 }
                 Input {
                     name: "tenant_name",
-                    label: "Tenant name",
+                    label: "Client name",
                     r#type: "text".to_string(),
                     value: name(),
                     required: true,
@@ -1104,7 +1107,7 @@ fn EditTenantModal(
         }
         let n = name.read().trim().to_string();
         if n.is_empty() {
-            error.set("Tenant name is required.".to_string());
+            error.set("Client name is required.".to_string());
             return;
         }
         // MAPPS-449: only send `slug` when the operator actually changed
@@ -1245,7 +1248,7 @@ fn EditTenantModal(
     rsx! {
         Modal {
             open: true,
-            title: format!("Edit tenant: {}", tenant.name),
+            title: format!("Edit client: {}", tenant.name),
             onclose: move |_| {
                 if !saving() {
                     onclose.call(());
@@ -1274,7 +1277,7 @@ fn EditTenantModal(
                 }
                 Input {
                     name: "tenant_name",
-                    label: "Tenant name",
+                    label: "Client name",
                     r#type: "text".to_string(),
                     value: name(),
                     required: true,
@@ -1484,6 +1487,6 @@ fn EditTenantModal(
 #[component]
 pub fn TenantManagementPage() -> Element {
     rsx! {
-        div { "Tenant management is not available in single-tenant mode." }
+        div { "Client management is not available in single-tenant mode." }
     }
 }

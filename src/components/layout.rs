@@ -720,7 +720,14 @@ fn TenantsNavItem(props: TenantsNavItemProps) -> Element {
         NavItem {
             to: Route::TenantManagement {},
             icon: rsx!(BuildingIcon {}),
-            label: "Tenants",
+            // MAPPS-547: the mokosh super-admin manages "Clients" here
+            // (MSPs paying for the platform). "Tenant" is schema jargon
+            // (`tenants` table, `tenants.kind`); the operator-facing
+            // label is "Client". Route + component + Rust type names
+            // (Route::TenantManagement, TenantManagementPage) stay
+            // unchanged so bookmarks and internal code references
+            // still work.
+            label: "Clients",
             collapsed: props.collapsed,
         }
     }
