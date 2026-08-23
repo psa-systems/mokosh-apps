@@ -19,10 +19,10 @@ Area: `src/pages/knowledge_base.rs`, `src/modules/kb/`, `Cargo.toml`
 
 The Knowledge Base client pages were wired to the API under PMS-79. They work, but the reading and authoring experience is rough:
 
-- The article body is rendered inside a `<pre class="whitespace-pre-wrap">` block ([knowledge_base.rs:655](../src/pages/knowledge_base.rs#L655)). Markdown source is shown verbatim, not rendered, and the `<pre>` gives it a boxed, monospace look. A comment at line 651 explicitly defers real rendering.
+- The article body is rendered inside a `<pre class="whitespace-pre-wrap">` block ([knowledge_base.rs:655](../../src/pages/knowledge_base.rs#L655)). Markdown source is shown verbatim, not rendered, and the `<pre>` gives it a boxed, monospace look. A comment at line 651 explicitly defers real rendering.
 - The article detail view is a 4-column grid: the article occupies `lg:col-span-3` on the left with the rating thumbs embedded in that same column, and the right `1/4` holds metadata plus version history.
 - There is no way to browse between articles without going back to the list; the category hierarchy (`KbCategory.parent_id`) is not surfaced as navigation.
-- On the create/edit form, the slug only derives from the title at submit time when left blank ([knowledge_base.rs:1035](../src/pages/knowledge_base.rs#L1035)); it does not update live as the author types the title.
+- On the create/edit form, the slug only derives from the title at submit time when left blank ([knowledge_base.rs:1035](../../src/pages/knowledge_base.rs#L1035)); it does not update live as the author types the title.
 - There is no preview of the markdown while authoring.
 
 The data model already supports the target design: `KbCategory` carries `parent_id`, `slug`, and `sort_order` (a real hierarchy); `KbArticle` carries `category_id`, `content` (markdown), `helpful_count`/`not_helpful_count`, and versions exist via `KbArticleVersion`. `pulldown-cmark = "0.12"` is already a dependency.

@@ -1,11 +1,11 @@
 # Changelog
 
-Internal, name-free history for mokosh-apps. Retired point-in-time docs (milestone handoffs, audit reports) are distilled here so the tree keeps only forward-useful reference material. The living per-page status doc is `codebase-state.md` (kept, not folded). Entries are newest-first and vary in depth.
+Internal, name-free history for mokosh-apps. Retired point-in-time docs (milestone handoffs, audit reports) are distilled here so the tree keeps only forward-useful reference material. `codebase-state.md` was kept rather than folded in, and is itself a retired point-in-time audit as of MAPPS-540: it records a 2026-05-06 walk and is not maintained. Entries are newest-first and vary in depth.
 
 ## 2026-07-01 - Docs reorganization and history sanitization
 
 - Markdown consolidated under `docs/` (public / how-to) and `docs/dev-docs/` (internal working notes); `README.md` stays at the repo root, README files stay colocated with their code. The two source comments that pointed at moved docs were repointed.
-- Retired audits and the 2026-05 milestone-1 handoff were removed and distilled into the entries below. `codebase-state.md` was kept (it is the per-page status and F1..F19 tracker) and moved to `docs/dev-docs/`.
+- Retired audits and the 2026-05 milestone-1 handoff were removed and distilled into the entries below. `codebase-state.md` was kept (it carries the F1..F19 ids that source comments cite) and moved to `docs/dev-docs/`. MAPPS-540 later reframed it as the historical record it always was.
 - The local-only `For AI/` scratch directory stays gitignored. Contributor names were stripped from commit-message text in a companion history rewrite; git author/committer fields were left unchanged.
 
 ## 2026-06 - Client form-validation sweep (distilled)
