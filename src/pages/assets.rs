@@ -354,6 +354,10 @@ enum WarrantyRefreshStatus {
 
 const WARRANTY_REFRESH_THRESHOLD_DAYS: i64 = 30;
 
+/// MAPPS-546: rows per page on the asset list, sent to the server rather than
+/// applied to what came back.
+const PER_PAGE: usize = 25;
+
 /// Compute the refresh-status bucket from a server-formatted (`YYYY-MM-DD`)
 /// warranty date string compared to today (in the user's timezone, via
 /// `user_today`). Pure read-only - the field's not mutated, the cue is
@@ -411,16 +415,37 @@ pub fn AssetListPage() -> Element {
     // `.unwrap_or_default()`) so a failed load stays distinguishable from an
     // empty list, letting the outage render ContentUnavailable below, and it
     // subscribes to reachability so the list auto-refetches on reconnect.
-    let mut assets_resource = use_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        let _reachable = crate::hooks::use_server_reachable();
-        let mut path = String::from("/assets");
-        if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
-            path.push_str(&format!("?company_id={company_id}"));
+    let mut page = use_signal(|| 1usize);
+    // MAPPS-546: one page at a time, with the search sent to the server.
+    // MAPPS-543 had this fetching every asset in the tenant so the browser
+    // could filter them, which was correct and unbounded. The search is `q`,
+    // which PMS-894 taught to match serial numbers as well as names - without
+    // that, moving the filter here would have silently dropped serial search,
+    // and a serial is what an operator pastes in off the hardware.
+    //
+    // Every reactive input is read INSIDE the closure: Dioxus only re-runs a
+    // resource when a signal read within it changes, so a value captured
+    // outside would leave the resource serving page 1 for ever (MAPPS-148).
+    let mut assets_resource = use_resource(move || {
+        let q = search.read().trim().to_string();
+        let current_page = (*page.read()).max(1);
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let _reachable = crate::hooks::use_server_reachable();
+            let mut path = format!("/assets?page={current_page}&per_page={PER_PAGE}");
+            if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
+                path.push_str(&format!("&company_id={company_id}"));
+            }
+            if !q.is_empty() {
+                path.push_str(&format!(
+                    "&q={}",
+                    crate::utils::url::encode_uri_component(&q)
+                ));
+            }
+            crate::hooks::fetch::api::get_authed::<Paginated<RemoteAsset>>(&path)
+                .await
+                .ok()
         }
-        crate::hooks::fetch::api::get_all_authed::<RemoteAsset>(&path)
-            .await
-            .ok()
     });
     let types_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
@@ -440,7 +465,12 @@ pub fn AssetListPage() -> Element {
     let snapshot = assets_resource.read_unchecked().clone();
     let is_loading = snapshot.is_none();
     let load_failed = matches!(&snapshot, Some(None));
-    let assets: Vec<RemoteAsset> = snapshot.flatten().unwrap_or_default();
+    let page_envelope = snapshot.flatten();
+    let total = page_envelope
+        .as_ref()
+        .map(|p| p.meta.total as usize)
+        .unwrap_or_default();
+    let assets: Vec<RemoteAsset> = page_envelope.map(|p| p.data).unwrap_or_default();
     let types = types_resource.read_unchecked().clone().unwrap_or_default();
     let companies = companies_resource
         .read_unchecked()
@@ -473,19 +503,9 @@ pub fn AssetListPage() -> Element {
             .unwrap_or_else(|| "-".to_string())
     };
 
-    let needle = search.read().to_lowercase();
-    let filtered: Vec<&RemoteAsset> = assets
-        .iter()
-        .filter(|a| {
-            needle.is_empty()
-                || a.name.to_lowercase().contains(&needle)
-                || a.serial_number
-                    .as_deref()
-                    .map(|s| s.to_lowercase().contains(&needle))
-                    .unwrap_or(false)
-        })
-        .collect();
-    let total = filtered.len();
+    // MAPPS-546: no client-side filter. The rows are the page the server
+    // matched, and `total` is its count of every match - not of this page.
+    let filtered: Vec<&RemoteAsset> = assets.iter().collect();
 
     rsx! {
         PageHeader {
@@ -512,7 +532,10 @@ pub fn AssetListPage() -> Element {
             SearchInput {
                 value: search.read().clone(),
                 placeholder: "Search by name or serial…",
-                oninput: move |e: FormEvent| search.set(e.value()),
+                oninput: move |e: FormEvent| {
+                    search.set(e.value());
+                    page.set(1);
+                },
             }
         }
 
@@ -621,9 +644,10 @@ pub fn AssetListPage() -> Element {
 
         DataTable {
             total_items: total,
-            current_page: 1,
-            per_page: if total == 0 { 25 } else { total },
+            current_page: (*page.read()).max(1),
+            per_page: PER_PAGE,
             columns: 5,
+            onpagechange: move |p| page.set(p),
             Table {
                 TableHead {
                     TableRow {

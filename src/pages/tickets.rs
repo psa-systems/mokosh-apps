@@ -11,7 +11,11 @@ use crate::components::{
     SelectAllHeader, SelectOption, SelectRowCell, SortDirection, Table, TableBody, TableCell,
     TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea, UserCircleIcon,
 };
-use crate::utils::{FormGuard, Rule};
+use crate::utils::{FormGuard, Paginated, Rule};
+
+/// MAPPS-546: rows per page on the ticket list, sent to the server rather than
+/// written into the table as a constant.
+const PER_PAGE: usize = 25;
 use crate::Route;
 
 /// Subset of mokosh-server's `TicketResponse` we render in the list. The
@@ -446,6 +450,22 @@ enum TicketSortKey {
     Updated,
 }
 
+/// MAPPS-546: the server's name for each sortable column.
+///
+/// These are the keys PMS-894 put on `list_ticket_responses`' allow-list. They
+/// are deliberately not SQL: the server maps them to expressions, so this
+/// client cannot name a column even by accident.
+fn ticket_sort_param(key: TicketSortKey) -> &'static str {
+    match key {
+        TicketSortKey::Ticket => "ticket_number",
+        TicketSortKey::Company => "company_name",
+        TicketSortKey::Status => "status",
+        TicketSortKey::Priority => "priority",
+        TicketSortKey::Assigned => "assigned_to_name",
+        TicketSortKey::Updated => "updated_at",
+    }
+}
+
 fn ticket_sort_dir_for(
     current: &Option<(TicketSortKey, SortDirection)>,
     key: TicketSortKey,
@@ -453,9 +473,15 @@ fn ticket_sort_dir_for(
     current.and_then(|(k, dir)| if k == key { Some(dir) } else { None })
 }
 
+/// MAPPS-546: takes the page signal too, and resets it. The sort is applied by
+/// the server now, so re-sorting while on page 3 would otherwise hand back
+/// page 3 of a different ordering - a jump to unrelated rows that reads as a
+/// bug. `contacts.rs::toggle_sort` has taken the page for the same reason since
+/// it was paged.
 fn toggle_ticket_sort(
     current: &mut Signal<Option<(TicketSortKey, SortDirection)>>,
     key: TicketSortKey,
+    page: &mut Signal<usize>,
 ) {
     let next = match *current.read() {
         Some((k, SortDirection::Ascending)) if k == key => Some((key, SortDirection::Descending)),
@@ -463,6 +489,7 @@ fn toggle_ticket_sort(
         _ => Some((key, SortDirection::Ascending)),
     };
     current.set(next);
+    page.set(1);
 }
 
 /// Ticket list page
@@ -470,6 +497,7 @@ fn toggle_ticket_sort(
 pub fn TicketListPage() -> Element {
     use_page_title("Tickets");
     let mut search = use_signal(String::new);
+    let mut page = use_signal(|| 1usize);
     let mut status_filter = use_signal(String::new);
     let mut priority_filter = use_signal(String::new);
     // MAPPS-289: sortable-column state. Sorting here is entirely client-side
@@ -509,33 +537,88 @@ pub fn TicketListPage() -> Element {
             .ok()
             .unwrap_or_default()
     });
+    // MAPPS-546: the tenant's own priorities, for the same reason as the
+    // statuses above - the filter sends an id, and the previous hardcoded
+    // critical/high/medium/low list offered values a renamed priority would
+    // never match.
+    let priority_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_all_authed::<RemoteTicketPriority>("/tickets/priorities")
+            .await
+            .ok()
+            .unwrap_or_default()
+    });
 
     // MAPPS-438: `None` is a failed load, exactly like the other list pages.
     // The page renders only what the backend returned.
     // MAPPS-249: a company context card's "View All" lands here with
     // `?company_id=<uuid>`. When present, scope the fetch to that company so the
     // list shows only its tickets and every row stays inside the same company.
-    let mut tickets_resource = use_resource(|| async {
-        // MAPPS-357: subscribe to reachability so the list auto-refetches the
-        // instant the server returns, and so a failed load stays distinguishable
-        // from an empty one.
-        let _reachable = crate::hooks::use_server_reachable();
-        let token = crate::hooks::fetch::api::current_access_token()?;
-        let mut path = String::from("/tickets");
-        if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
-            path.push_str(&format!("?company_id={company_id}"));
+    // MAPPS-546: one page at a time, with every filter and the sort sent to the
+    // server. MAPPS-543 had this fetching every ticket in the tenant so the
+    // browser could filter and sort them, which was correct and unbounded on
+    // the busiest page in the product.
+    //
+    // The search reaches company and assignee because PMS-894 widened `q` to
+    // match them; before that, moving this filter server-side would have
+    // stopped finding tickets by client name, which is how most people look for
+    // one. The sort keys are the ones PMS-894 added to the allow-list - and
+    // note what `order_by` does with a key that is NOT on it: it drops it and
+    // sorts by the default, returning a 200. A page that looks sorted and is
+    // not is why those had to land first.
+    //
+    // Every reactive input is read INSIDE the closure so the resource
+    // subscribes to it (MAPPS-148).
+    let mut tickets_resource = use_resource(move || {
+        let q = search.read().trim().to_string();
+        let status_id = status_filter.read().clone();
+        let priority_id = priority_filter.read().clone();
+        let sort_snapshot = *sort.read();
+        let current_page = (*page.read()).max(1);
+        async move {
+            // MAPPS-357: subscribe to reachability so the list auto-refetches the
+            // instant the server returns, and so a failed load stays distinguishable
+            // from an empty one.
+            let _reachable = crate::hooks::use_server_reachable();
+            let token = crate::hooks::fetch::api::current_access_token()?;
+            let mut path = format!("/tickets?page={current_page}&per_page={PER_PAGE}");
+            if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
+                path.push_str(&format!("&company_id={company_id}"));
+            }
+            if !q.is_empty() {
+                path.push_str(&format!(
+                    "&q={}",
+                    crate::utils::url::encode_uri_component(&q)
+                ));
+            }
+            if !status_id.is_empty() {
+                path.push_str(&format!("&status_id={status_id}"));
+            }
+            if !priority_id.is_empty() {
+                path.push_str(&format!("&priority_id={priority_id}"));
+            }
+            if let Some((key, dir)) = sort_snapshot {
+                path.push_str(&format!(
+                    "&sort={}&sort_dir={}",
+                    ticket_sort_param(key),
+                    match dir {
+                        SortDirection::Ascending => "asc",
+                        SortDirection::Descending => "desc",
+                    }
+                ));
+            }
+            crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteTicket>>(&path, &token)
+                .await
+                .ok()
         }
-        crate::hooks::fetch::api::get_all_with_auth::<RemoteTicket>(&path, &token)
-            .await
-            .ok()
     });
 
     let resource_snapshot = tickets_resource.read_unchecked();
     let is_loading = resource_snapshot.is_none();
     let fetch_failed = matches!(*resource_snapshot, Some(None));
-    let remote_tickets: Vec<RemoteTicket> = match &*resource_snapshot {
-        Some(Some(rows)) => rows.clone(),
-        _ => Vec::new(),
+    let (remote_tickets, total_matches): (Vec<RemoteTicket>, usize) = match &*resource_snapshot {
+        Some(Some(envelope)) => (envelope.data.clone(), envelope.meta.total as usize),
+        _ => (Vec::new(), 0),
     };
 
     // MAPPS-357: the ticket list is this page's PRIMARY resource. A failed load
@@ -552,89 +635,47 @@ pub fn TicketListPage() -> Element {
         };
     }
 
-    // Apply search + status/priority filters to the loaded set client-side.
-    // The controls previously only updated signals and never narrowed the
-    // list (MAPPS-154); filtering here makes them functional. Status uses
-    // the tenant's server-side name verbatim (MAPPS-295); priority still
-    // routes through the humanize helper because its options remain the
-    // hardcoded four-level slug set.
-    let search_term = search.read().trim().to_lowercase();
-    let status_name_sel = status_filter.read().clone();
-    let priority_label_sel = match priority_filter.read().as_str() {
-        "" => String::new(),
-        raw => humanize_priority(raw),
-    };
-    let mut filtered_tickets: Vec<RemoteTicket> = remote_tickets
-        .iter()
-        .filter(|t| {
-            if !search_term.is_empty() {
-                let assigned = t.assigned_to_name.as_deref().unwrap_or("");
-                let haystack = format!(
-                    "{} {} {} {}",
-                    t.ticket_number, t.title, t.company_name, assigned
-                )
-                .to_lowercase();
-                if !haystack.contains(&search_term) {
-                    return false;
-                }
-            }
-            if !status_name_sel.is_empty() && !t.status.name.eq_ignore_ascii_case(&status_name_sel)
-            {
-                return false;
-            }
-            if !priority_label_sel.is_empty()
-                && humanize_priority(&t.priority.name) != priority_label_sel
-            {
-                return false;
-            }
-            true
-        })
-        .cloned()
-        .collect();
-
-    // MAPPS-289: client-side sort over the filtered set, so a header click
-    // re-orders without a round trip. MAPPS-527: these keys are never sent to
-    // the server, so they are not bound by its sort allow-list.
-    {
-        let snap = *sort.read();
-        if let Some((key, dir)) = snap {
-            filtered_tickets.sort_by(|a, b| {
-                let ord = match key {
-                    TicketSortKey::Ticket => a.ticket_number.cmp(&b.ticket_number),
-                    TicketSortKey::Company => a.company_name.cmp(&b.company_name),
-                    TicketSortKey::Status => a.status.name.cmp(&b.status.name),
-                    TicketSortKey::Priority => a.priority.name.cmp(&b.priority.name),
-                    TicketSortKey::Assigned => a
-                        .assigned_to_name
-                        .as_deref()
-                        .unwrap_or("")
-                        .cmp(b.assigned_to_name.as_deref().unwrap_or("")),
-                    TicketSortKey::Updated => a.updated_at.cmp(&b.updated_at),
-                };
-                match dir {
-                    SortDirection::Ascending => ord,
-                    SortDirection::Descending => ord.reverse(),
-                }
-            });
-        }
-    }
+    // MAPPS-546: the search, the status and priority filters and the sort are
+    // all the server's now, so these rows ARE the matches for this page, in
+    // order. `total_matches` is the server's count of every match, not of the
+    // rows on screen.
+    let filtered_tickets: Vec<RemoteTicket> = remote_tickets;
+    // MAPPS-546: which empty state to show used to be decided by comparing the
+    // filtered rows with the unfiltered ones. Server-side, those are the same
+    // list, so the question "is this empty because the tenant has no tickets,
+    // or because the filters exclude them?" is answered by whether any filter
+    // is set.
+    let filters_active = !search.read().trim().is_empty()
+        || !status_filter.read().is_empty()
+        || !priority_filter.read().is_empty();
 
     // MAPPS-295: build the Status filter options from the tenant's actual
     // status set. A still-loading or empty resource just shows the "All
     // Statuses" placeholder option.
     let tenant_statuses = status_resource.read_unchecked().clone().unwrap_or_default();
+    // MAPPS-546: the option VALUE is the id, because the server filters on
+    // `status_id`. The label stays the tenant's own name.
     let mut status_options = vec![SelectOption::new("", "All Statuses")];
     for s in tenant_statuses.iter() {
-        status_options.push(SelectOption::new(s.name.clone(), s.name.clone()));
+        status_options.push(SelectOption::new(s.id.to_string(), s.name.clone()));
     }
 
-    let priority_options = vec![
-        SelectOption::new("", "All Priorities"),
-        SelectOption::new("critical", "Critical"),
-        SelectOption::new("high", "High"),
-        SelectOption::new("medium", "Medium"),
-        SelectOption::new("low", "Low"),
-    ];
+    // MAPPS-546: built from the tenant's own priorities, not from a hardcoded
+    // four-level slug list. The server filters on `priority_id`, so an id is
+    // needed anyway - and the hardcoded set was wrong for any tenant that had
+    // renamed or added a priority, silently offering filters that matched
+    // nothing.
+    let tenant_priorities = priority_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+    let mut priority_options = vec![SelectOption::new("", "All Priorities")];
+    for p in tenant_priorities.iter() {
+        priority_options.push(SelectOption::new(
+            p.id.to_string(),
+            humanize_priority(&p.name),
+        ));
+    }
 
     rsx! {
         PageHeader {
@@ -677,14 +718,20 @@ pub fn TicketListPage() -> Element {
                         options: status_options,
                         value: status_filter.read().clone(),
                         placeholder: "Status",
-                        onchange: move |e: FormEvent| status_filter.set(e.value()),
+                        onchange: move |e: FormEvent| {
+                            status_filter.set(e.value());
+                            page.set(1);
+                        },
                     }
                     Select {
                         name: "priority",
                         options: priority_options,
                         value: priority_filter.read().clone(),
                         placeholder: "Priority",
-                        onchange: move |e: FormEvent| priority_filter.set(e.value()),
+                        onchange: move |e: FormEvent| {
+                            priority_filter.set(e.value());
+                            page.set(1);
+                        },
                     }
                 }
             }
@@ -787,9 +834,10 @@ pub fn TicketListPage() -> Element {
         // Ticket table
         DataTable {
             loading: is_loading,
-            total_items: filtered_tickets.len(),
-            current_page: 1,
-            per_page: 25,
+            total_items: total_matches,
+            current_page: (*page.read()).max(1),
+            per_page: PER_PAGE,
+            onpagechange: move |p| page.set(p),
             columns: 6,
             Table {
                 striped: true,
@@ -806,37 +854,37 @@ pub fn TicketListPage() -> Element {
                                 TableHeader {
                                     sortable: true,
                                     sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Ticket),
-                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Ticket),
+                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Ticket, &mut page),
                                     "Ticket"
                                 }
                                 TableHeader {
                                     sortable: true,
                                     sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Company),
-                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Company),
+                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Company, &mut page),
                                     "Company"
                                 }
                                 TableHeader {
                                     sortable: true,
                                     sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Status),
-                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Status),
+                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Status, &mut page),
                                     "Status"
                                 }
                                 TableHeader {
                                     sortable: true,
                                     sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Priority),
-                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Priority),
+                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Priority, &mut page),
                                     "Priority"
                                 }
                                 TableHeader {
                                     sortable: true,
                                     sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Assigned),
-                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Assigned),
+                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Assigned, &mut page),
                                     "Assigned To"
                                 }
                                 TableHeader {
                                     sortable: true,
                                     sort_direction: ticket_sort_dir_for(&sort_snap, TicketSortKey::Updated),
-                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Updated),
+                                    onsort: move |_| toggle_ticket_sort(&mut sort, TicketSortKey::Updated, &mut page),
                                     "Updated"
                                 }
                             }
@@ -846,7 +894,7 @@ pub fn TicketListPage() -> Element {
                 if is_loading {
                     TableLoading { columns: 6, rows: 5 }
                 } else if filtered_tickets.is_empty() {
-                    if remote_tickets.is_empty() {
+                    if !filters_active {
                         // PMS-354: helpful empty state with a primary CTA,
                         // matching the Contracts reference pattern.
                         TableEmpty {

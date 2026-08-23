@@ -9,7 +9,7 @@ use crate::components::{
     SelectOption, StatCard, Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
     Textarea,
 };
-use crate::utils::{FormGuard, Rule};
+use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
 
 /// A project (`GET /api/v1/projects`). Money/hours are decoded with a
@@ -415,6 +415,9 @@ fn status_badge(status: &str) -> (BadgeVariant, &'static str) {
 // Money formatting is centralized in `crate::utils::money` (MAPPS-197).
 use crate::utils::money::format_money_f64;
 
+/// MAPPS-546: rows per page on the project list, sent to the server.
+const PER_PAGE: usize = 25;
+
 /// "Feb 28, 2025" from an ISO date string; raw string on parse failure,
 /// "-" when absent.
 fn fmt_date(s: &Option<String>) -> String {
@@ -427,10 +430,24 @@ fn fmt_date(s: &Option<String>) -> String {
 }
 
 /// Project list page
+/// MAPPS-546: the tenant-wide totals behind the stat cards, from
+/// `GET /projects/summary` (PMS-894). Counts are keyed by `projects.status`,
+/// and a status no project holds is absent rather than zero, so every read
+/// below defaults.
+#[derive(Clone, Debug, Deserialize, Default)]
+struct ProjectSummary {
+    #[serde(default)]
+    counts_by_status: std::collections::BTreeMap<String, i64>,
+    /// Money crosses the wire as a string; parsed once here for the formatter.
+    #[serde(default)]
+    total_budget: String,
+}
+
 #[component]
 pub fn ProjectListPage() -> Element {
     use_page_title("Projects");
     let mut search = use_signal(String::new);
+    let mut page = use_signal(|| 1usize);
     let mut status_filter = use_signal(String::new);
 
     let status_options = vec![
@@ -449,13 +466,46 @@ pub fn ProjectListPage() -> Element {
     // honest unavailable state below instead of an empty grid with zero stat
     // counts, and auto-refetches on reconnect. The query-param subscription
     // stays inside the fetcher.
-    let projects_resource = crate::hooks::use_remote_resource(|| async {
-        let _gen = crate::hooks::fetch::active_tenant_generation();
-        let mut path = String::from("/projects");
-        if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
-            path.push_str(&format!("?company_id={company_id}"));
+    // MAPPS-546: one page at a time, with the search and status filter sent to
+    // the server. MAPPS-543 had this fetching every project so the browser
+    // could filter them, which was correct and unbounded. The search is `q`
+    // (PMS-895); without it, moving the filter here would have left the box
+    // filtering whichever page was loaded and calling that the whole answer.
+    //
+    // Every reactive input is read INSIDE the closure, so the resource
+    // subscribes to it (MAPPS-148): a value captured outside would leave this
+    // serving page 1 for ever while the footer label changed.
+    let projects_resource = crate::hooks::use_remote_resource(move || {
+        let q = search.read().trim().to_string();
+        let status = status_filter.read().clone();
+        let current_page = (*page.read()).max(1);
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            let mut path = format!("/projects?page={current_page}&per_page={PER_PAGE}");
+            if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
+                path.push_str(&format!("&company_id={company_id}"));
+            }
+            if !status.is_empty() {
+                path.push_str(&format!("&status={status}"));
+            }
+            if !q.is_empty() {
+                path.push_str(&format!(
+                    "&q={}",
+                    crate::utils::url::encode_uri_component(&q)
+                ));
+            }
+            crate::hooks::fetch::api::get_authed::<Paginated<RemoteProject>>(&path).await
         }
-        crate::hooks::fetch::api::get_all_authed::<RemoteProject>(&path).await
+    });
+    // MAPPS-546: the stat cards are tenant-wide totals, so they come from the
+    // server's aggregate (PMS-894) rather than from the rows on screen. They
+    // used to be computed from the fetched projects, which meant they reported
+    // one page as soon as a tenant had more than one.
+    let summary_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<ProjectSummary>("/projects/summary")
+            .await
+            .ok()
     });
     // Company names are a SECONDARY lookup: a missing list just renders
     // "Unknown company", so it keeps degrading to a default rather than
@@ -476,7 +526,9 @@ pub fn ProjectListPage() -> Element {
         };
     }
     let is_loading = projects_resource.is_loading();
-    let projects: Vec<RemoteProject> = projects_resource.value_or_default();
+    let page_envelope = projects_resource.value_or_default();
+    let total = page_envelope.meta.total as usize;
+    let projects: Vec<RemoteProject> = page_envelope.data;
     let companies = companies_resource
         .read_unchecked()
         .clone()
@@ -493,11 +545,24 @@ pub fn ProjectListPage() -> Element {
         }
     };
 
-    // Stat cards computed from the fetched projects (no hardcoded totals).
-    let active = projects.iter().filter(|p| p.status == "active").count();
-    let on_hold = projects.iter().filter(|p| p.status == "on_hold").count();
-    let completed = projects.iter().filter(|p| p.status == "completed").count();
-    let total_value: f64 = projects.iter().filter_map(|p| p.budget_amount).sum();
+    // MAPPS-546: tenant-wide totals from `/projects/summary`, not from the rows
+    // on screen. Counting the fetched page reported one page as the tenant.
+    let summary = summary_resource
+        .read_unchecked()
+        .clone()
+        .flatten()
+        .unwrap_or_default();
+    let count_of = |status: &str| {
+        summary
+            .counts_by_status
+            .get(status)
+            .copied()
+            .unwrap_or_default() as usize
+    };
+    let active = count_of("active");
+    let on_hold = count_of("on_hold");
+    let completed = count_of("completed");
+    let total_value: f64 = summary.total_budget.parse().unwrap_or_default();
     // Normalize negative zero (and tiny negatives that round to zero) so the card
     // shows "$0" instead of "$-0".
     let total_value = if total_value.round() == 0.0 {
@@ -509,14 +574,9 @@ pub fn ProjectListPage() -> Element {
     // project card / budget panel ($1,234.00) instead of a bare $1234.
     let total_value_label = format_money_f64(Some(total_value));
 
-    // Client-side search + status filter.
-    let needle = search.read().to_lowercase();
-    let sf = status_filter.read().clone();
-    let filtered: Vec<&RemoteProject> = projects
-        .iter()
-        .filter(|p| sf.is_empty() || p.status == sf)
-        .filter(|p| needle.is_empty() || p.name.to_lowercase().contains(&needle))
-        .collect();
+    // MAPPS-546: the search and status filter are the server's now, so these
+    // rows ARE the matches for this page.
+    let filtered: Vec<&RemoteProject> = projects.iter().collect();
 
     rsx! {
         PageHeader {
@@ -555,14 +615,20 @@ pub fn ProjectListPage() -> Element {
                     SearchInput {
                         value: search.read().clone(),
                         placeholder: "Search projects…",
-                        oninput: move |e: FormEvent| search.set(e.value()),
+                        oninput: move |e: FormEvent| {
+                            search.set(e.value());
+                            page.set(1);
+                        },
                     }
                 }
                 Select {
                     name: "status",
                     options: status_options,
                     value: status_filter.read().clone(),
-                    onchange: move |e: FormEvent| status_filter.set(e.value()),
+                    onchange: move |e: FormEvent| {
+                        status_filter.set(e.value());
+                        page.set(1);
+                    },
                 }
             }
         }
@@ -678,6 +744,16 @@ pub fn ProjectListPage() -> Element {
                     }
                 }
             }
+        }
+
+        // MAPPS-546: the list is a card grid, not a DataTable, so it gets the
+        // standalone pager rather than the table's built-in one. `total` is
+        // the server's count of every match, not of the cards above it.
+        crate::components::Pagination {
+            current_page: (*page.read()).max(1),
+            total_items: total,
+            per_page: PER_PAGE,
+            onpagechange: move |p| page.set(p),
         }
     }
 }
