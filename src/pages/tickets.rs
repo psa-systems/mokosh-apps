@@ -11,7 +11,7 @@ use crate::components::{
     SelectAllHeader, SelectOption, SelectRowCell, SortDirection, Table, TableBody, TableCell,
     TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea, UserCircleIcon,
 };
-use crate::utils::{FormGuard, Paginated, Rule};
+use crate::utils::{FormGuard, Rule};
 use crate::Route;
 
 /// Subset of mokosh-server's `TicketResponse` we render in the list. The
@@ -504,10 +504,9 @@ pub fn TicketListPage() -> Element {
     // strictly better than fabricating slugs.
     let status_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketStatus>>("/tickets/statuses")
+        crate::hooks::fetch::api::get_all_authed::<RemoteTicketStatus>("/tickets/statuses")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
 
@@ -526,10 +525,9 @@ pub fn TicketListPage() -> Element {
         if let Some(company_id) = crate::utils::url::current_query_param("company_id") {
             path.push_str(&format!("?company_id={company_id}"));
         }
-        crate::hooks::fetch::api::get_with_auth::<Paginated<RemoteTicket>>(&path, &token)
+        crate::hooks::fetch::api::get_all_with_auth::<RemoteTicket>(&path, &token)
             .await
             .ok()
-            .map(|page| page.data)
     });
 
     let resource_snapshot = tickets_resource.read_unchecked();
@@ -1203,12 +1201,9 @@ pub fn TicketNewPage() -> Element {
     // matches the server's PaginatedResponse wire shape; meta is ignored
     // here (lookup tables are short enough to fit one page).
     let priorities_resource = use_resource(|| async move {
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketPriority>>(
-            "/tickets/priorities",
-        )
-        .await
-        .map(|p| p.data)
-        .unwrap_or_default()
+        crate::hooks::fetch::api::get_all_authed::<RemoteTicketPriority>("/tickets/priorities")
+            .await
+            .unwrap_or_default()
     });
 
     // Once priorities load, seed the signal with the tenant's default row
@@ -1708,11 +1703,9 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
         let id = id_for_notes.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<RemoteNote>>(&format!(
-                "/tickets/{id}/notes"
-            ))
-            .await
-            .ok()
+            crate::hooks::fetch::api::get_all_authed::<RemoteNote>(&format!("/tickets/{id}/notes"))
+                .await
+                .ok()
         }
     });
     let id_for_time = props.id.clone();
@@ -1720,7 +1713,7 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
         let id = id_for_time.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<RemoteTimeEntry>>(&format!(
+            crate::hooks::fetch::api::get_all_authed::<RemoteTimeEntry>(&format!(
                 "/time-entries?ticket_id={id}"
             ))
             .await
@@ -1732,21 +1725,19 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
         let id = id_for_history.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
-            crate::hooks::fetch::api::get_authed::<Paginated<HistoryEntry>>(&format!(
+            crate::hooks::fetch::api::get_all_authed::<HistoryEntry>(&format!(
                 "/audit-log/entity/tickets/{id}"
             ))
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
         }
     });
     let users_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<UserOpt>>("/auth/users")
+        crate::hooks::fetch::api::get_all_authed::<UserOpt>("/auth/users")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
     // PMS-359: the tenant's ticket statuses + priorities, fetched once
@@ -1755,21 +1746,17 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
     // (PMS-358).
     let statuses_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketStatus>>("/tickets/statuses")
+        crate::hooks::fetch::api::get_all_authed::<RemoteTicketStatus>("/tickets/statuses")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
     let priorities_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<RemoteTicketPriority>>(
-            "/tickets/priorities",
-        )
-        .await
-        .ok()
-        .map(|p| p.data)
-        .unwrap_or_default()
+        crate::hooks::fetch::api::get_all_authed::<RemoteTicketPriority>("/tickets/priorities")
+            .await
+            .ok()
+            .unwrap_or_default()
     });
     // PMS-359: per-field error message surfaced inline below the editor.
     // One signal is enough since at most one of the three editors fires
@@ -1897,14 +1884,12 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
         .read_unchecked()
         .clone()
         .flatten()
-        .map(|p| p.data)
         .unwrap_or_default();
     let note_count = notes.len();
     let time_entries: Vec<RemoteTimeEntry> = time_resource
         .read_unchecked()
         .clone()
         .flatten()
-        .map(|p| p.data)
         .unwrap_or_default();
     let total_minutes: i32 = time_entries.iter().map(|e| e.duration_minutes).sum();
     let total_hours_label = format!("{:.1} hours", total_minutes as f64 / 60.0);
@@ -3006,10 +2991,9 @@ pub fn ApprovalsSection(props: ApprovalsSectionProps) -> Element {
     });
     let users_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
-        crate::hooks::fetch::api::get_authed::<Paginated<UserPickerRow>>("/auth/users")
+        crate::hooks::fetch::api::get_all_authed::<UserPickerRow>("/auth/users")
             .await
             .ok()
-            .map(|p| p.data)
             .unwrap_or_default()
     });
 
