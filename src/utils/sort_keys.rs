@@ -1,32 +1,34 @@
-//! Server-accepted `?sort=` keys, mirrored from mokosh-server's
-//! `PaginationParams::order_by` allow-lists.
+//! Server-accepted `?sort=` keys, and the query fragments built from them.
 //!
-//! MAPPS-527: the server drops an unrecognised `sort` silently and answers in
-//! its default order, so a key the SPA invents renders a sorted column header
-//! over rows that never moved. Every `?sort=` value the SPA sends is asserted
-//! against these lists by the tests here and in the pages that build the
-//! query, so a new sort control cannot ship a key the server ignores.
+//! PMS-897: these come from `mokosh_types::sort` now. They used to be a hand
+//! copy of allow-lists that lived as locals inside the server's service
+//! functions, and this file said so - and the copy went stale within a day of
+//! being written. PMS-894 added five sort keys to the ticket list, MAPPS-546
+//! started sending all five, and nothing obliged the mirror to follow, so it
+//! still claimed the two ticket listers shared one list.
 //!
-//! Mirrored by hand because the allow-lists are locals inside the server's
-//! service functions and are not exported through `mokosh-types`. Making the
-//! server reject an unrecognised key with a 422, and exporting the lists so
-//! the compiler enforces this pairing, is MAPPS-533.
+//! Re-exports rather than a second name, so the tests below and in the pages
+//! keep asserting against the server's own definition. MAPPS-533 also made the
+//! server answer 422 for a key it does not accept, so a drift that survives
+//! this file now fails a request rather than quietly reordering a page.
 
-/// `GET /api/v1/contacts/companies`, from mokosh-server
-/// `src/modules/contacts/service.rs` (`list_companies`).
-pub const COMPANY_SORT_KEYS: &[&str] = &["name", "created_at", "updated_at"];
+/// `GET /api/v1/contacts/companies`.
+pub use mokosh_types::sort::COMPANIES as COMPANY_SORT_KEYS;
 
-/// `GET /api/v1/contacts/contacts`, from mokosh-server
-/// `src/modules/contacts/service.rs` (`list_contacts`).
-pub const CONTACT_SORT_KEYS: &[&str] = &["first_name", "last_name", "email", "created_at"];
+/// `GET /api/v1/contacts/contacts`.
+pub use mokosh_types::sort::CONTACTS as CONTACT_SORT_KEYS;
 
-/// `GET /api/v1/tickets`, from mokosh-server `src/modules/tickets/service.rs`
-/// (`list_tickets` and `list_ticket_responses`, which share one list).
-pub const TICKET_SORT_KEYS: &[&str] = &["created_at", "updated_at", "sla_due_date", "priority_id"];
+/// `GET /api/v1/tickets`, the joined lister the ticket list page consumes.
+///
+/// This is the one the stale mirror got wrong: it listed `priority_id`, which
+/// only the lower-level lister accepts, and none of the five columns PMS-894
+/// added.
+pub use mokosh_types::sort::TICKETS as TICKET_SORT_KEYS;
 
 /// Query fragment for the "most recently updated first" ticket lists.
 /// The old `sort=-updated_at` was not allow-listed, so the server discarded it
-/// and returned `created_at DESC` instead (MAPPS-527).
+/// and returned `created_at DESC` instead (MAPPS-527). Since MAPPS-533 it would
+/// be a 422.
 pub const TICKETS_RECENT_SORT: &str = "sort=updated_at&sort_dir=desc";
 
 /// Query fragment for the alphabetical company pickers.
