@@ -1,385 +1,38 @@
-//! Ticket models and types
+//! Ticket models.
+//!
+//! MAPPS-536: the wire DTOs come from `mokosh-types` rather than being declared
+//! here. MAPPS-378 adopted `TicketNote` and `TicketNoteResponse`; this finishes
+//! the module.
+//!
+//! What was here was 655 lines that nothing outside this directory imported.
+//! Fifteen of the types were byte-identical to the crate's; three had drifted,
+//! and the drift is the argument for the change:
+//!
+//! - `Ticket` had no `procedure_kb_article_id` (PMS-730).
+//! - `UpdateTicketRequest` typed `asset_id` as `Option<Uuid>` where the crate
+//!   uses `Option<Option<Uuid>>`, so the local shape could not distinguish
+//!   "leave the asset alone" from "clear it" and could not express an Unassign
+//!   at all.
+//! - `TicketFilter` had neither `my_teams` (PMS-406) nor `asset_id` (PMS-344).
+//!
+//! Note what this does NOT buy. The SPA renders from structs declared per page
+//! in `src/pages/`, not from this module, so those are the hand copies that can
+//! still drift against a live payload. See `docs/client-server-integration.md`.
 
-// These model enums expose `from_str(&str) -> Option<Self>` as a deliberate
-// infallible-style parser API; they intentionally do not implement
-// `std::str::FromStr` (which requires a `Result`).
-#![allow(clippy::should_implement_trait)]
+pub use mokosh_types::tickets::*;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use validator::Validate;
-
-// ============================================================================
-// TICKET SOURCE
-// ============================================================================
-
-/// How the ticket was created
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum TicketSource {
-    #[default]
-    Portal,
-    Email,
-    Phone,
-    Api,
-    Chat,
-    Rmm,
-    Internal,
-}
-
-impl TicketSource {
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "portal" => Some(Self::Portal),
-            "email" => Some(Self::Email),
-            "phone" => Some(Self::Phone),
-            "api" => Some(Self::Api),
-            "chat" => Some(Self::Chat),
-            "rmm" => Some(Self::Rmm),
-            "internal" => Some(Self::Internal),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Portal => "portal",
-            Self::Email => "email",
-            Self::Phone => "phone",
-            Self::Api => "api",
-            Self::Chat => "chat",
-            Self::Rmm => "rmm",
-            Self::Internal => "internal",
-        }
-    }
-}
-
-// ============================================================================
-// BILLING STATUS
-// ============================================================================
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum BillingStatus {
-    #[default]
-    NotBilled,
-    ReadyToBill,
-    Billed,
-}
-
-impl BillingStatus {
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "not_billed" => Some(Self::NotBilled),
-            "ready_to_bill" => Some(Self::ReadyToBill),
-            "billed" => Some(Self::Billed),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::NotBilled => "not_billed",
-            Self::ReadyToBill => "ready_to_bill",
-            Self::Billed => "billed",
-        }
-    }
-}
-
-// ============================================================================
-// NOTE TYPE
-// ============================================================================
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum NoteType {
-    #[default]
-    Internal,
-    Public,
-    Resolution,
-    TimeEntry,
-}
-
-impl NoteType {
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "internal" => Some(Self::Internal),
-            "public" => Some(Self::Public),
-            "resolution" => Some(Self::Resolution),
-            "time_entry" => Some(Self::TimeEntry),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Internal => "internal",
-            Self::Public => "public",
-            Self::Resolution => "resolution",
-            Self::TimeEntry => "time_entry",
-        }
-    }
-}
-
-// ============================================================================
-// TICKET STATUS
-// ============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TicketStatus {
-    pub id: Uuid,
-    pub tenant_id: Uuid,
-    pub name: String,
-    pub color: String,
-    pub is_closed: bool,
-    pub is_default: bool,
-    pub sort_order: i32,
-}
-
-// ============================================================================
-// TICKET PRIORITY
-// ============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TicketPriority {
-    pub id: Uuid,
-    pub tenant_id: Uuid,
-    pub name: String,
-    pub color: String,
-    pub icon: Option<String>,
-    pub sla_multiplier: f64,
-    pub sort_order: i32,
-    pub is_default: bool,
-}
-
-// ============================================================================
-// TICKET TYPE
-// ============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TicketType {
-    pub id: Uuid,
-    pub tenant_id: Uuid,
-    pub name: String,
-    pub description: Option<String>,
-    pub icon: Option<String>,
-    pub is_active: bool,
-    pub sort_order: i32,
-}
-
-// ============================================================================
-// TICKET QUEUE
-// ============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TicketQueue {
-    pub id: Uuid,
-    pub tenant_id: Uuid,
-    pub name: String,
-    pub description: Option<String>,
-    pub color: Option<String>,
-    pub icon: Option<String>,
-    pub is_default: bool,
-    pub sort_order: i32,
-}
-
-// ============================================================================
-// TICKET
-// ============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Ticket {
-    pub id: Uuid,
-    pub tenant_id: Uuid,
-    pub ticket_number: String,
-    pub title: String,
-    pub description: Option<String>,
-    pub status_id: Uuid,
-    pub priority_id: Uuid,
-    pub type_id: Option<Uuid>,
-    pub category_id: Option<Uuid>,
-    pub subcategory_id: Option<Uuid>,
-    pub queue_id: Uuid,
-    pub source: TicketSource,
-    pub company_id: Uuid,
-    pub contact_id: Option<Uuid>,
-    pub site_id: Option<Uuid>,
-    pub assigned_to_id: Option<Uuid>,
-    pub team_id: Option<Uuid>,
-    pub parent_ticket_id: Option<Uuid>,
-    pub contract_id: Option<Uuid>,
-    pub sla_id: Option<Uuid>,
-    pub sla_due_date: Option<DateTime<Utc>>,
-    pub first_response_due: Option<DateTime<Utc>>,
-    pub first_response_at: Option<DateTime<Utc>>,
-    pub resolution_due: Option<DateTime<Utc>>,
-    pub resolved_at: Option<DateTime<Utc>>,
-    pub closed_at: Option<DateTime<Utc>>,
-    pub scheduled_start: Option<DateTime<Utc>>,
-    pub scheduled_end: Option<DateTime<Utc>>,
-    pub estimated_hours: Option<f64>,
-    pub actual_hours: f64,
-    pub is_billable: bool,
-    pub billing_status: BillingStatus,
-    pub asset_id: Option<Uuid>,
-    pub custom_fields: serde_json::Value,
-    pub tags: Vec<String>,
-    pub created_by_id: Uuid,
-    pub last_updated_by_id: Option<Uuid>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-/// Update ticket request
-#[derive(Debug, Clone, Deserialize, Validate)]
-pub struct UpdateTicketRequest {
-    #[validate(length(min = 1, max = 500))]
-    pub title: Option<String>,
-    pub description: Option<String>,
-    pub status_id: Option<Uuid>,
-    pub priority_id: Option<Uuid>,
-    pub type_id: Option<Uuid>,
-    pub category_id: Option<Uuid>,
-    pub queue_id: Option<Uuid>,
-    pub contact_id: Option<Uuid>,
-    pub site_id: Option<Uuid>,
-    pub assigned_to_id: Option<Uuid>,
-    pub team_id: Option<Uuid>,
-    pub contract_id: Option<Uuid>,
-    pub sla_id: Option<Uuid>,
-    pub scheduled_start: Option<DateTime<Utc>>,
-    pub scheduled_end: Option<DateTime<Utc>>,
-    pub estimated_hours: Option<f64>,
-    pub is_billable: Option<bool>,
-    pub billing_status: Option<BillingStatus>,
-    pub asset_id: Option<Uuid>,
-    pub custom_fields: Option<serde_json::Value>,
-    pub tags: Option<Vec<String>>,
-}
-
-/// SLA status indicator
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SlaStatus {
-    OnTrack,
-    Warning,
-    Breached,
-    NotApplicable,
-}
-
-impl Ticket {
-    /// Calculate SLA status
-    pub fn sla_status(&self) -> SlaStatus {
-        // A closed or resolved ticket has met (or stopped) its SLA clock; it
-        // can no longer breach, so it is never Breached/Warning.
-        if self.closed_at.is_some() || self.resolved_at.is_some() {
-            return SlaStatus::NotApplicable;
-        }
-
-        let Some(due) = self.sla_due_date else {
-            return SlaStatus::NotApplicable;
-        };
-
-        let now = Utc::now();
-        if now > due {
-            return SlaStatus::Breached;
-        }
-
-        // Warn inside the final quarter of the SLA target window (creation ->
-        // due) rather than a fixed 2h, so short SLAs still get a warning band
-        // before they breach instead of jumping straight from OnTrack.
-        let target = due - self.created_at;
-        let warn_window = target / 4;
-        if (due - now) < warn_window {
-            SlaStatus::Warning
-        } else {
-            SlaStatus::OnTrack
-        }
-    }
-}
-
-// ============================================================================
-// TICKET NOTES
-// ============================================================================
-
-// MAPPS-378: `TicketNote` and `TicketNoteResponse` are shared wire DTOs, so
-// source them from `mokosh-types` rather than hand-copying them (their
-// `created_by_contact_id` field was the drift this adoption closes). Their
-// `note_type` is `mokosh_types::tickets::NoteType`; the SPA-local `NoteType`
-// below is an identical enum kept local because `CreateNoteRequest` and
-// `TicketActivity` (both local) use it. `CreateNoteRequest` is the SPA's own
-// request shape and stays defined below.
-pub use mokosh_types::tickets::{TicketNote, TicketNoteResponse};
-
-/// Create note request
-#[derive(Debug, Clone, Deserialize, Validate)]
-pub struct CreateNoteRequest {
-    #[serde(default)]
-    pub note_type: NoteType,
-    #[validate(length(min = 1))]
-    pub content: String,
-    /// Send email notification to contact
-    #[serde(default)]
-    pub send_email: bool,
-}
-
-// ============================================================================
-// TICKET ATTACHMENTS
-// ============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TicketAttachment {
-    pub id: Uuid,
-    pub tenant_id: Uuid,
-    pub ticket_id: Uuid,
-    pub note_id: Option<Uuid>,
-    pub file_name: String,
-    pub file_size: i64,
-    pub mime_type: String,
-    pub storage_path: String,
-    pub uploaded_by_id: Uuid,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct TicketAttachmentResponse {
-    pub id: Uuid,
-    pub file_name: String,
-    pub file_size: i64,
-    pub mime_type: String,
-    pub uploaded_by_name: String,
-    pub created_at: DateTime<Utc>,
-}
-
-// ============================================================================
-// TICKET FILTERS
-// ============================================================================
-
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct TicketFilter {
-    pub q: Option<String>,
-    pub status_id: Option<Uuid>,
-    pub priority_id: Option<Uuid>,
-    pub type_id: Option<Uuid>,
-    pub queue_id: Option<Uuid>,
-    pub company_id: Option<Uuid>,
-    pub contact_id: Option<Uuid>,
-    pub assigned_to_id: Option<Uuid>,
-    pub team_id: Option<Uuid>,
-    pub is_unassigned: Option<bool>,
-    pub is_overdue: Option<bool>,
-    pub is_open: Option<bool>,
-    pub billing_status: Option<BillingStatus>,
-    pub created_from: Option<DateTime<Utc>>,
-    pub created_to: Option<DateTime<Utc>>,
-    pub tags: Option<String>,
-}
 
 // ============================================================================
 // TICKET ACTIVITY
 // ============================================================================
 
+// MAPPS-536: kept local because the crate does not model it - the server has no
+// activity-feed DTO, and this is the SPA's own view model for one. It has no
+// call sites yet either; it is a sketch of a feature, not a wire contract, and
+// re-exporting it from the shared crate would claim the server produces it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TicketActivity {
@@ -422,81 +75,50 @@ pub enum TicketActivity {
     },
 }
 
-// ============================================================================
-// AUTOMATION TYPES
-// ============================================================================
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AutomationTrigger {
-    OnCreate,
-    OnUpdate,
-    OnSchedule,
-    OnSlaBreach,
-    OnSlaWarning,
-    OnAging,
-}
-
-impl AutomationTrigger {
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "on_create" => Some(Self::OnCreate),
-            "on_update" => Some(Self::OnUpdate),
-            "on_schedule" => Some(Self::OnSchedule),
-            "on_sla_breach" => Some(Self::OnSlaBreach),
-            "on_sla_warning" => Some(Self::OnSlaWarning),
-            "on_aging" => Some(Self::OnAging),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::OnCreate => "on_create",
-            Self::OnUpdate => "on_update",
-            Self::OnSchedule => "on_schedule",
-            Self::OnSlaBreach => "on_sla_breach",
-            Self::OnSlaWarning => "on_sla_warning",
-            Self::OnAging => "on_aging",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AutomationRule {
-    pub id: Uuid,
-    pub tenant_id: Uuid,
-    pub name: String,
-    pub description: Option<String>,
-    pub is_active: bool,
-    pub trigger_type: AutomationTrigger,
-    pub conditions: serde_json::Value,
-    pub actions: serde_json::Value,
-    pub priority: i32,
-    pub last_run_at: Option<DateTime<Utc>>,
-    pub run_count: i32,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-/// Automation condition
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AutomationCondition {
-    pub field: String,
-    pub operator: String,
-    pub value: serde_json::Value,
-}
-
-/// Automation action
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AutomationAction {
-    pub action_type: String,
-    pub params: serde_json::Value,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MAPPS-536 guard, in the shape of `src/modules/contacts/mod.rs`: these
+    /// names must resolve to the shared crate's types. Re-declaring any of them
+    /// here breaks these identity conversions at compile time.
+    #[test]
+    fn dtos_are_the_shared_types() {
+        let _: fn(mokosh_types::tickets::Ticket) -> super::Ticket = |v| v;
+        let _: fn(mokosh_types::tickets::TicketFilter) -> super::TicketFilter = |v| v;
+        let _: fn(mokosh_types::tickets::UpdateTicketRequest) -> super::UpdateTicketRequest = |v| v;
+        let _: fn(mokosh_types::tickets::TicketStatus) -> super::TicketStatus = |v| v;
+        let _: fn(mokosh_types::tickets::TicketPriority) -> super::TicketPriority = |v| v;
+        let _: fn(mokosh_types::tickets::TicketType) -> super::TicketType = |v| v;
+        let _: fn(mokosh_types::tickets::TicketQueue) -> super::TicketQueue = |v| v;
+        let _: fn(mokosh_types::tickets::TicketSource) -> super::TicketSource = |v| v;
+        let _: fn(mokosh_types::tickets::BillingStatus) -> super::BillingStatus = |v| v;
+        let _: fn(mokosh_types::tickets::NoteType) -> super::NoteType = |v| v;
+        let _: fn(mokosh_types::tickets::SlaStatus) -> super::SlaStatus = |v| v;
+        let _: fn(mokosh_types::tickets::CreateNoteRequest) -> super::CreateNoteRequest = |v| v;
+        let _: fn(mokosh_types::tickets::TicketAttachment) -> super::TicketAttachment = |v| v;
+        let _: fn(mokosh_types::tickets::AutomationRule) -> super::AutomationRule = |v| v;
+        let _: fn(mokosh_types::tickets::AutomationTrigger) -> super::AutomationTrigger = |v| v;
+    }
+
+    /// The other two drifts this adoption closes, asserted at compile time.
+    ///
+    /// `UpdateTicketRequest::asset_id` is the one that changes what the client
+    /// can say: `Option<Option<Uuid>>` distinguishes an absent field (leave the
+    /// asset alone) from an explicit null (clear it), and the hand copy's
+    /// `Option<Uuid>` could not express an Unassign at all.
+    #[test]
+    fn shared_shape_carries_the_previously_missing_members() {
+        fn _clearable_asset(r: &super::UpdateTicketRequest) -> &Option<Option<uuid::Uuid>> {
+            &r.asset_id
+        }
+        fn _my_teams(f: &super::TicketFilter) -> &Option<bool> {
+            &f.my_teams
+        }
+        fn _filter_by_asset(f: &super::TicketFilter) -> &Option<uuid::Uuid> {
+            &f.asset_id
+        }
+    }
 
     #[test]
     fn test_ticket_source_from_str() {
@@ -580,8 +202,24 @@ mod tests {
         assert_eq!(AutomationTrigger::OnSlaBreach.as_str(), "on_sla_breach");
     }
 
+    /// MAPPS-536: this now pins the SHARED computation, which is what the SPA
+    /// actually sees: the server calls `compute_sla_status` itself
+    /// (`mokosh-server/src/modules/tickets/service.rs`) and sends the result on
+    /// the ticket payload. The copy this replaces implemented a different and
+    /// better algorithm that never once ran, because nothing in the SPA called
+    /// it. Two differences, both now recorded here rather than lost:
+    ///
+    /// - The copy treated a resolved-but-not-closed ticket as `NotApplicable`.
+    ///   The shared one looks only at `closed_at`, so such a ticket keeps
+    ///   accruing and can report `Breached` after the work was done.
+    /// - The copy warned inside the final quarter of the target window, so the
+    ///   band scaled with the SLA. The shared one warns under a flat two hours,
+    ///   which is the whole window for a short SLA and a blink for a long one.
+    ///
+    /// Whether `compute_sla_status` should take `resolved_at` and scale its
+    /// band is a real question for mokosh-server, where it runs.
     #[test]
-    fn test_ticket_sla_status() {
+    fn sla_status_is_the_shared_computation() {
         // Create a test ticket
         let mut ticket = Ticket {
             id: Uuid::new_v4(),
@@ -617,6 +255,10 @@ mod tests {
             is_billable: false,
             billing_status: BillingStatus::NotBilled,
             asset_id: None,
+            // MAPPS-536: the field the hand copy was missing. The compiler
+            // demanded it the moment this module started resolving to the
+            // shared crate, which is the entire argument for the change.
+            procedure_kb_article_id: None,
             custom_fields: serde_json::json!({}),
             tags: vec![],
             created_by_id: Uuid::new_v4(),
@@ -635,6 +277,8 @@ mod tests {
         // Test warning: inside the final quarter of the SLA window. With a 4h
         // target window (created 3h ago, due in 1h) the warn band is the last
         // hour, so 1h remaining trips Warning.
+        // Warning: under two hours left, flat, regardless of how long the
+        // target window was.
         ticket.created_at = Utc::now() - chrono::Duration::hours(3);
         ticket.sla_due_date = Some(Utc::now() + chrono::Duration::minutes(50));
         assert_eq!(ticket.sla_status(), SlaStatus::Warning);
@@ -643,9 +287,11 @@ mod tests {
         ticket.sla_due_date = Some(Utc::now() - chrono::Duration::hours(2));
         assert_eq!(ticket.sla_status(), SlaStatus::Breached);
 
-        // Test resolved (but not closed) ticket is not breached.
+        // Resolving does NOT stop the clock: only closing does. This is the
+        // difference described above, asserted rather than assumed so a change
+        // to it on the server side shows up here as a failing test.
         ticket.resolved_at = Some(Utc::now());
-        assert_eq!(ticket.sla_status(), SlaStatus::NotApplicable);
+        assert_eq!(ticket.sla_status(), SlaStatus::Breached);
         ticket.resolved_at = None;
 
         // Test closed ticket (should be NotApplicable)
