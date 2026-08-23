@@ -455,6 +455,14 @@ enum TicketSortKey {
 /// These are the keys PMS-894 put on `list_ticket_responses`' allow-list. They
 /// are deliberately not SQL: the server maps them to expressions, so this
 /// client cannot name a column even by accident.
+///
+/// PMS-897: every value here is asserted against `mokosh_types::sort::TICKETS`
+/// by the test below. `scripts/check-sort-keys.sh` cannot see this function -
+/// it forbids a hardcoded `sort=` LITERAL, and these reach the query string
+/// through interpolation - so until that test existed, six sort keys went to
+/// the server unchecked against any allow-list. Since MAPPS-533 an unlisted one
+/// is a 422, so a drift here breaks the ticket list rather than reordering it
+/// quietly.
 fn ticket_sort_param(key: TicketSortKey) -> &'static str {
     match key {
         TicketSortKey::Ticket => "ticket_number",
@@ -463,6 +471,68 @@ fn ticket_sort_param(key: TicketSortKey) -> &'static str {
         TicketSortKey::Priority => "priority",
         TicketSortKey::Assigned => "assigned_to_name",
         TicketSortKey::Updated => "updated_at",
+    }
+}
+
+#[cfg(test)]
+mod pms897_sort_tests {
+    use super::{ticket_sort_param, TicketSortKey};
+
+    /// Every key this page can send is one the server accepts.
+    ///
+    /// The enum is matched exhaustively rather than iterated, so adding a
+    /// variant fails to compile here until someone decides what the server
+    /// calls it - which is the check `check-sort-keys.sh` structurally cannot
+    /// make, since these values never appear as literals in a query string.
+    #[test]
+    fn every_sort_key_this_page_sends_is_one_the_server_accepts() {
+        let all = [
+            TicketSortKey::Ticket,
+            TicketSortKey::Company,
+            TicketSortKey::Status,
+            TicketSortKey::Priority,
+            TicketSortKey::Assigned,
+            TicketSortKey::Updated,
+        ];
+        for key in all {
+            let param = ticket_sort_param(key);
+            assert!(
+                mokosh_types::sort::TICKETS.contains(&param),
+                "`{param}` is not in the server's ticket sort allow-list; it would 422"
+            );
+        }
+    }
+
+    /// The other direction: a key the server offers that no control sends is a
+    /// sort the user cannot reach. Not a failure, but worth knowing about, so
+    /// the assertion is on the count and the message names what is unused.
+    #[test]
+    fn the_page_offers_every_column_the_server_can_sort_by() {
+        let sent: Vec<&str> = [
+            TicketSortKey::Ticket,
+            TicketSortKey::Company,
+            TicketSortKey::Status,
+            TicketSortKey::Priority,
+            TicketSortKey::Assigned,
+            TicketSortKey::Updated,
+        ]
+        .into_iter()
+        .map(ticket_sort_param)
+        .collect();
+
+        let unreachable: Vec<&&str> = mokosh_types::sort::TICKETS
+            .iter()
+            .filter(|k| !sent.contains(k))
+            .collect();
+
+        // `created_at` and `sla_due_date` are accepted by the server and have
+        // no column header on this page. That is a deliberate gap, not drift:
+        // the table shows neither.
+        assert_eq!(
+            unreachable,
+            vec![&"created_at", &"sla_due_date"],
+            "the set of server sort keys with no control on this page changed"
+        );
     }
 }
 
