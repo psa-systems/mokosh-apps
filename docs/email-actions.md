@@ -64,17 +64,47 @@ trigger, so that stops being true.
 | Send a request form to a client | `src/pages/request_links.rs` (`SendRequestLinkModal`, reached directly from the company page and via `SendFormToClientModal` from the form builder) | `forms.request_link` |
 | Invite a colleague | `src/pages/team.rs` | `invitations.created` |
 | Send a quote to the client | `src/pages/quotes.rs` | `quote.sent` |
+| Send an invoice to the client | `src/pages/billing.rs` (`InvoiceDetailPage`) | `billing.invoice_pay_now` |
 
 Only `forms.request_link` is a notification rule today. mokosh-server builds the
-invite mail in `invitations/service.rs` and the quote mail in
-`quotes/service.rs`, both with a built-in template and neither through
-`dispatch`, so their previews come back empty. Those two call sites pass
-`empty_note` so the modal says the message is built into the server and an email
-is still sent, rather than leaving the operator to read "nothing will be sent"
-and believe it. MAPPS-489 moves both sends onto the dispatcher and removes the
-note.
+invite mail in `invitations/service.rs`, the quote mail in `quotes/service.rs`
+and the invoice mail in `billing/service.rs`, each with a built-in template and
+none through `dispatch`, so their previews come back empty. Those three call
+sites pass `empty_note` so the modal says the message is built into the server
+and an email is still sent, rather than leaving the operator to read "nothing
+will be sent" and believe it. MAPPS-489 moves the sends onto the dispatcher and
+removes the note.
+
+The invoice send is **conditional server-side**, which none of the others are.
+`notify_invoice_pay_now` fires only on the first transition into `sent`, and
+skips the mail entirely when the tenant has no active payment gateway, when the
+invoice has no billing contact, or when that contact has no email on file. The
+page says so under the header rather than promising an email that may not go.
+
+It is also the only entry not keyed on a URL. The send is `PUT /invoices/{id}`
+with `{"status": "sent"}`, a path shared with Edit, Void and the invoice delete
+in `src/pages/contacts.rs`, and matching that shape flags two files that send
+nothing (`src/pages/contacts.rs` and `src/modules/billing/routes.rs`). The guard
+keys on `invoice_send_path(` instead, a helper that exists because the call
+sends mail. A send whose endpoint is not dedicated needs a symbol like that.
 
 ## Keeping it true
+
+### What the guard actually promises
+
+Worth knowing before trusting it. It resolves each entry to the set of **files**
+that call it, then requires each of those files to render `MailIcon {` and
+`EmailPreview {` somewhere. `src/pages/billing.rs` is 3,700 lines and holds
+Send, Edit and Void; one rendered icon anywhere in it satisfies the check, and
+the guard cannot tell which button it sits on.
+
+So it catches the case it was written for - a send trigger added with no email
+affordance anywhere near it - and not a misplaced one. Matching the rendered
+element rather than the bare name (MAPPS-539) closed a weaker hole: a plain
+`grep MailIcon` was satisfied by the import line, so a file could import the
+icon, render none, and pass. Making it call-site aware needs a proximity rule,
+and the fetch usually sits in a handler while the icon sits in the `rsx!`, far
+apart; that is a separate change with its own false positives.
 
 `scripts/check-email-affordance.sh` (run by `just check`) holds the list of API
 paths known to send email. For each one it fails when a file that calls it
