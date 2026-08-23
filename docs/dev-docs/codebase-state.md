@@ -1,14 +1,31 @@
-# Codebase state - mokosh-apps
+# Codebase audit, 2026-05-06 - mokosh-apps
 
-A practical reference for what the client UI looks like to a real
-user today. Derived from a 2026-05-06 audit that walked every route
-in the router via Chrome (MCP browser automation), clicking every
-button / link / row / input / pagination control, and recording the
-result alongside the static-analysis intent.
+**This is a record of one walk through the client on 2026-05-06, not a
+description of the client now.** Read it for what that walk found and
+for the `F1..F19` ids that source comments and YouTrack issues still
+cite. Do not read it to learn what a page currently does.
 
-## At a glance
+The method was to walk every route in the router via Chrome (MCP
+browser automation), clicking every button, link, row, input and
+pagination control, and to record the result alongside the
+static-analysis intent. That is worth keeping: the walk is expensive
+to reproduce and nothing else in the tree records what it found.
 
-| Metric | Value |
+What has changed since is not tracked here, and this file is not
+updated when it does. Most of it is wrong by now. The client made no
+API calls at all on the day of the audit; 25 of the 36 files in
+`src/pages/` call an authed fetch helper today. Anything below that
+reads as present tense is 2026-05-06 present tense.
+
+Line-number citations have been removed rather than corrected
+(MAPPS-540). A `file.rs:line` pointer into a tree that has moved on by
+a year sends a reader to the wrong code with the confidence of a
+precise reference; the file name alone is honest about what it can
+offer.
+
+## What the walk found, on 2026-05-06
+
+| Metric | Value on the day of the audit |
 | --- | --- |
 | Total routes in router | **54** |
 | Pages walked in browser | **54 / 54** |
@@ -19,21 +36,26 @@ result alongside the static-analysis intent.
 | Critical bugs (data-loss / break-the-app) | **1** (the `/portal/tickets/new` GET-leak) |
 | Sections with rich UI but zero backend | **14 of 18** |
 
-The client renders mock data on every page. Empirically confirmed:
-no `/api/*` requests are made during normal navigation (Chrome network
-panel observed across `/dashboard`, `/tickets`, and
-`/portal/tickets/new`).
+On that day the client rendered mock data on every page: the Chrome
+network panel showed no `/api/*` requests during normal navigation
+across `/dashboard`, `/tickets` and `/portal/tickets/new`.
+
+That is the single claim most worth not carrying forward. It has not
+been true for a long time, and it is the one a reader is most likely
+to act on: it says the HTTP layer does not exist, so anyone planning
+work from it starts by building one that has been there for months.
 
 ## Cross-cutting findings
 
-These appear across many pages and are best fixed once at the
-component or infrastructure layer.
+These appeared across many pages on 2026-05-06 and were judged best
+fixed once at the component or infrastructure layer. Several have
+since been fixed; the list is not maintained.
 
 1. **No `data-testid` or `aria-label` on action buttons.** Test /
    automation selectors fall back to button text + DOM position.
    Adding `data-testid` to `Button` / `IconButton` / `TableRow`
    would make selectors stable.
-   ([`src/components/button.rs:48-140`](../src/components/button.rs#L48))
+   ([`src/components/button.rs`](../../src/components/button.rs))
 2. **`TableRow { clickable: true }` with no `onclick` is everywhere.**
    The dominant broken interaction. The `clickable` prop styles the
    row as interactive (cursor-pointer, hover) but no
@@ -48,14 +70,14 @@ component or infrastructure layer.
    additionally has no inner Link, so portal rows are completely
    inert).
 3. **Mocked auth/data layer.** Login
-   ([`src/hooks/auth.rs`](../src/hooks/auth.rs)),
+   ([`src/hooks/auth.rs`](../../src/hooks/auth.rs)),
    `ForgotPasswordPage`, `ResetPasswordPage`, `TicketNewPage` all
    simulate success after a 1s delay with no API call. With ADMIN
    bypass, this is fine for dev rendering. `// TODO: Call API`
    markers at
-   [`src/pages/auth.rs:130`](../src/pages/auth.rs#L130),
-   [`auth.rs:241`](../src/pages/auth.rs#L241),
-   [`src/pages/tickets.rs:251`](../src/pages/tickets.rs#L251).
+   `src/pages/auth.rs` (since split into `login.rs`, `auth_callback.rs` and `portal_login.rs`),
+   `auth.rs`,
+   [`src/pages/tickets.rs`](../../src/pages/tickets.rs).
 4. **Detail pages have hardcoded titles.** Every `*DetailPage`
    ignores its `props.id` and shows fixed sample text (always
    "TKT-1234: Email server not responding", "Acme Corp", "Bob
@@ -93,7 +115,7 @@ component or infrastructure layer.
    setting it.
 10. **`/reports/:report_type` Date Range and Group By selects render
     blank** despite `selected: true` on default options in code
-    ([`src/pages/reports.rs:147,158`](../src/pages/reports.rs#L147)).
+    ([`src/pages/reports.rs`](../../src/pages/reports.rs)).
     Dioxus 0.7 `<select>` rendering quirk - the `selected`
     attribute on `<option>` elements may not be applied correctly.
 
@@ -120,9 +142,9 @@ facing and should be fixed before any v1 ship; P2 / P3 are polish.
 2. **Fake-link blue text.** At least two places (likely more) where
    text is styled link-blue but isn't a `Link`:
    - Dashboard Recent Tickets `TKT-1234..1230` ticket numbers
-     ([`dashboard.rs:242`](../src/pages/dashboard.rs#L242))
+     ([`dashboard.rs`](../../src/pages/dashboard.rs))
    - Company detail Statistics "Open Tickets: **5**" value
-     ([`contacts.rs:415`](../src/pages/contacts.rs#L415))
+     ([`contacts.rs`](../../src/pages/contacts.rs))
 
    Users click expecting navigation; nothing happens.
 3. **`TableRow { clickable: true }` without `onclick` everywhere**
@@ -164,7 +186,7 @@ facing and should be fixed before any v1 ship; P2 / P3 are polish.
 13. **Browser-native HTML5 validation tooltips** ("Please fill out
     this field") clash with the dark theme and aren't accessible.
     Replace with the existing `Input.error` / `Select.error` props
-    in [`form.rs`](../src/components/form.rs).
+    in [`form.rs`](../../src/components/form.rs).
 14. **`/reports/:report_type` Date Range and Group By selects
     render visually empty** despite the DOM having `option ...
     (selected)`. Dioxus 0.7 native `<select>` rendering bug; fix by
@@ -212,66 +234,66 @@ facing and should be fixed before any v1 ship; P2 / P3 are polish.
 
 ## Per-page status
 
-Every route in [`src/lib.rs`](../src/lib.rs) was walked. The status
+Every route in [`src/lib.rs`](../../src/lib.rs) was walked. The status
 column tracks whether a typical user can productively use the page
 end-to-end.
 
 | Route | Component | File | Status |
 | --- | --- | --- | --- |
 | `/` | HomePage | `pages/home.rs` | partial (3 footer dead links) |
-| `/login` | LoginPage | `pages/auth.rs:11-116` | working (always redirects under bypass) |
-| `/forgot-password` | ForgotPasswordPage | `pages/auth.rs:120-205` | working (mock submit) |
-| `/reset-password/:token` | ResetPasswordPage | `pages/auth.rs:213-326` | working (validation only, mock submit) |
+| `/login` | LoginPage | `pages/auth.rs` | working (always redirects under bypass) |
+| `/forgot-password` | ForgotPasswordPage | `pages/auth.rs` | working (mock submit) |
+| `/reset-password/:token` | ResetPasswordPage | `pages/auth.rs` | working (validation only, mock submit) |
 | `/dashboard` | DashboardPage | `pages/dashboard.rs` | partial (5 dead row clicks; sidebar nav works) |
-| `/tickets` | TicketListPage | `pages/tickets.rs:14-155` | partial (filters bind but don't filter; row click is `\|_\| {}`) |
-| `/tickets/new` | TicketNewPage | `pages/tickets.rs:226-335` | partial (mock submit, no nav) |
-| `/tickets/:id` | TicketDetailPage | `pages/tickets.rs:344-508` | partial (Add Note opens modal; submit + inputs unwired) |
-| `/time` | TimeEntryListPage | `pages/time.rs:14-156` | partial (dead row clicks) |
-| `/time/new` | TimeEntryNewPage | `pages/time.rs:198-289` | partial (stub submit; button stuck loading) |
-| `/timesheets` | TimesheetsPage | `pages/time.rs:293-396` | partial (Submit Timesheet + week-prev/next dead) |
-| `/projects` | ProjectListPage | `pages/projects.rs:14-140` | working (whole-card Links navigate) |
-| `/projects/new` | ProjectNewPage | `pages/projects.rs:220-291` | partial (stub submit) |
-| `/projects/:id` | ProjectDetailPage | `pages/projects.rs:297-...` | partial (header buttons dead) |
+| `/tickets` | TicketListPage | `pages/tickets.rs` | partial (filters bind but don't filter; row click is `\|_\| {}`) |
+| `/tickets/new` | TicketNewPage | `pages/tickets.rs` | partial (mock submit, no nav) |
+| `/tickets/:id` | TicketDetailPage | `pages/tickets.rs` | partial (Add Note opens modal; submit + inputs unwired) |
+| `/time` | TimeEntryListPage | `pages/time.rs` | partial (dead row clicks) |
+| `/time/new` | TimeEntryNewPage | `pages/time.rs` | partial (stub submit; button stuck loading) |
+| `/timesheets` | TimesheetsPage | `pages/time.rs` | partial (Submit Timesheet + week-prev/next dead) |
+| `/projects` | ProjectListPage | `pages/projects.rs` | working (whole-card Links navigate) |
+| `/projects/new` | ProjectNewPage | `pages/projects.rs` | partial (stub submit) |
+| `/projects/:id` | ProjectDetailPage | `pages/projects.rs-...` | partial (header buttons dead) |
 | `/projects/:id/tasks` | ProjectTasksPage | `pages/projects.rs:...` | partial (Add Task dead) |
 | `/companies` | CompanyListPage | `pages/contacts.rs` | partial (dead row clicks) |
 | `/companies/new` | CompanyNewPage | `pages/contacts.rs` | partial (stub submit) |
 | `/companies/:id` | CompanyDetailPage | `pages/contacts.rs` | partial (fake-link "5" stat; sub-table rows dead) |
 | `/contacts` | ContactListPage | `pages/contacts.rs` | partial (dead row clicks) |
-| `/contacts/new` | ContactNewPage | `pages/contacts.rs:567-...` | partial (stub submit) |
+| `/contacts/new` | ContactNewPage | `pages/contacts.rs-...` | partial (stub submit) |
 | `/contacts/:id` | ContactDetailPage | `pages/contacts.rs` | partial (header buttons dead) |
 | `/calendar` | CalendarPage | `pages/calendar.rs` | partial (Week toggle, next-month chevron, day-cell click all dead) |
 | `/dispatch` | DispatchBoardPage | `pages/calendar.rs` | partial (appointments not rendered in grid - F14) |
 | `/contracts` | ContractListPage | `pages/contracts.rs` | partial (dead row clicks) |
-| `/contracts/new` | ContractNewPage | `pages/contracts.rs:147-174` | placeholder ("Contract creation form would go here") |
+| `/contracts/new` | ContractNewPage | `pages/contracts.rs` | placeholder ("Contract creation form would go here") |
 | `/contracts/:id` | ContractDetailPage | `pages/contracts.rs` | partial (Edit / Renew dead; PDF / SLA links dead) |
 | `/invoices` | InvoiceListPage | `pages/billing.rs` | partial (dead row clicks) |
-| `/invoices/new` | InvoiceNewPage | `pages/billing.rs:172-201` | placeholder |
+| `/invoices/new` | InvoiceNewPage | `pages/billing.rs` | placeholder |
 | `/invoices/:id` | InvoiceDetailPage | `pages/billing.rs` | partial (Download PDF / Send / Record Payment dead) |
-| `/payments` | PaymentListPage | `pages/billing.rs:367-391` | partial (rows fully inert - F17) |
+| `/payments` | PaymentListPage | `pages/billing.rs` | partial (rows fully inert - F17) |
 | `/assets` | AssetListPage | `pages/assets.rs` | partial (dead row clicks) |
-| `/assets/new` | AssetNewPage | `pages/assets.rs:148-175` | placeholder |
+| `/assets/new` | AssetNewPage | `pages/assets.rs` | placeholder |
 | `/assets/:id` | AssetDetailPage | `pages/assets.rs` | partial (sub-table dead; "Remote Connect" / "Open in RMM" dead) |
 | `/kb` | KBHomePage | `pages/knowledge_base.rs` | partial (CategoryCards `cursor-pointer` but no Link - F13) |
 | `/kb/articles` | KBArticleListPage | `pages/knowledge_base.rs` | partial (dead row clicks) |
-| `/kb/articles/new` | KBArticleNewPage | `pages/knowledge_base.rs:249-278` | placeholder |
+| `/kb/articles/new` | KBArticleNewPage | `pages/knowledge_base.rs` | placeholder |
 | `/kb/articles/:id` | KBArticleDetailPage | `pages/knowledge_base.rs` | partial (related articles dead) |
 | `/reports` | ReportsPage | `pages/reports.rs` | partial (report tile clicks navigate) |
-| `/reports/:report_type` | ReportDetailPage | `pages/reports.rs:145-160` | partial (Date Range / Group By selects render blank - F11) |
+| `/reports/:report_type` | ReportDetailPage | `pages/reports.rs` | partial (Date Range / Group By selects render blank - F11) |
 | `/settings` | SettingsPage | `pages/settings.rs` | working (sub-page navigation works) |
 | `/settings/users` | UserManagementPage | `pages/settings.rs` | partial (Add User dead) |
 | `/settings/teams` | TeamManagementPage | `pages/settings.rs` | partial (Add Team dead) |
-| `/settings/notifications` | NotificationSettingsPage | `pages/settings.rs:331-335` | partial (5 email-template dead links) |
+| `/settings/notifications` | NotificationSettingsPage | `pages/settings.rs` | partial (5 email-template dead links) |
 | `/settings/integrations` | IntegrationSettingsPage | `pages/settings.rs` | partial (Connect / Configure all dead) |
 | `/settings/billing` | BillingSettingsPage | `pages/settings.rs` | partial (Manage Subscription dead) |
 | `/admin/team` | TeamPage | `pages/team.rs` | working (invite + revoke wired; PMS-247). Role picker hidden behind `ROLE_ASSIGNMENT_ENABLED=false` until full RBAC lands - invites go out as Technician (PMS-513) |
 | `/admin/tenants` | TenantManagementPage | `pages/admin.rs` | partial (dead row clicks) |
 | `/portal` | PortalHomePage | `pages/portal.rs` | working |
 | `/portal/tickets` | PortalTicketListPage | `pages/portal.rs` | partial (rows fully inert - no inner Link either) |
-| `/portal/tickets/new` | PortalTicketNewPage | `pages/portal.rs:262-330` | **broken (P0 GET-leak)** |
+| `/portal/tickets/new` | PortalTicketNewPage | `pages/portal.rs` | **broken (P0 GET-leak)** |
 | `/portal/tickets/:id` | PortalTicketDetailPage | `pages/portal.rs` | partial (header buttons dead) |
 | `/portal/invoices` | PortalInvoiceListPage | `pages/portal.rs` | partial (dead row clicks) |
-| `/portal/invoices/:id` | PortalInvoiceDetailPage | `pages/portal.rs:497-514` | placeholder |
-| `/portal/kb` | PortalKBPage | `pages/portal.rs:572-...` | partial (article items dead) |
+| `/portal/invoices/:id` | PortalInvoiceDetailPage | `pages/portal.rs` | placeholder |
+| `/portal/kb` | PortalKBPage | `pages/portal.rs-...` | partial (article items dead) |
 | `/:..route` | NotFoundPage | `pages/not_found.rs` | working |
 
 ## Proposed fixes
@@ -282,7 +304,7 @@ its own commit / PR.
 
 ### F1. `TableRow.clickable` should imply onclick or do nothing
 
-**File:** [`src/components/table.rs`](../src/components/table.rs).
+**File:** [`src/components/table.rs`](../../src/components/table.rs).
 **Why:** `clickable: true` adds hover/cursor styles that promise an
 interactive row. When parents pass it without an `onclick`, users
 see a clickable cursor over a dead row.
@@ -313,15 +335,15 @@ TableRow {
 }
 ```
 
-Apply caller-side fix to: `dashboard.rs:238`, `tickets.rs:188`,
-`time.rs:172`, `contacts.rs:144,281,293,305,341,351,534`,
-`contracts.rs:128`, `billing.rs:142`, `assets.rs:129,261,271`,
-`knowledge_base.rs:217,229`, `admin.rs:138`, `portal.rs:224,234,244`.
+Apply caller-side fix to: `dashboard.rs`, `tickets.rs`,
+`time.rs`, `contacts.rs`,
+`contracts.rs`, `billing.rs`, `assets.rs`,
+`knowledge_base.rs`, `admin.rs`, `portal.rs`.
 
 ### F2. `/tickets` row-click empty closure
 
 **File:**
-[`src/pages/tickets.rs:188-192`](../src/pages/tickets.rs#L188).
+[`src/pages/tickets.rs`](../../src/pages/tickets.rs).
 
 ```rust
 // Replace:
@@ -340,7 +362,7 @@ TableRow { clickable: true,
 ### F3. `TicketDetailPage` Add Note modal: wire submit + inputs
 
 **File:**
-[`src/pages/tickets.rs:469-505`](../src/pages/tickets.rs#L469).
+[`src/pages/tickets.rs`](../../src/pages/tickets.rs).
 
 Add signals for note type and content, bind the Select / Textarea,
 and give the footer Add Note button an `onclick`:
@@ -384,7 +406,7 @@ Modal {
 ### F4. `TicketDetailPage` "Log Time" button
 
 **File:**
-[`src/pages/tickets.rs:358-362`](../src/pages/tickets.rs#L358).
+[`src/pages/tickets.rs`](../../src/pages/tickets.rs).
 
 Replace the no-onclick button with a Link to `/time/new`
 pre-populated with the current ticket id:
@@ -420,12 +442,12 @@ is honest until each button is wired.
 ### F6. Portal layout title duplication
 
 **Files:** `src/components/layout.rs` (PortalLayout) and
-`src/pages/portal.rs:201,266,442,519`.
+`src/pages/portal.rs`.
 
 **Option A - drop the page-level h1:**
 
 ```rust
-// Before (portal.rs:201-212):
+// Before (portal.rs):
 PortalLayout { title: "My Tickets",
     div { class: "flex items-center justify-between mb-6",
         h1 { class: "text-2xl font-bold ...", "My Tickets" }
@@ -463,7 +485,7 @@ once, instead of the duplication.
 ### F8. PortalTicketNewPage form is fully decorative
 
 **File:**
-[`src/pages/portal.rs:262-330`](../src/pages/portal.rs#L262).
+[`src/pages/portal.rs`](../../src/pages/portal.rs).
 
 This is the **P0 critical bug**. The form has no `onsubmit`, so
 the browser falls back to a native GET submit, leaking values to the
@@ -517,10 +539,10 @@ alone fixes the data-loss bug.
 ### F9. Stub-submit pages get stuck loading
 
 **Files:**
-- [`src/pages/time.rs:222-225`](../src/pages/time.rs#L222) (TimeEntryNewPage)
-- [`src/pages/projects.rs:242-245`](../src/pages/projects.rs#L242) (ProjectNewPage)
-- [`src/pages/contacts.rs:192-195`](../src/pages/contacts.rs#L192) (CompanyNewPage)
-- [`src/pages/contacts.rs:581-584`](../src/pages/contacts.rs#L581) (ContactNewPage)
+- [`src/pages/time.rs`](../../src/pages/time.rs) (TimeEntryNewPage)
+- [`src/pages/projects.rs`](../../src/pages/projects.rs) (ProjectNewPage)
+- [`src/pages/contacts.rs`](../../src/pages/contacts.rs) (CompanyNewPage)
+- [`src/pages/contacts.rs`](../../src/pages/contacts.rs) (ContactNewPage)
 
 All four set `is_submitting=true` and never reset, leaving the
 button stuck. Until real APIs land, mock with the same 1s pattern as
@@ -547,7 +569,7 @@ step until real data fetching lands - include the route param in the
 placeholder so the page is at least visibly route-aware:
 
 ```rust
-// Before (e.g. tickets.rs:350):
+// Before (e.g. tickets.rs):
 title: "TKT-1234: Email server not responding",
 
 // After:
@@ -560,7 +582,7 @@ ticket title.
 ### F11. `<select>` with declarative `selected` not rendering on `/reports/:report_type`
 
 **File:**
-[`src/pages/reports.rs:145-160`](../src/pages/reports.rs#L145).
+[`src/pages/reports.rs`](../../src/pages/reports.rs).
 
 Dioxus 0.7's `<select>` requires `value:` on the select itself,
 not `selected:` on each `<option>`. Fix:
@@ -586,35 +608,35 @@ select {
 ```
 
 Or better: switch to `<Select>` from
-[`crate::components::form`](../src/components/form.rs) which already
+[`crate::components::form`](../../src/components/form.rs) which already
 handles `value:` / `onchange` plumbing.
 
 ### F12. Placeholder pages
 
 **Files:**
-[`src/pages/contracts.rs:147-174`](../src/pages/contracts.rs#L147)
+[`src/pages/contracts.rs`](../../src/pages/contracts.rs)
 (ContractNew),
-[`billing.rs:172-201`](../src/pages/billing.rs#L172) (InvoiceNew),
-[`assets.rs:148-175`](../src/pages/assets.rs#L148) (AssetNew),
-[`knowledge_base.rs:249-278`](../src/pages/knowledge_base.rs#L249)
+[`billing.rs`](../../src/pages/billing.rs) (InvoiceNew),
+[`assets.rs`](../../src/pages/assets.rs) (AssetNew),
+[`knowledge_base.rs`](../../src/pages/knowledge_base.rs)
 (KBArticleNew),
-[`portal.rs:497-514`](../src/pages/portal.rs#L497)
+[`portal.rs`](../../src/pages/portal.rs)
 (PortalInvoiceDetail).
 
 These show literal "X creation form would go here" text. Until the
 real forms exist:
 
 - **Hide the routes:** comment out the `Route::*New {}` variants in
-  [`src/lib.rs`](../src/lib.rs) and remove the "+ New" buttons that
+  [`src/lib.rs`](../../src/lib.rs) and remove the "+ New" buttons that
   link to them. Honest UX.
 - **Implement minimal forms** matching the data models in
-  [`src/modules/<area>/models.rs`](../src/modules/) (T&M / fixed-
+  [`src/modules/<area>/models.rs`](../../src/modules/) (T&M / fixed-
   price for contracts; line items for invoices; etc.).
 
 ### F13. KB CategoryCards are styled clickable but have no Link
 
 **File:**
-[`src/pages/knowledge_base.rs:131-152`](../src/pages/knowledge_base.rs#L131).
+[`src/pages/knowledge_base.rs`](../../src/pages/knowledge_base.rs).
 
 Wrap the Card in a Link so the cursor-pointer styling is honest:
 
@@ -635,7 +657,7 @@ fn CategoryCard(props: CategoryCardProps) -> Element {
 ### F14. Dispatch board appointments not rendered
 
 **File:**
-[`src/pages/calendar.rs:319-341`](../src/pages/calendar.rs#L319).
+[`src/pages/calendar.rs`](../../src/pages/calendar.rs).
 
 `TechnicianRow` receives `appointments: Vec<(start, end, label,
 type)>` but only renders empty divs (`for _ in 0..9 { div { ... }
@@ -667,19 +689,19 @@ fn TechnicianRow(props: TechnicianRowProps) -> Element {
 Sweep these files and either delete the dead links or replace with
 real Routes / `mailto:` / external URLs:
 
-- [`src/pages/home.rs:123-125`](../src/pages/home.rs#L123) (footer
+- [`src/pages/home.rs`](../../src/pages/home.rs) (footer
   Privacy / Terms / Contact)
-- [`src/pages/auth.rs:107-111`](../src/pages/auth.rs#L107) ("Contact
+- `src/pages/auth.rs` (since split into `login.rs`, `auth_callback.rs` and `portal_login.rs`) ("Contact
   us" on login)
-- [`src/pages/contracts.rs:320,324`](../src/pages/contracts.rs#L320)
+- [`src/pages/contracts.rs`](../../src/pages/contracts.rs)
   (Contract PDF / SLA Agreement)
-- [`src/pages/assets.rs:332`](../src/pages/assets.rs#L332) ("Open in
+- [`src/pages/assets.rs`](../../src/pages/assets.rs) ("Open in
   Tactical RMM")
-- [`src/pages/knowledge_base.rs:374-383`](../src/pages/knowledge_base.rs#L374)
+- [`src/pages/knowledge_base.rs`](../../src/pages/knowledge_base.rs)
   (3x Related Articles)
-- [`src/pages/settings.rs:331-335`](../src/pages/settings.rs#L331)
+- [`src/pages/settings.rs`](../../src/pages/settings.rs)
   (5x Email Templates)
-- [`src/pages/portal.rs:572`](../src/pages/portal.rs#L572)
+- [`src/pages/portal.rs`](../../src/pages/portal.rs)
   (PortalArticleItem - 5 entries)
 
 ### F16. Add `data-testid` to core components
@@ -708,7 +730,7 @@ Then per-page, pass `data_testid: "ticket-list-new-button"` etc.
 ### F17. PaymentList rows are completely inert
 
 **File:**
-[`src/pages/billing.rs:367-391`](../src/pages/billing.rs#L367).
+[`src/pages/billing.rs`](../../src/pages/billing.rs).
 
 Styled-blue invoice numbers are just spans. Either link them to
 invoice detail:
@@ -732,7 +754,7 @@ Or remove the blue styling so it doesn't promise interactivity.
 ### F18. Dashboard `RecentTicketRow` should navigate
 
 **File:**
-[`src/pages/dashboard.rs:238-253`](../src/pages/dashboard.rs#L238).
+[`src/pages/dashboard.rs`](../../src/pages/dashboard.rs).
 
 Same pattern as F2 - pass `onclick` to `TableRow` to navigate to
 ticket detail by `props.number` / `id`.
@@ -740,7 +762,7 @@ ticket detail by `props.number` / `id`.
 ### F19. Portal new-ticket attachment zone is decorative
 
 **File:**
-[`src/pages/portal.rs:301-312`](../src/pages/portal.rs#L301).
+[`src/pages/portal.rs`](../../src/pages/portal.rs).
 
 The "Drag and drop files here" div has no `<input type="file">`.
 Either remove the zone (until attachments are supported by the API)
@@ -765,7 +787,7 @@ Roughly in increasing complexity / decreasing impact:
 ### P0 - mass-fix patterns (one PR each, big surface)
 
 1. **F1** - `TableRow.clickable` honest-cursor fix (component-level
-   patch in [`src/components/table.rs`](../src/components/table.rs)).
+   patch in [`src/components/table.rs`](../../src/components/table.rs)).
    Fixes ~12 list pages in one diff.
 2. **F5** - Hide unwired detail-page header buttons behind a feature
    flag. Affects every `*DetailPage`.
@@ -795,5 +817,5 @@ Roughly in increasing complexity / decreasing impact:
 
 Server-dependent fixes are deliberately not on this list. They are
 in
-[`client-server-integration.md`](client-server-integration.md#suggested-next-implementation-pass)
+[`client-server-integration.md`](../client-server-integration.md)
 under "Suggested next implementation pass".
