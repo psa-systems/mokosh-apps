@@ -22,8 +22,8 @@ use std::str::FromStr;
 
 use crate::components::{
     invoice_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant,
-    Card, DataTable, ErrorBanner, IconSize, InformationIcon, Modal, ModalSize, PageHeader,
-    PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
+    Card, DataTable, ErrorBanner, IconSize, InformationIcon, MailIcon, Modal, ModalSize,
+    PageHeader, PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
     TableHeader, TableLoading, TableRow,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
@@ -590,6 +590,29 @@ struct InvoiceLine {
     total: String,
 }
 
+/// MAPPS-539: the invoice "Pay Now" mail is built in mokosh-server's billing
+/// service, not by a notification rule, so `POST /notifications/preview`
+/// renders nothing for it. Same position as the quote and invite sends; the
+/// modal says so rather than leaving the operator to read "nothing will be
+/// sent" and believe it. MAPPS-489 moves those onto the dispatcher.
+const INVOICE_SEND_PREVIEW_NOTE: &str = "The invoice email is built into the server rather than by a notification rule, so there is nothing to render yet. The billing contact is still emailed a link to view and pay the invoice.";
+
+/// The path the invoice **send** transition writes to (MAPPS-539).
+///
+/// A named helper rather than an inline `format!`, because it is what
+/// `scripts/check-email-affordance.sh` keys on. The URL shape cannot be the
+/// key: `PUT /invoices/{id}` is the general invoice update, shared here with
+/// Edit and Void and again with the invoice delete in `src/pages/contacts.rs`,
+/// none of which send anything. This symbol exists because the call sends
+/// email, so it matches the send and nothing else, and goes on matching if the
+/// button moves to another file.
+///
+/// The email is `notify_invoice_pay_now` on the server, fired on the first
+/// transition into `sent`.
+fn invoice_send_path(id: &str) -> String {
+    format!("/invoices/{id}")
+}
+
 /// Invoice detail page. GET `/invoices/{id}` with `lines` populated.
 #[derive(Props, Clone, PartialEq)]
 pub struct InvoiceDetailPageProps {
@@ -756,7 +779,7 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                             }
                             busy.set(true);
                             action_error.set(String::new());
-                            let path = format!("/invoices/{id_for_send}");
+                            let path = invoice_send_path(&id_for_send);
                             spawn(async move {
                                 #[cfg(feature = "web")]
                                 {
@@ -775,7 +798,33 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
                                 busy.set(false);
                             });
                         },
+                        MailIcon { size: IconSize::Small, class: "mr-2".to_string() }
                         "Send"
+                    }
+                    // MAPPS-539: Send emails the client, so it carries the two
+                    // affordances every other send trigger does. The preview
+                    // never gates the send; it sits beside it.
+                    crate::components::EmailPreview {
+                        event_type: "billing.invoice_pay_now".to_string(),
+                        context: serde_json::json!({
+                            "invoice_number": invoice
+                                .as_ref()
+                                .map(|i| i.invoice_number.clone())
+                                .unwrap_or_default(),
+                            "company_name": invoice
+                                .as_ref()
+                                .and_then(|i| i.company_name.clone())
+                                .unwrap_or_default(),
+                            "total": invoice
+                                .as_ref()
+                                .map(|i| i.total.clone())
+                                .unwrap_or_default(),
+                            "due_date": invoice
+                                .as_ref()
+                                .and_then(|i| i.due_date.clone())
+                                .unwrap_or_default(),
+                        }),
+                        empty_note: INVOICE_SEND_PREVIEW_NOTE.to_string(),
                     }
                 }
                 if collectible {
@@ -816,6 +865,17 @@ pub fn InvoiceDetailPage(props: InvoiceDetailPageProps) -> Element {
             div {
                 class: "mb-3 text-xs text-muted bg-surface-2 border border-line rounded-md px-3 py-2",
                 "{note}"
+            }
+        }
+
+        // MAPPS-539: Send is a one-way door that emails the client, and the
+        // button alone cannot say so. The conditions are the server's: it
+        // skips the mail when no payment gateway is connected, when the
+        // invoice has no billing contact, or when that contact has no address
+        // on file, so promise it only where it holds.
+        if editable {
+            p { class: "mb-3 text-xs text-subtle",
+                "Sending emails the billing contact a link to view and pay this invoice, if a payment gateway is connected and the contact has an email address. Use Preview email to read it first."
             }
         }
 
