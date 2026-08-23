@@ -179,6 +179,16 @@ jobs:
           bash scripts/check-email-affordance.sh --self-test
           bash scripts/check-email-affordance.sh
 
+      # MAPPS-545: every relative Markdown link resolves. MAPPS-540 found 49
+      # that did not, all of them from a file move that left the links inside
+      # a relocated directory one level short. Nothing had caught them because
+      # a broken link fails silently: three doc audits reported stale content
+      # in those files without noticing the links underneath were dead.
+      - name: Markdown link targets
+        run: |
+          bash scripts/check-doc-links.sh --self-test
+          bash scripts/check-doc-links.sh
+
       # MAPPS-534: the guard over this file. Every command in a `just check`
       # recipe must appear in a `run:` block here, so the next guard added
       # cannot be added to one of the two places and not the other. It compares

@@ -47,7 +47,7 @@ pre-commit: css-build
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-ci-parity check-web check-desktop check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin
+check: check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin
 
 # Check web/WASM compilation
 [group: 'check']
@@ -151,6 +151,12 @@ check-sort-keys:
 check-per-page-cap:
     bash scripts/check-per-page-cap.sh --self-test
     bash scripts/check-per-page-cap.sh
+
+# MAPPS-545: every relative Markdown link resolves to a path that exists. MAPPS-540 took docs/ from 49 broken links to zero; all 49 came from a file move that left the links inside it one directory short, and a broken link fails silently - the reader lands on nothing and concludes the docs are abandoned. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-doc-links:
+    bash scripts/check-doc-links.sh --self-test
+    bash scripts/check-doc-links.sh
 
 # MAPPS-534: `.forgejo/workflows/check.yml` says it mirrors this recipe, and it had drifted in four places with nothing able to notice. Fails if a command any recipe in the `check` list runs has no `run:` line in the workflow. Compares command lines, not recipe names, because two of those four drifts were steps present but invoked without their --self-test. --self-test first, so a guard that stopped guarding fails loudly.
 [group: 'check']
