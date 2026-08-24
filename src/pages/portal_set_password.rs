@@ -33,10 +33,17 @@ struct SetupPasswordBody {
 }
 
 #[component]
-pub fn PortalSetPasswordPage() -> Element {
-    // The emailed token is `{contact_id}.{64 alphanumerics}`, so the raw
-    // (undecoded) query value is already what the server expects.
-    let token = use_signal(|| crate::utils::url::current_query_param("token").unwrap_or_default());
+pub fn PortalSetPasswordPage(token: String) -> Element {
+    // MAPPS-560: `token` comes from the route's `?:token` query segment
+    // (see `Route::PortalSetPassword { token }` in `lib.rs`). Pre-560
+    // this component read `?token=...` off `window.location.search`
+    // at mount via `use_signal(|| ...)`, but the Dioxus router
+    // normalizes the URL on route match and can strip an undeclared
+    // query on the first render, leaving the signal empty. When that
+    // happened, submit hit the empty-token early return and showed
+    // "This link is expired or invalid" WITHOUT any network call -
+    // matching the operator's 2026-08-24 symptom on a fresh link.
+    let token = use_signal(|| token);
 
     let mut password = use_signal(String::new);
     let mut confirm = use_signal(String::new);

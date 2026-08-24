@@ -29,10 +29,13 @@ struct ResetPasswordBody {
 }
 
 #[component]
-pub fn PortalResetPasswordPage() -> Element {
-    // Token comes in via `?token=` (same shape as the setup-password
-    // email); the raw undecoded value is what the server expects.
-    let token = use_signal(|| crate::utils::url::current_query_param("token").unwrap_or_default());
+pub fn PortalResetPasswordPage(token: String) -> Element {
+    // MAPPS-560: `token` comes from the route's `?:token` query segment
+    // (see `Route::PortalResetPassword { token }` in `lib.rs`). Same
+    // shape as `PortalSetPasswordPage`; pre-560 both read
+    // `window.location.search` at mount, which the Dioxus router
+    // could strip on URL normalization and leave empty.
+    let token = use_signal(|| token);
 
     let mut password = use_signal(String::new);
     let mut confirm = use_signal(String::new);

@@ -770,11 +770,21 @@ pub enum Route {
     #[route("/portal/login")]
     PortalLogin {},
 
-    // MAPPS-396: the destination of the portal setup email mokosh-server
-    // sends on a portal-access grant. Public by construction: the emailed
-    // single-use token in `?token=` is the only credential the visitor has.
-    #[route("/portal/set-password")]
-    PortalSetPassword {},
+    // MAPPS-396 / MAPPS-560: the destination of the portal setup email
+    // mokosh-server sends on a portal-access grant. Public by
+    // construction: the emailed single-use token in `?token=` is the
+    // only credential the visitor has.
+    //
+    // MAPPS-560: the query segment is declared on the route itself so
+    // the Dioxus router captures it into `token` and passes it to the
+    // component as a prop. Pre-560 the page read `?token=...` off
+    // `window.location.search` at mount via `use_signal(|| ...)`, but
+    // the router's URL normalization can strip an undeclared query on
+    // the first render and leave the signal empty - producing the
+    // operator's 2026-08-24 report ("This link is expired or invalid"
+    // on a fresh link, even before any network call fired).
+    #[route("/portal/set-password?:token")]
+    PortalSetPassword { token: String },
 
     // PMS-729 phase 2 H3: request a password reset by email. Public: the
     // customer is signed out. The endpoint always returns 204 whether the
@@ -783,11 +793,13 @@ pub enum Route {
     #[route("/portal/forgot-password")]
     PortalForgotPassword {},
 
-    // PMS-729 phase 2 H3: destination of the reset email. Public by
-    // construction: the emailed single-use token in `?token=` is the
-    // only credential the visitor has. Same shape as PortalSetPassword.
-    #[route("/portal/reset-password")]
-    PortalResetPassword {},
+    // PMS-729 phase 2 H3 / MAPPS-560: destination of the reset email.
+    // Public by construction: the emailed single-use token in
+    // `?token=` is the only credential the visitor has. Same query-
+    // segment shape as `PortalSetPassword` above so the router does
+    // not silently drop the token.
+    #[route("/portal/reset-password?:token")]
+    PortalResetPassword { token: String },
 
     // MAPPS-395: everything below needs a portal session. Without the guard a
     // signed-out visitor (or an agent, whose bearer is the wrong token class)
@@ -1639,8 +1651,8 @@ fn PortalLogin() -> Element {
 }
 
 #[component]
-fn PortalSetPassword() -> Element {
-    rsx! { portal_set_password::PortalSetPasswordPage {} }
+fn PortalSetPassword(token: String) -> Element {
+    rsx! { portal_set_password::PortalSetPasswordPage { token } }
 }
 
 #[component]
@@ -1649,8 +1661,8 @@ fn PortalForgotPassword() -> Element {
 }
 
 #[component]
-fn PortalResetPassword() -> Element {
-    rsx! { portal_reset_password::PortalResetPasswordPage {} }
+fn PortalResetPassword(token: String) -> Element {
+    rsx! { portal_reset_password::PortalResetPasswordPage { token } }
 }
 
 #[component]
