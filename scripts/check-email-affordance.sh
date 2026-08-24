@@ -58,6 +58,13 @@ EMAIL_PATHS=(
   '"/invitations"|POST /invitations (emails a colleague an invitation)'
   '"/quotes/\{[A-Za-z_]+\}/send"|POST /quotes/{id}/send (emails the billing contact a sign-off link)'
   'invoice_send_path\(|PUT /invoices/{id} status=sent (emails the billing contact a pay-now link)'
+  # MAPPS-517: conditional server-side, like the invoice send. The mail goes
+  # out only for a PUBLIC note with `send_email` on, and only when the ticket's
+  # contact has an address. The composer says so, and the journal records what
+  # actually happened. The pattern carries the opening quote so the portal's
+  # own `"/portal/tickets/{id}/notes"` (a customer reply, which mails nobody)
+  # is left alone.
+  '"/tickets/\{[A-Za-z_]+\}/notes"|POST /tickets/{id}/notes with send_email (emails the ticket contact a public note)'
 )
 
 if [ "${1:-}" = "--self-test" ]; then
@@ -97,6 +104,16 @@ if [ "${1:-}" = "--self-test" ]; then
     {
       printf '    let delete_path = format!("/invoices/{id}");\n'
     } > "$fixtures/src/pages/contacts.rs"
+    # MAPPS-517: the ticket-note send, plus the portal reply that shares the
+    # tail of its URL and mails nobody.
+    {
+      printf '    let path = format!("/tickets/{id}/notes");\n'
+      printf '    MailIcon { size: IconSize::Small, class: "mr-2".to_string() }\n'
+      printf '    EmailPreview { event_type: "ticket.note".to_string(), context: ctx }\n'
+    } > "$fixtures/src/pages/tickets.rs"
+    {
+      printf '    let path = format!("/portal/tickets/{id}/notes");\n'
+    } > "$fixtures/src/pages/portal.rs"
   }
 
   check_rejects() { # check_rejects <name>
@@ -132,6 +149,12 @@ if [ "${1:-}" = "--self-test" ]; then
   mv "$fixtures/billing.tmp" "$fixtures/src/pages/billing.rs"
   check_rejects "an invoice send with no MailIcon"
 
+  # MAPPS-517
+  build_clean
+  grep -v 'EmailPreview' "$fixtures/src/pages/tickets.rs" > "$fixtures/tickets.tmp"
+  mv "$fixtures/tickets.tmp" "$fixtures/src/pages/tickets.rs"
+  check_rejects "a ticket-note send with no EmailPreview"
+
   build_clean
   out=$("$0" "$fixtures/src" 2>&1) && rc=0 || rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -142,8 +165,9 @@ if [ "${1:-}" = "--self-test" ]; then
     # The clean tree includes a contacts.rs that calls `PUT /invoices/{id}` to
     # DELETE an invoice and carries neither affordance. Passing proves the
     # invoice entry keys on the send helper and not on the URL, which is the
-    # whole reason the helper exists (MAPPS-539).
-    echo "self-test: a compliant tree passes, and the invoice URL's other caller is left alone"
+    # whole reason the helper exists (MAPPS-539). MAPPS-517 adds the same case
+    # for the portal reply, whose URL ends in the ticket-note path.
+    echo "self-test: a compliant tree passes, and the invoice URL's and note URL's other callers are left alone"
   fi
 
   [ "$status" -eq 0 ] && echo "email-affordance guard self-test: clean"

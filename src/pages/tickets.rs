@@ -6,16 +6,29 @@ use serde::Deserialize;
 
 use crate::components::{
     clear_selection, ticket_status_badge, use_bulk_selection, use_page_title, AlertType, Badge,
-    BadgeVariant, BulkActionsBar, BulkSelection, Button, ButtonVariant, Card, ClockIcon, DataTable,
-    ErrorBanner, IconSize, Modal, PageHeader, PencilIcon, PlusIcon, SearchInput, Select,
-    SelectAllHeader, SelectOption, SelectRowCell, SortDirection, Table, TableBody, TableCell,
-    TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea, UserCircleIcon,
+    BadgeVariant, BulkActionsBar, BulkSelection, Button, ButtonVariant, Card, Checkbox, ClockIcon,
+    DataTable, ErrorBanner, IconSize, MailIcon, Modal, PageHeader, PencilIcon, PlusIcon,
+    SearchInput, Select, SelectAllHeader, SelectOption, SelectRowCell, SortDirection, Table,
+    TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow, Textarea,
+    UserCircleIcon,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 
 /// MAPPS-546: rows per page on the ticket list, sent to the server rather than
 /// written into the table as a constant.
 const PER_PAGE: usize = 25;
+
+/// MAPPS-517: entries rendered in the ticket journal. The stream merges three
+/// sources, each read in full, so a long-running ticket would otherwise render
+/// hundreds of list items; the count of the rest is stated under the stream.
+const JOURNAL_LIMIT: usize = 50;
+
+/// What the email preview says for a public note. mokosh-server builds the
+/// note mail in `tickets/service.rs` with a built-in template rather than
+/// through the notification dispatcher, so the preview comes back empty and
+/// would otherwise read as "nothing will be sent". Same shape as
+/// `QUOTE_PREVIEW_NOTE` in `quotes.rs` (docs/email-actions.md).
+const NOTE_PREVIEW_NOTE: &str = "The ticket-note email is built into the server rather than by a notification rule, so there is nothing to render yet. The ticket's contact is still emailed the note.";
 use crate::Route;
 
 /// Subset of mokosh-server's `TicketResponse` we render in the list. The
@@ -158,7 +171,7 @@ struct RemoteUserLookup {
     email: String,
 }
 
-/// A ticket note (`GET /tickets/:id/notes`), rendered as an Activity item.
+/// A ticket note (`GET /tickets/:id/notes`), rendered as a journal entry.
 #[derive(Clone, Debug, Deserialize)]
 struct RemoteNote {
     #[serde(default)]
@@ -167,6 +180,11 @@ struct RemoteNote {
     content: String,
     #[serde(default)]
     created_by_name: String,
+    /// MAPPS-517: the server records on the note row whether the public-note
+    /// email actually went out (`TicketNoteResponse.is_email_sent`), so the
+    /// journal states what happened rather than what was asked for.
+    #[serde(default)]
+    is_email_sent: bool,
     created_at: DateTime<Utc>,
 }
 
@@ -218,6 +236,14 @@ struct RemoteTimeEntry {
     notes: Option<String>,
     #[serde(default)]
     is_billable: bool,
+    // MAPPS-517: the journal orders every source on one clock, so it needs the
+    // entry's creation instant rather than the work date, and the author to
+    // attribute the line. Both are on `TimeEntryResponse`; `Option` because the
+    // page decoded neither before and a missing field must not blank the list.
+    #[serde(default)]
+    created_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    user_id: Option<uuid::Uuid>,
 }
 
 /// Mirror of the server `SlaStatus` enum (snake_case wire form). Defaults
@@ -434,6 +460,146 @@ fn fmt_change_value(v: &Option<serde_json::Value>) -> String {
         Some(serde_json::Value::Number(n)) => n.to_string(),
         Some(_) => "(updated)".to_string(),
     }
+}
+
+/// MAPPS-517: one line of the ticket journal, whatever source it came from.
+///
+/// The journal replaced an Activity card that rendered notes alone, so a
+/// reader could not tell from the record that a ticket had been reassigned,
+/// changed state or had time logged against it.
+#[derive(Clone, Debug, PartialEq)]
+struct JournalEntry {
+    at: DateTime<Utc>,
+    /// Display name of whoever did it, or "Someone" when unresolvable.
+    who: String,
+    /// Predicate, rendered after the name: "added an internal note".
+    action: String,
+    /// Body block under the headline: the note text, the before/after values
+    /// of an edit, or a time entry's notes. `None` renders the headline alone.
+    body: Option<String>,
+}
+
+/// The name to attribute a journal line to. `actor_name` yields "-" for an
+/// id no `/auth/users` row matches, which reads as a broken row in a sentence.
+fn journal_actor(users: &[UserOpt], id: &Option<uuid::Uuid>) -> String {
+    let name = actor_name(users, id);
+    if name == "-" {
+        "Someone".to_string()
+    } else {
+        name
+    }
+}
+
+/// Headline for an audit-log entry. A single-column edit gets the phrasing a
+/// reader expects for that column ("changed the status"); anything wider falls
+/// back to naming the columns, as the change-history pane always did.
+fn history_action(entry: &HistoryEntry) -> String {
+    match entry.action.as_str() {
+        "create" => return "created the ticket".to_string(),
+        "delete" => return "deleted the ticket".to_string(),
+        _ => {}
+    }
+    match entry.changed_fields.as_slice() {
+        [] => format!("{} the ticket", action_label(&entry.action).to_lowercase()),
+        [one] => match one.as_str() {
+            "status_id" => "changed the status".to_string(),
+            "assigned_to_id" => "changed the assignee".to_string(),
+            other => format!("updated {}", title_field(other)),
+        },
+        many => format!("updated {}", fields_label(many)),
+    }
+}
+
+/// The before/after lines for an audit entry, or `None` when every change on
+/// it is a bare reference (a FK swap the audit log records as two UUIDs).
+fn history_body(entry: &HistoryEntry) -> Option<String> {
+    let lines: Vec<String> = entry
+        .changes
+        .iter()
+        .filter_map(|c| {
+            let old = fmt_change_value(&c.old);
+            let new = fmt_change_value(&c.new);
+            if old == "(reference)" && new == "(reference)" {
+                return None;
+            }
+            Some(format!("{}: {} -> {}", title_field(&c.field), old, new))
+        })
+        .collect();
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+/// MAPPS-517: merge every source this page already fetches into one
+/// newest-first stream: notes, the ticket's audit log (state and assignment
+/// changes among them) and its time entries.
+///
+/// There is no single server activity feed for a ticket, so this is assembled
+/// here. It degrades rather than empties: a source that returns nothing (the
+/// audit log 404s, no time is logged) simply contributes no lines, leaving the
+/// notes-only stream the Activity card used to show. What it cannot include is
+/// anything no source records - attachments and approvals write no audit row
+/// against the ticket - which is why the journal says so on screen instead of
+/// reading as complete.
+fn build_journal(
+    notes: &[RemoteNote],
+    history: &[HistoryEntry],
+    time_entries: &[RemoteTimeEntry],
+    users: &[UserOpt],
+) -> Vec<JournalEntry> {
+    let mut entries: Vec<JournalEntry> =
+        Vec::with_capacity(notes.len() + history.len() + time_entries.len());
+
+    for n in notes {
+        // The email only ever goes out for a public note, and only when the
+        // composer's toggle was on AND the ticket's contact has an address
+        // (mokosh-server `send_note_email`). `is_email_sent` is the outcome,
+        // so the line states what happened, not what was requested.
+        let action = if n.note_type == "internal" {
+            "added an internal note".to_string()
+        } else if n.is_email_sent {
+            "added a public note and emailed the client".to_string()
+        } else {
+            "added a public note (not emailed)".to_string()
+        };
+        entries.push(JournalEntry {
+            at: n.created_at,
+            who: if n.created_by_name.trim().is_empty() {
+                "Someone".to_string()
+            } else {
+                n.created_by_name.clone()
+            },
+            action,
+            body: (!n.content.trim().is_empty()).then(|| n.content.clone()),
+        });
+    }
+
+    for h in history {
+        entries.push(JournalEntry {
+            at: h.timestamp,
+            who: journal_actor(users, &h.user_id),
+            action: history_action(h),
+            body: history_body(h),
+        });
+    }
+
+    for e in time_entries {
+        // `created_at` is when the entry was written, which is the journal's
+        // clock; the work date is in the headline. Older rows decoded without
+        // it fall back to midnight on the work date rather than dropping out.
+        let at = e.created_at.unwrap_or_else(|| {
+            DateTime::<Utc>::from_naive_utc_and_offset(e.date.and_time(chrono::NaiveTime::MIN), Utc)
+        });
+        let billable = if e.is_billable { " (billable)" } else { "" };
+        entries.push(JournalEntry {
+            at,
+            who: journal_actor(users, &e.user_id),
+            action: format!("logged {} min on {}{billable}", e.duration_minutes, e.date),
+            body: e.notes.clone().filter(|s| !s.trim().is_empty()),
+        });
+    }
+
+    // Newest first, matching the ordering the Activity card had.
+    entries.sort_by(|a, b| b.at.cmp(&a.at));
+    entries
 }
 
 /// MAPPS-289: sortable columns on the ticket list. Mirrors the
@@ -1787,12 +1953,15 @@ pub struct TicketDetailPageProps {
 #[component]
 #[allow(unused_variables)]
 pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
-    let mut show_note_modal = use_signal(|| false);
     let mut note_type = use_signal(|| "internal".to_string());
     let mut note_content = use_signal(String::new);
+    // MAPPS-517: the per-note send-email flag the server has carried since
+    // PMS-15, surfaced on the composer. Off by default: most notes are
+    // internal working discussion and defaulting to on leaks it to the client.
+    let mut note_send_email = use_signal(|| false);
     // PMS-518: inline error for the now-enforced required note Content,
-    // surfaced in the textarea's own slot by the FormGuard in the Add Note
-    // modal's submit handler.
+    // surfaced in the textarea's own slot by the FormGuard in the composer's
+    // submit handler.
     let mut note_content_error = use_signal(String::new);
     let mut note_submitting = use_signal(|| false);
     let mut note_error = use_signal(String::new);
@@ -1843,12 +2012,15 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
         let id = id_for_history.clone();
         async move {
             let _gen = crate::hooks::fetch::active_tenant_generation();
+            // MAPPS-517: keep the `Option` rather than collapsing a failed
+            // fetch to an empty Vec here. The journal is now the ticket's
+            // record, so "the history did not load" has to stay
+            // distinguishable from "nothing has been edited".
             crate::hooks::fetch::api::get_all_authed::<HistoryEntry>(&format!(
                 "/audit-log/entity/tickets/{id}"
             ))
             .await
             .ok()
-            .unwrap_or_default()
         }
     });
     let users_resource = use_resource(|| async {
@@ -1969,10 +2141,12 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
             }
         };
     }
-    let history = history_resource
-        .read_unchecked()
-        .clone()
-        .unwrap_or_default();
+    // MAPPS-517: each journal source is read as a snapshot first, so a failed
+    // fetch (`Some(None)`) stays separable from an empty one and can be named
+    // under the stream instead of reading as "nothing happened".
+    let history_snap = history_resource.read_unchecked().clone();
+    let history_failed = matches!(history_snap, Some(None));
+    let history = history_snap.flatten().unwrap_or_default();
     let users = users_resource.read_unchecked().clone().unwrap_or_default();
     // PMS-359: lookups for the inline editors. Empty until the fetches
     // land; the renderer falls back to a "Loading…" badge in that window.
@@ -1998,19 +2172,39 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                 format!("Edited {when} by {who}")
             }
         });
-    let notes: Vec<RemoteNote> = notes_resource
-        .read_unchecked()
-        .clone()
-        .flatten()
-        .unwrap_or_default();
-    let note_count = notes.len();
-    let time_entries: Vec<RemoteTimeEntry> = time_resource
-        .read_unchecked()
-        .clone()
-        .flatten()
-        .unwrap_or_default();
+    let notes_snap = notes_resource.read_unchecked().clone();
+    let notes_failed = matches!(notes_snap, Some(None));
+    let notes: Vec<RemoteNote> = notes_snap.flatten().unwrap_or_default();
+    let time_snap = time_resource.read_unchecked().clone();
+    let time_failed = matches!(time_snap, Some(None));
+    let time_entries: Vec<RemoteTimeEntry> = time_snap.flatten().unwrap_or_default();
     let total_minutes: i32 = time_entries.iter().map(|e| e.duration_minutes).sum();
     let total_hours_label = format!("{:.1} hours", total_minutes as f64 / 60.0);
+
+    // MAPPS-517: one stream out of the three sources the page already holds.
+    let journal = build_journal(&notes, &history, &time_entries, &users);
+    let shown_journal_count = journal.len().min(JOURNAL_LIMIT);
+    // Whichever of the three did not load, named. An unreadable source has to
+    // be visible here: the journal is the record, and a silently short stream
+    // reads as a quiet ticket.
+    let journal_gaps: Vec<&str> = [
+        (notes_failed, "notes"),
+        (history_failed, "change history"),
+        (time_failed, "time entries"),
+    ]
+    .iter()
+    .filter_map(|(failed, label)| failed.then_some(*label))
+    .collect();
+    let journal_gaps_label = journal_gaps.join(", ");
+    // Composer state the markup reads more than once.
+    let note_is_public = note_type.read().as_str() == "public";
+    let note_will_email = note_is_public && note_send_email();
+    let note_email_help = if note_is_public {
+        "Sent to the ticket's contact. Nothing is sent when the ticket has no contact with an email address."
+    } else {
+        "Internal notes are never emailed. Switch the note to public to email it."
+    }
+    .to_string();
 
     // PMS-362: carry the ticket into the Log Time flow so the work-item picker
     // opens preselected. A plain <a href> (not a routed Link) because the
@@ -2027,19 +2221,10 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     items: crate::components::detail_breadcrumbs("Tickets", Route::TicketList {}, &header_title),
                 }
             },
+            // MAPPS-517: no "Add Note" button here any more. The composer is
+            // open in the journal below, so a note takes typing, not a click
+            // that opens a modal first.
             actions: rsx! {
-                Button {
-                    variant: ButtonVariant::Secondary,
-                    // MAPPS-357: block adding a note while the server is down.
-                    disabled: !can_mutate,
-                    title: (!can_mutate).then(|| "Can't add a note while the server is unreachable".to_string()),
-                    onclick: move |_| {
-                        note_error.set(String::new());
-                        show_note_modal.set(true);
-                    },
-                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                    "Add Note"
-                }
                 a {
                     href: "{log_time_href}",
                     Button {
@@ -2241,30 +2426,191 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
 
                 // PMS-486: ticket-detail Approvals section. Self-contained
                 // component owns its own fetch, modal state, and refresh
-                // cycle; rendered above the activity timeline so the
-                // open approval requests are immediately visible.
+                // cycle; rendered above the journal so the open approval
+                // requests are immediately visible.
                 ApprovalsSection { entity_id: props.id.clone() }
 
-                // Activity timeline (real ticket notes; there is no audit
-                // feed yet, so status / assignment events do not appear).
-                Card { title: "Activity",
-                    if note_count == 0 {
-                        p { class: "text-sm text-subtle italic",
-                            "No activity yet. Notes added to this ticket will appear here."
+                // MAPPS-517: the journal. The composer sits at the top of it,
+                // open, and the stream below carries every source this page
+                // fetches rather than notes alone.
+                Card { title: "Journal",
+                    div { class: "space-y-4",
+                        if !note_error.read().is_empty() {
+                            ErrorBanner { "{note_error}" }
                         }
-                    } else {
-                        div { class: "flow-root",
-                            ul { class: "-mb-8",
-                                for (i , n) in notes.iter().enumerate() {
-                                    TimelineItem {
-                                        user: if n.created_by_name.is_empty() { "Someone".to_string() } else { n.created_by_name.clone() },
-                                        action: if n.note_type == "internal" { "added an internal note".to_string() } else { "added a note".to_string() },
-                                        time: fmt_datetime(n.created_at),
-                                        content: Some(n.content.clone()),
-                                        is_last: i + 1 == note_count,
+                        Textarea {
+                            name: "content",
+                            label: "Add a note",
+                            placeholder: "Enter your note…",
+                            rows: 4,
+                            required: true,
+                            rules: vec![Rule::Required],
+                            error: note_content_error.read().clone(),
+                            value: note_content.read().clone(),
+                            oninput: move |e: FormEvent| {
+                                note_content_error.set(String::new());
+                                note_content.set(e.value());
+                            },
+                        }
+                        div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
+                            Select {
+                                name: "note_type",
+                                label: "Note Type",
+                                options: vec![
+                                    SelectOption::new("internal", "Internal Note"),
+                                    SelectOption::new("public", "Public Note (visible to customer)"),
+                                ],
+                                value: note_type.read().clone(),
+                                onchange: move |e: FormEvent| {
+                                    // An internal note never leaves the building,
+                                    // whatever the flag says (mokosh-server
+                                    // `add_note`), so switching back to internal
+                                    // clears the toggle rather than leaving a
+                                    // checked box that does nothing.
+                                    if e.value() == "internal" {
+                                        note_send_email.set(false);
+                                    }
+                                    note_type.set(e.value());
+                                },
+                            }
+                            div { class: "flex items-end",
+                                Checkbox {
+                                    name: "note_send_email",
+                                    label: "Email this note to the client",
+                                    checked: note_send_email(),
+                                    disabled: !note_is_public,
+                                    help: note_email_help,
+                                    onchange: move |e: FormEvent| note_send_email.set(e.checked()),
+                                }
+                            }
+                        }
+                        div { class: "flex items-center justify-end gap-3",
+                            // MAPPS-482 / docs/email-actions.md: this submit
+                            // mails a client whenever the toggle is on, so it
+                            // carries the mail affordances exactly then.
+                            if note_will_email {
+                                crate::components::EmailPreview {
+                                    event_type: "ticket.note".to_string(),
+                                    context: serde_json::json!({
+                                        "ticket_number": ticket
+                                            .as_ref()
+                                            .map(|t| t.ticket_number.clone())
+                                            .unwrap_or_default(),
+                                        "title": header_title.clone(),
+                                        "content": note_content.read().clone(),
+                                    }),
+                                    empty_note: NOTE_PREVIEW_NOTE.to_string(),
+                                }
+                            }
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                loading: *note_submitting.read(),
+                                // MAPPS-357: block the add-note POST while the server is down.
+                                disabled: !can_mutate,
+                                title: (!can_mutate).then(|| "Can't add a note while the server is unreachable".to_string()),
+                                onclick: move |_| {
+                                    note_error.set(String::new());
+                                    // PMS-518: validate the required Content through
+                                    // the shared FormGuard before submitting so the
+                                    // failure lands in the textarea's own inline slot
+                                    // and the field is focused. Runs before
+                                    // `note_submitting` is set, so the bail path
+                                    // leaves it untouched.
+                                    let mut guard = FormGuard::new();
+                                    let content_v = note_content.read().clone();
+                                    note_content_error.set(guard.field(
+                                        "content",
+                                        content_v.trim(),
+                                        "Content",
+                                        &[Rule::Required],
+                                    ));
+                                    if guard.blocked() {
+                                        return;
+                                    }
+                                    note_submitting.set(true);
+                                    let id = ticket_id_for_note.clone();
+                                    let type_v = note_type.read().clone();
+                                    let email_v = type_v == "public" && note_send_email();
+                                    spawn(async move {
+                                        #[cfg(feature = "web")]
+                                        {
+                                            let body = serde_json::json!({
+                                                "note_type": type_v,
+                                                "content": content_v,
+                                                "send_email": email_v,
+                                            });
+                                            let path = format!("/tickets/{id}/notes");
+                                            match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(&path, &body).await {
+                                                Ok(_) => {
+                                                    note_content.set(String::new());
+                                                    note_error.set(String::new());
+                                                    // Back to the default for the next
+                                                    // note rather than staying armed.
+                                                    note_send_email.set(false);
+                                                    // Refresh the journal so the new note shows.
+                                                    let mut nr = notes_resource;
+                                                    nr.restart();
+                                                }
+                                                Err(err) => {
+                                                    note_error.set(format!("Could not add note: {err}"));
+                                                }
+                                            }
+                                        }
+                                        note_submitting.set(false);
+                                    });
+                                },
+                                if note_will_email {
+                                    MailIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                } else {
+                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                }
+                                "Add note"
+                            }
+                        }
+                    }
+
+                    div { class: "mt-6 border-t border-line pt-6",
+                        if journal.is_empty() {
+                            // MAPPS-517: an untouched ticket has no notes and no
+                            // events, and that is an empty journal, not an error.
+                            // A source that failed to load is a different thing
+                            // and says so below instead of claiming this.
+                            if journal_gaps.is_empty() {
+                                p { class: "text-sm text-subtle italic",
+                                    "Nothing has happened on this ticket yet. Notes, state and assignment changes and logged time land here."
+                                }
+                            }
+                        } else {
+                            div { class: "flow-root",
+                                ul { class: "-mb-8",
+                                    for (i , entry) in journal.iter().take(JOURNAL_LIMIT).enumerate() {
+                                        TimelineItem {
+                                            user: entry.who.clone(),
+                                            action: entry.action.clone(),
+                                            time: fmt_datetime(entry.at),
+                                            content: entry.body.clone(),
+                                            is_last: i + 1 == shown_journal_count,
+                                        }
                                     }
                                 }
                             }
+                            if journal.len() > JOURNAL_LIMIT {
+                                p { class: "text-xs text-subtle",
+                                    "Showing the {JOURNAL_LIMIT} most recent of {journal.len()} entries."
+                                }
+                            }
+                        }
+                        if !journal_gaps.is_empty() {
+                            p { class: "mt-4 text-xs text-red-600 dark:text-red-300",
+                                "This ticket's {journal_gaps_label} could not be loaded, so the journal is missing entries. Reload the page to try again."
+                            }
+                        }
+                        // MAPPS-517: the journal is assembled here from three
+                        // endpoints because the server exposes no single feed
+                        // for a ticket. Say what is missing rather than let the
+                        // stream read as the whole record.
+                        p { class: "mt-4 text-xs text-subtle",
+                            "Built from this ticket's notes, its change history and its time entries. Attachments and approvals are not in the stream yet: they record no ticket history entry, so they arrive when the server exposes one activity feed."
                         }
                     }
                 }
@@ -2638,92 +2984,30 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                     } else {
                         p { class: "text-sm text-subtle", "Loading…" }
                     }
-                }
 
-                // Time entries (real, summed from /time-entries?ticket_id=)
-                Card { title: "Time Logged",
-                    div { class: "space-y-3",
+                    // MAPPS-517: the Time Logged card folded in here as a total.
+                    // Its per-entry list moved into the journal, where each
+                    // logged entry sits in order beside the notes and the state
+                    // changes instead of in a box of its own.
+                    div { class: "mt-6 border-t border-line pt-4",
                         div { class: "flex justify-between items-center",
-                            span { class: "text-sm text-muted", "Total Time" }
+                            span { class: "text-sm text-muted", "Time Logged" }
                             span { class: "text-lg font-semibold", "{total_hours_label}" }
                         }
                         if time_entries.is_empty() {
-                            // MAPPS-388: centered empty state.
-                            p { class: "text-sm text-subtle italic text-center", "No time logged yet." }
+                            p { class: "mt-1 text-sm text-subtle italic", "No time logged yet." }
                         } else {
-                            div { class: "space-y-2 text-sm text-muted",
-                                for e in time_entries.iter() {
-                                    div {
-                                        div { class: "flex justify-between gap-2",
-                                            span { "{e.date} · {e.duration_minutes} min" }
-                                            if e.is_billable {
-                                                span { class: "text-green-600 dark:text-green-400", "billable" }
-                                            }
-                                        }
-                                        if let Some(note) = e.notes.as_ref().filter(|s| !s.is_empty()) {
-                                            p { class: "text-xs text-subtle truncate", "{note}" }
-                                        }
-                                    }
-                                }
+                            p { class: "mt-1 text-xs text-subtle",
+                                "Every entry is in the journal."
                             }
                         }
                     }
                 }
 
-                // Change history (PMS-182) - field-level edits to the ticket.
-                Card { title: "Change History",
-                    if history.is_empty() {
-                        p { class: "text-sm text-subtle italic", "No edits yet." }
-                    } else {
-                        div { class: "space-y-3 text-sm",
-                            for e in history.iter().take(20) {
-                                {
-                                    let label = action_label(&e.action);
-                                    let fields = fields_label(&e.changed_fields);
-                                    let who = actor_name(&users, &e.user_id);
-                                    let when = fmt_datetime(e.timestamp);
-                                    rsx! {
-                                        div { class: "flex justify-between gap-2",
-                                            div { class: "min-w-0",
-                                                p { class: "text-content",
-                                                    if fields.is_empty() {
-                                                        "{label}"
-                                                    } else {
-                                                        "{label}: {fields}"
-                                                    }
-                                                }
-                                                if who != "-" {
-                                                    p { class: "text-xs text-subtle", "by {who}" }
-                                                }
-                                                // PMS-204: actual before/after content.
-                                                for c in e.changes.iter() {
-                                                    {
-                                                        let old = fmt_change_value(&c.old);
-                                                        let new = fmt_change_value(&c.new);
-                                                        let fname = title_field(&c.field);
-                                                        if old == "(reference)" && new == "(reference)" {
-                                                            rsx! {}
-                                                        } else {
-                                                            rsx! {
-                                                                p { class: "text-xs text-muted mt-1",
-                                                                    span { class: "font-medium", "{fname}: " }
-                                                                    span { class: "line-through text-subtle", "{old}" }
-                                                                    " → "
-                                                                    span { "{new}" }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            span { class: "text-subtle whitespace-nowrap", "{when}" }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                // MAPPS-517: the Change History card (PMS-182) is gone. Its
+                // entries are journal lines now, in one stream with the notes
+                // and the logged time rather than in a second box that a reader
+                // had to cross-reference by timestamp.
             }
         }
 
@@ -2842,104 +3126,6 @@ pub fn TicketDetailPage(props: TicketDetailPageProps) -> Element {
                             },
                         }
                     }
-                }
-            }
-        }
-
-        // Add note modal
-        Modal {
-            open: *show_note_modal.read(),
-            title: "Add Note",
-            size: crate::components::ModalSize::Medium,
-            onclose: move |_| show_note_modal.set(false),
-            footer: rsx! {
-                Button {
-                    variant: ButtonVariant::Secondary,
-                    onclick: move |_| show_note_modal.set(false),
-                    "Cancel"
-                }
-                Button {
-                    variant: ButtonVariant::Primary,
-                    loading: *note_submitting.read(),
-                    // MAPPS-357: block the add-note POST while the server is down.
-                    disabled: !can_mutate,
-                    title: (!can_mutate).then(|| "Can't add a note while the server is unreachable".to_string()),
-                    onclick: move |_| {
-                        note_error.set(String::new());
-                        // PMS-518: validate the required Content through the
-                        // shared FormGuard before submitting so the failure
-                        // lands in the textarea's own inline slot and the
-                        // field is focused. Runs before `note_submitting` is
-                        // set, so the bail path leaves it untouched.
-                        let mut guard = FormGuard::new();
-                        let content_v = note_content.read().clone();
-                        note_content_error.set(guard.field(
-                            "content",
-                            content_v.trim(),
-                            "Content",
-                            &[Rule::Required],
-                        ));
-                        if guard.blocked() {
-                            return;
-                        }
-                        note_submitting.set(true);
-                        let id = ticket_id_for_note.clone();
-                        let type_v = note_type.read().clone();
-                        spawn(async move {
-                            #[cfg(feature = "web")]
-                            {
-                                let body = serde_json::json!({
-                                    "note_type": type_v,
-                                    "content": content_v,
-                                });
-                                let path = format!("/tickets/{id}/notes");
-                                match crate::hooks::fetch::api::post_authed::<serde_json::Value, _>(&path, &body).await {
-                                    Ok(_) => {
-                                        note_content.set(String::new());
-                                        note_error.set(String::new());
-                                        show_note_modal.set(false);
-                                        // Refresh the Activity feed so the new note shows.
-                                        let mut nr = notes_resource;
-                                        nr.restart();
-                                    }
-                                    Err(err) => {
-                                        note_error.set(format!("Could not add note: {err}"));
-                                    }
-                                }
-                            }
-                            note_submitting.set(false);
-                        });
-                    },
-                    "Add Note"
-                }
-            },
-            div { class: "space-y-4",
-                if !note_error.read().is_empty() {
-                    ErrorBanner { "{note_error}" }
-                }
-                Select {
-                    name: "note_type",
-                    label: "Note Type",
-                    options: vec![
-                        SelectOption::new("internal", "Internal Note"),
-                        SelectOption::new("public", "Public Note (visible to customer)"),
-                    ],
-                    value: note_type.read().clone(),
-                    onchange: move |e: FormEvent| note_type.set(e.value()),
-                }
-                Textarea {
-                    name: "content",
-                    label: "Content",
-                    placeholder: "Enter your note…",
-                    rows: 4,
-                    required: true,
-                    rules: vec![Rule::Required],
-                    error: note_content_error.read().clone(),
-                    value: note_content.read().clone(),
-                    oninput: move |e: FormEvent| {
-                        note_content_error.set(String::new());
-                        note_content.set(e.value());
-                    },
                 }
             }
         }
@@ -3395,5 +3581,145 @@ mod procedure_kb_tests {
         // opened FROM; it must never feed the Procedure row.
         let t = detail(r#","source_kb_article_id":"22222222-2222-4222-8222-222222222222""#);
         assert!(t.procedure_kb_article_id.is_none());
+    }
+}
+
+#[cfg(test)]
+mod mapps517_journal_tests {
+    use super::{build_journal, HistoryEntry, JournalEntry, RemoteNote, RemoteTimeEntry, UserOpt};
+
+    fn note(json: &str) -> RemoteNote {
+        serde_json::from_str(json).expect("deserialise note")
+    }
+
+    fn history(json: &str) -> HistoryEntry {
+        serde_json::from_str(json).expect("deserialise history entry")
+    }
+
+    fn time_entry(json: &str) -> RemoteTimeEntry {
+        serde_json::from_str(json).expect("deserialise time entry")
+    }
+
+    fn users() -> Vec<UserOpt> {
+        vec![serde_json::from_str(
+            r#"{"id":"11111111-1111-4111-8111-111111111111","full_name":"Dana Reeve"}"#,
+        )
+        .expect("deserialise user")]
+    }
+
+    fn actions(entries: &[JournalEntry]) -> Vec<String> {
+        entries
+            .iter()
+            .map(|e| format!("{} {}", e.who, e.action))
+            .collect()
+    }
+
+    /// The whole point of the journal: four kinds of thing on one clock,
+    /// newest first, rather than notes in one box and edits in another.
+    #[test]
+    fn merges_every_source_newest_first() {
+        let notes = vec![note(
+            r#"{"note_type":"internal","content":"Rebooted the switch","created_by_name":"Dana Reeve","created_at":"2026-08-20T09:00:00Z"}"#,
+        )];
+        let history = vec![
+            history(
+                r#"{"action":"update","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":["status_id"],"changes":[{"field":"status_id","old":"33333333-3333-4333-8333-333333333333","new":"44444444-4444-4444-8444-444444444444"}],"timestamp":"2026-08-20T11:00:00Z"}"#,
+            ),
+            history(
+                r#"{"action":"update","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":["assigned_to_id"],"changes":[],"timestamp":"2026-08-20T10:00:00Z"}"#,
+            ),
+        ];
+        let time = vec![time_entry(
+            r#"{"date":"2026-08-20","duration_minutes":45,"is_billable":true,"user_id":"11111111-1111-4111-8111-111111111111","created_at":"2026-08-20T12:00:00Z"}"#,
+        )];
+
+        let journal = build_journal(&notes, &history, &time, &users());
+
+        assert_eq!(
+            actions(&journal),
+            vec![
+                "Dana Reeve logged 45 min on 2026-08-20 (billable)".to_string(),
+                "Dana Reeve changed the status".to_string(),
+                "Dana Reeve changed the assignee".to_string(),
+                "Dana Reeve added an internal note".to_string(),
+            ]
+        );
+    }
+
+    /// A source that yields nothing contributes nothing: the stream degrades
+    /// to the notes-only shape the Activity card had, never to an error.
+    #[test]
+    fn falls_back_to_notes_when_the_other_sources_are_empty() {
+        let notes = vec![note(
+            r#"{"note_type":"public","content":"Emailed the client","created_by_name":"Dana Reeve","is_email_sent":true,"created_at":"2026-08-20T09:00:00Z"}"#,
+        )];
+
+        let journal = build_journal(&notes, &[], &[], &users());
+
+        assert_eq!(
+            actions(&journal),
+            vec!["Dana Reeve added a public note and emailed the client".to_string()]
+        );
+    }
+
+    /// An untouched ticket is an empty journal, not a failure.
+    #[test]
+    fn an_empty_ticket_yields_an_empty_journal() {
+        assert!(build_journal(&[], &[], &[], &users()).is_empty());
+    }
+
+    /// Whether the email went out is the note's own outcome, so the line says
+    /// which of the three cases it was.
+    #[test]
+    fn a_note_line_records_whether_the_email_was_sent() {
+        let public_unsent = note(
+            r#"{"note_type":"public","content":"c","created_by_name":"Dana Reeve","created_at":"2026-08-20T09:00:00Z"}"#,
+        );
+        let internal = note(
+            r#"{"note_type":"internal","content":"c","created_by_name":"Dana Reeve","created_at":"2026-08-20T08:00:00Z"}"#,
+        );
+
+        let journal = build_journal(&[public_unsent, internal], &[], &[], &users());
+
+        assert_eq!(
+            actions(&journal),
+            vec![
+                "Dana Reeve added a public note (not emailed)".to_string(),
+                "Dana Reeve added an internal note".to_string(),
+            ]
+        );
+    }
+
+    /// A FK swap the audit log records as two UUIDs carries no readable
+    /// before/after, and a body of "(reference) -> (reference)" is noise.
+    #[test]
+    fn a_reference_only_change_renders_no_body() {
+        let h = history(
+            r#"{"action":"update","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":["status_id"],"changes":[{"field":"status_id","old":"33333333-3333-4333-8333-333333333333","new":"44444444-4444-4444-8444-444444444444"}],"timestamp":"2026-08-20T11:00:00Z"}"#,
+        );
+        let readable = history(
+            r#"{"action":"update","user_id":"11111111-1111-4111-8111-111111111111","changed_fields":["priority_id"],"changes":[{"field":"priority","old":"Low","new":"High"}],"timestamp":"2026-08-20T10:00:00Z"}"#,
+        );
+
+        let journal = build_journal(&[], &[h, readable], &[], &users());
+
+        assert_eq!(journal[0].body, None);
+        assert_eq!(journal[1].body.as_deref(), Some("Priority: Low -> High"));
+    }
+
+    /// An actor no `/auth/users` row matches reads as "Someone", never as the
+    /// bare "-" the change-history pane used in a column of its own.
+    #[test]
+    fn an_unresolvable_actor_reads_as_someone() {
+        let h = history(
+            r#"{"action":"create","changed_fields":[],"changes":[],"timestamp":"2026-08-20T09:00:00Z"}"#,
+        );
+
+        let journal = build_journal(&[], &[h], &[], &users());
+
+        assert_eq!(
+            actions(&journal),
+            vec!["Someone created the ticket".to_string()]
+        );
     }
 }
