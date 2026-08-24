@@ -16,6 +16,7 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::components::{AuthLayout, Button, ButtonVariant, Input};
+use crate::utils::url::urlencoding_minimal;
 use crate::Route;
 
 /// Request body for `POST /api/v1/portal/auth/login`, matching
@@ -172,6 +173,18 @@ pub fn PortalLoginPage() -> Element {
                         class: "w-full".to_string(),
                         "Sign in"
                     }
+                }
+            }
+
+            // PMS-832: before this, a customer who forgot their portal password
+            // had to ask the MSP to mint a new setup link - the support-ticket
+            // workflow PMS-820 set out to remove. The account name they have
+            // already typed rides along so they do not type it twice.
+            p { class: "mt-6 text-center text-sm text-muted",
+                Link {
+                    to: format!("/portal/forgot-password?tenant={}", urlencoding_minimal(tenant.read().trim())),
+                    class: "underline hover:no-underline",
+                    "Forgot your password?"
                 }
             }
         }
