@@ -53,12 +53,7 @@ pub fn retry_after_phrase(body: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// The body the server actually sends, escaped rather than written as a
-    /// raw string: `scripts/check-confirm-destructive.sh` tracks brace depth
-    /// with strings removed, and its raw-string terminator matches a bare
-    /// quote, so `r#"{"a":1}"#` skews its count and fails the file. An escaped
-    /// literal is stripped correctly. Do not "tidy" these back to raw strings.
-    const REAL_BODY: &str = "{\"error\":\"rate_limited\",\"message\":\"Too many password reset attempts, please try again later\",\"retry_after_seconds\":45}";
+    const REAL_BODY: &str = r#"{"error":"rate_limited","message":"Too many password reset attempts, please try again later","retry_after_seconds":45}"#;
 
     #[test]
     fn reads_the_wait_out_of_the_servers_own_429_body() {
@@ -73,12 +68,12 @@ mod tests {
     fn a_body_that_is_not_the_rate_limit_shape_yields_nothing() {
         // The canonical error envelope, which is what every other status uses.
         assert_eq!(
-            retry_after_seconds("{\"error\":{\"code\":\"BAD_REQUEST\",\"message\":\"nope\"}}"),
+            retry_after_seconds(r#"{"error":{"code":"BAD_REQUEST","message":"nope"}}"#),
             None
         );
         // Truncated by `handle_response`'s 200-character cap.
         assert_eq!(
-            retry_after_seconds("{\"error\":\"rate_limited\",\"mess"),
+            retry_after_seconds(r#"{"error":"rate_limited","mess"#),
             None
         );
         // An HTML error page from a proxy in front of the API.
@@ -89,26 +84,26 @@ mod tests {
     #[test]
     fn a_zero_wait_reads_as_no_number_rather_than_zero_seconds() {
         assert_eq!(
-            retry_after_seconds("{\"retry_after_seconds\":0}"),
+            retry_after_seconds(r#"{"retry_after_seconds":0}"#),
             None,
             "\"try again in 0 seconds\" is worse copy than no number"
         );
-        assert_eq!(retry_after_seconds("{\"retry_after_seconds\":-5}"), None);
+        assert_eq!(retry_after_seconds(r#"{"retry_after_seconds":-5}"#), None);
     }
 
     #[test]
     fn the_wait_rounds_up_so_the_advice_is_never_early() {
         assert_eq!(
-            retry_after_phrase("{\"retry_after_seconds\":60}").as_deref(),
+            retry_after_phrase(r#"{"retry_after_seconds":60}"#).as_deref(),
             Some("in about a minute")
         );
         assert_eq!(
-            retry_after_phrase("{\"retry_after_seconds\":61}").as_deref(),
+            retry_after_phrase(r#"{"retry_after_seconds":61}"#).as_deref(),
             Some("in about 2 minutes"),
             "rounding down would earn the customer a second failed attempt"
         );
         assert_eq!(
-            retry_after_phrase("{\"retry_after_seconds\":90}").as_deref(),
+            retry_after_phrase(r#"{"retry_after_seconds":90}"#).as_deref(),
             Some("in about 2 minutes")
         );
     }
