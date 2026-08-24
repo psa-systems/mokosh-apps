@@ -597,8 +597,12 @@ fn build_journal(
         });
     }
 
-    // Newest first, matching the ordering the Activity card had.
-    entries.sort_by(|a, b| b.at.cmp(&a.at));
+    // Newest first, matching the ordering the Activity card had. `Reverse` on a
+    // key rather than a flipped comparator: `DateTime<Utc>` is `Copy`, so the
+    // key costs nothing, and `clippy::unnecessary_sort_by` rejects the
+    // comparator form. Both are stable sorts, so entries sharing a timestamp
+    // keep the order they were pushed in.
+    entries.sort_by_key(|e| std::cmp::Reverse(e.at));
     entries
 }
 
