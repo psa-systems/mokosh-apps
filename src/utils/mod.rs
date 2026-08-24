@@ -10,6 +10,7 @@ pub mod markdown;
 pub mod money;
 pub mod pagination;
 pub mod prefs;
+pub mod rate_limit;
 pub mod sort_keys;
 pub mod url;
 pub mod validation;
