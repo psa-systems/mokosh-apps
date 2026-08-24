@@ -80,6 +80,44 @@ impl AuthContext {
     pub fn active_org_name(&self) -> Option<&str> {
         self.active_membership().map(|m| m.tenant_name.as_str())
     }
+
+    /// Point the cached organisation name at what the server just stored.
+    ///
+    /// MAPPS-571: [`use_active_org_loader`] runs once per session. It sets
+    /// `memberships_loaded` on its first attempt, deliberately, so a failed load
+    /// stays a failure instead of re-firing forever (MAPPS-427) - but that also
+    /// means nothing re-reads `tenants.name` after a rename. Both writers of
+    /// that column call this so the top bar, the dispatch board heading and the
+    /// onboarding screen show the new name without a page reload.
+    ///
+    /// Pass the name from the server's response rather than the form signal: the
+    /// server trims and length-checks it, so the response is what was actually
+    /// stored and the form value is only what was typed.
+    ///
+    /// Updates an existing row and otherwise does nothing, returning whether it
+    /// found one. A rename is not a reason to break MAPPS-427's rule that a
+    /// failed org load leaves the list empty rather than inventing a row: with no
+    /// membership the right thing to display is still no name, not one
+    /// reconstructed from a form field. An empty or whitespace name is ignored
+    /// for the same reason - the server rejects it (`1..=255`), so seeing one
+    /// here means the response was not what it claimed, and the previous name is
+    /// a better answer than none.
+    pub fn set_active_org_name(&mut self, name: &str) -> bool {
+        let name = name.trim();
+        if name.is_empty() {
+            return false;
+        }
+        let Some(active) = self.active_tenant_id.map(|id| id.to_string()) else {
+            return false;
+        };
+        match self.memberships.iter_mut().find(|m| m.tenant_id == active) {
+            Some(m) => {
+                m.tenant_name = name.to_string();
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 /// Hook to access authentication state
@@ -820,6 +858,106 @@ mod tests {
         assert!(
             !production_src().contains("issuer_get_authed"),
             "an issuer-hosted call cannot succeed with a mokosh-audience token"
+        );
+    }
+
+    /// MAPPS-571: a context holding one membership, the shape the loader
+    /// produces on a successful read.
+    fn with_org(name: &str) -> (super::AuthContext, uuid::Uuid) {
+        let id = uuid::Uuid::from_u128(0x0dd1);
+        let ctx = super::AuthContext {
+            active_tenant_id: Some(id),
+            memberships: vec![super::MembershipView {
+                tenant_id: id.to_string(),
+                tenant_name: name.to_string(),
+            }],
+            memberships_loaded: true,
+            ..Default::default()
+        };
+        (ctx, id)
+    }
+
+    #[test]
+    fn a_rename_updates_the_cached_org_name() {
+        let (mut ctx, _) = with_org("My workspace");
+        assert!(ctx.set_active_org_name("Niceguy IT"));
+        assert_eq!(ctx.active_org_name(), Some("Niceguy IT"));
+    }
+
+    #[test]
+    fn a_rename_with_no_membership_does_not_invent_one() {
+        // MAPPS-427 leaves the list empty when the org load failed, on purpose:
+        // no name beats a wrong one. A rename must not be the back door that
+        // reintroduces a fabricated row, because the name it would carry comes
+        // from a form field rather than from the row the server holds.
+        let mut ctx = super::AuthContext {
+            active_tenant_id: Some(uuid::Uuid::from_u128(0x0dd1)),
+            memberships_loaded: true,
+            ..Default::default()
+        };
+        assert!(!ctx.set_active_org_name("Niceguy IT"));
+        assert!(ctx.memberships.is_empty());
+        assert_eq!(ctx.active_org_name(), None);
+    }
+
+    #[test]
+    fn a_rename_before_the_active_tenant_is_known_changes_nothing() {
+        let (mut ctx, _) = with_org("My workspace");
+        ctx.active_tenant_id = None;
+        assert!(!ctx.set_active_org_name("Niceguy IT"));
+        assert_eq!(ctx.memberships[0].tenant_name, "My workspace");
+    }
+
+    #[test]
+    fn a_rename_never_touches_a_row_for_another_tenant() {
+        let (mut ctx, _) = with_org("My workspace");
+        ctx.memberships.push(super::MembershipView {
+            tenant_id: uuid::Uuid::from_u128(0xbeef).to_string(),
+            tenant_name: "Someone else".to_string(),
+        });
+        assert!(ctx.set_active_org_name("Niceguy IT"));
+        assert_eq!(ctx.memberships[0].tenant_name, "Niceguy IT");
+        assert_eq!(ctx.memberships[1].tenant_name, "Someone else");
+    }
+
+    #[test]
+    fn an_empty_name_leaves_the_previous_one_standing() {
+        // The server enforces `1..=255`, so an empty name in a 2xx response
+        // means the body was not what it claimed. Blanking the top bar on the
+        // strength of that is worse than keeping the name that was there.
+        let (mut ctx, _) = with_org("Niceguy IT");
+        assert!(!ctx.set_active_org_name(""));
+        assert!(!ctx.set_active_org_name("   "));
+        assert_eq!(ctx.active_org_name(), Some("Niceguy IT"));
+    }
+
+    #[test]
+    fn a_stored_name_is_cached_without_its_surrounding_space() {
+        let (mut ctx, _) = with_org("My workspace");
+        assert!(ctx.set_active_org_name("  Niceguy IT  "));
+        assert_eq!(ctx.active_org_name(), Some("Niceguy IT"));
+    }
+
+    /// MAPPS-571 recurrence guard, in the same shape as the MAPPS-427 one
+    /// above: both writers of `tenants.name` live in pages that need a browser,
+    /// so what is pinned here is the thing this file owns.
+    #[test]
+    fn a_rename_refreshes_the_cache_rather_than_re_running_the_loader() {
+        let src = production_src();
+        assert!(
+            src.contains("pub fn set_active_org_name"),
+            "the writers of tenants.name need a way to refresh the cached name"
+        );
+        // `memberships_loaded` is cleared in exactly one place: the `/me`
+        // reconcile, which re-runs the loader once the session is confirmed.
+        // A second site would almost certainly be a rename trying to refresh
+        // itself by making the effect fire again, which spends a round-trip on
+        // a value the PUT response already carried and re-opens the
+        // retry-on-failure behaviour MAPPS-427 closed.
+        assert_eq!(
+            src.matches("memberships_loaded = false").count(),
+            1,
+            "the org loader's guard flag is cleared by the /me reconcile and nothing else"
         );
     }
 
