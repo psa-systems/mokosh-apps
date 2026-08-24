@@ -96,6 +96,7 @@ defaults.
 | `MOKOSH_BRAND_NAME` | `og:title`, `og:site_name`, `twitter:title` | `Mokosh Platform` |
 | `MOKOSH_BRAND_DESCRIPTION` | `og:description`, `twitter:description` | `Mokosh Platform - Professional Services Automation for MSPs` |
 | `MOKOSH_BRAND_LOGO_URL` | `og:image`, `twitter:image` | none: the image tags are omitted and `twitter:card` becomes `summary` instead of `summary_large_image` |
+| `MOKOSH_PUBLIC_URL` | resolves a root-relative `MOKOSH_BRAND_LOGO_URL` to the absolute form `og:image` requires | none: a root-relative logo yields no image tags |
 
 `MOKOSH_BRAND_DESCRIPTION` is used **only** for the link preview; unlike the
 other `MOKOSH_BRAND_*` vars it is not read by the SPA. Because the tags are
@@ -103,6 +104,43 @@ written into `index.html`, the same writable-root caveat applies as for the
 `_mokosh_config.js` injection above: mount `index.html` read-write (or leave
 it in place) so the entrypoint can patch it. A read-only root logs a warning
 and serves the un-injected page.
+
+### The preview image URL must be absolute
+
+`og:image` is fetched by the crawler's own servers, which have no page to
+resolve a relative path against, so a root-relative value is dropped and the
+card renders without artwork. Root-relative is exactly what
+[the section below](#where-the-logo-and-hero-may-be-served-from) recommends for
+the in-app logo, because the browser CSP is `img-src 'self'` - so set
+`MOKOSH_PUBLIC_URL` to the site's public base URL and the entrypoint joins the
+two:
+
+```yaml
+environment:
+  MOKOSH_PUBLIC_URL: https://msp.example.com
+  MOKOSH_BRAND_LOGO_URL: /branding/logo.svg   # og:image https://msp.example.com/branding/logo.svg
+```
+
+An already-absolute `MOKOSH_BRAND_LOGO_URL` is used unchanged and needs no
+`MOKOSH_PUBLIC_URL`. A relative one with no `MOKOSH_PUBLIC_URL` set drops the
+image tags (falling back to `twitter:card: summary`) and logs the reason at
+container start, rather than emitting a URL no crawler can fetch. CSP does not
+apply here: the crawler is not a browser.
+
+### Verifying a preview
+
+`just check-link-preview` runs the real entrypoint and Caddyfile in a container
+and fetches the result with `curl`, which is what a crawler is: an HTTP GET with
+no JavaScript. It checks the branded, default and relative-logo cases, on the
+root URL and on a deep client-side route. Against a live deployment, the same
+check by hand is:
+
+```nushell
+http get --raw https://msp.example.com/tickets/12345 | lines | find 'og:'
+```
+
+A card validator (or pasting the link into the chat client itself) confirms the
+last mile, since each platform decides its own layout from these tags.
 
 ## Runtime config env vars
 

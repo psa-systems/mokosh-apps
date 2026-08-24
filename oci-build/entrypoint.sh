@@ -65,6 +65,31 @@ origin_of() {
     esac
 }
 
+# MAPPS-477: resolve a branding image URL to the ABSOLUTE form og:image and
+# twitter:image require. A link-preview crawler fetches the image from its own
+# servers, with no page to resolve a relative path against, so it drops a
+# root-relative value - and root-relative is exactly what
+# docs/deployment-branding.md recommends for the logo, because the browser CSP
+# is `img-src 'self'`. Join such a value onto MOKOSH_PUBLIC_URL's origin. With
+# no MOKOSH_PUBLIC_URL there is no correct absolute form, so this yields empty
+# and the caller omits the image tags instead of emitting an unfetchable one.
+absolute_image_url() {
+    case "$1" in
+        "")
+            :
+            ;;
+        *://*)
+            printf '%s' "$1"
+            ;;
+        *)
+            image_base="$(origin_of "${MOKOSH_PUBLIC_URL:-}")"
+            if [ -n "$image_base" ]; then
+                printf '%s/%s' "$image_base" "${1#/}"
+            fi
+            ;;
+    esac
+}
+
 if ! {
     echo "// Generated at container start by oci-build/entrypoint.sh."
     echo "// Operators override these via env vars on the mokosh-www container."
@@ -135,7 +160,10 @@ OG_MARKER='<!-- MAPPS-477 link-preview metadata -->'
 if ! grep -q -F "$OG_MARKER" "$INDEX"; then
     og_title="$(escape_html "${MOKOSH_BRAND_NAME:-Mokosh Platform}")"
     og_desc="$(escape_html "${MOKOSH_BRAND_DESCRIPTION:-Mokosh Platform - Professional Services Automation for MSPs}")"
-    og_image_raw="${MOKOSH_BRAND_LOGO_URL:-}"
+    og_image_raw="$(absolute_image_url "${MOKOSH_BRAND_LOGO_URL:-}")"
+    if [ -n "${MOKOSH_BRAND_LOGO_URL:-}" ] && [ -z "$og_image_raw" ]; then
+        echo "[entrypoint] WARN: MOKOSH_BRAND_LOGO_URL='${MOKOSH_BRAND_LOGO_URL}' is not absolute and MOKOSH_PUBLIC_URL is unset; og:image/twitter:image omitted because a link-preview crawler cannot resolve a relative image URL. Set MOKOSH_PUBLIC_URL to the site's public base URL." >&2
+    fi
 
     og_blockfile="$(mktemp 2>/dev/null || echo "${INDEX}.ogblock")"
     {
