@@ -298,6 +298,43 @@ pub fn PortalLoginPage() -> Element {
         });
     };
 
+    // MAPPS-559: if /portal/host returned the tenant as suspended
+    // or cancelled, render a splash INSTEAD of the login form. Pre-559
+    // the SPA showed the sign-in form on any host that resolved to a
+    // tenant, and a submit against a non-active tenant 401'd with the
+    // generic "Invalid email or password" copy - misleading + supports
+    // the operator's 2026-08-24 ask ("We should probably have a page
+    // that says 'This client is suspended' or something").
+    #[cfg(feature = "web")]
+    if let Some(hint) = &hint_snapshot {
+        if !hint.is_active() {
+            let name = hint.name.clone();
+            let is_dark = crate::hooks::portal_theme::current_is_dark();
+            let logo = hint.branding.logo_for(is_dark).map(|s| s.to_string());
+            return rsx! {
+                div { class: "min-h-screen bg-app flex items-center justify-center px-4",
+                    div { class: "max-w-md w-full",
+                        div { class: "bg-surface rounded-lg shadow-lg p-8 text-center",
+                            if let Some(url) = logo {
+                                img {
+                                    src: "{url}",
+                                    alt: "{name}",
+                                    class: "h-14 w-auto mx-auto mb-4 opacity-60",
+                                }
+                            }
+                            h1 { class: "text-2xl font-semibold text-content mb-2",
+                                "{name} is not available"
+                            }
+                            p { class: "text-sm text-content",
+                                "This client portal has been suspended by the account team. If you believe this is a mistake, contact your account manager."
+                            }
+                        }
+                    }
+                }
+            };
+        }
+    }
+
     rsx! {
         div { class: "min-h-screen bg-app flex items-center justify-center px-4",
             div { class: "max-w-md w-full",

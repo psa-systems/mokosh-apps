@@ -77,8 +77,20 @@ impl PortalBranding {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct PortalHostHint {
     pub name: String,
+    /// MAPPS-559: raw `tenants.status` value (`'active' | 'suspended'
+    /// | 'cancelled'`). Portal pages gate on `is_active()` and render
+    /// a "This client is suspended" splash instead of the sign-in
+    /// form when the tenant is not accepting logins. Defaults to
+    /// "active" so a pre-559 server response (no `status` field)
+    /// keeps behaving like today.
+    #[serde(default = "portal_host_hint_default_status")]
+    pub status: String,
     #[serde(flatten)]
     pub branding: PortalBranding,
+}
+
+fn portal_host_hint_default_status() -> String {
+    "active".to_string()
 }
 
 impl PortalHostHint {
@@ -88,6 +100,14 @@ impl PortalHostHint {
     /// `branding.logo_url` so the shape change is transparent.
     pub fn logo_url(&self) -> Option<&str> {
         self.branding.logo_url.as_deref()
+    }
+
+    /// MAPPS-559: whether the tenant is currently accepting portal
+    /// traffic. Anything other than `'active'` (suspended, cancelled,
+    /// or a future unknown value) reads as inactive so the sign-in
+    /// form gates closed by default.
+    pub fn is_active(&self) -> bool {
+        self.status == "active"
     }
 }
 
