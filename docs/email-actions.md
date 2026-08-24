@@ -65,23 +65,37 @@ trigger, so that stops being true.
 | Invite a colleague | `src/pages/team.rs` | `invitations.created` |
 | Send a quote to the client | `src/pages/quotes.rs` | `quote.sent` |
 | Send an invoice to the client | `src/pages/billing.rs` (`InvoiceDetailPage`) | `billing.invoice_pay_now` |
+| Email a ticket note to the client | `src/pages/tickets.rs` (the journal composer on `TicketDetailPage`) | `ticket.note` |
 
 Only `forms.request_link` is a notification rule today. mokosh-server builds the
-invite mail in `invitations/service.rs`, the quote mail in `quotes/service.rs`
-and the invoice mail in `billing/service.rs`, each with a built-in template and
-none through `dispatch`, so their previews come back empty. Those three call
-sites pass `empty_note` so the modal says the message is built into the server
+invite mail in `invitations/service.rs`, the quote mail in `quotes/service.rs`,
+the invoice mail in `billing/service.rs` and the ticket-note mail in
+`tickets/service.rs` (`send_note_email`), each with a built-in template and none
+through `dispatch`, so their previews come back empty. Those four call sites
+pass `empty_note` so the modal says the message is built into the server
 and an email is still sent, rather than leaving the operator to read "nothing
 will be sent" and believe it. MAPPS-489 moves the sends onto the dispatcher and
 removes the note.
 
-The invoice send is **conditional server-side**, which none of the others are.
-`notify_invoice_pay_now` fires only on the first transition into `sent`, and
-skips the mail entirely when the tenant has no active payment gateway, when the
-invoice has no billing contact, or when that contact has no email on file. The
-page says so under the header rather than promising an email that may not go.
+The invoice send and the ticket note are **conditional server-side**, which the
+other two are not. `notify_invoice_pay_now` fires only on the first transition
+into `sent`, and skips the mail entirely when the tenant has no active payment
+gateway, when the invoice has no billing contact, or when that contact has no
+email on file. The page says so under the header rather than promising an email
+that may not go.
 
-It is also the only entry not keyed on a URL. The send is `PUT /invoices/{id}`
+The ticket note (MAPPS-517) is conditional twice over. `add_note` mails only a
+PUBLIC note whose `send_email` flag is on, and only when the ticket has a
+contact with an address; an internal note never leaves the building whatever the
+flag says. So the trigger is a checkbox on the journal composer rather than a
+button of its own: it is off by default, disabled while the note is internal,
+and its help text names both conditions. The affordances hang off the composer's
+submit, which renders `MailIcon` in place of `PlusIcon` exactly when the click
+will mail someone. What actually happened is not guessed at afterwards either:
+the server records `is_email_sent` on the note row, and the journal line reads
+"added a public note and emailed the client" or "(not emailed)" from it.
+
+The invoice entry is the only one not keyed on a URL. The send is `PUT /invoices/{id}`
 with `{"status": "sent"}`, a path shared with Edit, Void and the invoice delete
 in `src/pages/contacts.rs`, and matching that shape flags two files that send
 nothing (`src/pages/contacts.rs` and `src/modules/billing/routes.rs`). The guard
