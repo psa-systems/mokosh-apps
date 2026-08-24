@@ -690,6 +690,20 @@ pub enum Route {
     #[route("/portal/set-password")]
     PortalSetPassword {},
 
+    // PMS-832: the destination of the portal password-reset email PMS-820
+    // added. Public for the same reason as its sibling above: the emailed
+    // single-use token in `?token=` is the only credential the visitor has, and
+    // a visitor who has forgotten their password has no portal session to
+    // satisfy `PortalGuard` with.
+    #[route("/portal/reset-password")]
+    PortalResetPassword {},
+
+    // PMS-832: where a customer asks for that email. Public by construction:
+    // someone who has forgotten their password has no portal session, so a
+    // `PortalGuard` above this route would bounce the only people who need it.
+    #[route("/portal/forgot-password")]
+    PortalForgotPassword {},
+
     // MAPPS-395: everything below needs a portal session. Without the guard a
     // signed-out visitor (or an agent, whose bearer is the wrong token class)
     // renders the page and collects a 401 from every fetch.
@@ -1342,6 +1356,16 @@ fn PortalSetPassword() -> Element {
 }
 
 #[component]
+fn PortalForgotPassword() -> Element {
+    rsx! { portal_forgot_password::PortalForgotPasswordPage {} }
+}
+
+#[component]
+fn PortalResetPassword() -> Element {
+    rsx! { portal_reset_password::PortalResetPasswordPage {} }
+}
+
+#[component]
 fn RequestForm(token: String) -> Element {
     rsx! { request_form::RequestFormPage { token } }
 }
@@ -1400,12 +1424,6 @@ fn NotFound(route: Vec<String>) -> Element {
 /// The list is the full set of emitters on mokosh-server `main`, verified at
 /// ff429b3c. Adding an emailed link server-side without adding its route here
 /// fails this test.
-///
-/// One emitter is deliberately absent: `portal::send_reset_email`
-/// (mokosh-server `src/modules/portal/service.rs`, PMS-820) emails
-/// `/portal/reset-password?token=...`, and this SPA has no such route, so
-/// listing it would fail the test rather than describe it. Building that page
-/// is MAPPS-538; its entry lands with it.
 #[cfg(test)]
 mod emailed_link_routes {
     use super::Route;
@@ -1417,6 +1435,11 @@ mod emailed_link_routes {
     const EMAILED_LINKS: &[(&str, &str)] = &[
         // src/modules/contacts/service.rs: portal-access grant setup link.
         ("contacts::send_setup_email", "/portal/set-password"),
+        // src/modules/portal/service.rs: portal password-reset link (PMS-820).
+        // The page behind it is PMS-832 / MAPPS-538; before that this emitter
+        // was the one deliberate omission from this list, because listing a
+        // link with no route behind it fails the very test the list feeds.
+        ("portal::send_reset_email", "/portal/reset-password"),
         // src/modules/forms/request_links.rs: client request-form link
         // (PMS-730). The token is `{token_id}.{secret}`.
         (
@@ -1473,6 +1496,42 @@ mod portal_login_route {
         assert!(
             matches!(route, Route::PortalLogin {}),
             "/portal/login must resolve to PortalLogin, got {route:?}"
+        );
+    }
+
+    /// PMS-832 / MAPPS-538: the password-reset pair resolves, and resolves to
+    /// the PORTAL pages.
+    ///
+    /// The emailed link landing on the 404 catch-all is the defect this work
+    /// fixes, and `emailed_link_routes` above now covers that. What it cannot
+    /// see is the other half: `/reset-password/{token}` is the PLATFORM page,
+    /// which posts to `/api/v1/auth/reset-password` and resolves the token
+    /// against `users`. A portal customer reaching that page resets a staff
+    /// login, which is the PMS-820 defect exactly. These paths differ by one
+    /// prefix, so the two are asserted apart rather than assumed.
+    #[test]
+    fn the_portal_reset_pages_resolve_and_are_not_the_platform_one() {
+        let reset =
+            Route::from_str("/portal/reset-password").expect("/portal/reset-password parses");
+        assert!(
+            matches!(reset, Route::PortalResetPassword {}),
+            "the emailed portal link must land on the portal page, got {reset:?}"
+        );
+
+        let forgot =
+            Route::from_str("/portal/forgot-password").expect("/portal/forgot-password parses");
+        assert!(
+            matches!(forgot, Route::PortalForgotPassword {}),
+            "/portal/forgot-password must resolve to PortalForgotPassword, got {forgot:?}"
+        );
+
+        // The platform page is still its own route, one prefix away.
+        let platform = Route::from_str("/reset-password/Zt4kQ1p9Zt4kQ1p9Zt4kQ1p9Zt4kQ1p9")
+            .expect("the platform reset route parses");
+        assert!(
+            !matches!(platform, Route::PortalResetPassword {}),
+            "the platform reset link must not resolve to the portal page: it posts to \
+             /api/v1/auth/reset-password, which resolves the token against `users`"
         );
     }
 }
