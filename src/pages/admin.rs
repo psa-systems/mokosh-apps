@@ -542,7 +542,18 @@ fn TenantRow(props: TenantRowProps) -> Element {
                                     ("Suspend", LifecycleActionKind::Suspend),
                                     ("Cancel", LifecycleActionKind::Cancel),
                                 ],
-                                "Suspended" | "Cancelled" => {
+                                // MAPPS-561: Suspended clients also get a
+                                // Cancel button so the operator can promote
+                                // a temporary pause into a permanent close
+                                // without first Reactivating + then
+                                // Cancelling. Cancelled rows stay at just
+                                // Reactivate - there is no further state
+                                // to walk them into.
+                                "Suspended" => vec![
+                                    ("Reactivate", LifecycleActionKind::Reactivate),
+                                    ("Cancel", LifecycleActionKind::Cancel),
+                                ],
+                                "Cancelled" => {
                                     vec![("Reactivate", LifecycleActionKind::Reactivate)]
                                 }
                                 _ => Vec::new(),
