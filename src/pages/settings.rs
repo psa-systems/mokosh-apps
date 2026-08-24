@@ -864,6 +864,9 @@ pub fn OrganizationSettingsPage() -> Element {
 
 #[component]
 fn OrganizationSettingsBody() -> Element {
+    // MAPPS-571: written on a successful save, so the cached organisation name
+    // every `active_org_name()` reader shows follows the rename.
+    let mut auth = crate::hooks::use_auth();
     let mut name = use_signal(String::new);
     // MAPPS-429: the organisation's own contact, shown to clients on the forms
     // and email this tenant sends.
@@ -968,7 +971,13 @@ fn OrganizationSettingsBody() -> Element {
                 )
                 .await
                 {
-                    Ok(_) => {
+                    Ok(saved) => {
+                        // MAPPS-571: the org loader runs once per session, so
+                        // without this the top bar keeps the pre-save name until
+                        // the next full page load and the toast below reads as
+                        // though the rename only half took. The server's own
+                        // value, not `trimmed`: it is the one that was stored.
+                        auth.write().set_active_org_name(&saved.name);
                         crate::hooks::push_toast(
                             crate::components::AlertType::Success,
                             "Organization name saved. New emails will use it.",
