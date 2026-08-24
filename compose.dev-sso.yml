@@ -34,8 +34,8 @@ services:
       # `dev-mokosh-private-${USER}` via that file's `networks:` block).
       - private
       - traefik-public
-    # Drop both host port bindings from compose.yml (LAN-IP + 127.0.0.1
-    # for Google OAuth); Traefik is sole ingress for this profile.
+    # Drop both host port bindings from compose.yml (the LAN-IP publish
+    # and the loopback one); Traefik is sole ingress for this profile.
     ports: !reset []
     # List (sequence) syntax is REQUIRED here, not the usual map syntax.
     # Docker Compose interpolates ${USER} inside string VALUES but NOT inside
