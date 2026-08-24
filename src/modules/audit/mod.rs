@@ -4,6 +4,8 @@
 //! (`GET /api/v1/audit-log`, admin-only). This module carries only the
 //! response DTOs the admin audit page decodes into.
 
+mod enrichment;
 mod models;
 
+pub use enrichment::*;
 pub use models::*;
