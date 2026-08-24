@@ -91,6 +91,7 @@ check-auth-error-prose:
 # MAPPS-436: keep every destructive mutation behind ConfirmDialog, never straight from a button onclick
 [group: 'check']
 check-confirm-destructive:
+    bash scripts/check-confirm-destructive.sh --self-test
     bash scripts/check-confirm-destructive.sh
 
 # MAPPS-446: keep headings declaring a weight, two-up form grids on sm:, and table name cells naming their colour token

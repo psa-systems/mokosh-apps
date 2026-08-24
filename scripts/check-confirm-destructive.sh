@@ -17,14 +17,137 @@
 # to pass B by construction. Indirection through a helper in ANOTHER file is
 # out of reach here; a file that cannot be parsed fails loudly rather than
 # reporting clean.
+#
+# Usage: check-confirm-destructive.sh [ROOT | --self-test]
+#   ROOT defaults to `src`. `--self-test` re-runs the guard over generated
+#   fixtures to prove it still catches a bare-onclick DELETE, still parses a
+#   raw string containing quotes, and still refuses to report clean when it has
+#   lost track of the source (MAPPS-555).
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
+if [ "${1:-}" = "--self-test" ]; then
+  fixtures=$(mktemp -d) || exit 2
+  trap 'rm -rf "$fixtures"' EXIT
+  status=0
+
+  # The violation this guard exists to catch, on its own.
+  cat > "$fixtures/bare.rs" <<'FIXTURE'
+fn danger() -> Element {
+    rsx! {
+        Button {
+            onclick: move |_| {
+                spawn(async move {
+                    let _ = delete_authed("/companies/1").await;
+                });
+            },
+            "Delete"
+        }
+    }
+}
+FIXTURE
+  out=$("$0" "$fixtures" 2>&1) && rc=0 || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    echo "self-test: FAIL (a DELETE straight from an onclick did not fail the guard)"
+    printf '%s\n' "$out"
+    status=1
+  else
+    echo "self-test: a DELETE straight from an onclick fails the guard (exit $rc)"
+  fi
+
+  # MAPPS-555: the same violation, behind a raw string whose contents carry an
+  # ODD number of quotes. That used to close the raw string at the first inner
+  # quote, set `in_str` on a string that never ends, and silently discard every
+  # later line - so the guard reported CLEAN on this exact file.
+  cat > "$fixtures/bare.rs" <<'FIXTURE'
+fn benign() {
+    let _ = r#"{"a":"b","c"#;
+    let _ = "}";
+}
+
+fn danger() -> Element {
+    rsx! {
+        Button {
+            onclick: move |_| {
+                spawn(async move {
+                    let _ = delete_authed("/companies/1").await;
+                });
+            },
+            "Delete"
+        }
+    }
+}
+FIXTURE
+  out=$("$0" "$fixtures" 2>&1) && rc=0 || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    echo "self-test: FAIL (a raw string with an odd quote count hid a bare-onclick DELETE)"
+    printf '%s\n' "$out"
+    status=1
+  else
+    echo "self-test: a raw string with an odd quote count no longer hides a DELETE (exit $rc)"
+  fi
+
+  # Losing track must never read as clean, even when the brace depth happens to
+  # balance because the discarded lines took their braces with them.
+  cat > "$fixtures/bare.rs" <<'FIXTURE'
+fn a() {
+}
+
+const X: &str = r#"never closed;
+FIXTURE
+  out=$("$0" "$fixtures" 2>&1) && rc=0 || rc=$?
+  if [ "$rc" -eq 0 ] || ! printf '%s' "$out" | grep -q 'unterminated raw string'; then
+    echo "self-test: FAIL (an unterminated raw string at EOF did not fail the guard)"
+    printf '%s\n' "$out"
+    status=1
+  else
+    echo "self-test: an unterminated raw string at EOF fails rather than reporting clean"
+  fi
+
+  # And the confirmed shape, plus the raw strings that used to break parsing,
+  # still pass. A guard that rejects everything guards nothing.
+  cat > "$fixtures/bare.rs" <<'FIXTURE'
+fn fixtures() {
+    let _ = r#"{"a":"b","c"#;
+    let _ = r#"{"retry_after_seconds":45}"#;
+    let _ = r##"{"nested":"##;
+}
+
+fn confirmed() -> Element {
+    rsx! {
+        ConfirmDialog {
+            onconfirm: move |_| {
+                spawn(async move {
+                    let _ = delete_authed("/companies/1").await;
+                });
+            },
+        }
+    }
+}
+FIXTURE
+  out=$("$0" "$fixtures" 2>&1) && rc=0 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "self-test: FAIL (a confirmed delete or a quoted raw string was rejected)"
+    printf '%s\n' "$out"
+    status=1
+  else
+    echo "self-test: confirmed deletes and raw strings containing quotes pass the guard"
+  fi
+
+  [ "$status" -eq 0 ] && echo "confirm-destructive guard self-test: clean"
+  exit "$status"
+fi
+
+root="${1:-src}"
+
 report=$(
-  find src -name '*.rs' -print0 | sort -z | xargs -0 awk '
-    function clean(line,   pre, rest, q, n) {
+  find "$root" -name '*.rs' -print0 | sort -z | xargs -0 awk '
+    function clean(line,   pre, rest, q, n, at) {
       if (in_raw) {
-        if (index(line, "\"#") > 0) { sub(/^.*"#/, "", line); in_raw = 0 }
+        # MAPPS-555: resume on the delimiter that OPENED this raw string, not
+        # on the first `"#` in the line. `raw_term` is recorded below.
+        at = index(line, raw_term)
+        if (at > 0) { line = substr(line, at + length(raw_term)); in_raw = 0 }
         else { return "" }
       }
       gsub(/\\./, "", line)
@@ -34,7 +157,16 @@ report=$(
       while (match(line, /[^A-Za-z0-9_]r#*"/)) {
         pre = substr(line, 1, RSTART)
         rest = substr(line, RSTART + RLENGTH)
-        if (match(rest, /"#*/)) { line = pre substr(rest, RSTART + RLENGTH) }
+        # MAPPS-555: the terminator is `"` followed by the OWN hash count of the opener
+        # The old /"#*/ matched a bare quote, so a raw string closed at
+        # the first quote in its own contents; with an odd number of them the
+        # leftovers set `in_str` on a string that never ends and every later
+        # line in the file was silently discarded. The matched text is
+        # <delimiter>r<hashes>", so the hashes start two past RSTART and run
+        # RLENGTH - 3.
+        raw_term = "\"" substr(line, RSTART + 2, RLENGTH - 3)
+        at = index(rest, raw_term)
+        if (at > 0) { line = pre substr(rest, at + length(raw_term)) }
         else { line = pre; in_raw = 1; break }
       }
       gsub(SQ "[{}\"]" SQ, "", line)
@@ -78,6 +210,16 @@ report=$(
       if (n_lines == 0) return
       if (depth != 0) {
         printf "%s: guard cannot parse this file (brace depth ended at %d)\n", file, depth
+        bad = 1
+        return
+      }
+      # MAPPS-555: an unterminated string or raw string means every line after
+      # it was discarded, and the braces went with them - so the depth can land
+      # on zero and hide it. That turned a loud parse failure into a silent
+      # pass, which is the one outcome this guard must never produce.
+      if (in_str || in_raw) {
+        printf "%s: guard cannot parse this file (unterminated %s at end of file)\n", \
+          file, (in_raw ? "raw string" : "string")
         bad = 1
         return
       }

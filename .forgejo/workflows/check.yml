@@ -77,7 +77,12 @@ jobs:
       # wired the dialog app-wide; row Deletes added later shipped with no
       # confirmation at all, so the rule is enforced rather than documented.
       - name: Destructive-confirm guard
-        run: bash scripts/check-confirm-destructive.sh
+        # --self-test first (MAPPS-555): the guard silently reported clean on
+        # any file following a raw string with an odd quote count, so a guard
+        # that has stopped guarding now fails loudly before it is trusted.
+        run: |
+          bash scripts/check-confirm-destructive.sh --self-test
+          bash scripts/check-confirm-destructive.sh
 
       # MAPPS-446: three class omissions with no effect in the default theme
       # (a heading with no weight, a form grid gated at md:, a name cell with
