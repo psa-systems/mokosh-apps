@@ -93,3 +93,31 @@ pub fn portal_url_for_slug(slug: &str) -> Option<String> {
     };
     Some(format!("{scheme}://{slug}{suffix}"))
 }
+
+/// MAPPS-553: the inverse of `portal_url_for_slug`. Reads the current
+/// browser-visible host, strips the configured `portal_host_suffix`,
+/// and returns the leftmost label as the tenant slug for the SPA that
+/// is currently rendering. Returns `None` when the SPA is served from
+/// a non-portal host (apex, localhost without the portal suffix, or a
+/// deploy that does not configure the suffix at all), so callers can
+/// treat the absence as "not on a tenant subdomain" instead of a
+/// broken slug. Lowercases the label; rejects a prefix that itself
+/// contains a dot (that would be a nested subdomain we do not model).
+#[cfg(feature = "web")]
+pub fn tenant_slug_from_current_host() -> Option<String> {
+    let suffix = portal_host_suffix()?;
+    let host = web_sys::window()?.location().host().ok()?;
+    let host_no_port = host.split(':').next().unwrap_or(&host).to_ascii_lowercase();
+    let suffix_lower = suffix.to_ascii_lowercase();
+    let prefix = host_no_port.strip_suffix(&suffix_lower)?;
+    let slug = prefix.trim_end_matches('.');
+    if slug.is_empty() || slug.contains('.') {
+        return None;
+    }
+    Some(slug.to_string())
+}
+
+#[cfg(not(feature = "web"))]
+pub fn tenant_slug_from_current_host() -> Option<String> {
+    None
+}

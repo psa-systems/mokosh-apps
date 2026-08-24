@@ -900,31 +900,33 @@ fn HubRedirect(target: String, label: &'static str) -> Element {
 
 #[component]
 fn Home() -> Element {
-    // PMS-729 / MAPPS-520: when the SPA is served from a portal host
-    // (e.g. `acme.client.localhost:4301`, `acme.client.a8n.systems`)
-    // the tenant-subdomain root belongs to the customer portal, not
-    // the agent marketing home page. Post-MAPPS-520 we render the
-    // portal login (or the portal dashboard when a portal session is
-    // already present) INLINE at `/`, so the URL bar stays clean
-    // instead of bouncing through `/portal/login`. `/portal/login`
-    // still resolves via `Route::PortalLogin` as an internal alias
-    // for programmatic navigations (post-logout redirects, session-
-    // expired handlers).
+    // MAPPS-553: the tenant subdomain now owns the tenant admin
+    // sign-in surface. Pre-553 the subdomain root rendered the MSP's
+    // OWN customer portal login (`PortalLoginPage` at `/`), and the
+    // tenant admin had no home there - they signed in on the mokosh
+    // apex `/login` and worked with the mokosh apex host in the URL
+    // bar, which the operator reported (2026-08-24) as "makes the
+    // account a mokosh platform account, not an account for that
+    // portal, essentially making the client portal absolutely
+    // useless". Post-553 `<slug>.client.<suffix>/` renders the
+    // tenant admin login (`StandaloneLogin`, which auto-derives the
+    // tenant slug from the current host and posts a tenant-scoped
+    // `/auth/login`). The MSP's own customer portal stays reachable
+    // at the explicit `/portal/login` subpath (`Route::PortalLogin`,
+    // wired below), which is the URL the MSP's outbound customer
+    // emails carry.
     //
-    // Non-portal hosts (localhost:4301, msp.<tld>) keep the pre-729
-    // behaviour and render the agent-side home page.
+    // When a tenant admin session is already present on this host,
+    // AuthGuard-protected routes are the natural landing; the root
+    // stays on the login surface (rather than auto-navigating) so a
+    // deliberate revisit to `/` still reveals a working sign-in for
+    // the operator to swap accounts or debug from.
+    //
+    // Non-portal hosts (localhost:4301, msp.<tld>) keep rendering
+    // the agent-side marketing home page.
     #[cfg(feature = "web")]
     if hooks::fetch::api::on_portal_host() {
-        // Portal session in place -> land on the dashboard; otherwise
-        // show the login form. `current_portal_access_token` is the
-        // authoritative "signed in on the portal plane" signal (see
-        // `hooks::fetch::api`) and matches the extractor server-side
-        // uses for `/portal/*`. Kept inline on the same route so the
-        // URL never leaves `/` while the portal user is here.
-        if hooks::fetch::api::current_portal_access_token().is_some() {
-            return rsx! { crate::pages::portal::PortalHomePage {} };
-        }
-        return rsx! { crate::pages::portal_login::PortalLoginPage {} };
+        return rsx! { crate::pages::login::StandaloneLogin {} };
     }
     rsx! { home::HomePage {} }
 }

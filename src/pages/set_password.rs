@@ -19,9 +19,20 @@
 //! The submit posts `POST /api/v1/auth/reset-password` (the sole
 //! password-write endpoint post-MAPPS-551 - setup and forgot-password
 //! share the same server handler, which writes ONLY the specific
-//! users row). On success land on `/login` (the tenant subdomain
-//! itself post the MAPPS-520 root routing; on the apex the same
-//! route is fine, the operator picks up their tenant on next login).
+//! users row).
+//!
+//! MAPPS-553 fix: after success, the "Go to sign in" button hard-navs
+//! to the tenant subdomain login (`<slug>.client.<suffix>/login`),
+//! NOT `/login` on the apex. Pre-553 the button routed via the
+//! Dioxus navigator to `Route::Login`, which on the mokosh apex sent
+//! the fresh client-admin to the platform-admin unified login and
+//! made the account look like "a mokosh platform account" instead of
+//! a per-client credential (operator report 2026-08-24). Post-553 the
+//! button crosses origins via `window.location.href` (the Dioxus
+//! router cannot cross origins), and falls back to a same-origin
+//! `/login` when either the tenant slug or the portal host suffix
+//! is missing (dev without env, or a deploy that does not host the
+//! portal on its own suffix).
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -39,7 +50,6 @@ struct ResetBody {
 #[derive(Deserialize, Clone, Debug)]
 struct SetPasswordContext {
     tenant_name: String,
-    #[allow(dead_code)]
     tenant_slug: String,
 }
 
@@ -51,6 +61,7 @@ pub fn SetPasswordPage(token: String) -> Element {
     let mut error = use_signal(String::new);
     let mut done = use_signal(|| false);
     let mut saving = use_signal(|| false);
+    let mut tenant_slug_state: Signal<Option<String>> = use_signal(|| None);
 
     // Fetch the tenant name so the heading can name the client
     // portal. A failure (unknown/expired/redeemed token) lands as
@@ -86,6 +97,30 @@ pub fn SetPasswordPage(token: String) -> Element {
         }
         _ => None,
     };
+    // MAPPS-553: remember the tenant slug so the post-success button
+    // can hard-nav to the tenant subdomain login. Stored in a signal
+    // rather than derived inline in the click handler so the button
+    // callback doesn't have to re-borrow the resource state (which
+    // moves into `spawn` awkwardly). `use_effect` runs whenever the
+    // resource resolves.
+    let slug_from_ctx: Option<String> = match &*context_snap {
+        Some(Some(ctx)) => {
+            let s = ctx.tenant_slug.trim().to_ascii_lowercase();
+            if s.is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        }
+        _ => None,
+    };
+    let slug_effect_input = slug_from_ctx.clone();
+    use_effect(move || {
+        let next = slug_effect_input.clone();
+        if *tenant_slug_state.peek() != next {
+            tenant_slug_state.set(next);
+        }
+    });
     let heading = match tenant_name.as_deref() {
         Some(name) => format!("Set your password for {name}"),
         None => "Set your password".to_string(),
@@ -162,7 +197,37 @@ pub fn SetPasswordPage(token: String) -> Element {
                         variant: ButtonVariant::Primary,
                         r#type: "button".to_string(),
                         class: "w-full".to_string(),
-                        onclick: move |_| { nav.replace(Route::Login {}); },
+                        onclick: move |_| {
+                            // MAPPS-553: post-set-password lands on
+                            // the tenant subdomain login, not the
+                            // mokosh apex `/login`. Requires a hard
+                            // cross-origin navigation (the Dioxus
+                            // router cannot cross origins). Falls
+                            // back to same-origin `/login` when
+                            // either the slug (context 404 / no
+                            // tenant_slug) or the portal host suffix
+                            // (dev without env, non-portal deploy)
+                            // is missing.
+                            #[cfg(feature = "web")]
+                            {
+                                let slug_opt = tenant_slug_state.peek().clone();
+                                let target = slug_opt.as_deref().and_then(|slug| {
+                                    crate::modules::runtime_config::portal_url_for_slug(slug)
+                                        .map(|origin| format!("{origin}/login"))
+                                });
+                                if let Some(url) = target {
+                                    if let Some(win) = web_sys::window() {
+                                        let _ = win.location().set_href(&url);
+                                        return;
+                                    }
+                                }
+                                nav.replace(Route::Login {});
+                            }
+                            #[cfg(not(feature = "web"))]
+                            {
+                                nav.replace(Route::Login {});
+                            }
+                        },
                         "Go to sign in"
                     }
                 }

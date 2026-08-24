@@ -31,8 +31,20 @@ use crate::CurrentUser;
 use crate::Route;
 
 /// Request body for `POST /api/v1/auth/login`, a subset of mokosh-server's
-/// `LoginRequest`. MAPPS-492 phase 3: `tenant_slug` is no longer sent by
-/// the SPA (the server derives tenant from the identity's memberships).
+/// `LoginRequest`.
+///
+/// MAPPS-492 phase 3 dropped `tenant_slug` from the apex flow (the server
+/// falls into `authenticate_identity_first` and picks tenant via the
+/// identity's memberships). MAPPS-553 puts it back for the portal-host
+/// flow: when the SPA is served from `<slug>.client.<suffix>` the tenant
+/// admin login is intentionally tenant-scoped, so the SPA derives the
+/// slug from the current host (via
+/// `crate::modules::runtime_config::tenant_slug_from_current_host`) and
+/// includes it here. That drives the server into `AuthService::login`,
+/// which verifies against `users.password_hash` for that specific
+/// (tenant_id, email) row - the credential set on that portal only
+/// (MAPPS-551). On the apex the field stays `None` so the identity-first
+/// picker path continues to run as before.
 #[derive(Serialize)]
 struct LoginBody {
     email: String,
@@ -42,6 +54,8 @@ struct LoginBody {
     mfa_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     approval_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tenant_slug: Option<String>,
 }
 
 /// MAPPS-520: request body for `POST /api/v1/platform/login`. Kept as a
@@ -238,6 +252,26 @@ pub fn StandaloneLogin() -> Element {
             {
                 use crate::hooks::fetch::api::ApiError;
 
+                // MAPPS-553: on a tenant subdomain
+                // (`<slug>.client.<suffix>`) the login is intentionally
+                // tenant-scoped: derive the slug from the current host
+                // and send it in the LoginBody. The server takes the
+                // `AuthService::login` path (see `routes.rs`
+                // has_tenant_hint dispatch) and verifies against
+                // `users.password_hash` for THAT tenant only. Also
+                // skip the platform-login first-attempt here: the
+                // platform-admin surface lives at the mokosh apex,
+                // not on tenant subdomains, so a POST to
+                // `/platform/login` from a subdomain would either be
+                // a wasted round-trip or (worse) install a platform
+                // bearer under the wrong origin's sessionStorage.
+                let on_portal = crate::hooks::fetch::api::on_portal_host();
+                let host_slug = if on_portal {
+                    crate::modules::runtime_config::tenant_slug_from_current_host()
+                } else {
+                    None
+                };
+
                 // MAPPS-520: unified /login. Try the platform-admin
                 // plane FIRST (only when there is no MFA / approval
                 // code in the submission - both are tenant-plane
@@ -250,7 +284,10 @@ pub fn StandaloneLogin() -> Element {
                 // unaffected. Any other error also falls through -
                 // the tenant call will surface a more actionable
                 // message than a naked 500 on the platform endpoint.
-                let can_try_platform = mfa.is_none() && approval.is_none();
+                //
+                // MAPPS-553: skip this branch entirely on portal
+                // hosts (see host_slug derivation above).
+                let can_try_platform = !on_portal && mfa.is_none() && approval.is_none();
                 if can_try_platform {
                     let platform_body = PlatformLoginBody {
                         email: em.clone(),
@@ -303,6 +340,14 @@ pub fn StandaloneLogin() -> Element {
                                 remember_me: false,
                                 mfa_code: None,
                                 approval_code: None,
+                                // MAPPS-553: apex-only path (the
+                                // outer `!on_portal` guard prevents
+                                // reaching here on a subdomain), so
+                                // no tenant hint - the server takes
+                                // the identity-first branch and
+                                // auto-picks / needs_selects across
+                                // the operator's memberships.
+                                tenant_slug: None,
                             };
                             if let Ok(tenant_resp) =
                                 crate::hooks::fetch::api::post_typed::<LoginResp, _>(
@@ -400,6 +445,13 @@ pub fn StandaloneLogin() -> Element {
                     remember_me: false,
                     mfa_code: mfa.clone(),
                     approval_code: approval.clone(),
+                    // MAPPS-553: `Some(slug)` on the tenant subdomain
+                    // (drives `AuthService::login` -> tenant-scoped
+                    // verify against `users.password_hash`);
+                    // `None` on the apex (drives
+                    // `authenticate_identity_first` -> picker /
+                    // needs_setup as before).
+                    tenant_slug: host_slug.clone(),
                 };
                 match crate::hooks::fetch::api::post_typed::<LoginResp, _>("/auth/login", &body)
                     .await
@@ -545,6 +597,18 @@ pub fn StandaloneLogin() -> Element {
     // response handler above navigates to those routes after
     // populating the shared `PENDING_LOGIN` signal.
 
+    // MAPPS-553: on a tenant subdomain this page is the tenant admin
+    // login. A customer of the MSP who accidentally lands on
+    // `<slug>.client.<suffix>/` (rather than the `/portal/login`
+    // link their MSP emailed them) needs a way to reach the
+    // customer portal without knowing the URL, so append a small
+    // footer link. Absent on the apex where the customer portal is
+    // not addressable at all.
+    #[cfg(feature = "web")]
+    let show_portal_footer = crate::hooks::fetch::api::on_portal_host();
+    #[cfg(not(feature = "web"))]
+    let show_portal_footer = false;
+
     rsx! {
         AuthLayout {
             div { class: "text-center mb-6",
@@ -630,6 +694,18 @@ pub fn StandaloneLogin() -> Element {
                     }
                 }
             }
+
+            if show_portal_footer {
+                p { class: "mt-6 text-center text-xs text-muted",
+                    "Are you a customer of this MSP? "
+                    Link {
+                        to: Route::PortalLogin {},
+                        class: "text-accent hover:underline",
+                        "Sign in to the customer portal"
+                    }
+                    "."
+                }
+            }
         }
     }
 }
@@ -702,11 +778,16 @@ mod tests {
             remember_me,
             mfa_code,
             approval_code,
+            // MAPPS-553: SPA now DOES send tenant_slug when running
+            // on a tenant subdomain. The apex flow still sends
+            // `None` here, but the field is on the wire so the
+            // destructuring test carries it back through.
+            tenant_slug,
         };
-        // Deliberately not sent by the standalone form. MAPPS-492 phase 3:
-        // tenant_slug and tenant_id are gone from the SPA request; the
-        // server derives tenant from the identity's memberships.
-        let _ = (recovery_code, device_id, tenant_id, tenant_slug);
+        // Deliberately not sent by the standalone form. MAPPS-492 phase 3
+        // dropped tenant_id, and MAPPS-397 doesn't wire recovery_code /
+        // device_id into the standalone form yet.
+        let _ = (recovery_code, device_id, tenant_id);
     }
 
     #[test]
