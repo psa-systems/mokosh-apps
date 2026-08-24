@@ -35,8 +35,13 @@ ip = "0.0.0.0"
 # Middleware configuration (compression, cors handled in code)
 
 # Reverse-proxy /api/* to the mokosh-server container so the SPA and the
-# API share a single browser-visible origin in dev. Required for the
-# Google OAuth popup + postMessage flow to satisfy same-origin checks.
+# API share a single browser-visible origin in dev. Load-bearing, not a
+# convenience: `api::api_base()` (src/hooks/fetch.rs) resolves to the
+# same-origin `/api/v1` on any host that does not start with `msp.`, so
+# in dev every request the SPA makes is addressed to the dx server's own
+# origin and reaches mokosh-server only through this proxy. One origin is
+# also what keeps the server's CLIENT_ORIGIN and its CORS list a single
+# entry.
 # `server` is the in-network DNS name of the mokosh-server compose
 # service (the dev-mokosh-private-${USER} network is shared with the
 # server stack). The server listens on its $MOKOSH_PORT (8080); 4301 is
