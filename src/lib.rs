@@ -331,6 +331,15 @@ pub enum Route {
     #[route("/reset-password/:token")]
     ResetPassword { token: String },
 
+    // MAPPS-552: first-time password setup for a fresh client-admin.
+    // The welcome email from `TenantService::mint_and_send_welcome`
+    // points here (not `/reset-password/:token`) so the URL bar and
+    // the page heading match what the recipient is actually doing -
+    // setting a password for a specific client portal, not resetting
+    // an existing one.
+    #[route("/set-password/:token")]
+    SetPassword { token: String },
+
     #[route("/invite/:token")]
     InviteAccept { token: String },
 
@@ -1023,6 +1032,26 @@ fn ResetPassword(token: String) -> Element {
         return rsx! { crate::pages::reset_password::StandaloneResetPassword { token } };
     }
     rsx! { HubRedirect { target: format!("/reset-password/{token}"), label: "password reset" } }
+}
+
+// MAPPS-552: first-time password setup for a fresh client-admin.
+// Landing page for the welcome-email link. Post MAPPS-551 the setup
+// token redeems through the same `POST /auth/reset-password` handler
+// as forgot-password, so the URL split is UI-only: a distinct page
+// with copy that names the specific client portal ("Set your password
+// for [Client Name]"), instead of the confusing "Reset password" the
+// welcome recipient used to see.
+#[component]
+fn SetPassword(token: String) -> Element {
+    // Standalone deploys own the setup flow locally, same posture as
+    // ResetPassword above. HubRedirect for bunyip-configured deploys
+    // keeps the token in the URL so bunyip's own set-password surface
+    // (when one exists) can pick it up; today it falls back to the
+    // same /reset-password shape until a hub-side companion lands.
+    if crate::modules::oidc::is_standalone() {
+        return rsx! { crate::pages::set_password::SetPasswordPage { token } };
+    }
+    rsx! { HubRedirect { target: format!("/set-password/{token}"), label: "password setup" } }
 }
 
 #[component]
