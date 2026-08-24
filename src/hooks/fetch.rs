@@ -345,20 +345,75 @@ pub mod api {
         PORTAL_ACCESS_TOKEN.with(|t| t.borrow().is_some())
     }
 
-    /// PMS-729 phase 2 H2: set the portal refresh token. Called from the
-    /// login page on `POST /portal/auth/login` and from the auto-refresh
-    /// hook after `POST /portal/auth/refresh`. `None` clears it, matching
-    /// the access-token holder's shape.
+    /// MAPPS-563: `localStorage` key under which the portal refresh token
+    /// is persisted so it survives a hard refresh / deep-link cold-load.
+    /// Distinct from the platform-admin `mokosh:platform_token`
+    /// (`sessionStorage`) and the standalone-agent session keys so a
+    /// stale value from another plane cannot cross-populate this one.
+    ///
+    /// XSS trade-off: the refresh token becomes readable by scripts
+    /// running on the portal origin. That is strictly worse than the
+    /// pre-563 in-memory-only shape, but a full HttpOnly-cookie
+    /// implementation crosses tenant subdomain <-> API subdomain and
+    /// requires CORS + Domain=.<apex> cookie work that we don't have
+    /// today. The follow-up ticket to move this to a cookie is filed
+    /// as a note in `docs/mokosh-client-login/dashboard-overhaul-1.md`
+    /// under B2.
+    #[cfg(feature = "web")]
+    const PORTAL_REFRESH_STORAGE_KEY: &str = "mokosh:portal_refresh_token";
+
+    /// PMS-729 phase 2 H2 / MAPPS-563: set the portal refresh token.
+    /// Called from the login page on `POST /portal/auth/login` and from
+    /// the auto-refresh hook after `POST /portal/auth/refresh`. `None`
+    /// clears both the in-memory slot and the localStorage mirror so a
+    /// hard refresh after logout lands the visitor at /portal/login
+    /// rather than silently re-authenticating.
     #[cfg(feature = "web")]
     pub fn set_portal_refresh_token(token: Option<String>) {
-        PORTAL_REFRESH_TOKEN.with(|t| *t.borrow_mut() = token);
+        PORTAL_REFRESH_TOKEN.with(|t| *t.borrow_mut() = token.clone());
+        // Persist to localStorage so a cold-load can re-mint the access
+        // token via /portal/auth/refresh before PortalGuard bounces.
+        // Any storage access can throw (private-mode browsers, disabled
+        // site data), so degrade to in-memory-only on failure.
+        if let Some(win) = web_sys::window() {
+            if let Ok(Some(storage)) = win.local_storage() {
+                match token.as_deref() {
+                    Some(value) => {
+                        let _ = storage.set_item(PORTAL_REFRESH_STORAGE_KEY, value);
+                    }
+                    None => {
+                        let _ = storage.remove_item(PORTAL_REFRESH_STORAGE_KEY);
+                    }
+                }
+            }
+        }
     }
 
-    /// PMS-729 phase 2 H2: read the portal refresh token. Only the
-    /// refresh flow and the logout flow call this.
+    /// PMS-729 phase 2 H2 / MAPPS-563: read the portal refresh token.
+    /// Only the refresh flow and the logout flow call this.
+    ///
+    /// MAPPS-563: when the in-memory slot is empty (cold-load after a
+    /// hard refresh / deep-link), fall back to the localStorage mirror.
+    /// The first successful `POST /portal/auth/refresh` rotates the
+    /// token and calls `set_portal_refresh_token(Some(new))`, which
+    /// updates both places. If the localStorage read succeeds we also
+    /// prime the in-memory slot so subsequent reads in the same
+    /// browser session skip the storage round-trip.
     #[cfg(feature = "web")]
     pub fn current_portal_refresh_token() -> Option<String> {
-        PORTAL_REFRESH_TOKEN.with(|t| t.borrow().clone())
+        let in_memory = PORTAL_REFRESH_TOKEN.with(|t| t.borrow().clone());
+        if in_memory.is_some() {
+            return in_memory;
+        }
+        let win = web_sys::window()?;
+        let storage = win.local_storage().ok().flatten()?;
+        let stored = storage.get_item(PORTAL_REFRESH_STORAGE_KEY).ok().flatten()?;
+        if stored.is_empty() {
+            return None;
+        }
+        // Prime the in-memory slot so the next caller skips storage.
+        PORTAL_REFRESH_TOKEN.with(|t| *t.borrow_mut() = Some(stored.clone()));
+        Some(stored)
     }
 
     // The web-only API helpers below are grouped under this `api`

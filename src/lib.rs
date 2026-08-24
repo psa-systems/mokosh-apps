@@ -215,8 +215,58 @@ pub fn AuthGuard() -> Element {
 #[component]
 pub fn PortalGuard() -> Element {
     let nav = use_navigator();
+
+    // MAPPS-563: cold-load recovery. Pre-563 PortalGuard synchronously
+    // checked the in-memory access token; a hard refresh / deep-link
+    // discarded it, so every full page load bounced to /portal/login
+    // even though the user had a live 30-day server-side session. The
+    // portal refresh token is now persisted to localStorage (see
+    // `hooks::fetch::api::set_portal_refresh_token`), so on cold-load
+    // we can trade it for a fresh access token via
+    // `POST /portal/auth/refresh` BEFORE bouncing to login. Only on
+    // refresh failure (unknown / expired / revoked token) do we
+    // actually redirect.
+    //
+    // The Resource fires on mount and short-circuits when the in-
+    // memory access token is already present (returned an early Ok(())
+    // in `refresh_portal_session` when the refresh returned a fresh
+    // access token, or we take the "already signed in" branch here).
     #[cfg(feature = "web")]
-    let signed_in = hooks::fetch::api::has_portal_session();
+    let bootstrap: Resource<Result<bool, ()>> = use_resource(|| async {
+        // Fast path: an in-memory access token already exists (fresh
+        // login, or a page mount that landed after the sign-in
+        // completed but before the visitor navigated). Nothing to do.
+        if hooks::fetch::api::has_portal_session() {
+            return Ok(true);
+        }
+        // Cold-load path: no in-memory token but the localStorage
+        // fallback in `current_portal_refresh_token` may have one.
+        // Attempt a refresh. On success PortalGuard renders its
+        // Outlet as if a login had just landed; on failure we let
+        // the redirect fire below.
+        match crate::hooks::portal_auth::refresh_portal_session().await {
+            Ok(()) => Ok(true),
+            Err(_) => Err(()),
+        }
+    });
+    #[cfg(feature = "web")]
+    let bootstrap_state = bootstrap.read_unchecked();
+    #[cfg(feature = "web")]
+    let signed_in = match &*bootstrap_state {
+        None => {
+            // Refresh still in flight; render a placeholder rather
+            // than bouncing immediately so a valid refresh cookie
+            // has a chance to complete on the same tick.
+            return rsx! {
+                div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
+                    "Loading your portal session…"
+                }
+            };
+        }
+        Some(Ok(true)) => true,
+        Some(Ok(false)) => false,
+        Some(Err(_)) => false,
+    };
     // The portal fetch helpers only exist in the `web` build, so a non-web
     // build has no portal session to hold.
     #[cfg(not(feature = "web"))]
@@ -957,10 +1007,29 @@ fn Home() -> Element {
     // the agent-side marketing home page.
     #[cfg(feature = "web")]
     if hooks::fetch::api::on_portal_host() {
-        if hooks::fetch::api::current_portal_access_token().is_some() {
-            return rsx! { crate::pages::portal::PortalHomePage {} };
-        }
-        return rsx! { crate::pages::portal_login::PortalLoginPage {} };
+        // MAPPS-563: same cold-load recovery PortalGuard runs. A hard
+        // refresh on `<slug>.client.<suffix>/` used to fall through to
+        // PortalLoginPage even though the localStorage refresh token
+        // could re-mint an access token; we try that first, THEN
+        // decide which page to render.
+        let bootstrap: Resource<bool> = use_resource(|| async {
+            if hooks::fetch::api::has_portal_session() {
+                return true;
+            }
+            crate::hooks::portal_auth::refresh_portal_session()
+                .await
+                .is_ok()
+        });
+        let bootstrap_state = bootstrap.read_unchecked();
+        return match &*bootstrap_state {
+            None => rsx! {
+                div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
+                    "Loading your portal session…"
+                }
+            },
+            Some(true) => rsx! { crate::pages::portal::PortalHomePage {} },
+            Some(false) => rsx! { crate::pages::portal_login::PortalLoginPage {} },
+        };
     }
     rsx! { home::HomePage {} }
 }
