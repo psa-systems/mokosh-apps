@@ -1565,6 +1565,11 @@ fn PortalSidebarContent() -> Element {
             PortalNavItem { to: Route::PortalHome {}, icon: rsx!(HomeIcon {}), label: "Home" }
             PortalNavItem { to: Route::PortalTicketList {}, icon: rsx!(TicketIcon {}), label: "Tickets" }
             PortalNavItem { to: Route::PortalInvoiceList {}, icon: rsx!(CurrencyIcon {}), label: "Invoices" }
+            // MAPPS-565: previously hidden; only reachable by typing the URL.
+            // The Quotes page renders an accept/decline flow when a quote is
+            // available; hiding it from the sidebar meant customers never
+            // saw pending quotes.
+            PortalNavItem { to: Route::PortalQuoteList {}, icon: rsx!(DocumentIcon {}), label: "Quotes" }
             PortalNavItem { to: Route::PortalKB {}, icon: rsx!(BookIcon {}), label: "Knowledge Base" }
             PortalNavItem { to: Route::PortalFormList {}, icon: rsx!(ClipboardDocumentListIcon {}), label: "Forms" }
             // PMS-729 phase 2 §7 slice C.
@@ -1577,6 +1582,15 @@ fn PortalSidebarContent() -> Element {
             PortalNavItem { to: Route::PortalCompany {}, icon: rsx!(UserGroupIcon {}), label: "Company" }
             PortalNavItem { to: Route::PortalExport {}, icon: rsx!(DocumentIcon {}), label: "Data export" }
             PortalNavItem { to: Route::PortalSearch {}, icon: rsx!(MagnifyingGlassIcon {}), label: "Search" }
+            // MAPPS-565: previously hidden. The bell in the header opens a
+            // dropdown but the full inbox at /portal/notifications was
+            // only reachable via URL. Sidebar entry so a customer looking
+            // for their notification history can find it.
+            PortalNavItem { to: Route::PortalNotifications {}, icon: rsx!(BellIcon {}), label: "Notifications" }
+            // MAPPS-565: previously hidden. The user menu in the header
+            // links to Settings, but sidebar discoverability matters
+            // when the menu is closed.
+            PortalNavItem { to: Route::PortalSettings {}, icon: rsx!(CogIcon {}), label: "Settings" }
         }
     }
 }

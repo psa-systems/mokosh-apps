@@ -6088,7 +6088,21 @@ pub fn PortalExportPage() -> Element {
                                         let requested = crate::utils::datetime::format_user_datetime(row.requested_at.unwrap_or_default(), None);
                                         let ready = row.ready_at.map(|d| crate::utils::datetime::format_user_datetime(d, None)).unwrap_or_default();
                                         let expires = row.expires_at.map(|d| crate::utils::datetime::format_user_datetime(d, None)).unwrap_or_default();
-                                        let can_download = row.signed_url.as_deref().map(|s| !s.is_empty()).unwrap_or(false);
+                                        // MAPPS-566: `can_download` used to gate on
+                                        // `signed_url.is_some()`, but the LIST endpoint
+                                        // does not populate `signed_url` (only the
+                                        // per-job GET does), so every history row's
+                                        // Download cell rendered as a bare dash even
+                                        // though the current-job panel would gladly
+                                        // fetch + stream the bundle for it. Gate on
+                                        // "ready and not expired" instead - the Select
+                                        // click loads the row into the current-job
+                                        // panel where the download button lives.
+                                        let now = chrono::Utc::now();
+                                        let is_ready = row.ready_at.is_some()
+                                            && row.expires_at.map(|e| e > now).unwrap_or(false);
+                                        let can_download = is_ready
+                                            || row.signed_url.as_deref().map(|s| !s.is_empty()).unwrap_or(false);
                                         let status_label = crate::components::humanize_enum_label(&row.status);
                                         let row_id = row.id.to_string();
                                         rsx! {
