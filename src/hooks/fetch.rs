@@ -1473,11 +1473,23 @@ pub mod api {
     /// decode the empty payload, so this variant only inspects the status and
     /// keeps the typed error so the caller can tell 410 (replayed link) from
     /// 400 (expired / unknown link).
+    ///
+    /// MAPPS-554 fix (2026-08-24 operator report: "Forget password in
+    /// client portal doesn't actually work"): attach `X-Forwarded-Host`
+    /// to match `post_typed` / `get_typed`. Without it, the portal's
+    /// `POST /portal/auth/forgot-password` sees `Host: server:8080`
+    /// (the Dioxus dev proxy rewrite) instead of the real
+    /// `{slug}.client.<apex>` the browser is visiting; `lookup_host_tenant`
+    /// then fails silently and the handler returns 204 with no
+    /// email dispatched. Same reason `post_typed` already attaches it.
     #[cfg(feature = "web")]
     pub async fn post_typed_no_content<B: Serialize>(path: &str, body: &B) -> Result<(), ApiError> {
         let url = format!("{}{}", api_base(), path);
-        let resp = Request::post(&url)
-            .header("Content-Type", "application/json")
+        let mut req = Request::post(&url).header("Content-Type", "application/json");
+        if let Some(host) = current_forwarded_host() {
+            req = req.header("X-Forwarded-Host", &host);
+        }
+        let resp = req
             .json(body)
             .map_err(|e| ApiError::Network(e.to_string()))?
             .send()

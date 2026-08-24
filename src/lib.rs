@@ -79,6 +79,27 @@ pub fn AuthGuard() -> Element {
         // redirect to, so send the user to the standalone username/password
         // login form instead of a dead `/oauth2/authorize`.
         if crate::modules::oidc::is_standalone() {
+            // MAPPS-554: on a tenant subdomain, every unauthenticated
+            // AuthGuard hit MUST land on the customer-portal login,
+            // not the mokosh-workspace `StandaloneLogin`. Portal
+            // admins have no `users` row (post-554 provisioning
+            // creates a `contacts` row only), so sending them to
+            // `/login` on the subdomain would dead-end them at a form
+            // that can never accept their credentials. The operator's
+            // 2026-08-24 walkthrough was explicit: "We should not be
+            // giving users access to mokosh-platform, even if it's
+            // the client portal admin user." Post-554 the tenant
+            // subdomain is a customer-portal-only surface, so gate
+            // the redirect target here.
+            #[cfg(feature = "web")]
+            if crate::hooks::fetch::api::on_portal_host() {
+                nav.replace(Route::PortalLogin {});
+                return rsx! {
+                    div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
+                        "Redirecting to the client portal sign-in…"
+                    }
+                };
+            }
             nav.replace(Route::Login {});
             return rsx! {
                 div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
@@ -977,6 +998,26 @@ fn PlatformLoginLegacy() -> Element {
 
 #[component]
 fn Login() -> Element {
+    let nav = use_navigator();
+    // MAPPS-554: on a tenant subdomain the mokosh-workspace login is
+    // NOT reachable. Portal admins have no users row (post-554
+    // provisioning creates a contacts row only), so `StandaloneLogin`
+    // on the subdomain would just dead-end them at a form that could
+    // never accept their credentials. Redirect any visitor to
+    // `<slug>.client.<suffix>/login` straight to the customer-portal
+    // login. Legacy tenants (pre-554, still holding `users` rows) sign
+    // in on the mokosh apex `/login` instead - the apex path still
+    // renders `StandaloneLogin`, unchanged.
+    #[cfg(feature = "web")]
+    if crate::hooks::fetch::api::on_portal_host() {
+        nav.replace(Route::PortalLogin {});
+        return rsx! {
+            div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
+                "Redirecting to the client portal sign-in…"
+            }
+        };
+    }
+
     // MAPPS-368: no OIDC issuer configured -> present the standalone
     // username/password form instead of the bunyip redirect. `is_standalone`
     // is stable for the session (config is memoized), so the effect below is
