@@ -900,33 +900,34 @@ fn HubRedirect(target: String, label: &'static str) -> Element {
 
 #[component]
 fn Home() -> Element {
-    // MAPPS-553: the tenant subdomain now owns the tenant admin
-    // sign-in surface. Pre-553 the subdomain root rendered the MSP's
-    // OWN customer portal login (`PortalLoginPage` at `/`), and the
-    // tenant admin had no home there - they signed in on the mokosh
-    // apex `/login` and worked with the mokosh apex host in the URL
-    // bar, which the operator reported (2026-08-24) as "makes the
-    // account a mokosh platform account, not an account for that
-    // portal, essentially making the client portal absolutely
-    // useless". Post-553 `<slug>.client.<suffix>/` renders the
-    // tenant admin login (`StandaloneLogin`, which auto-derives the
-    // tenant slug from the current host and posts a tenant-scoped
-    // `/auth/login`). The MSP's own customer portal stays reachable
-    // at the explicit `/portal/login` subpath (`Route::PortalLogin`,
-    // wired below), which is the URL the MSP's outbound customer
-    // emails carry.
+    // MAPPS-554 (superseding MAPPS-553): the tenant subdomain root is
+    // the CUSTOMER PORTAL again. MAPPS-553 briefly routed
+    // `<slug>.client.<suffix>/` at `StandaloneLogin` (the tenant admin
+    // login) because pre-554 a mokosh-client was provisioned as a
+    // `users`-row tenant admin. The operator's 2026-08-24 follow-up
+    // walkthrough clarified that a mokosh-client's world is the
+    // customer portal ("ONLY CLIENT PORTAL"), so post-554
+    // `TenantService::create_tenant` provisions a `contacts` row
+    // (`is_portal_user=true, portal_role='admin'`) and mails a
+    // portal-side setup link. The subdomain root therefore renders
+    // the customer portal (`PortalHomePage` when a `portal_access`
+    // token is present in memory, `PortalLoginPage` otherwise) - same
+    // shape as PMS-729 / pre-553.
     //
-    // When a tenant admin session is already present on this host,
-    // AuthGuard-protected routes are the natural landing; the root
-    // stays on the login surface (rather than auto-navigating) so a
-    // deliberate revisit to `/` still reveals a working sign-in for
-    // the operator to swap accounts or debug from.
+    // The explicit `StandaloneLogin` at `<slug>.client.<suffix>/login`
+    // stays reachable (see the `Login` route wrapper) so LEGACY
+    // tenants (created pre-554, still holding `users` rows) can sign
+    // in tenant-scoped without going to the mokosh apex. New clients
+    // (post-554, portal-only) do not need it.
     //
     // Non-portal hosts (localhost:4301, msp.<tld>) keep rendering
     // the agent-side marketing home page.
     #[cfg(feature = "web")]
     if hooks::fetch::api::on_portal_host() {
-        return rsx! { crate::pages::login::StandaloneLogin {} };
+        if hooks::fetch::api::current_portal_access_token().is_some() {
+            return rsx! { crate::pages::portal::PortalHomePage {} };
+        }
+        return rsx! { crate::pages::portal_login::PortalLoginPage {} };
     }
     rsx! { home::HomePage {} }
 }
