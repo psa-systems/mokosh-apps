@@ -41,7 +41,7 @@ if [ "${1:-}" = "--self-test" ]; then
 
   {
     printf '      MOKOSH_HUB_BASE_URL: https://${USER}-bunyip.a8n.run\n'
-    printf '      # the base compose.yml binds http://localhost:4301 for Google OAuth\n'
+    printf '      # the base compose.yml binds http://localhost:4301 for the dev-host browser\n'
     printf '      MOKOSH_LEGACY_URL: http://example.test # dev-sso-scheme-guard-allow\n'
   } > "$fixtures/clean.yml"
   out=$("$0" "$fixtures/clean.yml" 2>&1) && rc=0 || rc=$?

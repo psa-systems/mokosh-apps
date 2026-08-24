@@ -16,10 +16,17 @@ services:
       - path: .env
         required: false
     ports:
-      # LAN-IP bind so other Docker containers on the host can reach the
-      # dev server, plus a localhost bind so the browser can hit
-      # http://localhost:4301 (required for Google OAuth - the redirect
-      # URI rejects plain HTTP on non-loopback hosts).
+      # Two publishes, because two different callers reach dx serve.
+      # `${HOST_IP}` is the private LAN address `just dev` picks: that is
+      # the one sibling Docker stacks and other hosts on the LAN use. The
+      # loopback publish is the one a browser on the dev host itself opens
+      # at http://localhost:4301.
+      #
+      # Keeping both costs nothing when they coincide: `just dev` falls back
+      # to HOST_IP=127.0.0.1 when it finds no private LAN IPv4, and compose
+      # collapses the two identical entries into a single binding rather
+      # than failing on the port, so the loopback route survives that
+      # fallback instead of racing the LAN one for the port.
       - "${HOST_IP}:4301:4301"
       - "127.0.0.1:4301:4301"
     networks:
