@@ -86,6 +86,21 @@ fn humanize_plan(raw: &Option<String>) -> String {
     }
 }
 
+/// MAPPS-558: which lifecycle POST a client-row button issues. `Suspend`
+/// and `Cancel` both take an Active/Trial row to a non-active status
+/// (portal 401s the tenant's contacts on the next request either way,
+/// via MAPPS-557); `Reactivate` restores it. The kinds differ in the
+/// endpoint path (`/suspend` vs `/cancel` vs `/activate`), the confirm-
+/// dialog copy (Cancel spells out "going away for good but reversible"),
+/// and the button color (Cancel renders in red to signal intent).
+#[cfg(feature = "multi-tenant")]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum LifecycleActionKind {
+    Suspend,
+    Cancel,
+    Reactivate,
+}
+
 #[cfg(feature = "multi-tenant")]
 fn humanize_tenant_status(raw: &str) -> String {
     match raw {
@@ -502,89 +517,118 @@ fn TenantRow(props: TenantRowProps) -> Element {
                 if props.editable {
                     div { class: "inline-flex items-center gap-3 justify-end",
                         {
-                            // MAPPS-451: lifecycle action is hidden on
-                            // demo rows (no tenant_id) and rendered as a
-                            // muted text link matching Edit. Two labels
-                            // gate on the current status: suspended rows
-                            // get "Reactivate"; active / trial get
-                            // "Suspend". Any other value (unknown future
-                            // status) hides the affordance.
-                            let action = match props.status.as_str() {
-                                "Active" | "Trial" => Some(("Suspend", true)),
-                                "Suspended" => Some(("Reactivate", false)),
-                                _ => None,
+                            // MAPPS-451 / MAPPS-558: lifecycle actions. The
+                            // set of buttons rendered per row depends on the
+                            // client's current status:
+                            //
+                            // - Active / Trial: Suspend + Cancel (two mutations
+                            //   available; the operator picks reversible pause
+                            //   vs long-term close).
+                            // - Suspended:     Reactivate.
+                            // - Cancelled:     Reactivate.
+                            // - Anything else: nothing (unknown future status).
+                            //
+                            // The Cancel branch (MAPPS-558) POSTs to
+                            // `/tenants/{id}/cancel` and uses stricter
+                            // confirmation copy than Suspend since it is the
+                            // "going away for good" action. Both are reversible
+                            // via Reactivate; the difference is signalling
+                            // intent to the operator.
+                            let actions: Vec<(&'static str, LifecycleActionKind)> = match props
+                                .status
+                                .as_str()
+                            {
+                                "Active" | "Trial" => vec![
+                                    ("Suspend", LifecycleActionKind::Suspend),
+                                    ("Cancel", LifecycleActionKind::Cancel),
+                                ],
+                                "Suspended" | "Cancelled" => {
+                                    vec![("Reactivate", LifecycleActionKind::Reactivate)]
+                                }
+                                _ => Vec::new(),
                             };
                             let disabled = !props.can_mutate;
                             let id = props.tenant_id;
                             let on_changed = props.on_lifecycle_changed;
                             let name = props.name.clone();
-                            match (action, id) {
-                                (Some((label, suspend)), Some(tid)) => rsx! {
-                                    button {
-                                        r#type: "button",
-                                        class: if disabled {
-                                            "text-sm text-muted opacity-60 cursor-not-allowed"
-                                        } else {
-                                            "text-sm text-accent hover:opacity-80"
-                                        },
-                                        disabled,
-                                        onclick: move |_| {
-                                            #[cfg(feature = "web")]
-                                            {
-                                                let msg = if suspend {
-                                                    format!(
-                                                        "Suspend client \"{name}\"? Signed-in users will be forced out on their next request and the client's portal will stop resolving.",
-                                                    )
-                                                } else {
-                                                    format!(
-                                                        "Reactivate client \"{name}\"? The client will resume normal access on their next request.",
-                                                    )
-                                                };
-                                                let confirmed = web_sys::window()
-                                                    .and_then(|w| w.confirm_with_message(&msg).ok())
-                                                    .unwrap_or(false);
-                                                if !confirmed {
-                                                    return;
-                                                }
-                                                let name = name.clone();
-                                                spawn(async move {
-                                                    let path = if suspend {
-                                                        format!("/tenants/{tid}/suspend")
-                                                    } else {
-                                                        format!("/tenants/{tid}/activate")
-                                                    };
-                                                    // MAPPS-518: suspend/activate are RequirePlatformAdmin.
-                                                    match crate::hooks::fetch::api::post_platform_authed_no_content(&path).await {
-                                                        Ok(_) => {
-                                                            let toast = if suspend {
-                                                                format!("Client \"{name}\" suspended.")
-                                                            } else {
-                                                                format!("Client \"{name}\" reactivated.")
+                            match id {
+                                Some(tid) => rsx! {
+                                    for (label, kind) in actions.into_iter() {
+                                        {
+                                            let name = name.clone();
+                                            let on_changed = on_changed;
+                                            rsx! {
+                                                button {
+                                                    key: "{label}",
+                                                    r#type: "button",
+                                                    class: match (disabled, kind) {
+                                                        (true, _) => "text-sm text-muted opacity-60 cursor-not-allowed",
+                                                        (false, LifecycleActionKind::Cancel) => "text-sm text-red-600 dark:text-red-400 hover:opacity-80",
+                                                        (false, _) => "text-sm text-accent hover:opacity-80",
+                                                    },
+                                                    disabled,
+                                                    onclick: move |_| {
+                                                        #[cfg(feature = "web")]
+                                                        {
+                                                            let msg = match kind {
+                                                                LifecycleActionKind::Suspend => format!(
+                                                                    "Suspend client \"{name}\"? Signed-in users will be forced out on their next request and the client's portal will stop resolving.",
+                                                                ),
+                                                                LifecycleActionKind::Cancel => format!(
+                                                                    "Cancel client \"{name}\"? Their portal will lose access on the next request. The account and its data stay in place; you can reactivate them from this page.",
+                                                                ),
+                                                                LifecycleActionKind::Reactivate => format!(
+                                                                    "Reactivate client \"{name}\"? The client will resume normal access on their next request.",
+                                                                ),
                                                             };
-                                                            crate::hooks::toast::push_toast(
-                                                                crate::components::AlertType::Success,
-                                                                toast,
-                                                            );
-                                                            if let Some(h) = on_changed {
-                                                                h.call(());
+                                                            let confirmed = web_sys::window()
+                                                                .and_then(|w| w.confirm_with_message(&msg).ok())
+                                                                .unwrap_or(false);
+                                                            if !confirmed {
+                                                                return;
                                                             }
+                                                            let name = name.clone();
+                                                            spawn(async move {
+                                                                let path = match kind {
+                                                                    LifecycleActionKind::Suspend => format!("/tenants/{tid}/suspend"),
+                                                                    LifecycleActionKind::Cancel => format!("/tenants/{tid}/cancel"),
+                                                                    LifecycleActionKind::Reactivate => format!("/tenants/{tid}/activate"),
+                                                                };
+                                                                // MAPPS-518 / MAPPS-558: all three endpoints are RequirePlatformAdmin.
+                                                                match crate::hooks::fetch::api::post_platform_authed_no_content(&path).await {
+                                                                    Ok(_) => {
+                                                                        let toast = match kind {
+                                                                            LifecycleActionKind::Suspend => format!("Client \"{name}\" suspended."),
+                                                                            LifecycleActionKind::Cancel => format!("Client \"{name}\" cancelled."),
+                                                                            LifecycleActionKind::Reactivate => format!("Client \"{name}\" reactivated."),
+                                                                        };
+                                                                        crate::hooks::toast::push_toast(
+                                                                            crate::components::AlertType::Success,
+                                                                            toast,
+                                                                        );
+                                                                        if let Some(h) = on_changed {
+                                                                            h.call(());
+                                                                        }
+                                                                    }
+                                                                    Err(msg) => crate::hooks::toast::push_toast(
+                                                                        crate::components::AlertType::Warning,
+                                                                        msg,
+                                                                    ),
+                                                                }
+                                                            });
                                                         }
-                                                        Err(msg) => crate::hooks::toast::push_toast(
-                                                            crate::components::AlertType::Warning,
-                                                            msg,
-                                                        ),
-                                                    }
-                                                });
+                                                        #[cfg(not(feature = "web"))]
+                                                        {
+                                                            let _ = (tid, kind);
+                                                        }
+                                                    },
+                                                    "{label}"
+                                                }
                                             }
-                                            #[cfg(not(feature = "web"))]
-                                            {
-                                                let _ = (tid, suspend);
-                                            }
-                                        },
-                                        "{label}"
+                                        }
                                     }
                                 },
-                                _ => rsx! {},
+                                None => rsx! {},
                             }
                         }
                         button {
