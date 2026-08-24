@@ -236,15 +236,34 @@ pub fn Onboarding() -> Element {
                                 _,
                             >("/tenants/current", &body)
                             .await;
-                            if let Err(e) = saved {
-                                match e.field_message("name") {
-                                    Some(m) => org_name_error.set(m),
-                                    None => {
-                                        error.set(format!("Could not save: {}", e.user_message()))
-                                    }
+                            match saved {
+                                // MAPPS-571: the org loader has already run and
+                                // cached whatever the tenant was called before
+                                // this screen, which for a fresh tenant is the
+                                // seeded "My workspace" (PMS-751). Without this
+                                // the admin names their company, lands on the
+                                // dashboard, and the top bar shows them the
+                                // placeholder they just replaced.
+                                //
+                                // The response is a `Value` here, so read the
+                                // stored name out of it and fall back to the
+                                // submitted one if the key is absent.
+                                Ok(response) => {
+                                    let stored = response
+                                        .get("name")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or(name.as_str());
+                                    auth.write().set_active_org_name(stored);
                                 }
-                                saving.set(false);
-                                return;
+                                Err(e) => {
+                                    match e.field_message("name") {
+                                        Some(m) => org_name_error.set(m),
+                                        None => error
+                                            .set(format!("Could not save: {}", e.user_message())),
+                                    }
+                                    saving.set(false);
+                                    return;
+                                }
                             }
                         }
 
