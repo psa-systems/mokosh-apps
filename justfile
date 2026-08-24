@@ -323,6 +323,12 @@ desktop-build: css-build
 desktop-bundle: css-build
     dx bundle --release --platform desktop --no-default-features --features web,multi-tenant,desktop
 
+# MAPPS-477: prove a no-JS link-preview crawler receives the og:/twitter: tags. Runs the real entrypoint + Caddyfile in a container and fetches it with curl, so it needs docker and is not part of `just check` (which compiles on a runner with no docker), like check-docker below.
+[group: 'check']
+check-link-preview:
+    bash scripts/check-link-preview.sh --self-test
+    bash scripts/check-link-preview.sh
+
 # Build OCI image for validation
 [group: 'check']
 check-docker:
