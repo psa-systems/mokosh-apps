@@ -824,11 +824,33 @@ struct BrandingView {
 /// "My workspace". Before this page the only way to change it was a raw
 /// `PUT /api/v1/tenants/{id}`.
 ///
-/// Reads the name from mokosh-server rather than from `active_org_name()` in
-/// auth context. Those are two different values: the switcher name comes from
-/// the issuer's `/v1/auth/memberships` (bunyip's org), while the emails and
-/// the import confirmation use mokosh's own `tenants.name`. Editing the one
-/// the server actually sends is the point of the page.
+/// Fetches the tenant from mokosh-server rather than reading `active_org_name()`
+/// out of auth context.
+///
+/// MAPPS-541: not because they disagree. They did once, and this comment used to
+/// say so, but since MAPPS-427 `use_active_org_loader` reads the same
+/// `GET /tenants/current` this page does, so `active_org_name()` is the very
+/// `tenants.name` edited here. (That hook carries the history of where it used to
+/// read from and why the call could never have worked.) MAPPS-524's non-admin
+/// onboarding screen shows `active_org_name()` on the strength of it being
+/// mokosh's value.
+///
+/// Two reasons for the fetch survive that correction:
+///
+/// - The page edits the branding document as well as the name (support contact,
+///   email, phone, logo), and `MembershipView` carries only `tenant_id` and
+///   `tenant_name`. Auth context could supply at most one of this form's five
+///   fields, so the round-trip happens either way.
+/// - `active_org_name()` is `None` when the org load failed, deliberately:
+///   MAPPS-427 leaves the list empty rather than inventing a row. Seeding the
+///   form from it would leave an admin unable to see or fix the name on exactly
+///   the load that went wrong, where this page's own fetch renders `LoadError`
+///   and says what happened.
+///
+/// What the fetch does NOT do is refresh auth context after a save. The loader
+/// runs once per session (`memberships_loaded`) and this save does not call
+/// `bump_tenant_generation`, so the top bar and the onboarding screen keep the
+/// pre-save name until the next full page load.
 #[component]
 pub fn OrganizationSettingsPage() -> Element {
     use_page_title("Organization");
@@ -1185,13 +1207,18 @@ pub fn ImportExportSettingsPage() -> Element {
     // compares `confirm` to mokosh's `tenants.name`
     // (`src/modules/data_transfer/mod.rs:332`).
     //
-    // MAPPS-426: that is NOT the name in the org switcher. `active_org_name()`
-    // comes from the issuer's `/v1/auth/memberships` (bunyip's org record),
-    // and the two can differ, in which case this page instructed the user to
-    // type a phrase the server would always reject. Ask mokosh for its own
-    // name, and fall back to the switcher only when that read is unavailable
-    // (server down, or a build without the multi-tenant feature) so the page
-    // is never worse off than before.
+    // MAPPS-426: ask mokosh for its own name, and fall back to
+    // `active_org_name()` only when that read is unavailable (server down, or a
+    // build without the multi-tenant feature), so the page is never worse off
+    // than before.
+    //
+    // MAPPS-541: what that fallback means has changed, in the page's favour.
+    // This comment used to warn that the switcher name was a DIFFERENT value
+    // (bunyip's org record) which could disagree with `tenants.name`, so falling
+    // back risked instructing the user to type a phrase the server would always
+    // reject. Since MAPPS-427 `active_org_name()` is a cached copy of this same
+    // column, so the fallback now yields the previous read of the right value
+    // rather than a different one.
     // PMS-751: `current`, not `/tenants/{id}`. The id this used to interpolate
     // comes from an id_token claim that is nil whenever bunyip's client is not
     // configured to mint it, and the failure hid behind the switcher-name
