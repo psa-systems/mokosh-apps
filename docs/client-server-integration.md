@@ -35,13 +35,10 @@ src/modules/contacts/mod.rs      -> pub use mokosh_types::contacts::*;
 src/modules/time_tracking/mod.rs -> pub use mokosh_types::time_tracking::*;
 ```
 
-`src/modules/tenants/models.rs` has since joined them, and MAPPS-536
-finished `auth` and `tickets`, so five module trees now re-export the
-crate wholesale. One module still declares wire types by hand:
-
-```
-src/modules/forms/models.rs    -> whole module hand-copied                    (MAPPS-535)
-```
+`src/modules/tenants/models.rs` has since joined them, MAPPS-536
+finished `auth` and `tickets`, and MAPPS-535 finished `forms`, so six
+module trees now re-export the crate wholesale. No module under
+`src/modules/` still hand-copies a shared wire type.
 
 MAPPS-536 is worth reading for what it did NOT buy, because the
 headline is misleading. Both files it retired were dead: nothing
@@ -55,7 +52,7 @@ against those modules later inherits the live shape. It did not change
 what the running SPA deserialises.
 
 **Where the copies that matter actually live: `src/pages/`.** There are
-172 `Deserialize` derives across 29 page files, and three of those
+170 `Deserialize` derives across 29 page files, and five of those
 files mention `mokosh_types` at all. `src/pages/tickets.rs` is the
 pattern: its own ticket struct, deserialised straight off the server's
 `TicketResponse`, carrying `procedure_kb_article_id` and
@@ -71,17 +68,41 @@ the `server` feature cannot actually compile here: this crate has no
 axum or sqlx dependency, so those files are dead weight and are
 deleted as each module moves to `mokosh-types`.
 
-The forms copies are the awkward case, because the server keeps those
-wire types in its own `src/modules/forms/models.rs` rather than in the
-crate, so there is nothing to re-export yet, and
-`src/pages/request_form.rs` carries a second copy of the public subset
-on top. Moving them into `crates/mokosh-types/src/forms.rs` and
-re-exporting both is MAPPS-535, which is blocked on the mokosh-server
-half landing first.
+Forms was the last of these and the most instructive, because it was
+copied twice: once in `src/modules/forms/models.rs` and again in
+`src/pages/request_form.rs`, for the public subset. PMS-898 moved the
+fourteen wire types into `crates/mokosh-types/src/forms.rs` and
+MAPPS-535 deleted both copies here. Two details of that move are worth
+carrying forward to the next module.
 
-Direction of travel: migrate `forms` the same way, and decide what to
-do about the page-level structs. The
-crate is fetched over anonymous HTTPS rather than `ssh://`, because
+The names the pages already used survived as aliases rather than
+copies (`FormDefinition` for `FormDefinitionResponse`, and three more).
+An alias cannot drift from what it points at, which is the whole point;
+a wrapper struct would have reintroduced the thing being removed.
+`FieldType` and `RequestLinkResponse` also became foreign types, so
+their helper methods could no longer be inherent impls and became
+extension traits.
+
+The second detail is a trap. Adopting a typed enum where the client had
+been holding a `String` is a REGRESSION unless the enum has a
+catch-all: `request_form.rs` used to render an unknown field type as a
+text input, and a bare enum would have failed to deserialise the whole
+public form instead, blanking a page that a customer reaches from an
+emailed link with no account. `FormRule::Unknown` and
+`FieldType::Unknown` exist for that, with the server refusing both on
+write, so the read stays tolerant and the write stays strict.
+
+One deliberate exception to the direction of travel is worth naming, so
+the next reader does not file it as an oversight.
+`src/modules/audit/enrichment.rs` (PMS-870) declares the
+`/api/v1/ip-enrichment` response by hand. It has a single consumer on
+each side, and moving it would turn a client-only change into a
+two-repo, two-merge sequence; it belongs in the crate if that endpoint
+ever grows a second caller.
+
+## Pinning the crate
+
+The crate is fetched over anonymous HTTPS rather than `ssh://`, because
 neither the pre-commit container nor the Forgejo check runner carries
 SSH credentials.
 
@@ -143,3 +164,24 @@ The pages are not. `src/pages/` deserialises server payloads into
 structs declared per page, narrowed to what each page renders. That is
 a defensible client design, and it is also a hand copy no compiler
 compares against the producer. Nothing tracks it.
+
+## Not only DTOs
+
+The crate carries two things that are not response shapes but are just
+as much a wire contract, and both got there the same way: a hand copy
+went stale and the drift was invisible.
+
+`mokosh_types::sort` (PMS-897) is the set of `?sort=` keys each list
+endpoint accepts, re-exported by `src/utils/sort_keys.rs`. It used to
+mirror allow-lists that lived as locals inside the server's service
+functions, and the mirror went stale within a day of being written:
+PMS-894 added five ticket sort keys and nothing obliged the copy to
+follow. MAPPS-533 also made the server answer 422 for a key it does not
+accept, so a drift that survives the re-export now fails a request
+instead of quietly reordering a page.
+
+`mokosh_types::validation` (PMS-898) holds `validate_slug`, spelled out
+rather than compiled as a regex so the crate stays dependency-light and
+still builds for WASM. That constraint is worth remembering before
+moving anything else in: whatever lands in the crate has to compile on
+both targets.
