@@ -926,12 +926,17 @@ fn newest_draft(
 /// until it loads. Empty suppresses the attribution rather than previewing a
 /// form "sent to you by " nobody.
 ///
-/// PMS-752: read from mokosh, NOT from `active_org_name()`. That one reads the
-/// org switcher, which reads bunyip's `/v1/auth/memberships`, which 401s and
-/// falls back to a synthetic membership whose name is the user's EMAIL ADDRESS
-/// (MAPPS-427). So the preview showed an operator "This form was sent to you by
-/// long@example.com" while the email said "Niceguy IT". `/tenants/current` is
-/// the column the email is actually composed from.
+/// PMS-752: read from mokosh, NOT from `active_org_name()`. When this was
+/// written the two were different values and the switcher's was the signed-in
+/// user's own email address, so the preview showed an operator "This form was
+/// sent to you by long@example.com" while the email said "Niceguy IT".
+/// `use_active_org_loader` records that history.
+///
+/// MAPPS-541: that is no longer the difference. MAPPS-427 pointed the loader at
+/// `/tenants/current` as well, so `active_org_name()` is now the same column the
+/// email is composed from, and a failed load leaves it unset instead of
+/// inventing a name. The fetch stays because this hook also needs
+/// `branding.logo_url`, which auth context does not carry.
 fn use_org_identity() -> (String, Option<String>) {
     #[derive(Clone, Debug, PartialEq, serde::Deserialize)]
     struct TenantView {
