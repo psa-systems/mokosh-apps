@@ -30,6 +30,14 @@ pub struct PortalMe {
     /// `/portal/settings`.
     #[serde(default)]
     pub mfa_enabled: bool,
+    /// MAPPS-556: `contacts.portal_role` (`'admin' | 'user' | NULL`).
+    /// Drives the sub-user management UI on `/portal/company`: only
+    /// admins see the invite form + row-level resend/remove actions.
+    /// `None` = pre-554 row with no role concept; treated as
+    /// admin-equivalent for backwards compat so pre-554 portal
+    /// contacts who could invite before this ticket still can.
+    #[serde(default)]
+    pub portal_role: Option<String>,
 }
 
 impl PortalMe {
@@ -43,6 +51,18 @@ impl PortalMe {
             (false, true) => first.to_string(),
             (true, false) => last.to_string(),
             (true, true) => self.email.clone(),
+        }
+    }
+
+    /// MAPPS-556: whether the caller can manage sub-users. `'admin'`
+    /// is the post-554 tenant provisioner shape; `None` is the pre-554
+    /// backwards-compat "no role concept" state and is treated as
+    /// admin-equivalent so pre-554 rows keep their invite privilege.
+    /// Anything else (`'user'` in particular) is not an admin.
+    pub fn is_portal_admin(&self) -> bool {
+        match self.portal_role.as_deref() {
+            Some("admin") | None => true,
+            _ => false,
         }
     }
 
@@ -162,6 +182,7 @@ mod tests {
             first_name: first.to_string(),
             last_name: last.to_string(),
             mfa_enabled: false,
+            portal_role: None,
         }
     }
 

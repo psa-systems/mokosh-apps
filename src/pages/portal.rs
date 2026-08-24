@@ -5187,6 +5187,17 @@ struct PortalIncomingDelegationRow {
 
 #[component]
 pub fn PortalCompanyPage() -> Element {
+    // MAPPS-556: gate the sub-user management UI (invite form,
+    // row-level Resend / Remove) on `portal_role='admin'` (or
+    // legacy pre-554 NULL, admin-equivalent). Server enforces the
+    // same rule via `RequirePortalAdmin`, so a stale build would 403
+    // on mutation attempts regardless; this is UX polish so
+    // sub-users are not shown a form that will always reject them.
+    let is_portal_admin = crate::hooks::portal_me::use_portal_me()
+        .map(|me| me.is_portal_admin())
+        // Before the /portal/auth/me fetch lands, assume non-admin
+        // so the invite form does not flash-then-hide for sub-users.
+        .unwrap_or(false);
     let mut contacts_resource = use_resource(|| async {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         crate::hooks::fetch::api::get_portal_authed::<Vec<PortalCompanyContactRow>>(
@@ -5272,6 +5283,7 @@ pub fn PortalCompanyPage() -> Element {
                                     PortalColleagueRow {
                                         key: "{c.id}",
                                         contact: c.clone(),
+                                        is_admin: is_portal_admin,
                                         on_change: move |_| {
                                             contacts_resource.restart();
                                             delegations_resource.restart();
@@ -5379,12 +5391,12 @@ pub fn PortalCompanyPage() -> Element {
                             }
                         }
                     }
-                    // PMS-729 follow-up: invite-a-colleague form,
-                    // always available on the Company page regardless of
-                    // whether any delegatee candidates exist. Adding a
-                    // colleague triggers the same auth.welcome setup-
-                    // link email an agent-side grant fires.
-                    div { class: "mt-4 border-t border-line pt-4",
+                    // PMS-729 follow-up + MAPPS-556: invite-a-colleague
+                    // form, admin-only. Sub-users (portal_role='user')
+                    // see the colleague roster above but not this
+                    // form; server-side `RequirePortalAdmin` returns
+                    // 403 to any POST from a non-admin.
+                    if is_portal_admin { div { class: "mt-4 border-t border-line pt-4",
                         h3 { class: "text-sm font-semibold text-content mb-2", "Invite a colleague to the portal" }
                         p { class: "text-xs text-muted mb-3",
                             "Adds a colleague from your own company and emails them a link to set a password."
@@ -5486,7 +5498,7 @@ pub fn PortalCompanyPage() -> Element {
                                 "Send invite"
                             }
                         }
-                    }
+                    } }
 
                     div { class: "mt-4 border-t border-line pt-4",
                         h3 { class: "text-sm font-semibold text-content mb-2", "Grant a new delegation" }
@@ -5612,6 +5624,14 @@ pub fn PortalCompanyPage() -> Element {
 struct PortalColleagueRowProps {
     contact: PortalCompanyContactRow,
     on_change: EventHandler<()>,
+    /// MAPPS-556: `true` when the signed-in portal user is
+    /// (`portal_role='admin'` OR pre-554 NULL). Non-admin sub-users
+    /// see the roster but not the row-level Resend / Remove
+    /// affordances. Server also enforces this via
+    /// `RequirePortalAdmin`, so a stale build hitting a gated
+    /// endpoint would 403 anyway; the client gate is UX polish.
+    #[props(default = true)]
+    is_admin: bool,
 }
 
 /// One row on the "Colleagues with portal access" table. Renders the
@@ -5624,6 +5644,7 @@ struct PortalColleagueRowProps {
 fn PortalColleagueRow(props: PortalColleagueRowProps) -> Element {
     let c = props.contact.clone();
     let id = c.id;
+    let is_admin = props.is_admin;
     let mut confirming = use_signal(|| false);
     let mut working = use_signal(|| false);
     let mut msg = use_signal(String::new);
@@ -5697,7 +5718,7 @@ fn PortalColleagueRow(props: PortalColleagueRowProps) -> Element {
             }
             TableCell { "{c.email}" }
             TableCell { class: "text-right",
-                if !c.is_you {
+                if !c.is_you && is_admin {
                     if confirming() {
                         div { class: "inline-flex items-center gap-2",
                             span { class: "text-xs text-muted", "Remove?" }
