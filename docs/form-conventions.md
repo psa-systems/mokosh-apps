@@ -150,6 +150,17 @@ failure in its own slot, so one missing field never masks another (PMS-514).
 - Do not trust the browser's native `required`: it accepts whitespace-only input,
   so trim and check client-side (MAPPS-281). The server stays the backstop - a
   server `field_message("<field>")` still routes to that field's inline slot.
+- **An inline error never outlives the value that caused it** (MAPPS-581). The
+  message describes what was submitted, so the next edit of that field clears it
+  and its red border, and it comes back only if the next submit fails again.
+  Every field that renders an `error:` slot clears that slot from its own
+  `oninput` / `onchange`: `clear_on_edit(value, error)` from
+  `src/components/form.rs` for the plain set-the-signal case, or the clear as the
+  first statement of a handler that does more. A repeating child row clears its
+  own `error` field; a picker clears on select, because typing a search term
+  does not yet satisfy "a company is required". The clear lives at the call site,
+  not inside `Input`, because only the parent knows a submit happened and can
+  re-raise the same message when the corrected value still fails.
 
 Concretely, the new-ticket form evaluates Title and Company together and sets both
 slots before returning, so submitting with both empty surfaces both errors. The
@@ -204,7 +215,9 @@ normalizes rather than rejects (MAPPS-480):
   and `no-dot` do not become `https://` URLs.
 
 On blur an invalid value surfaces its message in the field's inline error slot instead
-of waiting for submit, and typing again clears it. A valid value is probed through
+of waiting for submit; typing again clears it under the form-wide rule in
+`## Required-field validation`, not as anything specific to this field. A valid value
+is probed through
 `GET /contacts/companies/website-probe` (the contacts router is nested under
 `/contacts`), and what came back renders as help text under the field: in flight, the
 address that answered (replacing the field value with it), or the reason the site could

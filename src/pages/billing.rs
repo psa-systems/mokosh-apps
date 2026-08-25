@@ -21,10 +21,10 @@ use serde::Deserialize;
 use std::str::FromStr;
 
 use crate::components::{
-    invoice_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant,
-    Card, DataTable, ErrorBanner, IconSize, InformationIcon, MailIcon, Modal, ModalSize,
-    PageHeader, PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
-    TableHeader, TableLoading, TableRow,
+    clear_on_edit, invoice_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonSize,
+    ButtonVariant, Card, DataTable, ErrorBanner, IconSize, InformationIcon, MailIcon, Modal,
+    ModalSize, PageHeader, PlusIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty,
+    TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
@@ -2005,7 +2005,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
             .unwrap_or_default(),
     );
     let mut payment_date = use_signal(|| props.payment_date.clone());
-    let mut amount = use_signal(|| props.amount.clone());
+    let amount = use_signal(|| props.amount.clone());
     // Seed the method from the edited payment, falling back to the create
     // default when this is a fresh record (MAPPS-235).
     let seed_method = props.payment_method.clone();
@@ -2264,7 +2264,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                     options: invoice_options,
                     value: invoice_id.read().clone(),
                     error: invoice_err(),
-                    onchange: move |e: FormEvent| invoice_id.set(e.value()),
+                    onchange: clear_on_edit(invoice_id, invoice_err),
                 }
                 div { class: "grid grid-cols-1 gap-4 sm:grid-cols-2",
                     crate::components::DateField {
@@ -2290,7 +2290,7 @@ fn RecordPaymentModal(props: RecordPaymentModalProps) -> Element {
                         required: true,
                         value: amount.read().clone(),
                         error: amount_err(),
-                        oninput: move |e: FormEvent| amount.set(e.value()),
+                        oninput: clear_on_edit(amount, amount_err),
                     }
                 }
                 Select {

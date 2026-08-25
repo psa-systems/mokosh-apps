@@ -4,10 +4,10 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, ErrorBanner,
-    IconSize, Input, Modal, OverflowActions, PageHeader, PencilIcon, PlusIcon, SearchInput, Select,
-    SelectOption, StatCard, Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-    Textarea,
+    clear_on_edit, use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable,
+    ErrorBanner, IconSize, Input, Modal, OverflowActions, PageHeader, PencilIcon, PlusIcon,
+    SearchInput, Select, SelectOption, StatCard, Table, TableBody, TableCell, TableHead,
+    TableHeader, TableRow, Textarea,
 };
 use crate::utils::{FormGuard, Paginated, Rule};
 use crate::Route;
@@ -762,7 +762,7 @@ pub fn ProjectListPage() -> Element {
 #[component]
 pub fn ProjectNewPage() -> Element {
     use_page_title("New Project");
-    let mut name = use_signal(String::new);
+    let name = use_signal(String::new);
     // MAPPS-300: pre-fill `company` from the URL so the Company detail
     // "New Project" CTA lands on a form already scoped to that company.
     let mut company =
@@ -771,8 +771,8 @@ pub fn ProjectNewPage() -> Element {
     // the display name back here so the autocomplete renders the chosen company.
     let mut company_name = use_signal(String::new);
     let mut description = use_signal(String::new);
-    let mut budget_amount = use_signal(String::new);
-    let mut budget_hours = use_signal(String::new);
+    let budget_amount = use_signal(String::new);
+    let budget_hours = use_signal(String::new);
     // PMS-361: New Project lacked the status / dates / manager fields the
     // Edit modal exposes, so every project was born as "planning" and
     // needed a follow-up edit. These signals make Create field-symmetric
@@ -1017,7 +1017,7 @@ pub fn ProjectNewPage() -> Element {
                     required: true,
                     value: name.read().clone(),
                     error: name_err(),
-                    oninput: move |e: FormEvent| name.set(e.value()),
+                    oninput: clear_on_edit(name, name_err),
                 }
 
                 // PMS-367: autocomplete CompanyPicker (with inline create),
@@ -1095,7 +1095,7 @@ pub fn ProjectNewPage() -> Element {
                         placeholder: "0.00",
                         value: budget_amount.read().clone(),
                         error: amount_err(),
-                        oninput: move |e: FormEvent| budget_amount.set(e.value()),
+                        oninput: clear_on_edit(budget_amount, amount_err),
                     }
                     crate::components::Input {
                         name: "budget_hours",
@@ -1107,7 +1107,7 @@ pub fn ProjectNewPage() -> Element {
                         help: "Decimal hours or H:MM.",
                         value: budget_hours.read().clone(),
                         error: hours_err(),
-                        oninput: move |e: FormEvent| budget_hours.set(e.value()),
+                        oninput: clear_on_edit(budget_hours, hours_err),
                     }
                 }
 
@@ -2090,7 +2090,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                             required: true,
                             value: "{pe_name}",
                             error: pe_name_err(),
-                            oninput: move |e: FormEvent| pe_name.set(e.value()),
+                            oninput: clear_on_edit(pe_name, pe_name_err),
                         }
                         Textarea {
                             name: "pe-description",
@@ -2139,7 +2139,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 max: BUDGET_AMOUNT_MAX.to_string(),
                                 value: "{pe_budget_amount}",
                                 error: pe_amount_err(),
-                                oninput: move |e: FormEvent| pe_budget_amount.set(e.value()),
+                                oninput: clear_on_edit(pe_budget_amount, pe_amount_err),
                             }
                             Input {
                                 name: "pe-budget-hours",
@@ -2150,7 +2150,7 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                 help: "Decimal hours or H:MM.",
                                 value: "{pe_budget_hours}",
                                 error: pe_hours_err(),
-                                oninput: move |e: FormEvent| pe_budget_hours.set(e.value()),
+                                oninput: clear_on_edit(pe_budget_hours, pe_hours_err),
                             }
                         }
                     }

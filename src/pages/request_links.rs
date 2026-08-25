@@ -24,9 +24,9 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::components::{
-    Badge, BadgeVariant, Button, ButtonVariant, Card, CollapsibleCard, ErrorBanner, IconSize,
-    Input, MailIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty, TableHead,
-    TableHeader, TableLoading, TableRow,
+    clear_on_edit, Badge, BadgeVariant, Button, ButtonVariant, Card, CollapsibleCard, ErrorBanner,
+    IconSize, Input, MailIcon, Select, SelectOption, Table, TableBody, TableCell, TableEmpty,
+    TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::modules::forms::RequestLinkExt;
 use crate::modules::forms::{
@@ -309,7 +309,7 @@ pub(crate) fn SendRequestLinkModal(
     onclose: EventHandler<()>,
     onsent: EventHandler<()>,
 ) -> Element {
-    let mut form_id = use_signal(|| preselected_form_id.clone().unwrap_or_default());
+    let form_id = use_signal(|| preselected_form_id.clone().unwrap_or_default());
     let mut contact_id = use_signal(String::new);
     let mut email = use_signal(String::new);
     let mut saving = use_signal(|| false);
@@ -549,7 +549,7 @@ pub(crate) fn SendRequestLinkModal(
                     disabled: saving() || no_forms,
                     error: form_error(),
                     help: "The client is asked only for what this form defines.".to_string(),
-                    onchange: move |e: FormEvent| form_id.set(e.value()),
+                    onchange: clear_on_edit(form_id, form_error),
                 }
 
                 Select {
