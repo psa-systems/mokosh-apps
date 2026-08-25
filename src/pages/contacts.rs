@@ -4788,15 +4788,183 @@ struct ContactPortalCardProps {
     on_change: EventHandler<()>,
 }
 
+/// mokosh-contact-login prompt 003: response shape from POST
+/// /contacts/contacts/{id}/grant-portal-access. Mirrors the server's
+/// `PortalGrantOutcome`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct PortalGrantOutcomeWire {
+    portal_slug: String,
+    setup_link: String,
+}
+
+/// mokosh-contact-login prompt 003: one row of GET
+/// /contacts/portal-roles. Mirrors the server's `PortalRoleSummary`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct PortalRoleSummaryWire {
+    id: uuid::Uuid,
+    name: String,
+    #[allow(dead_code)]
+    capabilities: Vec<String>,
+    #[allow(dead_code)]
+    is_builtin: bool,
+}
+
 #[component]
 fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
     let contact_id = props.contact_id.clone();
     let is_portal_user = props.is_portal_user;
-    let mut toggling = props.toggling;
+    let mut mutating = props.toggling;
     let on_change = props.on_change;
-    // MAPPS-357: block the portal grant / revoke writes while the server is
-    // unreachable. Reactive: re-enables on reconnect.
     let can_mutate = crate::hooks::use_can_mutate();
+
+    // mokosh-contact-login prompt 003: fetch the tenant's portal_roles
+    // + the contact's current assigned role_ids so the modal below can
+    // pre-check the correct boxes.
+    let roles_resource = use_resource(|| async {
+        let _gen = crate::hooks::fetch::active_tenant_generation();
+        crate::hooks::fetch::api::get_authed::<Vec<PortalRoleSummaryWire>>("/contacts/portal-roles")
+            .await
+            .unwrap_or_default()
+    });
+    let assigned_id = contact_id.clone();
+    let assigned_resource = use_resource(move || {
+        let id = assigned_id.clone();
+        async move {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            crate::hooks::fetch::api::get_authed::<Vec<uuid::Uuid>>(&format!(
+                "/contacts/contacts/{id}/portal-roles"
+            ))
+            .await
+            .unwrap_or_default()
+        }
+    });
+    let roles = roles_resource.read_unchecked().clone().unwrap_or_default();
+    let assigned = assigned_resource
+        .read_unchecked()
+        .clone()
+        .unwrap_or_default();
+
+    // Local UI state
+    let mut modal_open = use_signal(|| false);
+    let mut picked: Signal<Vec<uuid::Uuid>> = use_signal(Vec::new);
+    let mut error = use_signal(String::new);
+    let mut last_setup_link = use_signal(String::new);
+
+    // Every time we open the modal, seed `picked` with the current
+    // assignment set so the operator sees pre-checked boxes.
+    let assigned_for_seed = assigned.clone();
+    let open_modal = move |_| {
+        picked.set(assigned_for_seed.clone());
+        error.set(String::new());
+        modal_open.set(true);
+    };
+
+    let submit_id = contact_id.clone();
+    let mut submit_grant = move |_| {
+        if *mutating.read() {
+            return;
+        }
+        let ids = picked.read().clone();
+        if ids.is_empty() {
+            error.set("Pick at least one role.".to_string());
+            return;
+        }
+        let id = submit_id.clone();
+        mutating.set(true);
+        error.set(String::new());
+        spawn(async move {
+            let path = format!("/contacts/contacts/{id}/grant-portal-access");
+            let body = serde_json::json!({ "role_ids": ids });
+            match crate::hooks::fetch::api::post_authed_typed::<PortalGrantOutcomeWire, _>(
+                &path, &body,
+            )
+            .await
+            {
+                Ok(outcome) => {
+                    last_setup_link.set(outcome.setup_link.clone());
+                    crate::hooks::toast::push_toast(
+                        crate::components::AlertType::Success,
+                        "Portal access granted. Setup email queued.".to_string(),
+                    );
+                    modal_open.set(false);
+                    on_change.call(());
+                }
+                Err(err) => error.set(format!("{err}")),
+            }
+            mutating.set(false);
+        });
+    };
+
+    let resend_id = contact_id.clone();
+    let mut resend_invite = move |_| {
+        if *mutating.read() {
+            return;
+        }
+        let id = resend_id.clone();
+        mutating.set(true);
+        spawn(async move {
+            let path = format!("/contacts/contacts/{id}/resend-portal-invite");
+            match crate::hooks::fetch::api::post_authed_no_content(&path).await {
+                Ok(()) => crate::hooks::toast::push_toast(
+                    crate::components::AlertType::Success,
+                    "Setup email resent.".to_string(),
+                ),
+                Err(err) => crate::hooks::toast::push_toast(
+                    crate::components::AlertType::Error,
+                    format!("Could not resend invite: {err}"),
+                ),
+            }
+            mutating.set(false);
+        });
+    };
+
+    let revoke_id = contact_id.clone();
+    let mut revoke_access = move |_| {
+        if *mutating.read() {
+            return;
+        }
+        #[cfg(feature = "web")]
+        let confirmed = web_sys::window()
+            .and_then(|w| {
+                w.confirm_with_message(
+                    "Revoke portal access? Any live sessions this contact holds will die on the next request. \
+                     Their password stays on file; a future re-grant reuses it.",
+                )
+                .ok()
+            })
+            .unwrap_or(false);
+        #[cfg(not(feature = "web"))]
+        let confirmed = false;
+        if !confirmed {
+            return;
+        }
+        let id = revoke_id.clone();
+        mutating.set(true);
+        spawn(async move {
+            let path = format!("/contacts/contacts/{id}/revoke-portal-access");
+            match crate::hooks::fetch::api::post_authed_no_content(&path).await {
+                Ok(()) => {
+                    crate::hooks::toast::push_toast(
+                        crate::components::AlertType::Success,
+                        "Portal access revoked.".to_string(),
+                    );
+                    on_change.call(());
+                }
+                Err(err) => crate::hooks::toast::push_toast(
+                    crate::components::AlertType::Error,
+                    format!("Could not revoke: {err}"),
+                ),
+            }
+            mutating.set(false);
+        });
+    };
+
+    let assigned_role_names: Vec<String> = roles
+        .iter()
+        .filter(|r| assigned.iter().any(|a| a == &r.id))
+        .map(|r| r.name.clone())
+        .collect();
+
     rsx! {
         Card { title: "Portal Access",
             if is_portal_user {
@@ -4805,32 +4973,46 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                         span { class: "text-sm text-muted", "Status" }
                         Badge { variant: BadgeVariant::Green, "Granted" }
                     }
-                    p { class: "text-xs text-muted",
-                        "This contact can sign in to the Client Portal. A setup-password email was sent when access was granted; if the link expired (72h TTL), revoke and grant again to reissue it."
-                    }
-                    Button {
-                        variant: ButtonVariant::Secondary,
-                        loading: *toggling.read(),
-                        // MAPPS-357: block revoke while the server is down.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't change portal access while the server is unreachable".to_string()),
-                        onclick: move |_| {
-                            let id = contact_id.clone();
-                            toggling.set(true);
-                            spawn(async move {
-                                let path = format!("/contacts/contacts/{id}");
-                                let body = serde_json::json!({ "is_portal_user": false });
-                                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await {
-                                    Ok(_) => on_change.call(()),
-                                    Err(err) => crate::hooks::toast::push_toast(
-                                        crate::components::AlertType::Error,
-                                        format!("Could not revoke portal access: {err}"),
-                                    ),
+                    if !assigned_role_names.is_empty() {
+                        div {
+                            span { class: "text-xs text-muted block mb-1", "Roles" }
+                            div { class: "flex flex-wrap gap-1",
+                                for name in assigned_role_names.iter() {
+                                    Badge { key: "{name}", variant: BadgeVariant::Blue, "{name}" }
                                 }
-                                toggling.set(false);
-                            });
-                        },
-                        "Revoke portal access"
+                            }
+                        }
+                    }
+                    if !last_setup_link.read().is_empty() {
+                        p { class: "text-xs text-muted break-all",
+                            span { class: "font-medium text-content", "Setup link (also emailed): " }
+                            code { class: "text-xs", "{last_setup_link}" }
+                        }
+                    }
+                    p { class: "text-xs text-muted",
+                        "This contact can sign in to their client portal. The setup link is a 72h magic link; use Resend if the customer never received the email."
+                    }
+                    div { class: "flex flex-wrap gap-2",
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            disabled: !can_mutate || *mutating.read(),
+                            onclick: open_modal,
+                            "Change roles"
+                        }
+                        Button {
+                            variant: ButtonVariant::Secondary,
+                            disabled: !can_mutate || *mutating.read(),
+                            loading: *mutating.read(),
+                            onclick: move |e| resend_invite(e),
+                            "Resend setup email"
+                        }
+                        Button {
+                            variant: ButtonVariant::Danger,
+                            disabled: !can_mutate || *mutating.read(),
+                            loading: *mutating.read(),
+                            onclick: move |e| revoke_access(e),
+                            "Revoke access"
+                        }
                     }
                 }
             } else {
@@ -4840,31 +5022,87 @@ fn ContactPortalCard(props: ContactPortalCardProps) -> Element {
                         Badge { variant: BadgeVariant::Gray, "Not granted" }
                     }
                     p { class: "text-xs text-muted",
-                        "Granting access emails this contact a link to set a password and sign in to the Client Portal. Requires a valid email address on the contact."
+                        "Granting portal access mints a random Company slug (if this Company has none yet), assigns one or more portal roles, and emails the contact a magic-link setup URL. Contact must have an email + be linked to a Company."
                     }
                     Button {
                         variant: ButtonVariant::Primary,
-                        loading: *toggling.read(),
-                        // MAPPS-357: block grant while the server is down.
-                        disabled: !can_mutate,
-                        title: (!can_mutate).then(|| "Can't change portal access while the server is unreachable".to_string()),
-                        onclick: move |_| {
-                            let id = contact_id.clone();
-                            toggling.set(true);
-                            spawn(async move {
-                                let path = format!("/contacts/contacts/{id}");
-                                let body = serde_json::json!({ "is_portal_user": true });
-                                match crate::hooks::fetch::api::put_authed::<serde_json::Value, _>(&path, &body).await {
-                                    Ok(_) => on_change.call(()),
-                                    Err(err) => crate::hooks::toast::push_toast(
-                                        crate::components::AlertType::Error,
-                                        format!("Could not grant portal access: {err}"),
-                                    ),
-                                }
-                                toggling.set(false);
-                            });
-                        },
+                        disabled: !can_mutate || *mutating.read(),
+                        onclick: open_modal,
                         "Grant portal access"
+                    }
+                }
+            }
+
+            // Role picker modal.
+            if modal_open() {
+                div {
+                    class: "fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4",
+                    onclick: move |_| modal_open.set(false),
+                    div {
+                        class: "bg-surface rounded-lg shadow-lg max-w-md w-full p-6 space-y-4",
+                        onclick: move |evt: Event<MouseData>| { evt.stop_propagation(); },
+                        h3 { class: "text-lg font-semibold text-content", "Assign portal roles" }
+                        p { class: "text-xs text-muted",
+                            "Pick every role this contact should hold. Effective capabilities are the union across all picked roles."
+                        }
+                        if roles.is_empty() {
+                            p { class: "text-sm text-muted",
+                                "No portal roles configured yet. Ask an admin to create one in Settings > Contact Roles."
+                            }
+                        } else {
+                            div { class: "space-y-2 max-h-64 overflow-y-auto",
+                                for role in roles.iter().cloned() {
+                                    {
+                                        let role_id = role.id;
+                                        let checked = picked.read().iter().any(|p| p == &role_id);
+                                        rsx! {
+                                            label { key: "{role.id}", class: "flex items-start gap-2 cursor-pointer",
+                                                input {
+                                                    r#type: "checkbox",
+                                                    checked,
+                                                    class: "mt-1",
+                                                    onchange: move |evt: Event<FormData>| {
+                                                        let want = evt.value() == "true" || evt.value() == "on";
+                                                        let mut current = picked.read().clone();
+                                                        if want {
+                                                            if !current.iter().any(|c| c == &role_id) {
+                                                                current.push(role_id);
+                                                            }
+                                                        } else {
+                                                            current.retain(|c| c != &role_id);
+                                                        }
+                                                        picked.set(current);
+                                                    },
+                                                }
+                                                span { class: "text-sm text-content",
+                                                    span { class: "font-medium", "{role.name}" }
+                                                    if role.is_builtin {
+                                                        span { class: "ml-2 text-xs text-muted", "(built-in)" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if !error.read().is_empty() {
+                            p { role: "alert", class: "text-sm text-red-600 dark:text-red-400", "{error}" }
+                        }
+                        div { class: "flex justify-end gap-2 pt-2",
+                            Button {
+                                variant: ButtonVariant::Secondary,
+                                onclick: move |_| modal_open.set(false),
+                                "Cancel"
+                            }
+                            Button {
+                                variant: ButtonVariant::Primary,
+                                disabled: !can_mutate || *mutating.read(),
+                                loading: *mutating.read(),
+                                onclick: move |e| submit_grant(e),
+                                if is_portal_user { "Update roles" } else { "Grant + send email" }
+                            }
+                        }
                     }
                 }
             }
