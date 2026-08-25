@@ -16,9 +16,10 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::components::{
-    contract_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card,
-    DataTable, ErrorBanner, IconSize, PageHeader, PlusIcon, Select, SelectOption, SettingFormModal,
-    Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading, TableRow,
+    clear_on_edit, contract_status_badge, use_page_title, Badge, BadgeVariant, Button,
+    ButtonVariant, Card, DataTable, ErrorBanner, IconSize, PageHeader, PlusIcon, Select,
+    SelectOption, SettingFormModal, Table, TableBody, TableCell, TableEmpty, TableHead,
+    TableHeader, TableLoading, TableRow,
 };
 use crate::modules::contracts::{
     ContractHourBalanceResponse, ContractItemResponse, ContractResponse, CreateContractRequest,
@@ -710,7 +711,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
         ContractFormMode::Edit { id } => Route::ContractDetail { id: id.clone() },
     };
 
-    let mut name = use_signal(|| initial.name.clone());
+    let name = use_signal(|| initial.name.clone());
     let mut company_id = use_signal(|| initial.company_id.clone());
     // PMS-352 AC3: the create flow uses CompanyPicker (with inline create) so a
     // tenant with zero companies isn't dead-ended; the picker reports the
@@ -738,12 +739,12 @@ fn ContractForm(props: ContractFormProps) -> Element {
             initial.billing_cycle.clone()
         }
     });
-    let mut billing_amount = use_signal(|| initial.billing_amount.clone());
-    let mut start_date = use_signal(|| initial.start_date.clone());
-    let mut end_date = use_signal(|| initial.end_date.clone());
+    let billing_amount = use_signal(|| initial.billing_amount.clone());
+    let start_date = use_signal(|| initial.start_date.clone());
+    let end_date = use_signal(|| initial.end_date.clone());
     let mut auto_renew = use_signal(|| initial.auto_renew);
-    let mut contract_number = use_signal(|| initial.contract_number.clone());
-    let mut notes = use_signal(|| initial.notes.clone());
+    let contract_number = use_signal(|| initial.contract_number.clone());
+    let notes = use_signal(|| initial.notes.clone());
     let mut items = use_signal(|| initial.items.clone());
     let mut is_submitting = use_signal(|| false);
     // Server/submit-time errors only (e.g. a failed POST). Field validation
@@ -1143,7 +1144,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                         maxlength: CONTRACT_NAME_MAX as i64,
                         value: name.read().clone(),
                         error: name_err(),
-                        oninput: move |e: FormEvent| name.set(e.value()),
+                        oninput: clear_on_edit(name, name_err),
                     }
                     // PMS-352 AC3: on create, use CompanyPicker so a tenant with
                     // no companies can create one inline instead of dead-ending.
@@ -1158,7 +1159,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                             required: true,
                             disabled: true,
                             error: company_err(),
-                            onchange: move |e: FormEvent| company_id.set(e.value()),
+                            onchange: clear_on_edit(company_id, company_err),
                         }
                     } else {
                         div { class: "space-y-1",
@@ -1220,7 +1221,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                         step: "0.01".to_string(),
                         value: billing_amount.read().clone(),
                         error: billing_err(),
-                        oninput: move |e: FormEvent| billing_amount.set(e.value()),
+                        oninput: clear_on_edit(billing_amount, billing_err),
                     }
                 }
 
@@ -1231,14 +1232,14 @@ fn ContractForm(props: ContractFormProps) -> Element {
                         required: true,
                         value: start_date.read().clone(),
                         error: start_err(),
-                        oninput: move |e: FormEvent| start_date.set(e.value()),
+                        oninput: clear_on_edit(start_date, start_err),
                     }
                     crate::components::DateField {
                         name: "end_date",
                         label: "End Date",
                         value: end_date.read().clone(),
                         error: end_err(),
-                        oninput: move |e: FormEvent| end_date.set(e.value()),
+                        oninput: clear_on_edit(end_date, end_err),
                     }
                 }
 
@@ -1250,7 +1251,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                         maxlength: CONTRACT_NUMBER_MAX as i64,
                         value: contract_number.read().clone(),
                         error: number_err(),
-                        oninput: move |e: FormEvent| contract_number.set(e.value()),
+                        oninput: clear_on_edit(contract_number, number_err),
                     }
                 }
 
@@ -1272,7 +1273,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                     maxlength: CONTRACT_NOTES_MAX as i64,
                     value: notes.read().clone(),
                     error: notes_err(),
-                    oninput: move |e: FormEvent| notes.set(e.value()),
+                    oninput: clear_on_edit(notes, notes_err),
                 }
 
                 // Line items (create flow only). On edit, items are
@@ -1315,6 +1316,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                                                 oninput: move |e: FormEvent| {
                                                     let mut next = items.read().clone();
                                                     next[idx].name = e.value();
+                                                    next[idx].name_err.clear();
                                                     items.set(next);
                                                 },
                                             }
@@ -1342,6 +1344,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                                             oninput: move |e: FormEvent| {
                                                 let mut next = items.read().clone();
                                                 next[idx].quantity = e.value();
+                                                next[idx].qty_err.clear();
                                                 items.set(next);
                                             },
                                         }
@@ -1357,6 +1360,7 @@ fn ContractForm(props: ContractFormProps) -> Element {
                                             oninput: move |e: FormEvent| {
                                                 let mut next = items.read().clone();
                                                 next[idx].unit_price = e.value();
+                                                next[idx].price_err.clear();
                                                 items.set(next);
                                             },
                                         }
@@ -1915,10 +1919,10 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
     let original = initial.original.clone();
     let is_edit = original.is_some();
 
-    let mut name = use_signal(|| initial.name.clone());
+    let name = use_signal(|| initial.name.clone());
     let mut item_type = use_signal(|| initial.item_type.clone());
-    let mut quantity = use_signal(|| initial.quantity.clone());
-    let mut unit_price = use_signal(|| initial.unit_price.clone());
+    let quantity = use_signal(|| initial.quantity.clone());
+    let unit_price = use_signal(|| initial.unit_price.clone());
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut confirm_delete = use_signal(|| false);
@@ -2131,7 +2135,7 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
                 required: true,
                 value: name.read().clone(),
                 error: name_err(),
-                oninput: move |e: FormEvent| name.set(e.value()),
+                oninput: clear_on_edit(name, name_err),
             }
             crate::components::Select {
                 name: "contract_item_type",
@@ -2149,7 +2153,7 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
                 required: true,
                 value: quantity.read().clone(),
                 error: qty_err(),
-                oninput: move |e: FormEvent| quantity.set(e.value()),
+                oninput: clear_on_edit(quantity, qty_err),
             }
             crate::components::Input {
                 name: "contract_item_price",
@@ -2160,7 +2164,7 @@ fn ContractItemFormModal(props: ContractItemFormModalProps) -> Element {
                 placeholder: "0.00",
                 value: unit_price.read().clone(),
                 error: price_err(),
-                oninput: move |e: FormEvent| unit_price.set(e.value()),
+                oninput: clear_on_edit(unit_price, price_err),
             }
         }
         crate::components::ConfirmDialog {
@@ -2331,7 +2335,7 @@ fn AllotmentFormModal(props: AllotmentFormModalProps) -> Element {
         .included_hours
         .map(|h| h.normalize().to_string())
         .unwrap_or_default();
-    let mut allotted = use_signal(|| initial.clone());
+    let allotted = use_signal(|| initial.clone());
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
     // PMS-518: per-field inline error so a FormGuard can focus the field.
@@ -2443,7 +2447,7 @@ fn AllotmentFormModal(props: AllotmentFormModalProps) -> Element {
                 placeholder: "0",
                 value: allotted.read().clone(),
                 error: allotted_err(),
-                oninput: move |e: FormEvent| allotted.set(e.value()),
+                oninput: clear_on_edit(allotted, allotted_err),
             }
         }
     }
@@ -3105,7 +3109,7 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
     let initial = props.state.clone();
     let is_edit = initial.id.is_some();
 
-    let mut name = use_signal(|| initial.name.clone());
+    let name = use_signal(|| initial.name.clone());
     let mut description = use_signal(|| initial.description.clone());
     let mut is_default = use_signal(|| initial.is_default);
     let mut saving = use_signal(|| false);
@@ -3212,7 +3216,7 @@ fn RateCardFormModal(props: RateCardFormModalProps) -> Element {
                 required: true,
                 value: name.read().clone(),
                 error: name_err(),
-                oninput: move |e: FormEvent| name.set(e.value()),
+                oninput: clear_on_edit(name, name_err),
             }
             crate::components::Input {
                 name: "rate_card_description",
@@ -3285,10 +3289,10 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
     let initial = props.state.clone();
     let is_edit = initial.item_id.is_some();
 
-    let mut work_type_id = use_signal(|| initial.work_type_id.clone());
-    let mut hourly = use_signal(|| initial.hourly.clone());
-    let mut after = use_signal(|| initial.after.clone());
-    let mut emergency = use_signal(|| initial.emergency.clone());
+    let work_type_id = use_signal(|| initial.work_type_id.clone());
+    let hourly = use_signal(|| initial.hourly.clone());
+    let after = use_signal(|| initial.after.clone());
+    let emergency = use_signal(|| initial.emergency.clone());
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -3496,7 +3500,7 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
                 value: work_type_id.read().clone(),
                 disabled: is_edit,
                 error: wt_err(),
-                onchange: move |e: FormEvent| work_type_id.set(e.value()),
+                onchange: clear_on_edit(work_type_id, wt_err),
             }
             crate::components::Input {
                 name: "rate_item_hourly",
@@ -3507,7 +3511,7 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
                 required: true,
                 value: hourly.read().clone(),
                 error: hourly_err(),
-                oninput: move |e: FormEvent| hourly.set(e.value()),
+                oninput: clear_on_edit(hourly, hourly_err),
             }
             crate::components::Input {
                 name: "rate_item_after",
@@ -3518,7 +3522,7 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
                 placeholder: "Optional",
                 value: after.read().clone(),
                 error: after_err(),
-                oninput: move |e: FormEvent| after.set(e.value()),
+                oninput: clear_on_edit(after, after_err),
             }
             crate::components::Input {
                 name: "rate_item_emergency",
@@ -3529,7 +3533,7 @@ fn RateCardItemFormModal(props: RateCardItemFormModalProps) -> Element {
                 placeholder: "Optional",
                 value: emergency.read().clone(),
                 error: emergency_err(),
-                oninput: move |e: FormEvent| emergency.set(e.value()),
+                oninput: clear_on_edit(emergency, emergency_err),
             }
         }
     }

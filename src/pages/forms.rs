@@ -1923,6 +1923,7 @@ fn FormEditorModal(
                         error: name_error(),
                         help: "What the client sees at the top of the form.".to_string(),
                         oninput: move |e: FormEvent| {
+                            name_error.set(String::new());
                             let v = e.value();
                             // The slug follows the name until the operator
                             // edits it, then it stops moving: it is the
@@ -1947,6 +1948,7 @@ fn FormEditorModal(
                             "Used in the link a client opens. Lowercase letters, numbers and hyphens.".to_string()
                         },
                         oninput: move |e: FormEvent| {
+                            slug_error.set(String::new());
                             slug_touched.set(true);
                             slug.set(e.value());
                         },
@@ -2014,7 +2016,7 @@ fn FormEditorModal(
                             total: fields.read().len(),
                             expanded: expanded_fields.read().contains(&index),
                             disabled: saving(),
-                            errors: field_errors.read().get(index).cloned().unwrap_or_default(),
+                            field_errors,
                             fields,
                             expanded_fields,
                             drag_from,
@@ -2458,7 +2460,9 @@ fn FieldRowEditor(
     total: usize,
     expanded: bool,
     disabled: bool,
-    errors: FieldRowErrors,
+    /// MAPPS-581: the whole list, not this row's copy, so editing a control can
+    /// clear the message its own value invalidated.
+    mut field_errors: Signal<Vec<FieldRowErrors>>,
     fields: Signal<Vec<FieldRow>>,
     expanded_fields: Signal<HashSet<usize>>,
     /// PMS-760: the row currently being dragged, and the row it is over. Shared
@@ -2466,8 +2470,17 @@ fn FieldRowEditor(
     drag_from: Signal<Option<usize>>,
     drag_over: Signal<Option<usize>>,
 ) -> Element {
+    let errors = field_errors.read().get(index).cloned().unwrap_or_default();
+
     let mut update = move |f: Box<dyn FnOnce(&mut FieldRow)>| {
         if let Some(target) = fields.write().get_mut(index) {
+            f(target);
+        }
+    };
+
+    // MAPPS-581: an inline error must not outlive the value that caused it.
+    let mut clear_error = move |f: fn(&mut FieldRowErrors)| {
+        if let Some(target) = field_errors.write().get_mut(index) {
             f(target);
         }
     };
@@ -2687,6 +2700,7 @@ fn FieldRowEditor(
                             error: errors.label.clone(),
                             help: "What the client reads next to the input.".to_string(),
                             oninput: move |e: FormEvent| {
+                                clear_error(|e| e.label.clear());
                                 let v = e.value();
                                 update(Box::new(move |r| {
                                     // PMS-747: the reference name follows the label
@@ -2739,6 +2753,7 @@ fn FieldRowEditor(
                                 error: errors.options.clone(),
                                 help: "Comma separated. The client must pick one of these.".to_string(),
                                 oninput: move |e: FormEvent| {
+                                    clear_error(|e| e.options.clear());
                                     let v = e.value();
                                     update(Box::new(move |r| r.options = v));
                                 },
@@ -2787,6 +2802,7 @@ fn FieldRowEditor(
                                 error: errors.name.clone(),
                                 help: "Filled in from the label. Change it only if the answers have to arrive under a particular key: on a live form it starts a new column of answers.".to_string(),
                                 oninput: move |e: FormEvent| {
+                                    clear_error(|e| e.name.clear());
                                     let v = e.value();
                                     update(Box::new(move |r| {
                                         r.name_touched = true;

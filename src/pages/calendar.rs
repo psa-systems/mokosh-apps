@@ -32,9 +32,9 @@ use dioxus::prelude::*;
 use crate::utils::datetime::{user_timezone, user_today};
 
 use crate::components::{
-    use_page_title, BannerTone, Button, ButtonVariant, Card, ChevronRightIcon, EmptyState,
-    ErrorBanner, IconSize, Input, Modal, ModalSize, PageHeader, PencilIcon, PlusIcon, Select,
-    SelectOption, StatusBanner, SwatchIcon, Textarea,
+    clear_on_edit, use_page_title, BannerTone, Button, ButtonVariant, Card, ChevronRightIcon,
+    EmptyState, ErrorBanner, IconSize, Input, Modal, ModalSize, PageHeader, PencilIcon, PlusIcon,
+    Select, SelectOption, StatusBanner, SwatchIcon, Textarea,
 };
 use crate::modules::calendar::{
     AppointmentResponse, CreateAppointmentRequest, CreateSchedulingTemplateRequest,
@@ -1805,11 +1805,11 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
         }
     });
     let mut all_day = use_signal(|| init_all_day);
-    let mut start_date_value = use_signal(|| init_start_date.clone());
+    let start_date_value = use_signal(|| init_start_date.clone());
     // All-day End date is inclusive in the UI: the persisted End is local
     // 00:00 of the day AFTER this date, so a single-day span reads as one day.
-    let mut end_date_value = use_signal(|| init_end_date.clone());
-    let mut assignee = use_signal(|| init_assignee);
+    let end_date_value = use_signal(|| init_end_date.clone());
+    let assignee = use_signal(|| init_assignee);
     let mut recurrence = use_signal(|| init_recurrence);
     let mut recurrence_error = use_signal(String::new);
     // PMS-578: per-field inline errors (the standard pattern). `error` is now
@@ -2208,7 +2208,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                     maxlength: APPT_TITLE_MAX,
                     error: title_err(),
                     value: title.read().clone(),
-                    oninput: move |e: FormEvent| title.set(e.value()),
+                    oninput: clear_on_edit(title, title_err),
                 }
                 crate::components::Checkbox {
                     name: "appt_all_day",
@@ -2227,7 +2227,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                             required: true,
                             error: start_err(),
                             value: start_date_value.read().clone(),
-                            oninput: move |e: FormEvent| start_date_value.set(e.value()),
+                            oninput: clear_on_edit(start_date_value, start_err),
                         }
                         Input {
                             name: "appt_end_date",
@@ -2237,7 +2237,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                             help: "Inclusive. The event spans whole days through this date.".to_string(),
                             error: end_err(),
                             value: end_date_value.read().clone(),
-                            oninput: move |e: FormEvent| end_date_value.set(e.value()),
+                            oninput: clear_on_edit(end_date_value, end_err),
                         }
                     }
                 } else {
@@ -2252,6 +2252,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                             error: start_err(),
                             value: start_value.read().clone(),
                             oninput: move |e: FormEvent| {
+                                start_err.set(String::new());
                                 let next = e.value();
                                 // Keep the Custom End anchored to the new Start
                                 // by shifting it by the same delta, preserving
@@ -2298,6 +2299,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                                 error: end_err(),
                                 value: end_value.read().clone(),
                                 oninput: move |e: FormEvent| {
+                                    end_err.set(String::new());
                                     let next = e.value();
                                     // Back-compute the duration so a later Start
                                     // edit preserves this custom span.
@@ -2345,7 +2347,7 @@ fn AppointmentFormModal(props: AppointmentFormModalProps) -> Element {
                         options: assignee_options.clone(),
                         error: assignee_err(),
                         value: assignee.read().clone(),
-                        onchange: move |e: FormEvent| assignee.set(e.value()),
+                        onchange: clear_on_edit(assignee, assignee_err),
                     }
                     if is_edit {
                         Select {

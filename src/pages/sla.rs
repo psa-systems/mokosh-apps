@@ -20,9 +20,9 @@
 use dioxus::prelude::*;
 
 use crate::components::{
-    use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable, ErrorBanner,
-    PageHeader, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableLoading,
-    TableRow,
+    clear_on_edit, use_page_title, Badge, BadgeVariant, Button, ButtonVariant, Card, DataTable,
+    ErrorBanner, PageHeader, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
+    TableLoading, TableRow,
 };
 use crate::modules::sla::{
     BusinessHours, HolidayCalendar, SlaPolicy, SlaTarget, TicketPriorityOption,
@@ -1117,7 +1117,7 @@ fn BusinessHoursFormModal(props: BusinessHoursFormModalProps) -> Element {
 
     let mut name = use_signal(|| initial.name.clone());
     let mut timezone = use_signal(|| initial.timezone.clone());
-    let mut schedule_json = use_signal(|| initial.schedule_json.clone());
+    let schedule_json = use_signal(|| initial.schedule_json.clone());
     let mut is_default = use_signal(|| initial.is_default);
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -1265,7 +1265,7 @@ fn BusinessHoursFormModal(props: BusinessHoursFormModalProps) -> Element {
                     help: "Per-day windows, e.g. {{\"mon\": [{{\"start\": \"09:00\", \"end\": \"17:00\"}}]}}.",
                     error: schedule_err.read().clone(),
                     value: schedule_json.read().clone(),
-                    oninput: move |e: FormEvent| schedule_json.set(e.value()),
+                    oninput: clear_on_edit(schedule_json, schedule_err),
                 }
                 crate::components::Checkbox {
                     name: "bh_is_default",
@@ -1465,7 +1465,7 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
     };
 
     let mut name = use_signal(|| initial.name.clone());
-    let mut holidays_json = use_signal(|| initial.holidays_json.clone());
+    let holidays_json = use_signal(|| initial.holidays_json.clone());
     let mut saving = use_signal(|| false);
     let mut error = use_signal(String::new);
     // PMS-604: holidays-specific error rendered inline on the Textarea (bad
@@ -1588,7 +1588,7 @@ fn HolidayFormModal(props: HolidayFormModalProps) -> Element {
                     help: "List of {{date, name}} entries, e.g. [{{\"date\": \"2026-01-01\", \"name\": \"New Year's Day\"}}].",
                     error: holidays_err.read().clone(),
                     value: holidays_json.read().clone(),
-                    oninput: move |e: FormEvent| holidays_json.set(e.value()),
+                    oninput: clear_on_edit(holidays_json, holidays_err),
                 }
             }
         }

@@ -4,11 +4,11 @@ use dioxus::prelude::*;
 use serde::Deserialize;
 
 use crate::components::{
-    asset_status_badge, contract_status_badge, invoice_status_badge, project_status_badge,
-    use_page_title, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, CollapsibleCard,
-    DataTable, ErrorBanner, IconSize, Modal, PageHeader, PlusIcon, SearchInput, Select,
-    SelectOption, SortDirection, Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader,
-    TableLoading, TableRow,
+    asset_status_badge, clear_on_edit, contract_status_badge, invoice_status_badge,
+    project_status_badge, use_page_title, Badge, BadgeVariant, Button, ButtonSize, ButtonVariant,
+    Card, CollapsibleCard, DataTable, ErrorBanner, IconSize, Modal, PageHeader, PlusIcon,
+    SearchInput, Select, SelectOption, SortDirection, Table, TableBody, TableCell, TableEmpty,
+    TableHead, TableHeader, TableLoading, TableRow,
 };
 use crate::modules::contacts::Address;
 use crate::utils::money::format_money_str;
@@ -771,7 +771,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
     } else {
         initial.status.clone()
     };
-    let mut name = use_signal(|| initial.name.clone());
+    let name = use_signal(|| initial.name.clone());
     let mut company_type = use_signal(|| initial_type.clone());
     let mut status = use_signal(|| initial_status.clone());
     let mut industry = use_signal(|| initial.industry.clone());
@@ -798,12 +798,12 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         .clone()
         .unwrap_or_default();
     let mut website = use_signal(|| initial.website.clone());
-    let mut phone = use_signal(|| initial.phone.clone());
-    let mut line1 = use_signal(|| initial.address_line1.clone());
-    let mut line2 = use_signal(|| initial.address_line2.clone());
-    let mut city = use_signal(|| initial.address_city.clone());
+    let phone = use_signal(|| initial.phone.clone());
+    let line1 = use_signal(|| initial.address_line1.clone());
+    let line2 = use_signal(|| initial.address_line2.clone());
+    let city = use_signal(|| initial.address_city.clone());
     let mut state = use_signal(|| initial.address_state.clone());
-    let mut postal = use_signal(|| initial.address_postal_code.clone());
+    let postal = use_signal(|| initial.address_postal_code.clone());
     let mut country = use_signal(|| initial.address_country.clone());
     let mut is_submitting = use_signal(|| false);
     let mut error = use_signal(String::new);
@@ -1196,7 +1196,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         maxlength: 255,
                         value: name.read().clone(),
                         error: name_err(),
-                        oninput: move |e: FormEvent| name.set(e.value()),
+                        oninput: clear_on_edit(name, name_err),
                     }
                     Select {
                         name: "type",
@@ -1251,7 +1251,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         placeholder: "(555) 555-5555",
                         value: phone.read().clone(),
                         error: phone_err(),
-                        oninput: move |e: FormEvent| phone.set(e.value()),
+                        oninput: clear_on_edit(phone, phone_err),
                     }
                 }
 
@@ -1265,7 +1265,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         maxlength: 255,
                         value: line1.read().clone(),
                         error: line1_err(),
-                        oninput: move |e: FormEvent| line1.set(e.value()),
+                        oninput: clear_on_edit(line1, line1_err),
                     }
                     crate::components::Input {
                         name: "address_line2",
@@ -1273,7 +1273,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         maxlength: 255,
                         value: line2.read().clone(),
                         error: line2_err(),
-                        oninput: move |e: FormEvent| line2.set(e.value()),
+                        oninput: clear_on_edit(line2, line2_err),
                     }
                     crate::components::Input {
                         name: "address_city",
@@ -1281,7 +1281,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         maxlength: 100,
                         value: city.read().clone(),
                         error: city_err(),
-                        oninput: move |e: FormEvent| city.set(e.value()),
+                        oninput: clear_on_edit(city, city_err),
                     }
                     Select {
                         name: "address_state",
@@ -1297,7 +1297,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         maxlength: 12,
                         value: postal.read().clone(),
                         error: postal_err(),
-                        oninput: move |e: FormEvent| postal.set(e.value()),
+                        oninput: clear_on_edit(postal, postal_err),
                     }
                     Select {
                         name: "address_country",
@@ -2936,10 +2936,10 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
     let mut line2 = use_signal(|| initial.line2.clone());
     let mut city = use_signal(|| initial.city.clone());
     let mut state = use_signal(|| initial.state.clone());
-    let mut postal = use_signal(|| initial.postal_code.clone());
-    let mut country = use_signal(|| initial.country.clone());
-    let mut phone = use_signal(|| initial.phone.clone());
-    let mut timezone = use_signal(|| initial.timezone.clone());
+    let postal = use_signal(|| initial.postal_code.clone());
+    let country = use_signal(|| initial.country.clone());
+    let phone = use_signal(|| initial.phone.clone());
+    let timezone = use_signal(|| initial.timezone.clone());
     let mut is_primary = use_signal(|| initial.is_primary);
     let mut saving = use_signal(|| false);
     let mut deleting = use_signal(|| false);
@@ -3156,7 +3156,7 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
                         label: "Postal Code",
                         value: postal.read().clone(),
                         error: postal_err(),
-                        oninput: move |e: FormEvent| postal.set(e.value()),
+                        oninput: clear_on_edit(postal, postal_err),
                     }
                     crate::components::Input {
                         name: "site_country",
@@ -3164,14 +3164,14 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
                         placeholder: "US",
                         value: country.read().clone(),
                         error: country_err(),
-                        oninput: move |e: FormEvent| country.set(e.value()),
+                        oninput: clear_on_edit(country, country_err),
                     }
                     crate::components::Input {
                         name: "site_phone",
                         label: "Phone",
                         value: phone.read().clone(),
                         error: phone_err(),
-                        oninput: move |e: FormEvent| phone.set(e.value()),
+                        oninput: clear_on_edit(phone, phone_err),
                     }
                     crate::components::Input {
                         name: "site_timezone",
@@ -3179,7 +3179,7 @@ fn SiteFormModal(props: SiteFormModalProps) -> Element {
                         placeholder: "e.g. America/New_York",
                         value: timezone.read().clone(),
                         error: tz_err(),
-                        oninput: move |e: FormEvent| timezone.set(e.value()),
+                        oninput: clear_on_edit(timezone, tz_err),
                     }
                 }
                 crate::components::Checkbox {
@@ -4595,9 +4595,9 @@ struct ContactFormProps {
 fn ContactForm(props: ContactFormProps) -> Element {
     let initial = props.initial.clone();
     let mode = props.mode.clone();
-    let mut first_name = use_signal(|| initial.first_name.clone());
-    let mut last_name = use_signal(|| initial.last_name.clone());
-    let mut email = use_signal(|| initial.email.clone());
+    let first_name = use_signal(|| initial.first_name.clone());
+    let last_name = use_signal(|| initial.last_name.clone());
+    let email = use_signal(|| initial.email.clone());
     let mut title = use_signal(|| initial.title.clone());
     let mut department = use_signal(|| initial.department.clone());
     let mut contact_type = use_signal(|| {
@@ -4845,7 +4845,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
                         required: true,
                         value: first_name.read().clone(),
                         error: first_name_err(),
-                        oninput: move |e: FormEvent| first_name.set(e.value()),
+                        oninput: clear_on_edit(first_name, first_name_err),
                     }
                     crate::components::Input {
                         name: "last_name",
@@ -4853,7 +4853,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
                         required: true,
                         value: last_name.read().clone(),
                         error: last_name_err(),
-                        oninput: move |e: FormEvent| last_name.set(e.value()),
+                        oninput: clear_on_edit(last_name, last_name_err),
                     }
                     crate::components::Input {
                         name: "email",
@@ -4861,7 +4861,7 @@ fn ContactForm(props: ContactFormProps) -> Element {
                         r#type: "email",
                         value: email.read().clone(),
                         error: email_err(),
-                        oninput: move |e: FormEvent| email.set(e.value()),
+                        oninput: clear_on_edit(email, email_err),
                     }
                     crate::components::SuggestInput {
                         name: "title",
@@ -6061,6 +6061,18 @@ mod validation_tests {
         // Garbage / leading zero rejected.
         assert!(validate_phone_field("not-a-phone", "Phone").is_err());
         assert!(validate_phone_field("0412 345 678", "Phone").is_err());
+    }
+
+    /// MAPPS-581 was reported as "Phone rejects 919-397-4144". The value was
+    /// always valid; the message on screen was a stale one from an earlier
+    /// submit that the field never cleared. This pins the value so a future
+    /// change to the rule cannot make the original report true after the fact.
+    #[test]
+    fn reported_us_phone_is_valid() {
+        assert_eq!(
+            validate_phone_field("919-397-4144", "Phone").unwrap(),
+            Value::String("9193974144".into())
+        );
     }
 
     #[test]

@@ -2,6 +2,24 @@
 
 use dioxus::prelude::*;
 
+/// Bind a text field so editing it clears its inline error slot (MAPPS-581).
+/// An inline error describes the value that was submitted, so the next
+/// keystroke invalidates it; leaving it on screen reads as the app rejecting
+/// what the user just typed.
+///
+/// The clear lives at the call site, not inside [`Input`], because only the
+/// parent knows a submit happened and can re-raise the same message when the
+/// corrected value still fails.
+pub fn clear_on_edit(
+    mut value: Signal<String>,
+    mut error: Signal<String>,
+) -> impl FnMut(FormEvent) + Copy {
+    move |e: FormEvent| {
+        error.set(String::new());
+        value.set(e.value());
+    }
+}
+
 /// Text input component props
 #[derive(Props, Clone, PartialEq)]
 pub struct InputProps {
