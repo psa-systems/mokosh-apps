@@ -1367,6 +1367,9 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
     // each control reads `can_mutate` itself (ArticleActions, RatingBar,
     // VersionHistoryCard) to disable delete / rating / restore.
     let reachable = crate::hooks::use_server_reachable();
+    // MAPPS-573: a task-list toggle in the body PUTs the whole article, so the
+    // body needs the same reachability gate the other controls read.
+    let can_mutate = crate::hooks::use_can_mutate();
     let article_fetch_failed = matches!(*article_snapshot, Some(None));
     if article_fetch_failed && !reachable {
         return rsx! {
@@ -1533,9 +1536,67 @@ pub fn KBArticleDetailPage(props: KBArticleDetailPageProps) -> Element {
                             if !article.tags.is_empty() {
                                 TagChips { tags: article.tags.clone(), class: "mt-3".to_string() }
                             }
-                            article {
-                                class: "mt-4 prose dark:prose-invert max-w-none {prose_density}",
-                                dangerous_inner_html: crate::utils::markdown::render_markdown(&content),
+                            // MAPPS-573: through `components::Markdown`, not
+                            // `render_markdown` + `dangerous_inner_html`.
+                            // PMS-348 built interactive task-list checkboxes
+                            // into that component (data-ti indices plus one
+                            // delegated click listener) and tickets and projects
+                            // adopted it; the KB, which is where the long
+                            // checklists actually live, kept its own direct
+                            // call and so rendered them permanently disabled.
+                            {
+                                let src = content.clone();
+                                let aid = props.id.clone();
+                                rsx! {
+                                    crate::components::Markdown {
+                                        class: "mt-4 {prose_density}",
+                                        content: content.clone(),
+                                        // A toggle PUTs the whole body, so drop
+                                        // interactivity while the server is
+                                        // unreachable rather than letting the
+                                        // write fail silently (MAPPS-357's rule,
+                                        // matching the ticket page).
+                                        interactive: can_mutate,
+                                        on_toggle: move |i: usize| {
+                                            let Some(next) = crate::utils::markdown::toggle_task(&src, i) else {
+                                                return;
+                                            };
+                                            let aid = aid.clone();
+                                            let mut ar = article_resource;
+                                            spawn(async move {
+                                                #[cfg(feature = "web")]
+                                                {
+                                                    let body = serde_json::json!({ "content": next });
+                                                    let path = format!("/kb/articles/{aid}");
+                                                    match crate::hooks::fetch::api::put_authed_typed::<
+                                                        serde_json::Value,
+                                                        _,
+                                                    >(&path, &body)
+                                                        .await
+                                                    {
+                                                        Ok(_) => ar.restart(),
+                                                        Err(e) => {
+                                                            // The box has already flipped in the
+                                                            // DOM, so a silent failure leaves the
+                                                            // reader believing it saved. Say so,
+                                                            // then re-fetch to put it back.
+                                                            crate::hooks::toast::push_toast(
+                                                                crate::components::AlertType::Error,
+                                                                format!(
+                                                                    "Could not save that change: {}",
+                                                                    e.user_message()
+                                                                ),
+                                                            );
+                                                            ar.restart();
+                                                        }
+                                                    }
+                                                }
+                                                #[cfg(not(feature = "web"))]
+                                                let _ = (&aid, &mut ar);
+                                            });
+                                        },
+                                    }
+                                }
                             }
                             // MAPPS-423: the reader forms the opinion at the end
                             // of the article, so the vote asks for it there.
@@ -1967,6 +2028,35 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     ];
 
     let mut tab = use_signal(|| BodyTab::Write);
+    // MAPPS-573: Cancel with unsaved work asks first.
+    let mut confirming_cancel = use_signal(|| false);
+
+    // MAPPS-573: is anything unsaved? Compares every field to what the form
+    // opened with, the same shape the company form uses, with the two
+    // blank-reads-as-default cases (visibility, status) handled so opening a
+    // fresh form and leaving is not "unsaved changes".
+    let initial_for_dirty = initial.clone();
+    let dirty = use_memo(move || {
+        if is_submitting() {
+            return false;
+        }
+        let default_visibility =
+            initial_for_dirty.visibility.is_empty() && *visibility.read() == "internal";
+        let default_status = initial_for_dirty.status.is_empty() && *status.read() == "draft";
+        *title.read() != initial_for_dirty.title
+            || *slug.read() != initial_for_dirty.slug
+            || *summary.read() != initial_for_dirty.summary
+            || *category_id.read() != initial_for_dirty.category_id
+            || (*visibility.read() != initial_for_dirty.visibility && !default_visibility)
+            || (*status.read() != initial_for_dirty.status && !default_status)
+            || *content.read() != initial_for_dirty.content
+            || *tags.read() != initial_for_dirty.tags
+            || *companies.read() != initial_for_dirty.companies
+    });
+    // The browser-level half: a tab close or reload still prompts. It does NOT
+    // cover Cancel, because `beforeunload` never fires on an in-app route
+    // change, which is why Cancel gets its own dialog below.
+    crate::hooks::use_unsaved_guard(dirty.into());
 
     let navigator = use_navigator();
     let is_edit = matches!(mode, ArticleFormMode::Edit { .. });
@@ -2350,13 +2440,41 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     oninput: move |e: FormEvent| tags.set(e.value()),
                 }
 
+                // MAPPS-573: both panes stay mounted and the panel carries a
+                // floor height. Two separate bugs shared one cause.
+                //
+                // The page jumped because `match tab()` swapped a 16-row
+                // textarea plus its label, roughly 26rem, for a preview with
+                // `min-h-40`, which is 10rem. On a short article the document
+                // shrank by two thirds and the browser clamped `scrollTop` to
+                // the new maximum. That clamp IS the jump, so the fix is that
+                // the panel cannot shrink below what the write pane occupies.
+                //
+                // Unmounting the textarea also threw away the caret and its
+                // scroll offset, so returning from Preview landed at the top of
+                // the body. `hidden` keeps the element and its state alive,
+                // which is what the JetBrains editor does and the half that
+                // made the toggle feel wrong even when nothing scrolled.
                 div {
                     div { class: "flex gap-2 border-b border-line mb-2",
-                        button { r#type: "button", class: body_tab_class(tab() == BodyTab::Write), onclick: move |_| tab.set(BodyTab::Write), "Write" }
-                        button { r#type: "button", class: body_tab_class(tab() == BodyTab::Preview), onclick: move |_| tab.set(BodyTab::Preview), "Preview" }
+                        button {
+                            r#type: "button",
+                            class: body_tab_class(tab() == BodyTab::Write),
+                            // Two buttons acting on one region: say which is on.
+                            aria_pressed: if tab() == BodyTab::Write { "true" } else { "false" },
+                            onclick: move |_| tab.set(BodyTab::Write),
+                            "Write"
+                        }
+                        button {
+                            r#type: "button",
+                            class: body_tab_class(tab() == BodyTab::Preview),
+                            aria_pressed: if tab() == BodyTab::Preview { "true" } else { "false" },
+                            onclick: move |_| tab.set(BodyTab::Preview),
+                            "Preview"
+                        }
                     }
-                    match tab() {
-                        BodyTab::Write => rsx! {
+                    div { class: "min-h-[26rem]",
+                        div { class: if tab() == BodyTab::Write { "" } else { "hidden" },
                             crate::components::Textarea {
                                 name: "content",
                                 label: "Body (Markdown)",
@@ -2372,20 +2490,56 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                                     content.set(e.value());
                                 },
                             }
-                        },
-                        BodyTab::Preview => rsx! {
+                        }
+                        div { class: if tab() == BodyTab::Preview { "" } else { "hidden" },
                             article {
-                                class: "prose dark:prose-invert max-w-none p-2 min-h-40 border border-line rounded",
+                                class: "prose dark:prose-invert max-w-none p-2 border border-line rounded",
                                 dangerous_inner_html: crate::utils::markdown::render_markdown(&content.read()),
                             }
-                        },
+                        }
                     }
                 }
 
+                // MAPPS-573: Cancel used to be a plain `Link`, so a click
+                // discarded a half-written article with no confirmation and no
+                // way back. `use_unsaved_guard` above does not cover it:
+                // `beforeunload` never fires on an in-app route change.
+                //
+                // Only when there is something to lose. Cancelling an untouched
+                // form still leaves immediately, because a confirmation there
+                // is a dialog whose answer is always the same.
+                crate::components::ConfirmDialog {
+                    open: confirming_cancel(),
+                    title: "Discard your changes?".to_string(),
+                    message: "This article has unsaved changes. Discarding them cannot be undone."
+                        .to_string(),
+                    confirm_text: "Discard changes".to_string(),
+                    cancel_text: "Keep editing".to_string(),
+                    destructive: true,
+                    onconfirm: {
+                        let to = cancel_route.clone();
+                        move |_| {
+                            confirming_cancel.set(false);
+                            navigator.push(to.clone());
+                        }
+                    },
+                    oncancel: move |_| confirming_cancel.set(false),
+                }
+
                 div { class: "flex justify-end space-x-3",
-                    Link {
-                        to: cancel_route.clone(),
-                        Button { variant: ButtonVariant::Secondary, "Cancel" }
+                    Button {
+                        variant: ButtonVariant::Secondary,
+                        onclick: {
+                            let to = cancel_route.clone();
+                            move |_| {
+                                if dirty() {
+                                    confirming_cancel.set(true);
+                                } else {
+                                    navigator.push(to.clone());
+                                }
+                            }
+                        },
+                        "Cancel"
                     }
                     Button {
                         r#type: "submit",
@@ -3289,5 +3443,127 @@ mod tests {
     fn add_scope_company_label_reads_by_count() {
         assert_eq!(add_scope_company_label(0), "Add a company");
         assert_eq!(add_scope_company_label(1), "Add another company");
+    }
+}
+
+/// MAPPS-573: the three editor and viewer fixes whose whole point is a
+/// lifecycle or a route decision, none of which a rendered snapshot shows.
+///
+/// Source scans, deliberately. Each of these lives inside a `use_resource` or
+/// an event handler that only runs under the `web` feature and needs a real
+/// DOM, so no host test can drive them. What is being pinned is the decision,
+/// and the decision is visible in the source.
+#[cfg(test)]
+mod editor_ux_tests {
+    const SRC: &str = include_str!("knowledge_base.rs");
+
+    /// The page's code, with two things removed.
+    ///
+    /// Comment bodies, so a test cannot pass on a phrase that appears only in
+    /// the comment explaining it. And this module itself, because every
+    /// assertion below quotes the pattern it is looking for, so a scan that
+    /// included its own source would match itself and pass no matter what the
+    /// page does. That is not hypothetical: it is what the first run of these
+    /// tests did.
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod editor_ux_tests")
+            .expect("this module is part of this file");
+        SRC[..end]
+            .lines()
+            .map(|l| match l.find("//") {
+                Some(i) => &l[..i],
+                None => l,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// AC1, the jump. The panes were swapped by a `match` on the tab, so the
+    /// panel's height was whichever pane was mounted: a 16-row textarea, or a
+    /// preview with `min-h-40`. On a short article the document shrank by two
+    /// thirds and the browser clamped `scrollTop`, which is the jump. A floor
+    /// on the panel is what makes the swap height-neutral.
+    #[test]
+    fn the_body_panel_cannot_shrink_when_the_tab_changes() {
+        let code = code_only();
+        assert!(
+            code.contains(r#"div { class: "min-h-[26rem]""#),
+            "the tab panel needs a height floor, or switching to Preview shrinks the \
+             document and the browser scrolls the page up"
+        );
+        assert!(
+            !code.contains("min-h-40"),
+            "the preview's own smaller floor is what the panel floor replaces; leaving \
+             it invites the two to disagree"
+        );
+    }
+
+    /// AC1, the caret. `hidden` keeps the textarea mounted, so its caret and
+    /// scroll offset survive a trip to Preview. A `match` that unmounts it
+    /// throws both away and returns the user to the top of the body.
+    #[test]
+    fn the_write_pane_stays_mounted_while_previewing() {
+        let code = code_only();
+        assert!(
+            code.contains(r#"if tab() == BodyTab::Write { "" } else { "hidden" }"#),
+            "the write pane must be hidden rather than unmounted, or the caret and the \
+             textarea's scroll position are discarded on every preview"
+        );
+        assert!(
+            !code.contains("match tab()"),
+            "a match on the tab unmounts the inactive pane, which is the behaviour this \
+             replaced"
+        );
+    }
+
+    /// AC5. Cancel was a plain `Link`, so it discarded a half-written article
+    /// silently. It has to be a button that consults the dirty state.
+    #[test]
+    fn cancel_asks_before_discarding_unsaved_work() {
+        let code = code_only();
+        assert!(
+            code.contains("confirming_cancel.set(true)"),
+            "Cancel must open a confirmation when the form is dirty"
+        );
+        assert!(
+            code.contains("\"Keep editing\".to_string()"),
+            "and the dialog must offer a way back to editing, not just a way out"
+        );
+        // The clean-form path still leaves at once: a confirmation whose answer
+        // is always the same is a click tax, not a safeguard.
+        assert!(
+            code.contains("if dirty() {"),
+            "an untouched form must still cancel immediately"
+        );
+    }
+
+    /// AC7. The KB body renders through `components::Markdown`, which is where
+    /// PMS-348's interactive checkbox path lives. Calling `render_markdown`
+    /// with `dangerous_inner_html` directly, which is what it did, means the
+    /// `data-ti` indices and the delegated click listener never run and the
+    /// checkboxes render permanently disabled.
+    #[test]
+    fn the_article_body_uses_the_shared_markdown_component() {
+        let code = code_only();
+        assert!(
+            code.contains("crate::components::Markdown {"),
+            "the article body must go through the shared component"
+        );
+        assert!(
+            code.contains("interactive: can_mutate"),
+            "and opt into the interactive checkbox path, gated on reachability because \
+             a toggle PUTs the whole article"
+        );
+        // The editor's own preview is the one place a direct call is still
+        // right: it is not interactive, and its content is a signal rather than
+        // a saved article, so there is nothing to persist a toggle to.
+        assert_eq!(
+            code.matches("dangerous_inner_html: crate::utils::markdown::render_markdown")
+                .count(),
+            1,
+            "only the editor preview may render markdown directly; every reader surface \
+             goes through the component"
+        );
     }
 }
