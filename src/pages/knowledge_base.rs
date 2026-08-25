@@ -137,6 +137,25 @@ enum BodyTab {
     Preview,
 }
 
+/// Class for one of the two body panes.
+///
+/// MAPPS-584: with split view off, the inactive pane is `hidden` at EVERY
+/// width, so only the tab the author chose is on the page. With it on, the
+/// inactive pane comes back from `lg` up and the two sit side by side, which
+/// is what MAPPS-579 shipped unconditionally.
+///
+/// Both branches hide rather than unmount, because a `match` on the tab throws
+/// away the caret and the textarea's scroll offset (MAPPS-573).
+fn body_pane_class(active: bool, split: bool) -> &'static str {
+    if active {
+        "min-w-0"
+    } else if split {
+        "hidden lg:block lg:min-w-0"
+    } else {
+        "hidden"
+    }
+}
+
 fn body_tab_class(active: bool) -> &'static str {
     if active {
         "px-3 py-1 text-sm border-b-2 border-accent text-accent font-medium"
@@ -2038,6 +2057,12 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     ];
 
     let mut tab = use_signal(|| BodyTab::Write);
+    // MAPPS-584: side by side is opt-in and remembered, not the only layout.
+    // MAPPS-579 put the source and the preview on the page together at every
+    // `lg` width, which halves the width of both and makes a long article a
+    // very long page. Off by default, so the editor opens as the tabs it looks
+    // like; the reader who wants both turns it on once.
+    let mut split = use_signal(|| crate::utils::prefs::get_bool("kb_split_preview", false));
     // MAPPS-579: Ctrl+K in the body asks the toolbar to open its link dialog.
     // A signal rather than a direct call because the shortcut fires on the
     // textarea and the dialog belongs to the toolbar.
@@ -2574,7 +2599,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                 // which is what the JetBrains editor does and the half that
                 // made the toggle feel wrong even when nothing scrolled.
                 div {
-                    div { class: "flex gap-2 border-b border-line mb-2",
+                    div { class: "flex items-center gap-2 border-b border-line mb-2",
                         button {
                             r#type: "button",
                             class: body_tab_class(tab() == BodyTab::Write),
@@ -2590,15 +2615,36 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                             onclick: move |_| tab.set(BodyTab::Preview),
                             "Preview"
                         }
+                        // Only offered where it fits. Below `lg` the two panes
+                        // stack, and a stacked "side by side" is just the same
+                        // page twice, so the control that turns it on is not
+                        // shown at a width that cannot honour it.
+                        button {
+                            r#type: "button",
+                            class: "ml-auto hidden lg:inline-flex text-xs px-2 py-1 rounded border border-line text-content",
+                            title: "Show the source and the preview side by side",
+                            aria_pressed: if split() { "true" } else { "false" },
+                            onclick: move |_| {
+                                let next = !split();
+                                split.set(next);
+                                crate::utils::prefs::set_bool("kb_split_preview", next);
+                            },
+                            if split() { "Split view: on" } else { "Split view: off" }
+                        }
                     }
                     // MAPPS-579: source and preview side by side from `lg` up,
                     // stacked behind the tabs below it. Both panes stay mounted
                     // and the panel keeps its floor, so neither the breakpoint
                     // nor the tab can shrink the document and scroll the page
                     // (MAPPS-573).
-                    div { class: "min-h-[26rem] lg:grid lg:grid-cols-2 lg:gap-4",
+                    div {
+                        class: if split() {
+                            "min-h-[26rem] lg:grid lg:grid-cols-2 lg:gap-4"
+                        } else {
+                            "min-h-[26rem]"
+                        },
                         div {
-                            class: if tab() == BodyTab::Write { "min-w-0" } else { "hidden lg:block lg:min-w-0" },
+                            class: body_pane_class(tab() == BodyTab::Write, split()),
                             crate::components::MarkdownToolbar {
                                 target_id: "content".to_string(),
                                 value: content.read().clone(),
@@ -2702,7 +2748,7 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                             }
                         }
                         div {
-                            class: if tab() == BodyTab::Preview { "min-w-0" } else { "hidden lg:block lg:min-w-0" },
+                            class: body_pane_class(tab() == BodyTab::Preview, split()),
                             p { class: "mb-1 text-xs font-medium text-muted", "Preview" }
                             // MAPPS-579: the SAME component the published
                             // article renders through, not just the same
@@ -2718,7 +2764,17 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                                 // height and the grid row stretches both columns
                                 // to it. Two competing minimums is what made the
                                 // tab swap shrink the document (MAPPS-573).
-                                class: "p-2 border border-line rounded h-full".to_string(),
+                                // MAPPS-584: the preview scrolls inside its own
+                                // box. Left to grow, a long article made the
+                                // page several thousand pixels tall and put
+                                // Save Changes at the bottom of all of it, so
+                                // previewing meant losing the editor and the
+                                // buttons both. A ceiling keeps the panel the
+                                // same height whichever tab is up, which is the
+                                // MAPPS-573 floor doing its job from the other
+                                // side.
+                                class: "p-2 border border-line rounded h-full max-h-[34rem] overflow-y-auto"
+                                    .to_string(),
                                 content: content.read().clone(),
                             }
                         }
@@ -3680,6 +3736,8 @@ mod tests {
 /// and the decision is visible in the source.
 #[cfg(test)]
 mod editor_ux_tests {
+    use super::body_pane_class;
+
     const SRC: &str = include_str!("knowledge_base.rs");
 
     /// The page's code, with two things removed.
@@ -3715,15 +3773,28 @@ mod editor_ux_tests {
     #[test]
     fn the_body_panel_cannot_shrink_when_the_tab_changes() {
         let code = code_only();
-        assert!(
-            code.contains(r#"class: "min-h-[26rem]"#),
-            "the tab panel needs a height floor, or switching to Preview shrinks the \
-             document and the browser scrolls the page up"
+        // MAPPS-584 made the panel class conditional on split view, so the
+        // floor has to be on BOTH branches: an author with split off gets the
+        // other one, and a floor on only one of them is a floor half the
+        // users never see.
+        assert_eq!(
+            code.matches("min-h-[26rem]").count(),
+            2,
+            "the tab panel needs a height floor on both the split and the stacked \
+             class, or switching to Preview shrinks the document and the browser \
+             scrolls the page up"
         );
         assert!(
             !code.contains("min-h-40"),
             "the preview's own smaller floor is what the panel floor replaces; leaving \
              it invites the two to disagree"
+        );
+        // MAPPS-584, the other side of the same guarantee: the preview cannot
+        // grow past the panel either.
+        assert!(
+            code.contains("max-h-[34rem] overflow-y-auto"),
+            "the preview needs a ceiling and its own scrollbar, or a long article \
+             makes the page thousands of pixels tall and buries Save Changes"
         );
     }
 
@@ -3734,14 +3805,54 @@ mod editor_ux_tests {
     fn the_write_pane_stays_mounted_while_previewing() {
         let code = code_only();
         assert!(
-            code.contains(r#"if tab() == BodyTab::Write { "min-w-0" } else { "hidden"#),
-            "the write pane must be hidden rather than unmounted, or the caret and the \
-             textarea's scroll position are discarded on every preview"
+            code.contains("body_pane_class(tab() == BodyTab::Write"),
+            "both panes take their class from the shared helper, so the mounted-but-\
+             hidden guarantee below covers the write pane too"
         );
         assert!(
             !code.contains("match tab()"),
             "a match on the tab unmounts the inactive pane, which is the behaviour this \
              replaced"
+        );
+    }
+
+    /// MAPPS-573 and MAPPS-584 together. Hiding is not unmounting: the caret
+    /// and the textarea's scroll offset only survive a trip to Preview because
+    /// the element stays in the DOM. Every branch of the helper has to hide.
+    #[test]
+    fn an_inactive_pane_is_hidden_rather_than_unmounted() {
+        assert_eq!(body_pane_class(true, false), "min-w-0");
+        assert_eq!(body_pane_class(true, true), "min-w-0");
+        for split in [false, true] {
+            assert!(
+                body_pane_class(false, split).starts_with("hidden"),
+                "an inactive pane is hidden, never dropped (split={split})"
+            );
+        }
+    }
+
+    /// MAPPS-584 AC1. With split view off the editor is tabs at EVERY width.
+    /// The bug being fixed is that `lg:block` was unconditional, so anyone on a
+    /// laptop got both panes whether they wanted them or not.
+    #[test]
+    fn split_view_is_the_only_thing_that_puts_both_panes_on_the_page() {
+        assert!(
+            !body_pane_class(false, false).contains("lg:block"),
+            "with split off the inactive pane must stay hidden at every width"
+        );
+        assert!(
+            body_pane_class(false, true).contains("lg:block"),
+            "and split view is what brings it back"
+        );
+        let code = code_only();
+        assert!(
+            code.contains(r#"prefs::get_bool("kb_split_preview", false)"#),
+            "split view defaults to off, and reads back what the author last chose"
+        );
+        assert!(
+            code.contains(r#"prefs::set_bool("kb_split_preview", next)"#),
+            "and the choice is persisted, or it is a setting that resets on every \
+             article"
         );
     }
 

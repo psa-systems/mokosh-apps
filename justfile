@@ -47,7 +47,7 @@ pre-commit: css-build
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin
+check: check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin check-prose-layer
 
 # Check web/WASM compilation
 [group: 'check']
@@ -66,6 +66,12 @@ check-desktop:
 check-theme-tokens:
     bash scripts/check-theme-tokens.sh --self-test
     bash scripts/check-theme-tokens.sh
+
+# MAPPS-584: keep the Markdown corrections in a cascade layer that outranks @tailwindcss/typography. In `@layer components` they lost to the plugin and shipped inert. --self-test first, so a guard that stopped guarding fails loudly.
+[group: 'check']
+check-prose-layer:
+    bash scripts/check-prose-layer.sh --self-test
+    bash scripts/check-prose-layer.sh
 
 # MAPPS-433: fail on colour classes input.css does not define (they render as nothing). MAPPS-437: --self-test first, so a guard that stopped guarding fails loudly instead of reporting clean.
 [group: 'check']
