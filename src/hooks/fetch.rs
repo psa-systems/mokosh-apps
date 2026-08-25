@@ -1581,6 +1581,12 @@ pub mod api {
                     ..
                 } => match *code {
                     401 => "Your session has expired. Please sign in again.".into(),
+                    // Server sends a specific message on 403 for cases the user
+                    // needs to see verbatim (e.g. suspended tenant -> "This
+                    // organization is not active"). Surface it instead of the
+                    // generic copy so a session-scope failure does not look
+                    // like a per-action permission denial.
+                    403 if !message.is_empty() => message.clone(),
                     403 => "You do not have permission to do that.".into(),
                     404 => "The requested resource was not found.".into(),
                     409 if !message.is_empty() => message.clone(),
