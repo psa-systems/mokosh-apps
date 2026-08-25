@@ -501,8 +501,8 @@ fn highlight_with(spec: &Lang, code: &str) -> String {
 
         // Block comment.
         if let Some((open, close)) = spec.block_comment {
-            if rest.starts_with(open) {
-                let end = rest[open.len()..]
+            if let Some(after_open) = rest.strip_prefix(open) {
+                let end = after_open
                     .find(close)
                     .map(|p| i + open.len() + p + close.len())
                     .unwrap_or(code.len());
