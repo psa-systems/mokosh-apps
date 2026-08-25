@@ -3,6 +3,20 @@
 @plugin "@tailwindcss/forms";
 @plugin "@tailwindcss/typography";
 
+/* MAPPS-584: the layer the corrections below live in, declared here so it is
+   ordered LAST.
+
+   @tailwindcss/typography emits every `.prose` rule into `@layer utilities`.
+   The corrections used to sit in `@layer components`, and a cascade layer
+   outranks specificity and source order both, so the plugin won every
+   declaration the two of them shared and the corrections shipped inert. What
+   made that hard to see is that the declarations they did NOT share still
+   applied: the inline-code pill had its background and its border but kept the
+   plugin's literal backticks and its 600 weight, which reads as a half-working
+   fix rather than a dead rule. A layer first named after `utilities` sorts
+   after it, so these rules win what they contest and nothing else. */
+@layer prose;
+
 /* Dark mode using class strategy */
 @custom-variant dark (&:where(.dark, .dark *));
 
@@ -318,7 +332,19 @@
 
    The reference for all of it is the JetBrains rendering of the same source,
    attached to MAPPS-573. */
-@layer components {
+@layer prose {
+  /* MAPPS-584: an author's colour has to reach the text they wrapped.
+     `<span style="color:red">**REST API**</span>` is the shape they write, and
+     the sanitizer keeps that style, but the plugin sets an EXPLICIT colour on
+     `strong`, `code` and `kbd`, and an explicit colour on a descendant beats
+     one inherited from its ancestor. Every coloured span in the article that
+     reported this wrapped bold text, so not one of them showed any colour at
+     all. `a` is deliberately not in the list: a link's colour says it is a
+     link, which is worth more than the surrounding colour. */
+  .prose :where([style*="color"]) :where(strong, code, kbd) {
+    color: inherit;
+  }
+
   /* The plugin draws a LITERAL backtick either side of every inline code span
      (`prose code::before { content: "`" }`). Authors read that as "the
      backticks did not render". They rendered twice. */
