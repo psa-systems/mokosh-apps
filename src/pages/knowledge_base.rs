@@ -2046,23 +2046,28 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
             struct Row {
                 id: uuid::Uuid,
                 #[serde(default)]
-                email: String,
+                name: String,
                 #[serde(default)]
-                full_name: String,
+                handle: String,
             }
-            let rows = crate::hooks::fetch::api::get_all_authed::<Row>("/auth/users")
+            // PMS-921's directory, not `/auth/users`. The latter is
+            // `RequireManager`, so a Technician got a 403 and no autocomplete at
+            // all: the same gap PMS-921 was filed to close for the renderer.
+            // This is also the only source that carries `handle`, which is what
+            // resolution matches on.
+            let rows = crate::hooks::fetch::api::get_all_authed::<Row>("/auth/directory")
                 .await
                 .ok()?;
             Some(
                 rows.into_iter()
                     .map(|r| crate::utils::mentions::Mention {
                         id: r.id.to_string(),
-                        display: if r.full_name.trim().is_empty() {
-                            r.email.clone()
+                        display: if r.name.trim().is_empty() {
+                            r.handle.clone()
                         } else {
-                            r.full_name
+                            r.name
                         },
-                        email: r.email,
+                        handle: r.handle,
                     })
                     .collect::<Vec<_>>(),
             )
