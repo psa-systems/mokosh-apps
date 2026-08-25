@@ -1350,8 +1350,15 @@ fn optional_string(value: &str) -> serde_json::Value {
 /// whitespace-only input, and reject control characters. On success returns the
 /// trimmed name so the client surfaces the "Company name is required" cue inline
 /// (MAPPS-246) before any request instead of bouncing off an opaque server 422.
+///
+/// MAPPS-582: `is_control` is true only for `Cc`, so it let U+200B and U+FEFF
+/// through and the app stored them, making `Acme\u{200B}` a second record
+/// indistinguishable from `Acme` on screen. The invisibles are stripped rather
+/// than rejected, because the user cannot see the character and so cannot act
+/// on a message about it; a real control character stays an error.
 fn validate_name_field(raw: &str) -> Result<String, String> {
-    let trimmed = raw.trim();
+    let cleaned = crate::utils::text::strip_invisible(raw);
+    let trimmed = cleaned.trim();
     if trimmed.is_empty() {
         return Err("Company name is required.".to_string());
     }
@@ -1392,9 +1399,16 @@ pub fn format_phone(raw: &str) -> String {
 }
 
 fn validate_phone_field(raw: &str, label: &str) -> Result<serde_json::Value, String> {
+    // MAPPS-582: `clean_strict` removes the characters that render as nothing
+    // (U+200B, U+FEFF, the soft hyphen, the bidi marks) and folds every exotic
+    // space onto a plain one. The strip set below then drops whitespace via
+    // `char::is_whitespace` rather than the three hardcoded space characters it
+    // used to name, which missed U+202F, U+2007, U+3000 and the rest and let
+    // them reach the E.164 check as "not a digit".
+    let raw = crate::utils::text::clean_strict(raw);
     let normalized: String = raw
         .chars()
-        .filter(|c| !matches!(c, ' ' | '\t' | '\u{00A0}' | '-' | '(' | ')' | '.'))
+        .filter(|c| !c.is_whitespace() && !matches!(c, '-' | '(' | ')' | '.'))
         .collect();
     if normalized.is_empty() {
         return Ok(serde_json::Value::Null);
@@ -1508,7 +1522,9 @@ fn extra_company_suffix(total: usize) -> String {
 /// Requires exactly two ASCII letters (normalized to uppercase). The server
 /// (PMS-325) checks membership against the official set.
 fn validate_country_field(raw: &str) -> Result<serde_json::Value, String> {
-    let trimmed = raw.trim();
+    // MAPPS-582: a country code admits no invisible character anywhere.
+    let cleaned = crate::utils::text::clean_strict(raw);
+    let trimmed = cleaned.as_str();
     if trimmed.is_empty() {
         return Ok(serde_json::Value::Null);
     }
@@ -1524,7 +1540,11 @@ fn validate_country_field(raw: &str) -> Result<serde_json::Value, String> {
 /// (which includes NUL, rejected by Postgres anyway). Gating only - the body
 /// keeps sending the `optional_string` form.
 fn validate_address_text(raw: &str, label: &str, max: usize) -> Result<(), String> {
-    let trimmed = raw.trim();
+    // MAPPS-582: `is_control` covers only `Cc`, so an invisible `Cf` character
+    // used to pass this gate and get stored. Strip those first, then keep
+    // rejecting the real control characters.
+    let cleaned = crate::utils::text::strip_invisible(raw);
+    let trimmed = cleaned.trim();
     if trimmed.is_empty() {
         return Ok(());
     }
@@ -1540,7 +1560,10 @@ fn validate_address_text(raw: &str, label: &str, max: usize) -> Result<(), Strin
 /// Validate an optional postal code. Blank -> `Ok(None)`. Otherwise 2-12
 /// characters of letters, digits, spaces, or hyphens.
 fn validate_postal_field(raw: &str) -> Result<serde_json::Value, String> {
-    let trimmed = raw.trim();
+    // MAPPS-582: the charset below is ASCII-only, so an invisible character
+    // rejected the code with a message naming characters the user cannot see.
+    let cleaned = crate::utils::text::clean_strict(raw);
+    let trimmed = cleaned.as_str();
     if trimmed.is_empty() {
         return Ok(serde_json::Value::Null);
     }
@@ -1566,7 +1589,10 @@ fn validate_postal_field(raw: &str) -> Result<serde_json::Value, String> {
 /// reuses `utils::url::scheme_of`, the same whitespace-collapsing detection
 /// `safe_href` applies at render time, so `java\tscript:` cannot slip through.
 fn validate_website_field(raw: &str) -> Result<serde_json::Value, String> {
-    let trimmed = raw.trim();
+    // MAPPS-582: an invisible character never belongs in a URL either, and it
+    // is one more way a scheme can disguise itself from the check below.
+    let cleaned = crate::utils::text::clean_strict(raw);
+    let trimmed = cleaned.as_str();
     if trimmed.is_empty() {
         return Ok(serde_json::Value::Null);
     }
@@ -1723,7 +1749,10 @@ fn website_unreachable_note(normalized: &str, reason: &str) -> String {
 /// check (must look like `Area/Location` with no spaces) that catches the
 /// common `America/New York` mistake; the server (PMS-325) is authoritative.
 fn validate_timezone_field(raw: &str) -> Result<serde_json::Value, String> {
-    let trimmed = raw.trim();
+    // MAPPS-582: an IANA name is ASCII, so strip the invisibles before the
+    // "no spaces, has a slash" shape check.
+    let cleaned = crate::utils::text::clean_strict(raw);
+    let trimmed = cleaned.as_str();
     if trimmed.is_empty() {
         return Ok(serde_json::Value::Null);
     }
@@ -5878,8 +5907,9 @@ mod company_type_tests {
 #[cfg(test)]
 mod validation_tests {
     use super::{
-        validate_country_field, validate_name_field, validate_phone_field, validate_postal_field,
-        validate_timezone_field, validate_website_field, website_probe_note, WebsiteProbe,
+        validate_address_text, validate_country_field, validate_name_field, validate_phone_field,
+        validate_postal_field, validate_timezone_field, validate_website_field, website_probe_note,
+        WebsiteProbe,
     };
     use serde_json::Value;
 
@@ -6115,6 +6145,127 @@ mod validation_tests {
         // Unknown / absent values pass through verbatim rather than vanishing.
         assert_eq!(humanize_contact_type("escalation"), "escalation");
         assert_eq!(humanize_contact_type(""), "");
+    }
+
+    // ---- MAPPS-582: invisible characters never reach a validator, and never
+    // get stored under a name that looks clean.
+
+    /// The reported defect: `919-397-4144` with an invisible character
+    /// appended rendered identically to the valid number and was rejected with
+    /// a message the user could not act on. U+202F is the other half: `.trim()`
+    /// removed it, but the old hardcoded `' ' | '\t' | '\u{00A0}'` strip set
+    /// did not, so it reached the E.164 check as "not a digit".
+    #[test]
+    fn phone_accepts_a_number_carrying_an_invisible_character() {
+        for suffix in [
+            "\u{200B}", "\u{FEFF}", "\u{00AD}", "\u{200E}", "\u{200C}", "\u{202F}", "\u{00A0}",
+            "\u{2007}", "\u{3000}", "\u{2060}", "\u{2069}",
+        ] {
+            let raw = format!("919-397-4144{suffix}");
+            assert_eq!(
+                validate_phone_field(&raw, "Phone"),
+                Ok(serde_json::Value::String("9193974144".to_string())),
+                "U+{:04X} must not reject a valid number",
+                suffix.chars().next().unwrap() as u32
+            );
+        }
+        // An interior one is stripped too, not just a trailing one.
+        assert_eq!(
+            validate_phone_field("919-397\u{200B}-4144", "Phone"),
+            Ok(serde_json::Value::String("9193974144".to_string()))
+        );
+    }
+
+    /// Stripping the invisibles must not widen what the field accepts: an
+    /// extension is still not part of an E.164 number.
+    #[test]
+    fn phone_still_rejects_a_genuinely_invalid_number() {
+        for bad in ["919-397-4144 x12", "919-397-4144x12", "abc", "1"] {
+            assert!(
+                validate_phone_field(bad, "Phone").is_err(),
+                "{bad} must still be rejected"
+            );
+        }
+    }
+
+    /// The silent half of the bug: a free-text field with no format rule
+    /// accepted the invisible character and stored it, so `Acme\u{200B}` became
+    /// a second company indistinguishable from `Acme` in every list, search box
+    /// and picker.
+    #[test]
+    fn a_company_name_cannot_be_saved_with_an_invisible_character() {
+        let clean = validate_name_field("Acme").expect("Acme is a valid name");
+        for raw in [
+            "Acme\u{200B}",
+            "\u{FEFF}Acme",
+            "Ac\u{00AD}me",
+            "Acme\u{202F}",
+            "Acme\u{00A0}",
+            "Acme\u{2069}",
+        ] {
+            assert_eq!(
+                validate_name_field(raw).as_deref(),
+                Ok(clean.as_str()),
+                "{raw:?} must not be storable as a name distinct from \"Acme\""
+            );
+        }
+        // A real control character is still an error: it is not invisible in
+        // the same sense, and the user can remove it.
+        assert!(validate_name_field("Acme\u{0007}").is_err());
+    }
+
+    /// The same hole in the address fields, which also gated on `is_control`.
+    #[test]
+    fn an_address_line_accepts_a_value_carrying_an_invisible_character() {
+        assert_eq!(
+            validate_address_text("1 Main St\u{200B}", "Address", 255),
+            Ok(())
+        );
+        assert!(validate_address_text("1 Main St\u{0007}", "Address", 255).is_err());
+    }
+
+    /// The structured fields all take the same route.
+    #[test]
+    fn the_structured_fields_strip_invisible_characters() {
+        assert_eq!(
+            validate_country_field("US\u{200B}"),
+            Ok(serde_json::Value::String("US".to_string()))
+        );
+        assert_eq!(
+            validate_postal_field("27519\u{FEFF}"),
+            Ok(serde_json::Value::String("27519".to_string()))
+        );
+        assert_eq!(
+            validate_timezone_field("America/New_York\u{200E}"),
+            Ok(serde_json::Value::String("America/New_York".to_string()))
+        );
+        assert_eq!(
+            validate_website_field("https://example.com\u{00AD}"),
+            Ok(serde_json::Value::String("https://example.com".to_string()))
+        );
+    }
+
+    /// The hand-rolled strip set that could not see U+202F is gone, and the
+    /// whitespace test is `char::is_whitespace`, so a new exotic space cannot
+    /// reintroduce the defect.
+    #[test]
+    fn the_phone_strip_set_is_not_hardcoded() {
+        // The function's own body, so these needles cannot match themselves
+        // further down in this test.
+        let src = include_str!("contacts.rs");
+        let start = src
+            .find("fn validate_phone_field(")
+            .expect("validate_phone_field is defined in this file");
+        let rest = &src[start..];
+        let body = &rest[..rest.find("\n}\n").expect("the function closes")];
+        assert!(
+            !body.contains(r"'\u{00A0}'"),
+            "the hardcoded phone strip set must not come back"
+        );
+        assert!(
+            body.contains("!c.is_whitespace()"),
+            "validate_phone_field must strip whitespace via char::is_whitespace"
+        );
     }
 }
 

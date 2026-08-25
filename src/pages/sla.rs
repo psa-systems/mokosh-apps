@@ -1633,10 +1633,12 @@ fn parse_hours(value: &str) -> Option<rust_decimal::Decimal> {
 /// rejected with visible feedback instead of silently dropping the input or
 /// storing a negative target (MAPPS-239).
 fn validate_hours(value: &str) -> Result<Option<rust_decimal::Decimal>, &'static str> {
-    if value.trim().is_empty() {
+    // MAPPS-582: the H:MM / decimal parsers are ASCII-only.
+    let value = crate::utils::text::clean_strict(value);
+    if value.is_empty() {
         return Ok(None);
     }
-    match parse_hours(value) {
+    match parse_hours(&value) {
         Some(d) if d >= rust_decimal::Decimal::ZERO => Ok(Some(d)),
         Some(_) => Err("SLA target hours cannot be negative."),
         None => {

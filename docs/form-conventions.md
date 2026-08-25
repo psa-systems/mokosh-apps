@@ -167,6 +167,67 @@ slots before returning, so submitting with both empty surfaces both errors. The
 broader effort to make `required` actually enforce across every form, and to unify
 the validation system, is the PMS-515 epic.
 
+## Invisible characters: trimming is not enough (MAPPS-582)
+
+**A value that looks the same to a person is the same value.** No text a user types
+or pastes into this app carries a character that renders as nothing, and no exotic
+Unicode space reaches a validator as anything other than a plain space.
+
+`str::trim` does not get you there. It removes characters where `char::is_whitespace`
+is true, and the characters that cause the trouble are Unicode format characters
+(general category `Cf`) plus the soft hyphen, none of which are whitespace.
+`char::is_control` does not either: it is true only for `Cc`, so it answers `false`
+for U+200B and U+FEFF. Measured against the reported value `919-397-4144` with each
+character appended:
+
+| Appended character | Survives `.trim()` | Old phone validator |
+| --- | --- | --- |
+| U+200B zero width space | yes | rejected |
+| U+FEFF BOM / zero width no-break space | yes | rejected |
+| U+00AD soft hyphen | yes | rejected |
+| U+200E left-to-right mark | yes | rejected |
+| U+202F narrow no-break space | no | rejected |
+| U+00A0 no-break space | no | accepted |
+
+Both halves of that are defects. The visible half is a correct validator giving a
+message the user cannot act on, because the offending character renders as nothing.
+The silent half is worse: a field with no format rule (name, title, description,
+note) accepts the character, saves it, and nothing ever says so, at which point
+`Acme\u{200B}` and `Acme` are two records that look identical in every list, search
+box and picker.
+
+The rule, and where it is enforced:
+
+- **Sanitize at the component boundary, once.** `Input`, `Textarea` and `SearchInput`
+  in `src/components/form.rs` pass their `oninput` event through `sanitized`, which
+  replaces the event's value with `crate::utils::text::strip_invisible`. Every
+  text-entry surface in the app routes through those three, including the ones that
+  look like they do not (`SuggestInput`, `GlobalSearch`, `CompanyPicker`,
+  `ContactPicker`, `AssetPicker` all render `Input`), so a new form is covered
+  without opting in. A raw `input {}` / `textarea {}` element calls
+  `strip_invisible` in its own handler instead.
+- **`strip_invisible` does not trim or collapse.** Trimming per keystroke makes the
+  space in "John Smith" untypable. It removes the invisibles and maps every
+  non-ASCII whitespace character (U+00A0, U+202F, U+2007, U+3000, ...) to a plain
+  space; ASCII whitespace, including a textarea's newlines, passes through.
+- **ZWJ (U+200D) and ZWNJ (U+200C) are not invisibles here.** They carry meaning in
+  Persian, Arabic and Indic text and in emoji sequences, so removing them from free
+  text corrupts legitimate names. Only `clean_strict` removes them.
+- **Structured validators use `clean_strict`**, which is `strip_invisible` plus
+  ZWJ / ZWNJ plus a trim: phone, postal code, country, email, URL, UUID, timezone,
+  slug, date, money and the other numerics. A validator that strips whitespace does
+  it with `char::is_whitespace`, never a hand-written set of space characters, which
+  is how U+202F reached the E.164 check.
+- **Password fields are exempt, and this is the one place "sanitize everything" is
+  wrong.** A password may legitimately contain any character, and silently rewriting
+  one turns a correct credential into a failed login with no diagnosis. `Input` skips
+  sanitizing when `r#type == "password"`, which covers every password, secret and
+  API-key field in the app, because they all set that type. A new secret field sets
+  `r#type: "password"` for this reason as much as for the masking.
+
+The server accepts and stores the same characters through the API, so this is the
+usability half only; the data-integrity half is PMS-924.
+
 ## Repeating child rows
 
 A field that holds several values of the same shape (a contact's phone numbers

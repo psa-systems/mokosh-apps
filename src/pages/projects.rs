@@ -248,7 +248,9 @@ fn fmt_history_dt(dt: chrono::DateTime<chrono::Utc>) -> String {
 /// an out-of-range year (e.g. `0007`); the inputs carry matching min/max so
 /// the picker rejects it natively too. `label` names the field in the message.
 fn validate_opt_date(raw: &str, label: &str) -> Result<(), String> {
-    let s = raw.trim();
+    // MAPPS-582: a date has no room for a character that renders as nothing.
+    let s = crate::utils::text::clean_strict(raw);
+    let s = s.as_str();
     if s.is_empty() {
         return Ok(());
     }
@@ -314,7 +316,10 @@ fn validate_project_name(raw: &str) -> Result<String, String> {
 /// value or an inline error message for that field. `label` names the field in
 /// the message (e.g. "Budget amount").
 fn validate_budget(raw: &str, label: &str) -> Result<Option<f64>, String> {
-    let s = raw.trim();
+    // MAPPS-582: strip the invisibles so a pasted amount is not reported as
+    // "must be a number" for a character the user cannot see.
+    let s = crate::utils::text::clean_strict(raw);
+    let s = s.as_str();
     if s.is_empty() {
         return Ok(None);
     }
@@ -341,7 +346,9 @@ fn validate_budget(raw: &str, label: &str) -> Result<Option<f64>, String> {
 /// (e.g. `-9`, `0`) from genuinely non-numeric input, so a negative number is
 /// no longer misreported as "must be a number".
 fn validate_budget_hours(raw: &str) -> Result<Option<f64>, String> {
-    let s = raw.trim();
+    // MAPPS-582: same as `validate_budget`; the H:MM parser is ASCII-only.
+    let s = crate::utils::text::clean_strict(raw);
+    let s = s.as_str();
     if s.is_empty() {
         return Ok(None);
     }

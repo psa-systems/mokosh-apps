@@ -16,6 +16,8 @@ pub mod pagination;
 pub mod prefs;
 pub mod rate_limit;
 pub mod sort_keys;
+// MAPPS-582: invisible-character sanitizing for every text input.
+pub mod text;
 pub mod url;
 pub mod validation;
 pub mod version;
@@ -25,6 +27,7 @@ pub use envelope::{Paginated, PaginatedMeta};
 pub use error::{AppError, AppResult};
 pub use form_guard::FormGuard;
 pub use pagination::{PaginatedResponse, PaginationParams};
+pub use text::{clean_strict, has_invisible, strip_invisible};
 pub use validation::{validate, Rule};
 pub use version::{BUILD_DATE, GIT_HASH, VERSION};
 

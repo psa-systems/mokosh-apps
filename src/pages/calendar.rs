@@ -316,6 +316,10 @@ const APPT_DESCRIPTION_MAX: i64 = 2000;
 /// `COUNT` and `UNTIL` are not both set, and that the common numeric / keyword
 /// values are well-formed. It does not evaluate the rule semantically.
 fn validate_rrule(rule: &str) -> Result<(), String> {
+    // MAPPS-582: an RRULE is a fixed ASCII grammar, and a pasted rule is
+    // exactly the kind of value that carries an invisible character.
+    let rule = crate::utils::text::clean_strict(rule);
+    let rule = rule.as_str();
     // Tolerate an optional `RRULE:` prefix (some pastes include it).
     let body = rule
         .trim()
