@@ -2035,6 +2035,41 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     // MAPPS-579: whether the metadata block is expanded. Starts closed; a form
     // missing Title or Slug forces it open regardless (see the block itself).
     let mut meta_open = use_signal(|| false);
+    // MAPPS-580: who can be mentioned. Fetched once for the editor; an empty
+    // list disables the autocomplete entirely, which is the right degrade
+    // because a handle typed by hand still resolves at render time.
+    let mention_people = use_resource(move || async move {
+        #[cfg(feature = "web")]
+        {
+            let _gen = crate::hooks::fetch::active_tenant_generation();
+            #[derive(serde::Deserialize)]
+            struct Row {
+                id: uuid::Uuid,
+                #[serde(default)]
+                email: String,
+                #[serde(default)]
+                full_name: String,
+            }
+            let rows = crate::hooks::fetch::api::get_all_authed::<Row>("/auth/users")
+                .await
+                .ok()?;
+            Some(
+                rows.into_iter()
+                    .map(|r| crate::utils::mentions::Mention {
+                        id: r.id.to_string(),
+                        display: if r.full_name.trim().is_empty() {
+                            r.email.clone()
+                        } else {
+                            r.full_name
+                        },
+                        email: r.email,
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        }
+        #[cfg(not(feature = "web"))]
+        None
+    });
     // MAPPS-573: Cancel with unsaved work asks first.
     let mut confirming_cancel = use_signal(|| false);
 
@@ -2608,6 +2643,34 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                                         );
                                     }
                                 },
+                            }
+                            // MAPPS-580: the mention list, under the field it
+                            // completes for. Renders nothing unless an `@` is
+                            // being typed that the RENDERER would also read as
+                            // a mention.
+                            {
+                                let people = mention_people
+                                    .read_unchecked()
+                                    .clone()
+                                    .flatten()
+                                    .unwrap_or_default();
+                                rsx! {
+                                    crate::components::MentionAutocomplete {
+                                        target_id: "content".to_string(),
+                                        value: content.read().clone(),
+                                        people,
+                                        onaccept: move |(text, caret): (String, u32)| {
+                                            content_error.set(String::new());
+                                            content.set(text);
+                                            spawn(async move {
+                                                crate::platform::timer::sleep_ms(0).await;
+                                                crate::platform::dom::set_textarea_selection(
+                                                    "content", caret, caret,
+                                                );
+                                            });
+                                        },
+                                    }
+                                }
                             }
                             // MAPPS-579: what the author is up against. The body
                             // has a server-side cap, so the character count is
