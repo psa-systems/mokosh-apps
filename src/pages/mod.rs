@@ -34,8 +34,9 @@ pub mod onboarding;
 pub mod pick_tenant;
 pub mod platform_login;
 // mokosh-contact-login: /portal/* customer-portal pages retired on this
-// branch (prompt 001). Contact plane lands under a new module in
+// branch (prompt 001). Contact plane lands under `contact_portal` in
 // prompt 005.
+pub mod contact_portal;
 pub mod profile;
 pub mod projects;
 pub mod quotes;

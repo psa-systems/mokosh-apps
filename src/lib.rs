@@ -33,6 +33,25 @@ use components::AppShell;
 pub fn AuthGuard() -> Element {
     let auth = hooks::use_auth();
     let nav = use_navigator();
+    // mokosh-contact-login prompt 005: cold-load bootstrap for the
+    // contact plane. Fires once on mount; if there is no in-memory
+    // contact access token but a refresh token is mirrored in
+    // localStorage, kick off `/contact/auth/refresh` in the
+    // background. This races the first render (intentionally) and
+    // mirrors the staff-bearer bootstrap in hooks/auth.rs: a hard
+    // refresh on `/dashboard` under a contact session may transiently
+    // fall through the guard's next branch, then re-render once the
+    // refresh lands.
+    #[cfg(feature = "web")]
+    use_effect(|| {
+        if !crate::hooks::fetch::api::has_contact_session()
+            && crate::hooks::fetch::api::current_contact_refresh_token().is_some()
+        {
+            spawn(async move {
+                let _ = crate::hooks::contact_auth::refresh_contact_session().await;
+            });
+        }
+    });
     let auth_state = auth.read();
     if auth_state.is_loading {
         // Still hydrating tokens from sessionStorage. Render a
@@ -65,6 +84,26 @@ pub fn AuthGuard() -> Element {
         // silently unlocks a route that used to require tenant auth.
         #[cfg(feature = "web")]
         if crate::hooks::fetch::api::current_platform_access_token().is_some() {
+            return rsx! {
+                ErrorBoundary {
+                    handle_error: |errors: ErrorContext| rsx! {
+                        RouteErrorFallback { errors }
+                    },
+                    Outlet::<Route> {}
+                }
+            };
+        }
+
+        // mokosh-contact-login prompt 005: contact-plane session
+        // recognition. A contact JWT (`typ: "contact"`) is a distinct
+        // identity from the tenant staff bearer; the shared mokosh
+        // workspace routes render for either. The tenant `AuthContext`
+        // is empty in this branch (the contact identity is not a
+        // `users` row), so downstream pages that read `use_auth()` see
+        // `is_authenticated() == false` - capability gating lands in
+        // prompt 006 to hide the staff-only surfaces.
+        #[cfg(feature = "web")]
+        if crate::hooks::fetch::api::has_contact_session() {
             return rsx! {
                 ErrorBoundary {
                     handle_error: |errors: ErrorContext| rsx! {
@@ -331,6 +370,23 @@ pub enum Route {
 
     #[route("/signup/:token")]
     SignupComplete { token: String },
+
+    // mokosh-contact-login prompt 005: contact-plane portal routes.
+    // Public (no AuthGuard, no PortalGuard). The token on the two
+    // password-write routes arrives via the MAPPS-560 query-segment
+    // shape so the component receives it as a prop rather than
+    // scraping `window.location.search`.
+    #[route("/portal/:slug/login")]
+    ContactLogin { slug: String },
+
+    #[route("/portal/:slug/set-password?:token")]
+    ContactSetPassword { slug: String, token: String },
+
+    #[route("/portal/:slug/forgot-password")]
+    ContactForgotPassword { slug: String },
+
+    #[route("/portal/:slug/reset-password?:token")]
+    ContactResetPassword { slug: String, token: String },
 
     // ======================================================================
     // Authenticated routes. The `AuthGuard` layout below renders nothing
@@ -1424,9 +1480,30 @@ fn Teams() -> Element {
 // Clients tab (prompt 001). admin::TenantManagementPage stays in the
 // admin.rs file as dead code for a follow-up cleanup.
 
-// mokosh-contact-login: all Portal* route wrapper components retired
-// with the /portal/* routes (prompt 001). Contact plane replacements
-// land in prompt 005 under a different route family.
+// mokosh-contact-login: all pre-pivot Portal* route wrapper components
+// retired with the customer-portal /portal/* routes (prompt 001). The
+// contact-plane replacements below land per prompt 005 under a new
+// route family (`ContactLogin` etc.) with no PortalGuard layout.
+
+#[component]
+fn ContactLogin(slug: String) -> Element {
+    rsx! { contact_portal::login::ContactLoginPage { slug } }
+}
+
+#[component]
+fn ContactSetPassword(slug: String, token: String) -> Element {
+    rsx! { contact_portal::set_password::ContactSetPasswordPage { slug, token } }
+}
+
+#[component]
+fn ContactForgotPassword(slug: String) -> Element {
+    rsx! { contact_portal::forgot_password::ContactForgotPasswordPage { slug } }
+}
+
+#[component]
+fn ContactResetPassword(slug: String, token: String) -> Element {
+    rsx! { contact_portal::reset_password::ContactResetPasswordPage { slug, token } }
+}
 
 #[component]
 fn RequestForm(token: String) -> Element {
@@ -1489,8 +1566,59 @@ mod emailed_link_routes {
 }
 
 // mokosh-contact-login: portal_login_route test retired with the
-// /portal/* route family (prompt 001). Contact-plane replacement in
-// prompt 005.
+// /portal/* route family (prompt 001). Contact-plane replacements
+// below (prompt 005) pin the four new route shapes end-to-end so a
+// magic link built server-side round-trips through the router without
+// stripping the slug or the token.
+#[cfg(test)]
+mod contact_portal_routes {
+    use super::Route;
+    use std::str::FromStr;
+
+    #[test]
+    fn login_resolves_with_slug() {
+        let route = Route::from_str("/portal/abc/login").expect("login parses");
+        match route {
+            Route::ContactLogin { slug } => assert_eq!(slug, "abc"),
+            other => panic!("expected ContactLogin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_password_carries_slug_and_token() {
+        let route =
+            Route::from_str("/portal/abc/set-password?token=xyz").expect("set-password parses");
+        match route {
+            Route::ContactSetPassword { slug, token } => {
+                assert_eq!(slug, "abc");
+                assert_eq!(token, "xyz");
+            }
+            other => panic!("expected ContactSetPassword, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn forgot_password_resolves_with_slug() {
+        let route = Route::from_str("/portal/abc/forgot-password").expect("forgot-password parses");
+        match route {
+            Route::ContactForgotPassword { slug } => assert_eq!(slug, "abc"),
+            other => panic!("expected ContactForgotPassword, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reset_password_carries_slug_and_token() {
+        let route =
+            Route::from_str("/portal/abc/reset-password?token=xyz").expect("reset-password parses");
+        match route {
+            Route::ContactResetPassword { slug, token } => {
+                assert_eq!(slug, "abc");
+                assert_eq!(token, "xyz");
+            }
+            other => panic!("expected ContactResetPassword, got {other:?}"),
+        }
+    }
+}
 
 /// Prelude module for common imports
 pub mod prelude {

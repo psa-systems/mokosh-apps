@@ -419,6 +419,136 @@ pub mod api {
         Some(stored)
     }
 
+    // --- Contact-plane session holders (mokosh-contact-login, prompt 005) ---
+    //
+    // The `/api/v1/contact/*` tree runs on the contact JWT (`typ:
+    // "contact"`) minted at `POST /contact/auth/login`. Kept in a
+    // dedicated slot so a visitor holding both a staff bearer AND a
+    // contact bearer (rare, but the mokosh workspace routes render for
+    // either identity) does not accidentally cross the two: the
+    // `_contact_authed` helpers read ONLY this slot, and the staff
+    // helpers read ONLY `ACCESS_TOKEN`. Refresh mirror lives in
+    // localStorage under `CONTACT_REFRESH_STORAGE_KEY` so a hard
+    // refresh / deep-link cold-load can re-mint via
+    // `POST /contact/auth/refresh` before AuthGuard bounces.
+    #[cfg(feature = "web")]
+    thread_local! {
+        static CONTACT_ACCESS_TOKEN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+        static CONTACT_REFRESH_TOKEN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    }
+
+    #[cfg(feature = "web")]
+    const CONTACT_REFRESH_STORAGE_KEY: &str = "mokosh:contact_refresh_token";
+
+    /// `localStorage` key that remembers "this browser last signed in
+    /// as a contact on slug X" so the AuthGuard bounce for an expired
+    /// session can send them to `/portal/{slug}/login` rather than the
+    /// staff `/login`. Written by the contact-login page on success;
+    /// cleared alongside the refresh token on logout.
+    #[cfg(feature = "web")]
+    pub const CONTACT_LAST_SLUG_STORAGE_KEY: &str = "mokosh:contact_last_slug";
+
+    /// Set the contact access token. `None` clears the in-memory slot.
+    /// Does NOT bump [`super::TENANT_GENERATION`]: the contact plane
+    /// has its own tenant scope and the pages it mounts fresh after
+    /// login navigation anyway.
+    #[cfg(feature = "web")]
+    pub fn set_contact_access_token(token: Option<String>) {
+        CONTACT_ACCESS_TOKEN.with(|t| *t.borrow_mut() = token);
+    }
+
+    /// Read the contact access token. `None` until a contact signs in.
+    #[cfg(feature = "web")]
+    pub fn current_contact_access_token() -> Option<String> {
+        CONTACT_ACCESS_TOKEN.with(|t| t.borrow().clone())
+    }
+
+    /// Whether a contact session is held. Cheap predicate for gates
+    /// (AuthGuard) that don't need to touch the token itself.
+    #[cfg(feature = "web")]
+    pub fn has_contact_session() -> bool {
+        CONTACT_ACCESS_TOKEN.with(|t| t.borrow().is_some())
+    }
+
+    /// Set the contact refresh token. Also mirrors to localStorage so
+    /// a cold-load can bootstrap via `/contact/auth/refresh`. Passing
+    /// `None` clears both the in-memory slot and the storage mirror.
+    #[cfg(feature = "web")]
+    pub fn set_contact_refresh_token(token: Option<String>) {
+        CONTACT_REFRESH_TOKEN.with(|t| *t.borrow_mut() = token.clone());
+        if let Some(win) = web_sys::window() {
+            if let Ok(Some(storage)) = win.local_storage() {
+                match token.as_deref() {
+                    Some(value) => {
+                        let _ = storage.set_item(CONTACT_REFRESH_STORAGE_KEY, value);
+                    }
+                    None => {
+                        let _ = storage.remove_item(CONTACT_REFRESH_STORAGE_KEY);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Read the contact refresh token. Falls back to the localStorage
+    /// mirror on a cold-load; primes the in-memory slot so subsequent
+    /// reads skip the storage round-trip.
+    #[cfg(feature = "web")]
+    pub fn current_contact_refresh_token() -> Option<String> {
+        let in_memory = CONTACT_REFRESH_TOKEN.with(|t| t.borrow().clone());
+        if in_memory.is_some() {
+            return in_memory;
+        }
+        let win = web_sys::window()?;
+        let storage = win.local_storage().ok().flatten()?;
+        let stored = storage
+            .get_item(CONTACT_REFRESH_STORAGE_KEY)
+            .ok()
+            .flatten()?;
+        if stored.is_empty() {
+            return None;
+        }
+        CONTACT_REFRESH_TOKEN.with(|t| *t.borrow_mut() = Some(stored.clone()));
+        Some(stored)
+    }
+
+    /// Remember the last slug this browser signed in on. Used by the
+    /// AuthGuard bounce on expired sessions to route the visitor back
+    /// to the same portal they came from.
+    #[cfg(feature = "web")]
+    pub fn set_contact_last_slug(slug: &str) {
+        if let Some(win) = web_sys::window() {
+            if let Ok(Some(storage)) = win.local_storage() {
+                let _ = storage.set_item(CONTACT_LAST_SLUG_STORAGE_KEY, slug);
+            }
+        }
+    }
+
+    /// Read the last-known slug the browser signed in on. `None` when
+    /// no contact login has ever happened on this browser.
+    #[cfg(feature = "web")]
+    pub fn current_contact_last_slug() -> Option<String> {
+        let win = web_sys::window()?;
+        let storage = win.local_storage().ok().flatten()?;
+        let stored = storage
+            .get_item(CONTACT_LAST_SLUG_STORAGE_KEY)
+            .ok()
+            .flatten()?;
+        if stored.is_empty() {
+            None
+        } else {
+            Some(stored)
+        }
+    }
+
+    /// Clear the entire contact session. Setting the refresh token to
+    /// `None` clears its localStorage mirror as well.
+    #[cfg(feature = "web")]
+    pub fn clear_contact_session() {
+        set_contact_access_token(None);
+        set_contact_refresh_token(None);
+    }
+
     // The web-only API helpers below are grouped under this `api`
     // module; the non-`web` build compiles the module with no items.
 
@@ -1106,6 +1236,164 @@ pub mod api {
             .and_then(content_disposition_filename);
         let bytes = resp.binary().await.map_err(|e| e.to_string())?;
         Ok((bytes, filename))
+    }
+
+    // --- Contact-authed wrappers (mokosh-contact-login, prompt 005) ------
+    //
+    // Contact JWT (`typ: "contact"`) minted at
+    // `POST /api/v1/contact/auth/login`. Every `/api/v1/contact/*`
+    // extractor (`RequireContactAuth`) rejects any bearer whose typ is
+    // not "contact", so these helpers read ONLY `CONTACT_ACCESS_TOKEN`
+    // and fail fast with a 401 when no contact session is held, rather
+    // than falling back to the staff bearer or firing an anonymous
+    // request.
+
+    #[cfg(feature = "web")]
+    fn contact_not_signed_in_api() -> ApiError {
+        ApiError::Status {
+            code: 401,
+            message: "not signed in to the contact portal".to_string(),
+            fields: Vec::new(),
+            envelope_code: String::new(),
+            envelope_body: None,
+        }
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn get_contact_authed<T: DeserializeOwned>(path: &str) -> Result<T, ApiError> {
+        let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::get(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn post_contact_authed_typed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::post(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn post_contact_authed_no_content(path: &str) -> Result<(), ApiError> {
+        let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::post(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .send()
+            .await
+            .map_err(network_err)?;
+        let status = resp.status();
+        super::note_response_status(status);
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+        let body_text = resp.text().await.unwrap_or_default();
+        let (message, fields, envelope_code, envelope_body) =
+            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
+                Ok(env) => {
+                    let code = env.error.code.clone();
+                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
+                    (
+                        env.error.message,
+                        env.error.errors.unwrap_or_default(),
+                        code,
+                        raw,
+                    )
+                }
+                Err(_) => (
+                    body_text.chars().take(200).collect(),
+                    Vec::new(),
+                    String::new(),
+                    None,
+                ),
+            };
+        Err(ApiError::Status {
+            code: status,
+            message,
+            fields,
+            envelope_code,
+            envelope_body,
+        })
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn put_contact_authed_typed<T: DeserializeOwned, B: Serialize>(
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::put(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .json(body)
+            .map_err(|e| ApiError::Network(e.to_string()))?
+            .send()
+            .await
+            .map_err(network_err)?;
+        handle_response(resp).await
+    }
+
+    #[cfg(feature = "web")]
+    pub async fn delete_contact_authed_no_content(path: &str) -> Result<(), ApiError> {
+        let t = current_contact_access_token().ok_or_else(contact_not_signed_in_api)?;
+        let url = format!("{}{}", api_base(), path);
+        let resp = Request::delete(&url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", &format!("Bearer {t}"))
+            .send()
+            .await
+            .map_err(network_err)?;
+        let status = resp.status();
+        super::note_response_status(status);
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+        let body_text = resp.text().await.unwrap_or_default();
+        let (message, fields, envelope_code, envelope_body) =
+            match serde_json::from_str::<crate::utils::error::ErrorResponse>(&body_text) {
+                Ok(env) => {
+                    let code = env.error.code.clone();
+                    let raw = serde_json::from_str::<serde_json::Value>(&body_text).ok();
+                    (
+                        env.error.message,
+                        env.error.errors.unwrap_or_default(),
+                        code,
+                        raw,
+                    )
+                }
+                Err(_) => (
+                    body_text.chars().take(200).collect(),
+                    Vec::new(),
+                    String::new(),
+                    None,
+                ),
+            };
+        Err(ApiError::Status {
+            code: status,
+            message,
+            fields,
+            envelope_code,
+            envelope_body,
+        })
     }
 
     // --- Platform-authed wrappers (MAPPS-518) ---------------------------
@@ -1831,5 +2119,40 @@ mod tests_RETIRED {
                  `_portal_authed` helpers"
             );
         }
+    }
+}
+
+/// mokosh-contact-login prompt 005: unit tests for the contact-plane
+/// session holders. Covers only the in-memory holder round-trip and
+/// the isolation from the staff `ACCESS_TOKEN`. The refresh-token
+/// setter mirrors to `localStorage` via `web_sys::window()`, which
+/// panics on the native test target (`cannot access imported statics
+/// on non-wasm targets`); those paths are exercised in the browser
+/// end-to-end run described in prompt 005's Verify section rather
+/// than in `cargo test --lib`.
+#[cfg(all(test, feature = "web"))]
+mod contact_session_tests {
+    use super::api::{
+        current_access_token, current_contact_access_token, has_contact_session,
+        set_contact_access_token,
+    };
+
+    #[test]
+    fn contact_access_token_roundtrip() {
+        set_contact_access_token(Some("contact-access".to_string()));
+        assert_eq!(
+            current_contact_access_token().as_deref(),
+            Some("contact-access")
+        );
+        assert!(has_contact_session());
+        // Staff bearer is untouched by a contact sign-in: separate cells.
+        assert_eq!(
+            current_access_token(),
+            None,
+            "a contact sign-in must not populate the staff access token"
+        );
+        set_contact_access_token(None);
+        assert_eq!(current_contact_access_token(), None);
+        assert!(!has_contact_session());
     }
 }
