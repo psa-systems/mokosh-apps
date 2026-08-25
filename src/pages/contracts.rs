@@ -1790,8 +1790,17 @@ fn ContractItemsCard(
                                             TableRow {
                                                 key: "{key}",
                                                 clickable: true,
-                                                onclick: move |_| editing_item.set(Some(edit_state.clone())),
-                                                TableCell { class: "font-medium", "{item.name}" }
+                                                onclick: {
+                                                    let edit_state = edit_state.clone();
+                                                    move |_| editing_item.set(Some(edit_state.clone()))
+                                                },
+                                                TableCell {
+                                                    class: "font-medium",
+                                                    // MAPPS-569: the row's click opens a modal, so there is no
+                                                    // route to link to; this cell is the keyboard path instead.
+                                                    onactivate: move |_| editing_item.set(Some(edit_state.clone())),
+                                                    "{item.name}"
+                                                }
                                                 TableCell { "{type_label}" }
                                                 TableCell { "{qty}" }
                                                 TableCell { "{unit}" }

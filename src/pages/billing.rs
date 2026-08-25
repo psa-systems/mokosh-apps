@@ -2975,8 +2975,14 @@ fn TaxRateListBody() -> Element {
                                 let name = rate.name.clone();
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell { class: "text-right", "{rate_label}%" }
@@ -3449,8 +3455,14 @@ fn PaymentGatewayConfigBody() -> Element {
                                 let configured = gateway.configured;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{provider_label}" }
                                         }
                                         TableCell {

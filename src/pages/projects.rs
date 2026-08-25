@@ -1583,8 +1583,22 @@ pub fn ProjectDetailPage(props: ProjectDetailPageProps) -> Element {
                                                 let task = t.clone();
                                                 let open_task = move |_| selected_task.set(Some(task.clone()));
                                                 rsx! {
-                                                    div {
-                                                        class: "flex items-center justify-between p-3 bg-surface rounded-lg cursor-pointer hover:bg-surface-2 transition-colors",
+                                                    // MAPPS-569: a real button, not a div with an
+                                                    // onclick. This row contains no link and no
+                                                    // button of its own, so before this there was no
+                                                    // keyboard path to a task's detail from the
+                                                    // project page at all - the action was
+                                                    // mouse-only, not merely slower.
+                                                    //
+                                                    // It can wrap rather than overlay because it has
+                                                    // no interactive children; the calendar cells in
+                                                    // MAPPS-443 could not, which is why they kept
+                                                    // `role="button"` and a key handler instead.
+                                                    // `w-full text-left` keeps the row's appearance,
+                                                    // since a button defaults to neither.
+                                                    button {
+                                                        r#type: "button",
+                                                        class: "w-full text-left flex items-center justify-between p-3 bg-surface rounded-lg cursor-pointer hover:bg-surface-2 transition-colors",
                                                         onclick: open_task,
                                                         div {
                                                             p { class: "font-medium text-content", "{t.title}" }
@@ -2274,8 +2288,16 @@ pub fn ProjectTasksPage(props: ProjectTasksPageProps) -> Element {
                                 rsx! {
                                     TableRow {
                                         clickable: true,
-                                        onclick: move |_| selected_task.set(Some(task.clone())),
-                                        TableCell { "{t.title}" }
+                                        onclick: {
+                                            let task = task.clone();
+                                            move |_| selected_task.set(Some(task.clone()))
+                                        },
+                                        TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| selected_task.set(Some(task.clone())),
+                                            "{t.title}"
+                                        }
                                         TableCell { Badge { variant: tv, "{tl}" } }
                                         TableCell {
                                             if unassigned {

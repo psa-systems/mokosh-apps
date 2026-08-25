@@ -373,8 +373,16 @@ fn QuoteRow(props: QuoteRowProps) -> Element {
                 navigator.push(Route::QuoteDetail { id: id.clone() });
             },
             TableCell {
-                div { class: "font-medium", "{props.number}" }
-                div { class: "text-xs text-subtle", "{props.title}" }
+                // MAPPS-569: the row's `onclick` is on the `tr`, which is not
+                // focusable, so this Link is the keyboard path to the quote.
+                // Every other list row that navigates already had one; this was
+                // the only one that did not.
+                Link {
+                    to: Route::QuoteDetail { id: props.id.clone() },
+                    class: "block hover:underline",
+                    div { class: "font-medium", "{props.number}" }
+                    div { class: "text-xs text-subtle", "{props.title}" }
+                }
             }
             TableCell { "{props.company}" }
             TableCell { class: "font-medium", "{props.total}" }
