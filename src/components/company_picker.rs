@@ -1,6 +1,6 @@
 //! Reusable Company picker.
 //!
-//! Hits `GET /contacts/companies?q=...&per_page=20` on each keystroke
+//! Hits `GET /contacts/companies?q=...&status=active&per_page=20` on each keystroke
 //! (no debounce) and renders the matches in a click-to-select dropdown.
 //! The selected
 //! company's UUID is reported back via the `onselect` callback; the
@@ -113,13 +113,20 @@ pub fn CompanyPicker(props: CompanyPickerProps) -> Element {
     let results = use_resource(move || async move {
         let _gen = crate::hooks::fetch::active_tenant_generation();
         let q = query.read().trim().to_string();
+        // MAPPS-575: active companies only. Archiving is meant to take a
+        // company out of day-to-day use, and this picker IS day-to-day use: an
+        // archived company still offered here would keep being attached to new
+        // contacts, tickets and time entries, which is the state the operator
+        // archived it to leave. Editing a record that already names an archived
+        // company is unaffected, because the stored name is rendered from the
+        // record rather than re-resolved through this search.
         let path = if q.is_empty() {
-            "/contacts/companies?per_page=20".to_string()
+            "/contacts/companies?status=active&per_page=20".to_string()
         } else {
             // The server stores names as-is and matches with ILIKE so
             // we can pass the trimmed query straight through.
             format!(
-                "/contacts/companies?q={}&per_page=20",
+                "/contacts/companies?q={}&status=active&per_page=20",
                 urlencoding_minimal(&q)
             )
         };
