@@ -1053,3 +1053,321 @@ pub fn CogIcon(#[props(default)] size: IconSize, #[props(default)] class: String
         }
     }
 }
+
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn BoldIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M6.75 3.75h5.5a3.75 3.75 0 0 1 0 7.5h-5.5v-7.5Zm0 7.5h6.25a3.75 3.75 0 0 1 0 7.5H6.75v-7.5Z",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn ItalicIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M14.25 3.75h-5m1.5 16.5h-5M13.5 3.75 9 20.25",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn StrikethroughIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M4.5 12h15M16.5 6.75c-.6-1.7-2.4-3-4.7-3-2.8 0-4.8 1.5-4.8 3.6 0 1.5 1 2.6 2.7 3.2M7.5 17.25c.7 1.8 2.6 3 5 3 2.9 0 4.9-1.5 4.9-3.7 0-1.3-.6-2.3-1.8-3",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn QuoteIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M6.75 15.75A3 3 0 0 0 9.75 12.75V8.25h-6v4.5h3a3 3 0 0 1-3 3v0m13.5 0a3 3 0 0 0 3-3V8.25h-6v4.5h3a3 3 0 0 1-3 3v0",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn CodeIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "m9 8.25-4.5 3.75L9 15.75m6-7.5 4.5 3.75-4.5 3.75",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn CodeBlockIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M3.75 5.25h16.5v13.5H3.75zM9 10.5 7.125 12 9 13.5m6-3L16.875 12 15 13.5",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn LinkIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn BulletListIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M8.25 6.75h12M8.25 12h12M8.25 17.25h12M3.75 6.75h.008v.008H3.75zm0 5.25h.008v.008H3.75zm0 5.25h.008v.008H3.75z",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn NumberedListIcon(
+    #[props(default)] size: IconSize,
+    #[props(default)] class: String,
+) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M8.25 6.75h12M8.25 12h12M8.25 17.25h12M3 5.25h1.5v3M3 11.25h1.875L3 13.5v.75h1.875M3 16.5h1.875v1.125H3.75m1.125 0H3.75v1.125H4.875",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn ChecklistIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M9.75 6.75h10.5M9.75 12h10.5M9.75 17.25h10.5M3 6.375l1.125 1.125L6.375 5.25M3 11.625l1.125 1.125L6.375 10.5M3 16.875l1.125 1.125 2.25-2.25",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn TableIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M3.75 5.25h16.5v13.5H3.75zM3.75 9.75h16.5M9.75 9.75v9M15 9.75v9",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn PhotoIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M2.25 15.75l5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M18 5.25h.008v.008H18zM2.25 4.5h19.5v15H2.25z",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn HeadingIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M5.25 4.5v15m9-15v15m-9-7.5h9m3 7.5V9.75l2.25 1.5",
+            }
+        }
+    }
+}
+/// MAPPS-579: markdown editor toolbar.
+#[component]
+pub fn EyeIcon(#[props(default)] size: IconSize, #[props(default)] class: String) -> Element {
+    let size_class = size.class();
+    let class = format!("{} {}", size_class, class);
+
+    rsx! {
+        svg {
+            class: "{class}",
+            xmlns: "http://www.w3.org/2000/svg",
+            fill: "none",
+            view_box: "0 0 24 24",
+            stroke_width: "1.5",
+            stroke: "currentColor",
+            path {
+                stroke_linecap: "round",
+                stroke_linejoin: "round",
+                d: "M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178ZM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z",
+            }
+        }
+    }
+}

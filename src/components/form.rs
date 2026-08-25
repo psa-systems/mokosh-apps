@@ -263,6 +263,11 @@ pub struct TextareaProps {
     class: String,
     #[props(default)]
     oninput: EventHandler<FormEvent>,
+    /// MAPPS-579: keyboard shortcuts. The editor toolbar needs Cmd/Ctrl+B, I
+    /// and K on the body field, and the handler has to sit on the textarea
+    /// itself so a shortcut only fires while the author is typing in it.
+    #[props(default)]
+    onkeydown: EventHandler<KeyboardEvent>,
 }
 
 #[component]
@@ -313,6 +318,7 @@ pub fn Textarea(props: TextareaProps) -> Element {
                 aria_required: if props.required { "true" } else { "false" },
                 disabled: props.disabled,
                 oninput: move |e| props.oninput.call(e),
+                onkeydown: move |e| props.onkeydown.call(e),
                 onblur: move |_| touched.set(true),
                 "{props.value}"
             }
