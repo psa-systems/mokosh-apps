@@ -604,6 +604,29 @@ mod tests {
         assert!(out.contains("<strong>REST API</strong>"), "{out}");
     }
 
+    /// MAPPS-584: the nesting the stylesheet's colour rule selects on.
+    ///
+    /// `a_span_colour_is_kept` proves the declaration survives sanitizing, and
+    /// it always did - yet no colour reached the page, because the typography
+    /// plugin sets an EXPLICIT colour on `strong` and an explicit colour beats
+    /// an inherited one. The stylesheet answers that with
+    /// `.prose :where([style*="color"]) :where(strong, code, kbd)`, which only
+    /// matches while the colour sits on an ANCESTOR of the bold text. Pinned
+    /// here because a sanitizer that reordered or dropped the span would leave
+    /// that selector matching nothing, with no failing test and the same silent
+    /// symptom that took this to a second ticket.
+    #[test]
+    fn a_coloured_span_wraps_the_text_it_colours() {
+        let out = render_markdown("<span style=\"color:red\">**REST API**</span>");
+        let open = out.find(r#"<span style="color:red">"#).expect(&out);
+        let strong = out.find("<strong>").expect(&out);
+        let close = out.find("</span>").expect(&out);
+        assert!(
+            open < strong && strong < close,
+            "the colour has to be on an ancestor of the bold run, not a sibling: {out}"
+        );
+    }
+
     /// And the rejections, which is the half worth testing. Each of these
     /// drops the whole declaration rather than keeping a scrubbed part of it.
     #[test]
