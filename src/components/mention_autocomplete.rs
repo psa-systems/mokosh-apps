@@ -182,6 +182,35 @@ mod tests {
         );
     }
 
+    /// Mentions resolve against the PMS-921 staff directory, everywhere.
+    ///
+    /// `/auth/users` is `RequireManager`, so reading the roster from there
+    /// leaves a Technician with a 403 and no autocomplete, which is the gap
+    /// PMS-921 was filed to close for the renderer. It is also the only source
+    /// that carries `handle`, which is what resolution matches on.
+    ///
+    /// Pinned because this exact collision already happened once: MAPPS-580 was
+    /// written against `/auth/users` on a branch that predated the rename, and
+    /// merging both broke `main`.
+    #[test]
+    fn every_mention_source_is_the_staff_directory() {
+        for (what, src) in [
+            ("the editor", include_str!("../pages/knowledge_base.rs")),
+            ("the renderer", include_str!("markdown.rs")),
+        ] {
+            assert!(
+                src.contains("\"/auth/directory\""),
+                "{what} must read the staff directory"
+            );
+            assert!(
+                !src.contains("get_all_authed::<Row>(\"/auth/users\")")
+                    && !src.contains("DirectoryUser>(\"/auth/users\")"),
+                "{what} must not resolve mentions against the manager-gated user \
+                 list, or a Technician gets no mentions at all"
+            );
+        }
+    }
+
     /// Dismissing must not rewrite text. The only call that changes the source
     /// is the one behind an explicit accept.
     #[test]
