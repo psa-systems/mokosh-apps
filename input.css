@@ -383,6 +383,28 @@
     vertical-align: top;
   }
 
+  /* MAPPS-578: a resolved @mention. A chip, so it reads as a reference to a
+     person rather than as running text, and distinct from a link because it
+     does not always navigate: only a viewer who can open the team roster gets
+     a destination, and there is no per-user page to send anyone else to.
+     `cursor` follows that, set on the span only where the delegated listener
+     will act on it. */
+  .prose :where(.mention):not(:where([class~="not-prose"] *)) {
+    display: inline-block;
+    border-radius: 0.25rem;
+    background-color: var(--accent-100);
+    color: var(--accent-900);
+    padding: 0 0.3rem;
+    font-weight: 500;
+    /* Keep the chip from stretching the line it sits in. */
+    line-height: 1.35;
+    white-space: nowrap;
+  }
+  .dark .prose :where(.mention):not(:where([class~="not-prose"] *)) {
+    background-color: var(--accent-900);
+    color: var(--accent-100);
+  }
+
   /* GFM suppresses the list marker on a task item; the plugin draws it, so
      every checkbox was preceded by a stray bullet. pulldown emits no
      `task-list-item` class to hang this on, so the selector matches the
