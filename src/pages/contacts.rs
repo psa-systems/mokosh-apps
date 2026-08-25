@@ -7028,3 +7028,124 @@ mod archive_scope_tests {
         );
     }
 }
+
+/// MAPPS-577: the delete dialog's decisions, none of which a rendered snapshot
+/// shows. Source scans for the same reason the other page suites use them: the
+/// preview fetch and the archive PUT only run under the `web` feature.
+#[cfg(test)]
+mod delete_dialog_tests {
+    const SRC: &str = include_str!("contacts.rs");
+
+    /// Shipping code only, whitespace-collapsed. Excludes this module, because
+    /// every assertion quotes the pattern it looks for and would match itself.
+    fn code_only() -> String {
+        let end = SRC
+            .find("mod delete_dialog_tests")
+            .expect("this module is part of this file");
+        SRC[..end]
+            .lines()
+            .map(|l| match l.find("//") {
+                Some(i) => &l[..i],
+                None => l,
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// AC1, and the defect MAPPS-577 reported. The client held an English copy
+    /// of the server's blocking rules; PMS-919 changed them and the copy went
+    /// stale, so the dialog kept warning that projects, appointments and
+    /// sub-companies block a delete long after they started unlinking.
+    #[test]
+    fn the_dialog_holds_no_copy_of_which_tables_block() {
+        let code = code_only();
+        for stale in [
+            "cannot be deleted; remove those first",
+            "appointments or sub-companies",
+        ] {
+            assert!(
+                !code.contains(stale),
+                "the dialog must not restate the server's blocking rules: found {stale:?}"
+            );
+        }
+        assert!(
+            code.contains("deletion-preview"),
+            "what blocks a delete comes from PMS-926, so the two cannot drift"
+        );
+    }
+
+    /// AC8. The Statistics card cannot answer this: `open_ticket_count` filters
+    /// on `closed_at IS NULL` while the delete guard counts every ticket, so a
+    /// company with closed tickets and none open reads as deletable there and
+    /// is then refused.
+    #[test]
+    fn the_counts_are_not_re_derived_from_the_statistics_card() {
+        let code = code_only();
+        let preview_block = {
+            let start = code
+                .find("let deletion_preview = use_resource")
+                .expect("the preview resource exists");
+            &code[start..start + 600]
+        };
+        assert!(
+            !preview_block.contains("open_ticket_count"),
+            "the preview must not be built from the page's own counts"
+        );
+    }
+
+    /// AC5. A refused delete offers no gate and no Delete button.
+    #[test]
+    fn a_blocked_delete_withholds_the_gate() {
+        let code = code_only();
+        assert!(
+            code.contains("let blocked = known && !preview.can_delete;"),
+            "blocked follows the server's own verdict"
+        );
+        assert!(
+            code.contains("blocked,"),
+            "and is passed to the dialog, which withholds the gate and the \
+             confirm button"
+        );
+    }
+
+    /// AC7. The delete path never depends on the preview arriving. An unknown
+    /// preview degrades to the pre-MAPPS-577 behaviour rather than blocking the
+    /// dialog or disabling the delete.
+    #[test]
+    fn an_absent_preview_does_not_block_the_delete() {
+        let code = code_only();
+        assert!(
+            code.contains("let known = snapshot.is_some();"),
+            "the dialog distinguishes 'no preview' from 'preview says blocked'"
+        );
+        assert!(
+            code.contains("let blocked = known && !preview.can_delete;"),
+            "an absent preview is NOT blocked: without the `known &&`, a failed \
+             fetch would withhold the Delete button on every company"
+        );
+    }
+
+    /// AC4. Archiving is a control in the dialog, not an instruction to go and
+    /// find the edit form.
+    #[test]
+    fn a_blocked_delete_offers_archiving_in_place() {
+        let code = code_only();
+        assert!(
+            code.contains(r#""status": "inactive""#),
+            "the alternative performs the archive itself"
+        );
+        assert!(
+            code.contains("Archive instead"),
+            "and is labelled as the alternative it is"
+        );
+        // The own-company refusal is not solved by archiving either, so the
+        // action is withheld there rather than offered and then failing.
+        assert!(
+            code.contains("(blocked && !preview.is_own_company).then("),
+            "archiving is not offered where it would not help"
+        );
+    }
+}

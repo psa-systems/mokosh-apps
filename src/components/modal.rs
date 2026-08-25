@@ -851,6 +851,81 @@ mod tests {
         );
     }
 
+    /// MAPPS-577: a refused action offers no gate and no confirm button.
+    ///
+    /// Rendered through the REAL `ConfirmDialog`. Asking somebody to type a
+    /// company name to enable a button that will be refused is exactly the
+    /// wasted effort the issue reported, and a DISABLED button is not enough:
+    /// it invites the user to work out what would enable it.
+    #[component]
+    fn BlockedDialog() -> Element {
+        rsx! {
+            ConfirmDialog {
+                open: true,
+                title: "Delete company".to_string(),
+                message: "BODY-MARKER".to_string(),
+                confirm_text: "Delete".to_string(),
+                destructive: true,
+                blocked: true,
+                confirm_phrase: "Acme Corp".to_string(),
+                body: rsx! { p { "2 invoices" } },
+                alternative: rsx! { button { "Archive instead" } },
+                onconfirm: move |_| {},
+                oncancel: move |_| {},
+            }
+        }
+    }
+
+    #[test]
+    fn a_blocked_dialog_offers_no_gate_and_no_confirm() {
+        let html = render(BlockedDialog);
+        assert!(
+            !html.contains("<input"),
+            "no phrase gate: there is nothing for it to unlock; got: {html}"
+        );
+        assert!(
+            !html.contains("to confirm"),
+            "and no instruction to type one; got: {html}"
+        );
+        assert!(
+            !html.contains(">Delete<"),
+            "the confirm button is withheld, not disabled; got: {html}"
+        );
+        assert!(html.contains("Archive instead"), "{html}");
+        assert!(html.contains("2 invoices"), "the body renders: {html}");
+    }
+
+    /// And the ordinary path is untouched: a deletable company still gets its
+    /// gate and its Delete button. This must not become a two-step flow for the
+    /// common case.
+    #[component]
+    fn AllowedWithBody() -> Element {
+        rsx! {
+            ConfirmDialog {
+                open: true,
+                title: "Delete company".to_string(),
+                message: "BODY-MARKER".to_string(),
+                confirm_text: "Delete".to_string(),
+                destructive: true,
+                confirm_phrase: "Acme Corp".to_string(),
+                body: rsx! { p { "3 sites" } },
+                onconfirm: move |_| {},
+                oncancel: move |_| {},
+            }
+        }
+    }
+
+    #[test]
+    fn an_allowed_dialog_keeps_its_gate_and_gains_the_body() {
+        let html = render(AllowedWithBody);
+        assert!(html.contains("<input"), "the gate is intact: {html}");
+        assert!(html.contains(">Delete<"), "{html}");
+        assert!(
+            html.contains("3 sites"),
+            "and it can still say what the delete would do: {html}"
+        );
+    }
+
     #[test]
     fn gated_needs_exact_trimmed_caseinsensitive_match() {
         // Wrong / partial input keeps the gate closed.
