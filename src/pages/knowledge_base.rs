@@ -67,8 +67,13 @@ const TAG_MAX: usize = 50;
 /// drop empties. Mirrors the issue's "tags are length-capped and stripped of
 /// markup/control characters" requirement so junk like `<script>` or an
 /// unbounded blob never reaches the tag taxonomy (MAPPS-218).
+///
+/// MAPPS-582: `is_control` is true only for `Cc`, so an invisible `Cf`
+/// character used to survive and split one tag into two that render
+/// identically. `clean_strict` removes those before this filter runs.
 fn sanitize_tags(raw: &str) -> Vec<String> {
-    raw.split(',')
+    crate::utils::text::clean_strict(raw)
+        .split(',')
         .filter_map(|t| {
             let cleaned: String = t
                 .chars()
@@ -89,7 +94,12 @@ fn sanitize_tags(raw: &str) -> Vec<String> {
 /// to single hyphens, trimmed. Mirrors the obvious server expectation
 /// (`slug` is required, `length(min = 1, max = 255)`). Empty input yields
 /// `"article"` so we never POST an empty slug.
+///
+/// MAPPS-582: strip the invisibles first. Every non-alphanumeric collapses to a
+/// hyphen here, so an invisible character in the title would otherwise put a
+/// hyphen in the URL with nothing on screen to account for it.
 fn slugify(input: &str) -> String {
+    let input = crate::utils::text::clean_strict(input);
     let mut out = String::with_capacity(input.len());
     let mut prev_dash = false;
     for c in input.chars() {

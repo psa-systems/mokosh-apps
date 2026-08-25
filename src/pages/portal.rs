@@ -525,7 +525,11 @@ fn PortalTicketComments(props: PortalTicketCommentsProps) -> Element {
                     rows: 4,
                     placeholder: "Type your message…",
                     value: "{draft}",
-                    oninput: move |e: FormEvent| draft.set(e.value()),
+                    // MAPPS-582: raw textarea, so it strips the invisibles
+                    // itself rather than inheriting it from `Textarea`.
+                    oninput: move |e: FormEvent| {
+                        draft.set(crate::utils::text::strip_invisible(&e.value()))
+                    },
                 }
                 div { class: "mt-3 flex justify-end",
                     Button {
@@ -1333,7 +1337,11 @@ pub fn PortalQuoteDetailPage(props: PortalQuoteDetailPageProps) -> Element {
                                     rows: 3,
                                     placeholder: "Anything you want to add (optional)",
                                     value: "{notes}",
-                                    oninput: move |e| notes.set(e.value()),
+                                    // MAPPS-582: raw textarea; see the reply
+                                    // draft above.
+                                    oninput: move |e: FormEvent| {
+                                        notes.set(crate::utils::text::strip_invisible(&e.value()))
+                                    },
                                 }
                                 match *confirming.read() {
                                     None => rsx! {

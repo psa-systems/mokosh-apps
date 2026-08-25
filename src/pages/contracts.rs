@@ -610,7 +610,11 @@ fn decimal_parse_error(raw: &str, label: &str) -> String {
 /// Rejects negatives, more than two decimal places, and out-of-range values,
 /// distinguishing a non-numeric entry from one that is numeric but too large.
 fn validate_money(raw: &str, label: &str) -> Result<Option<Decimal>, String> {
-    let s = raw.trim();
+    // MAPPS-582: `Decimal::from_str` is ASCII-only, so an invisible character
+    // makes a correct amount report "must be a number" with nothing on screen
+    // to explain it.
+    let s = crate::utils::text::clean_strict(raw);
+    let s = s.as_str();
     if s.is_empty() {
         return Ok(None);
     }
@@ -634,7 +638,9 @@ fn validate_money(raw: &str, label: &str) -> Result<Option<Decimal>, String> {
 /// Validate a required quantity (MAPPS-211): present, non-negative, in range.
 /// Allows fractional quantities (the server column is `Decimal`).
 fn validate_quantity(raw: &str, label: &str) -> Result<Decimal, String> {
-    let s = raw.trim();
+    // MAPPS-582: see `validate_money`.
+    let s = crate::utils::text::clean_strict(raw);
+    let s = s.as_str();
     if s.is_empty() {
         return Err(format!("{label} is required."));
     }

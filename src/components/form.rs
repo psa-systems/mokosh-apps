@@ -1,6 +1,73 @@
 //! Form input components
 
+use dioxus::html::{FileData, HasFileData};
 use dioxus::prelude::*;
+use std::rc::Rc;
+
+/// A [`FormEvent`]'s payload with its `value()` replaced by the sanitized one
+/// (MAPPS-582). Everything else (`valid`, `values`, `files`) delegates to the
+/// event the browser raised, so the wrapper is invisible to a call site that
+/// reads anything other than the value.
+struct SanitizedFormData {
+    value: String,
+    inner: Rc<FormData>,
+}
+
+impl HasFormData for SanitizedFormData {
+    fn value(&self) -> String {
+        self.value.clone()
+    }
+
+    fn valid(&self) -> bool {
+        self.inner.valid()
+    }
+
+    fn values(&self) -> Vec<(String, FormValue)> {
+        self.inner.values()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl HasFileData for SanitizedFormData {
+    fn files(&self) -> Vec<FileData> {
+        self.inner.files()
+    }
+}
+
+/// Strip invisible characters from a text event's value before it reaches the
+/// call site (MAPPS-582). This is the single choke point: every text-entry
+/// surface in the app routes through the components in this file, so a value
+/// that renders as nothing can never be read out of `e.value()` and stored.
+///
+/// Returns the original event untouched when there is nothing to strip, which
+/// is every keystroke of ordinary text, so the common path allocates nothing
+/// and behaves bit-identically to before. `Event::map` is what rebuilds the
+/// event, so the new one shares the original's propagation and
+/// `prevent_default` state rather than resetting it.
+fn sanitized(e: FormEvent) -> FormEvent {
+    let raw = e.value();
+    if !crate::utils::text::has_invisible(&raw) {
+        return e;
+    }
+    let data = SanitizedFormData {
+        value: crate::utils::text::strip_invisible(&raw),
+        inner: e.data(),
+    };
+    e.map(move |_| FormData::new(data))
+}
+
+/// Whether an `<input>` of this type gets its value sanitized (MAPPS-582).
+///
+/// Everything does except a password. A password may legitimately contain any
+/// character, and silently rewriting one turns a correct credential into a
+/// failed login with no diagnosis anywhere. Every password, secret and API-key
+/// field in the app sets `type="password"`, so this one check exempts them all.
+fn sanitizes(field_type: &str) -> bool {
+    field_type != "password"
+}
 
 /// Bind a text field so editing it clears its inline error slot (MAPPS-581).
 /// An inline error describes the value that was submitted, so the next
@@ -126,6 +193,10 @@ pub fn Input(props: InputProps) -> Element {
 
     let class = format!("{} {}", input_class, props.class);
 
+    // MAPPS-582: read the field type once, out here, so the `oninput` closure
+    // captures a bool rather than the prop.
+    let sanitize = sanitizes(&props.r#type);
+
     rsx! {
         div { class: "space-y-1",
             if !props.label.is_empty() {
@@ -162,7 +233,9 @@ pub fn Input(props: InputProps) -> Element {
                 aria_label: if props.aria_label.is_empty() { None } else { Some(props.aria_label.clone()) },
                 disabled: props.disabled,
                 "data-testid": props.data_testid.as_deref(),
-                oninput: move |e| props.oninput.call(e),
+                oninput: move |e: FormEvent| {
+                    props.oninput.call(if sanitize { sanitized(e) } else { e })
+                },
                 onblur: move |e| {
                     touched.set(true);
                     props.onblur.call(e);
@@ -335,7 +408,9 @@ pub fn Textarea(props: TextareaProps) -> Element {
                 maxlength: props.maxlength,
                 aria_required: if props.required { "true" } else { "false" },
                 disabled: props.disabled,
-                oninput: move |e| props.oninput.call(e),
+                // MAPPS-582: same choke point as `Input`. A textarea has no
+                // password variant, so there is nothing to exempt.
+                oninput: move |e: FormEvent| props.oninput.call(sanitized(e)),
                 onkeydown: move |e| props.onkeydown.call(e),
                 onblur: move |_| touched.set(true),
                 "{props.value}"
@@ -660,8 +735,166 @@ pub fn SearchInput(props: SearchInputProps) -> Element {
                 class: "{class}",
                 placeholder: "{props.placeholder}",
                 value: "{props.value}",
-                oninput: move |e| props.oninput.call(e),
+                // MAPPS-582: a query carrying an invisible character matches
+                // nothing and reads as "the record is gone".
+                oninput: move |e: FormEvent| props.oninput.call(sanitized(e)),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shape a browser hands `oninput`: a value plus the form's named
+    /// values. Enough to drive [`sanitized`] end to end.
+    struct StubFormData {
+        value: String,
+    }
+
+    impl HasFormData for StubFormData {
+        fn value(&self) -> String {
+            self.value.clone()
+        }
+
+        fn valid(&self) -> bool {
+            true
+        }
+
+        fn values(&self) -> Vec<(String, FormValue)> {
+            vec![("name".to_string(), FormValue::Text(self.value.clone()))]
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    impl HasFileData for StubFormData {
+        fn files(&self) -> Vec<FileData> {
+            Vec::new()
+        }
+    }
+
+    /// This file up to the first test module, so a needle below cannot match
+    /// itself.
+    fn component_source() -> &'static str {
+        include_str!("form.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap()
+    }
+
+    fn event(value: &str) -> FormEvent {
+        FormEvent::new(
+            Rc::new(FormData::new(StubFormData {
+                value: value.to_string(),
+            })),
+            true,
+        )
+    }
+
+    #[test]
+    fn sanitized_strips_the_invisible_characters() {
+        assert_eq!(
+            sanitized(event("919-397-4144\u{200B}")).value(),
+            "919-397-4144"
+        );
+        assert_eq!(sanitized(event("Acme\u{FEFF}")).value(), "Acme");
+        assert_eq!(sanitized(event("John\u{00A0}Smith")).value(), "John Smith");
+    }
+
+    /// The common path: nothing to strip, so the original event is handed on
+    /// untouched rather than rebuilt.
+    #[test]
+    fn a_clean_value_takes_the_unchanged_path() {
+        let e = event("John Smith");
+        let original = e.data();
+        let out = sanitized(e);
+        assert_eq!(out.value(), "John Smith");
+        assert!(
+            Rc::ptr_eq(&original, &out.data()),
+            "a clean value must not be rebuilt"
+        );
+    }
+
+    /// Typing is unaffected: a mid-value space is kept where it was typed and
+    /// a trailing space while typing is not eaten.
+    #[test]
+    fn typing_is_unaffected() {
+        for value in ["John ", " John", "John  Smith", "line one\nline two"] {
+            let e = event(value);
+            let original = e.data();
+            let out = sanitized(e);
+            assert_eq!(out.value(), value);
+            assert!(Rc::ptr_eq(&original, &out.data()), "{value:?} was rebuilt");
+        }
+    }
+
+    /// The wrapper only replaces `value`; everything else still comes from the
+    /// event the browser raised.
+    #[test]
+    fn the_wrapper_delegates_everything_but_the_value() {
+        let out = sanitized(event("Acme\u{200B}"));
+        assert!(out.valid());
+        assert_eq!(
+            out.values(),
+            vec![(
+                "name".to_string(),
+                FormValue::Text("Acme\u{200B}".to_string())
+            )]
+        );
+        assert!(out.files().is_empty());
+    }
+
+    /// MAPPS-582: a password may legitimately contain any character, and
+    /// silently rewriting one turns a correct credential into a failed login
+    /// with no diagnosis. `Input` gates the sanitizing on the field type, which
+    /// is what exempts every password / secret / API-key field at once.
+    #[test]
+    fn password_inputs_are_exempt() {
+        assert!(!sanitizes("password"), "a password is never rewritten");
+        for kind in ["text", "email", "tel", "url", "search", "number", "date"] {
+            assert!(sanitizes(kind), "{kind} must be sanitized");
+        }
+
+        // What `Input` does with that answer, applied to a password whose value
+        // is nothing but characters this would otherwise strip.
+        let raw = "hunter2\u{200B}\u{00A0}\u{200D}\u{FEFF}";
+        let e = event(raw);
+        let out = if sanitizes("password") {
+            sanitized(e)
+        } else {
+            e
+        };
+        assert_eq!(
+            out.value(),
+            raw,
+            "a password must pass through byte-identical"
+        );
+
+        let src = component_source();
+        assert!(
+            src.contains("let sanitize = sanitizes(&props.r#type);"),
+            "Input must gate its sanitizing on the field type"
+        );
+        assert!(
+            src.contains("props.oninput.call(if sanitize { sanitized(e) } else { e })"),
+            "and must pass a password value through untouched"
+        );
+    }
+
+    /// The choke point only works if every text-entry element in this file
+    /// goes through it. `Textarea` and `SearchInput` have no password variant,
+    /// so they sanitize unconditionally.
+    #[test]
+    fn every_text_element_routes_through_the_choke_point() {
+        let src = component_source();
+        assert_eq!(
+            src.matches("props.oninput.call(sanitized(e))").count(),
+            2,
+            "Textarea and SearchInput must both sanitize"
+        );
     }
 }

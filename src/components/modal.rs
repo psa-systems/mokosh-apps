@@ -361,7 +361,12 @@ fn OpenConfirmDialog(
                         class: "w-full rounded-md border border-line bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-500",
                         value: "{typed}",
                         autocomplete: "off",
-                        oninput: move |e| typed.set(e.value()),
+                        // MAPPS-582: raw input. An invisible character pasted
+                        // with the phrase would leave the confirm button dead
+                        // with the right words on screen.
+                        oninput: move |e: FormEvent| {
+                            typed.set(crate::utils::text::strip_invisible(&e.value()))
+                        },
                     }
                 }
             }
