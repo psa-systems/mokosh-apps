@@ -6579,3 +6579,102 @@ mod sort_key_tests {
         assert!(!CONTACT_SORT_KEYS.contains(&"company_name"));
     }
 }
+
+/// MAPPS-575: archiving a company is only useful if it actually takes the
+/// company out of day-to-day use, and only safe if its history stays reachable.
+/// Those two pull in opposite directions at every call site that lists
+/// companies, so which ones narrow to `status=active` is the decision this
+/// feature rests on, and it is invisible in a rendered page.
+///
+/// A source scan rather than SSR: each of these is a URL built inside a
+/// `use_resource` closure that only runs under the `web` feature, so no host
+/// test can observe the request. What is being pinned is the classification.
+#[cfg(test)]
+mod archive_scope_tests {
+    /// Selectors that CHOOSE a company for new work. An archived company
+    /// offered here goes straight back into the state it was archived to leave.
+    const MUST_NARROW: &[(&str, &str)] = &[(
+        "company picker (new/edit contact, tickets, time entries)",
+        include_str!("../components/company_picker.rs"),
+    )];
+
+    #[test]
+    fn every_company_selector_for_new_work_asks_for_active_only() {
+        for (what, src) in MUST_NARROW {
+            let queries: Vec<&str> = src
+                .lines()
+                .filter(|l| l.contains("/contacts/companies?"))
+                .collect();
+            assert!(
+                !queries.is_empty(),
+                "{what}: expected at least one companies query; did the endpoint move?"
+            );
+            for q in queries {
+                assert!(
+                    q.contains("status=active"),
+                    "{what}: a selector for new work must ask for active companies only, \
+                     or archiving does not remove the company from day-to-day use. Found: {q}"
+                );
+            }
+        }
+    }
+
+    /// The counterweight. A LIST FILTER must not narrow: an archived company's
+    /// contracts and quotes still exist, and being able to look at them is the
+    /// reason archiving keeps history rather than deleting it. A blanket
+    /// "add status=active everywhere" sweep would break exactly this, and it
+    /// would look like tightening rather than like the regression it is.
+    #[test]
+    fn list_filters_still_offer_archived_companies() {
+        for (what, src) in [
+            ("contracts list filter", include_str!("contracts.rs")),
+            ("quotes list filter", include_str!("quotes.rs")),
+        ] {
+            let unnarrowed = src
+                .lines()
+                .filter(|l| l.contains("/contacts/companies?"))
+                .filter(|l| !l.contains("status=active"))
+                .count();
+            assert!(
+                unnarrowed >= 1,
+                "{what}: the list filter must still offer archived companies, so their \
+                 kept history is reachable; every companies query in this file narrows"
+            );
+        }
+    }
+
+    /// The company list's own default. Active, and the value is bound to the
+    /// Select, so the default is stated on screen rather than silently applied:
+    /// a user who cannot find a company they archived can see the list is
+    /// filtered instead of concluding it was deleted.
+    #[test]
+    fn the_company_list_defaults_to_active_and_says_so() {
+        const SRC: &str = include_str!("contacts.rs");
+        assert!(
+            SRC.contains(r#"let mut status_filter = use_signal(|| "active".to_string());"#),
+            "the company list must default to active"
+        );
+        assert!(
+            SRC.contains(r#"value: status_filter.read().clone(),"#),
+            "and must bind that default to the Select, so it is visible"
+        );
+        assert!(
+            SRC.contains(r#"SelectOption::new("", "Any status")"#),
+            "and must offer a way back to the archived ones"
+        );
+    }
+
+    /// The default must not read as a filter, or a brand-new tenant with no
+    /// companies is told "No companies match your filters" on first load and
+    /// offered a Clear filters button for filters it never set.
+    #[test]
+    fn the_default_status_does_not_count_as_a_filter() {
+        const SRC: &str = include_str!("contacts.rs");
+        assert!(
+            SRC.contains(
+                r#"!search_text.is_empty() || !type_text.is_empty() || status_text != "active""#
+            ),
+            "an empty tenant must read as \"No companies yet\", not as a filtered-out list"
+        );
+    }
+}
