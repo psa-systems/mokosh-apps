@@ -171,7 +171,9 @@ fn mention_html(person: &Mention) -> String {
     format!(
         "<span class=\"mention\" data-mention=\"{}\" title=\"{}\">@{}</span>",
         escape_attr(&person.id),
-        escape_attr(&format!("{} <{}>", person.display, person.email)),
+        // What the author typed, next to who it resolved to. Not an email:
+        // `GET /auth/directory` (PMS-921) returns the handle only.
+        escape_attr(&format!("{} (@{})", person.display, person.handle)),
         escape_text(&person.display),
     )
 }
@@ -692,12 +694,12 @@ mod tests {
             Mention {
                 id: "u-long".to_string(),
                 display: "Long Le".to_string(),
-                email: "long@niceguyit.com".to_string(),
+                handle: "long".to_string(),
             },
             Mention {
                 id: "u-nate".to_string(),
                 display: "Nate Fisher".to_string(),
-                email: "nate@niceguyit.com".to_string(),
+                handle: "nate".to_string(),
             },
         ]
     }
@@ -711,10 +713,8 @@ mod tests {
             "the id rides along: {out}"
         );
         assert!(out.contains("@Long Le"), "the chip shows the person: {out}");
-        // ammonia re-serializes, and `<` is legal inside a quoted attribute
-        // value, so it comes back raw rather than as the entity we wrote.
         assert!(
-            out.contains(r#"title="Long Le <long@niceguyit.com>""#),
+            out.contains(r#"title="Long Le (@long)""#),
             "hover answers who this is: {out}"
         );
     }
@@ -776,12 +776,12 @@ mod tests {
             Mention {
                 id: "a".to_string(),
                 display: "Chris Adams".to_string(),
-                email: "chris@x.test".to_string(),
+                handle: "chris".to_string(),
             },
             Mention {
                 id: "b".to_string(),
                 display: "Chris Brown".to_string(),
-                email: "chrisb@x.test".to_string(),
+                handle: "chrisb".to_string(),
             },
         ];
         let out = render_markdown_with_mentions("ping @chris", &people);
@@ -884,7 +884,7 @@ export TOKEN="$MOKOSH_TOKEN"
         let known = vec![Mention {
             id: "u-ngit".to_string(),
             display: "Nice Guy IT".to_string(),
-            email: "niceguyit@niceguyit.com".to_string(),
+            handle: "niceguyit".to_string(),
         }];
         let resolved = render_markdown_with_mentions(SRC, &known);
         assert!(
@@ -897,7 +897,7 @@ export TOKEN="$MOKOSH_TOKEN"
         let stranger = [Mention {
             id: "u-other".to_string(),
             display: "Someone Else".to_string(),
-            email: "someone@x.test".to_string(),
+            handle: "someone".to_string(),
         }];
         for directory in [&stranger[..], &[][..]] {
             let out = render_markdown_with_mentions(SRC, directory);

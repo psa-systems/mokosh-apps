@@ -23,9 +23,16 @@ pub struct Mention {
     pub id: String,
     /// What to render in the chip: the person's full name where there is one.
     pub display: String,
-    /// Shown on hover, so a reader can tell two people with the same first
-    /// name apart without leaving the article.
-    pub email: String,
+    /// The local part of their email address, as the server's staff directory
+    /// reports it (PMS-921). Shown on hover so a reader can see what the author
+    /// actually typed.
+    ///
+    /// Not the address. `GET /auth/directory` returns the local part only,
+    /// because it is what mention resolution matches on and it is not something
+    /// anyone can send to. A technician can already see a colleague's display
+    /// name across the app but no authenticated surface returns a staff email,
+    /// so carrying one here would be a disclosure the feature does not need.
+    pub handle: String,
 }
 
 impl Mention {
@@ -34,7 +41,7 @@ impl Mention {
     /// There is no username to match on, so this is derived from what people
     /// actually type when mentioning a colleague:
     ///
-    /// - the email local part, so `long@niceguyit.com` answers to `@long`,
+    /// - the directory handle, so `long@niceguyit.com` answers to `@long`,
     /// - the first name,
     /// - the full name with a `.` and with nothing between the parts, which is
     ///   the two shapes a handle usually takes.
@@ -51,9 +58,7 @@ impl Mention {
             }
         };
 
-        if let Some(local) = self.email.split('@').next() {
-            push(local.to_string());
-        }
+        push(self.handle.clone());
         let parts: Vec<&str> = self
             .display
             .split_whitespace()
@@ -139,19 +144,19 @@ pub fn handle_end(text: &str, at: usize) -> Option<usize> {
 mod tests {
     use super::*;
 
-    fn person(display: &str, email: &str) -> Mention {
+    fn person(display: &str, handle: &str) -> Mention {
         Mention {
             id: format!("id-{display}"),
             display: display.to_string(),
-            email: email.to_string(),
+            handle: handle.to_string(),
         }
     }
 
     #[test]
     fn handles_cover_what_people_actually_type() {
-        let p = person("Long Le", "long@niceguyit.com");
+        let p = person("Long Le", "long");
         let h = p.handles();
-        assert!(h.contains(&"long".to_string()), "email local part: {h:?}");
+        assert!(h.contains(&"long".to_string()), "directory handle: {h:?}");
         assert!(h.contains(&"long.le".to_string()), "first.last: {h:?}");
         assert!(h.contains(&"longle".to_string()), "firstlast: {h:?}");
         // Last name alone collides with first names too often to be safe.
@@ -160,7 +165,7 @@ mod tests {
 
     #[test]
     fn resolution_is_case_insensitive() {
-        let people = vec![person("Long Le", "long@niceguyit.com")];
+        let people = vec![person("Long Le", "long")];
         for handle in ["long", "Long", "LONG", "Long.Le", "longle"] {
             assert!(
                 resolve(handle, &people).is_some(),
@@ -175,8 +180,8 @@ mod tests {
     #[test]
     fn an_ambiguous_handle_resolves_to_nobody() {
         let people = vec![
-            person("Chris Adams", "chris@x.test"),
-            person("Chris Brown", "chrisb@x.test"),
+            person("Chris Adams", "chris"),
+            person("Chris Brown", "chrisb"),
         ];
         assert!(resolve("chris", &people).is_none(), "ambiguous");
         // The unambiguous one still resolves.
@@ -192,7 +197,7 @@ mod tests {
 
     #[test]
     fn an_unknown_handle_resolves_to_nobody() {
-        let people = vec![person("Long Le", "long@niceguyit.com")];
+        let people = vec![person("Long Le", "long")];
         assert!(resolve("nobody", &people).is_none());
         assert!(resolve("", &people).is_none());
     }
