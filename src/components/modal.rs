@@ -3,6 +3,7 @@
 use dioxus::prelude::*;
 
 use super::button::{Button, ButtonVariant};
+use super::error_banner::ErrorBanner;
 use super::icon_button::IconButton;
 use super::icons::XMarkIcon;
 
@@ -225,6 +226,16 @@ pub struct ConfirmDialogProps {
     /// plain one-click confirm, which is enough for non-cascading deletes.
     #[props(default)]
     confirm_phrase: String,
+    /// MAPPS-574: why the confirmed action did not happen, rendered inside the
+    /// dialog. Empty (default) = nothing to report.
+    ///
+    /// The dialog is the right home for it rather than a banner on the page
+    /// behind: the caller keeps `open` true on failure, so the reason appears
+    /// next to the button that produced it and above the phrase the user
+    /// already typed, instead of on a page they have just been dropped back
+    /// onto with no obvious link to what they did.
+    #[props(default)]
+    error: String,
     /// Confirm handler
     onconfirm: EventHandler<()>,
     /// Cancel/close handler
@@ -240,10 +251,55 @@ pub fn confirm_phrase_satisfied(typed: &str, required: &str) -> bool {
     required.is_empty() || typed.trim().eq_ignore_ascii_case(required)
 }
 
-/// Confirmation dialog component
+/// Confirmation dialog component.
+///
+/// MAPPS-574: the open dialog is a child component, for the same reason
+/// [`Modal`] splits out [`ModalDialog`]. The type-to-confirm phrase is state
+/// that must not outlive the dialog it belongs to, and `ConfirmDialog` itself
+/// does not unmount when the dialog closes - the caller keeps it mounted and
+/// flips `open`. Holding `typed` here meant cancelling and reopening found the
+/// phrase still in the box and the destructive button already enabled, so every
+/// attempt after the first was a one-click delete. Mounting the state with the
+/// dialog re-arms the gate on every open, with no reset to remember.
 #[component]
 pub fn ConfirmDialog(props: ConfirmDialogProps) -> Element {
-    let confirm_variant = if props.destructive {
+    if !props.open {
+        return rsx! {};
+    }
+
+    rsx! {
+        OpenConfirmDialog {
+            title: props.title.clone(),
+            message: props.message.clone(),
+            confirm_text: props.confirm_text.clone(),
+            cancel_text: props.cancel_text.clone(),
+            destructive: props.destructive,
+            loading: props.loading,
+            confirm_phrase: props.confirm_phrase.clone(),
+            error: props.error.clone(),
+            onconfirm: props.onconfirm,
+            oncancel: props.oncancel,
+        }
+    }
+}
+
+/// The dialog itself. Only mounted while open, so its phrase state is born and
+/// dies with one confirmation attempt.
+#[component]
+#[allow(clippy::too_many_arguments)]
+fn OpenConfirmDialog(
+    title: String,
+    message: String,
+    confirm_text: String,
+    cancel_text: String,
+    destructive: bool,
+    loading: bool,
+    confirm_phrase: String,
+    error: String,
+    onconfirm: EventHandler<()>,
+    oncancel: EventHandler<()>,
+) -> Element {
+    let confirm_variant = if destructive {
         ButtonVariant::Danger
     } else {
         ButtonVariant::Primary
@@ -254,34 +310,44 @@ pub fn ConfirmDialog(props: ConfirmDialogProps) -> Element {
     // (or empty) phrase keeps the button disabled, so a different entity's
     // name never carries over an enabled state.
     let mut typed = use_signal(String::new);
-    let gated = !props.confirm_phrase.trim().is_empty();
-    let satisfied = confirm_phrase_satisfied(&typed.read(), &props.confirm_phrase);
-    let confirm_disabled = props.loading || !satisfied;
-    let phrase = props.confirm_phrase.clone();
+    let gated = !confirm_phrase.trim().is_empty();
+    let satisfied = confirm_phrase_satisfied(&typed.read(), &confirm_phrase);
+    let confirm_disabled = loading || !satisfied;
+    let phrase = confirm_phrase.clone();
 
     rsx! {
         Modal {
-            open: props.open,
-            title: props.title.clone(),
+            open: true,
+            title: title.clone(),
             size: ModalSize::Small,
-            onclose: move |_| props.oncancel.call(()),
+            onclose: move |_| oncancel.call(()),
             footer: rsx! {
                 Button {
                     variant: ButtonVariant::Secondary,
-                    onclick: move |_| props.oncancel.call(()),
-                    disabled: props.loading,
-                    "{props.cancel_text}"
+                    onclick: move |_| oncancel.call(()),
+                    disabled: loading,
+                    "{cancel_text}"
                 }
                 Button {
                     variant: confirm_variant,
-                    onclick: move |_| props.onconfirm.call(()),
-                    loading: props.loading,
+                    onclick: move |_| onconfirm.call(()),
+                    loading: loading,
                     disabled: confirm_disabled,
-                    "{props.confirm_text}"
+                    "{confirm_text}"
                 }
             },
             p { class: "text-sm text-muted",
-                "{props.message}"
+                "{message}"
+            }
+            // MAPPS-574: why the last attempt did not happen. Above the phrase
+            // input, so the reason and the control the user is about to reuse
+            // are read in that order. `ErrorBanner` carries `role="alert"`, so
+            // a refusal arriving into an already-open dialog is announced
+            // rather than only appearing.
+            if !error.is_empty() {
+                div { class: "mt-3",
+                    ErrorBanner { "{error}" }
+                }
             }
             if gated {
                 div { class: "mt-3 space-y-1",
