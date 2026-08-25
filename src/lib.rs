@@ -714,6 +714,14 @@ pub enum Route {
     // MAPPS-364: admin-only tenant data import/export (server PMS-646).
     #[route("/settings/import-export")]
     SettingsImportExport {},
+    // mokosh-contact-login prompt 007: MSP portal-role management. List
+    // + edit live under `/settings/contact-roles*`. The card on a
+    // contact detail (`ContactPortalCard`, prompt 003) points admins
+    // here to create / rename / retire portal roles.
+    #[route("/settings/contact-roles")]
+    ContactRolesList {},
+    #[route("/settings/contact-roles/:id")]
+    ContactRoleEdit { id: String },
 
     // Mokosh-side profile. Edits the tenant-scoped fields on the
     // user row (name, title, phone, mobile, timezone). Cross-app
@@ -1378,6 +1386,19 @@ fn SettingsGateways() -> Element {
 #[component]
 fn SettingsImportExport() -> Element {
     rsx! { settings::ImportExportSettingsPage {} }
+}
+
+// mokosh-contact-login prompt 007: Settings > Contact Roles list +
+// edit. Two wrappers so the routing derive sees the correct component
+// names for `/settings/contact-roles` and `/settings/contact-roles/:id`.
+#[component]
+fn ContactRolesList() -> Element {
+    rsx! { settings_contact_roles::ContactRolesListPage {} }
+}
+
+#[component]
+fn ContactRoleEdit(id: String) -> Element {
+    rsx! { settings_contact_roles::ContactRoleEditPage { id } }
 }
 
 // MAPPS-172 ticket lookup editors.

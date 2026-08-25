@@ -332,6 +332,18 @@ const SETTINGS_SURFACES: &[SettingsSurface] = &[
         group: SettingsGroupKey::ServiceTypes,
         advanced: false,
     },
+    // mokosh-contact-login prompt 007: MSP-admin portal-role editor.
+    // Bundles capabilities into named roles that admins assign to
+    // contacts on the Contact detail page (ContactPortalCard, prompt
+    // 003 pointed here for role creation).
+    SettingsSurface {
+        route: Route::ContactRolesList {},
+        title: "Contact Roles",
+        description:
+            "Portal roles you assign to contacts. Each role bundles a set of capabilities.",
+        group: SettingsGroupKey::ServiceTypes,
+        advanced: false,
+    },
     SettingsSurface {
         route: Route::SettingsSla {},
         title: "SLA Management",
