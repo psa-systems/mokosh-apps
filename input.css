@@ -107,6 +107,23 @@
   --accent-950: #042f2e;
   --accent: #0f766e; /* fill chosen to pass WCAG AA with --on-accent text */
   --on-accent: #ffffff;
+
+  /* MAPPS-573: syntax-highlight palette, one token per class the Rust
+     highlighter emits (src/utils/highlight.rs CLASSES). Light values are
+     chosen against --surface-2, which is what a code block sits on; the
+     .dark block below re-pairs every one of them. Hues are deliberately
+     far apart in lightness as well as hue, so the distinction survives
+     for a red/green colour-blind reader. */
+  --hl-com: #64748b;
+  --hl-str: #0f766e;
+  --hl-num: #b45309;
+  --hl-kw: #9333ea;
+  --hl-typ: #1d4ed8;
+  --hl-var: #be185d;
+  --hl-key: #1d4ed8;
+  --hl-ins: #15803d;
+  --hl-del: #b91c1c;
+  --hl-mta: #7c3aed;
 }
 
 .dark {
@@ -125,6 +142,20 @@
   /* Default accent: Teal, Dark base. Lighter fill + dark on-accent. */
   --accent: #2dd4bf;
   --on-accent: #042f2e;
+
+  /* MAPPS-573: every --hl-* token re-paired for the dark surface. Each one
+     defined in :root has to reappear here, or it keeps its light value and
+     goes unreadable on the dark code block. */
+  --hl-com: #7d8da5;
+  --hl-str: #5eead4;
+  --hl-num: #fbbf24;
+  --hl-kw: #d8b4fe;
+  --hl-typ: #93c5fd;
+  --hl-var: #f9a8d4;
+  --hl-key: #93c5fd;
+  --hl-ins: #86efac;
+  --hl-del: #fca5a5;
+  --hl-mta: #c4b5fd;
 }
 
 /* Keyframes */
@@ -278,6 +309,98 @@
   }
   .scrollbar-hide::-webkit-scrollbar {
     display: none;               /* Chrome / Safari / WebKit */
+  }
+}
+
+/* MAPPS-573: corrections to @tailwindcss/typography for the Markdown we
+   actually render (KB articles, ticket and project descriptions). Scoped to
+   `.prose` so nothing here leaks into the app chrome.
+
+   The reference for all of it is the JetBrains rendering of the same source,
+   attached to MAPPS-573. */
+@layer components {
+  /* The plugin draws a LITERAL backtick either side of every inline code span
+     (`prose code::before { content: "`" }`). Authors read that as "the
+     backticks did not render". They rendered twice. */
+  .prose :where(code):not(:where([class~="not-prose"] *))::before,
+  .prose :where(code):not(:where([class~="not-prose"] *))::after {
+    content: none;
+  }
+
+  /* Inline code needs to read as code once the quotes are gone. */
+  .prose :where(code):not(:where(pre *)):not(:where([class~="not-prose"] *)) {
+    background-color: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 0.25rem;
+    padding: 0.1rem 0.3rem;
+    font-weight: 400;
+  }
+
+  /* A code block is a surface, not a run of monospace text. `overflow-x` on
+     the `pre` keeps a long line scrolling inside the block instead of widening
+     the article and putting a horizontal scrollbar on the page. */
+  .prose :where(pre):not(:where([class~="not-prose"] *)) {
+    background-color: var(--surface-2);
+    color: var(--content);
+    border: 1px solid var(--line);
+    border-radius: 0.375rem;
+    overflow-x: auto;
+  }
+
+  /* Token colours. One rule per class in src/utils/highlight.rs CLASSES; the
+     sanitizer allowlist is built from that same list, and a test fails if the
+     three ever disagree. */
+  .prose .hl-com { color: var(--hl-com); font-style: italic; }
+  .prose .hl-str { color: var(--hl-str); }
+  .prose .hl-num { color: var(--hl-num); }
+  .prose .hl-kw  { color: var(--hl-kw); font-weight: 600; }
+  .prose .hl-typ { color: var(--hl-typ); }
+  .prose .hl-var { color: var(--hl-var); }
+  .prose .hl-key { color: var(--hl-key); }
+  .prose .hl-ins { color: var(--hl-ins); }
+  .prose .hl-del { color: var(--hl-del); }
+  .prose .hl-mta { color: var(--hl-mta); font-weight: 600; }
+
+  /* Tables. The plugin draws horizontal rules and nothing else, which is
+     unreadable for the wide status tables these articles carry: with no
+     vertical rule there is nothing tying a cell to its column header. Full
+     cell borders and a shaded header row, matching the reference. */
+  .prose :where(table):not(:where([class~="not-prose"] *)) {
+    border: 1px solid var(--line);
+    border-collapse: collapse;
+    /* A wide table scrolls inside `display: block` rather than stretching the
+       article; `max-width` keeps it from forcing the page wider. */
+    display: block;
+    overflow-x: auto;
+    max-width: 100%;
+  }
+  .prose :where(thead):not(:where([class~="not-prose"] *)) {
+    background-color: var(--surface-2);
+  }
+  .prose :where(th, td):not(:where([class~="not-prose"] *)) {
+    border: 1px solid var(--line);
+    padding: 0.4rem 0.75rem;
+    vertical-align: top;
+  }
+
+  /* GFM suppresses the list marker on a task item; the plugin draws it, so
+     every checkbox was preceded by a stray bullet. pulldown emits no
+     `task-list-item` class to hang this on, so the selector matches the
+     checkbox itself. */
+  .prose :where(li):not(:where([class~="not-prose"] *)):has(> input[type="checkbox"]) {
+    list-style: none;
+  }
+  .prose :where(li):not(:where([class~="not-prose"] *)):has(> input[type="checkbox"])::marker {
+    content: none;
+  }
+  /* Line the checkbox up with the text it labels rather than the baseline. */
+  .prose :where(input[type="checkbox"]):not(:where([class~="not-prose"] *)) {
+    margin-right: 0.4rem;
+    vertical-align: baseline;
+  }
+  /* An interactive checkbox (MAPPS-573, via PMS-348) has to look clickable. */
+  .prose :where(input[type="checkbox"]:not([disabled])):not(:where([class~="not-prose"] *)) {
+    cursor: pointer;
   }
 }
 
