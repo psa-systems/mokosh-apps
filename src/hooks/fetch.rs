@@ -407,7 +407,10 @@ pub mod api {
         }
         let win = web_sys::window()?;
         let storage = win.local_storage().ok().flatten()?;
-        let stored = storage.get_item(PORTAL_REFRESH_STORAGE_KEY).ok().flatten()?;
+        let stored = storage
+            .get_item(PORTAL_REFRESH_STORAGE_KEY)
+            .ok()
+            .flatten()?;
         if stored.is_empty() {
             return None;
         }
