@@ -138,16 +138,16 @@ pub fn Markdown(props: MarkdownProps) -> Element {
 
 /// The tenant's staff directory, for resolving `@handle` (MAPPS-578).
 ///
-/// A `use_resource` per component instance, but Dioxus dedupes the underlying
-/// request the same way every other `/auth/users` reader in the app relies on,
-/// and the cost of being wrong here is one extra GET of a list the page has
-/// usually already loaded.
+/// `GET /auth/directory` (PMS-921), not `/auth/users`. The latter is
+/// `RequireManager`, so resolving against it meant a Technician got a 403 and
+/// saw every mention as plain text: a KB article is written for technicians and
+/// its mentions assign ownership, so the reader who most needed to know who was
+/// named was the one who could not see it. The directory is `RequireAuth` and
+/// returns id, name and handle only.
 ///
-/// A failure is not an error state: it yields an empty directory, every `@`
-/// renders as the plain text it already was, and the article is unchanged from
-/// what shipped before mentions existed. That is the right degrade, because
-/// `GET /auth/users` is `RequireManager` on the server, so a Technician, who is
-/// the typical KB reader, gets a 403 here by design.
+/// A failure is still not an error state: it yields an empty directory and
+/// every `@` renders as the plain text it already was. Nothing about a mention
+/// is worth blocking an article over.
 fn use_mention_directory(enabled: bool) -> Resource<Option<Vec<Mention>>> {
     use_resource(move || async move {
         if !enabled {
@@ -157,46 +157,23 @@ fn use_mention_directory(enabled: bool) -> Resource<Option<Vec<Mention>>> {
         {
             let _gen = crate::hooks::fetch::active_tenant_generation();
             #[derive(serde::Deserialize)]
-            struct DirectoryUser {
+            struct DirectoryEntry {
                 id: uuid::Uuid,
                 #[serde(default)]
-                email: String,
+                name: String,
                 #[serde(default)]
-                full_name: String,
-                #[serde(default)]
-                first_name: String,
-                #[serde(default)]
-                last_name: String,
-                #[serde(default)]
-                status: String,
+                handle: String,
             }
-            let rows = crate::hooks::fetch::api::get_all_authed::<DirectoryUser>("/auth/users")
-                .await
-                .ok()?;
+            let rows =
+                crate::hooks::fetch::api::get_all_authed::<DirectoryEntry>("/auth/directory")
+                    .await
+                    .ok()?;
             Some(
                 rows.into_iter()
-                    // A deactivated colleague is still the right answer for a
-                    // mention written while they were here, so status is not
-                    // filtered on. It is read only to keep the field from being
-                    // silently dropped if that decision is revisited.
-                    .map(|u| {
-                        let _ = &u.status;
-                        let display = if u.full_name.trim().is_empty() {
-                            format!("{} {}", u.first_name.trim(), u.last_name.trim())
-                                .trim()
-                                .to_string()
-                        } else {
-                            u.full_name.trim().to_string()
-                        };
-                        Mention {
-                            id: u.id.to_string(),
-                            display: if display.is_empty() {
-                                u.email.clone()
-                            } else {
-                                display
-                            },
-                            email: u.email,
-                        }
+                    .map(|u| Mention {
+                        id: u.id.to_string(),
+                        display: u.name,
+                        handle: u.handle,
                     })
                     .collect(),
             )
@@ -326,11 +303,9 @@ mod mention_wiring_tests {
         );
     }
 
-    /// A failed directory load is not an error state. It yields an empty
-    /// directory, every `@` renders as the plain text it already was, and the
-    /// article matches what shipped before mentions existed. This matters
-    /// because `GET /auth/users` is manager-gated on the server, so the typical
-    /// KB reader gets a 403 here by design.
+    /// A failed directory load is not an error state: it yields an empty
+    /// directory and every `@` renders as the plain text it already was.
+    /// Nothing about a mention is worth blocking an article over.
     #[test]
     fn a_failed_directory_load_degrades_to_plain_text() {
         let code = code_only();
@@ -343,6 +318,25 @@ mod mention_wiring_tests {
             code.contains(".await .ok()?"),
             "the fetch swallows its error into `None` rather than surfacing an \
              error state for something the reader cannot act on"
+        );
+    }
+
+    /// PMS-921: mentions resolve against the staff directory, not against user
+    /// management. `/auth/users` is `RequireManager`, so resolving there meant
+    /// a Technician saw every mention as plain text, which is the reader the
+    /// feature is for. Pinned because the two paths look interchangeable and
+    /// only one of them works for the audience.
+    #[test]
+    fn the_directory_is_the_source_not_user_management() {
+        let code = code_only();
+        assert!(
+            code.contains("\"/auth/directory\""),
+            "mentions resolve against the unprivileged staff directory"
+        );
+        assert!(
+            !code.contains("\"/auth/users\""),
+            "and never against the manager-gated user-management list, which a \
+             Technician cannot read"
         );
     }
 }
