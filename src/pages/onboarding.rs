@@ -467,11 +467,19 @@ pub fn Onboarding() -> Element {
                         // tenant whose details were never submitted is litter.
                         FileField {
                             name: "org_logo",
-                            label: "Logo (optional)",
+                            // MAPPS-443: matches the settings field. The help line
+                            // below now opens with "Optional.", so keeping it in the
+                            // label too said it twice on one control.
+                            label: "Logo",
                             accept: "image/png,image/jpeg,image/webp,image/gif",
                             disabled: saving(),
                             error: logo_error(),
-                            help: "PNG, JPEG, WebP or GIF, up to 1 MB. Shown to clients on the forms you send.",
+                            // MAPPS-443: verbatim from the settings logo field. The
+                            // two screens render the same field with the same accept
+                            // list and the same 1 MB cap, and this copy is the longer
+                            // of the two because it says where the logo actually shows
+                            // up, which is the part an operator needs.
+                            help: "Optional. PNG, JPEG, WebP or GIF, up to 1 MB. Shown to clients at the top of the request forms you send and the email that carries them.",
                             onchange: move |evt: FormEvent| {
                                     logo_error.set(String::new());
                                     let Some(file) = evt.files().into_iter().next() else {
