@@ -8,5 +8,9 @@
 
 pub mod forgot_password;
 pub mod login;
+// MAPPS-572 (prompt 010): magic-link finder + Company picker land as
+// two sibling routes at `/portal/login` and `/portal/pick?:token`.
+pub mod magic_link_login;
+pub mod picker;
 pub mod reset_password;
 pub mod set_password;

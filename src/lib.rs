@@ -388,6 +388,17 @@ pub enum Route {
     #[route("/portal/:slug/reset-password?:token")]
     ContactResetPassword { slug: String, token: String },
 
+    // MAPPS-572 (prompt 010): slug-less magic-link finder + Company
+    // picker. Both public (no AuthGuard). Finder accepts an optional
+    // `?email=` query segment so the picker's "Request a new sign-in
+    // link" button, and the password-login page's "sign in without a
+    // password" affordance, can pre-fill the field on hop.
+    #[route("/portal/login?:email")]
+    ContactMagicLinkLogin { email: String },
+
+    #[route("/portal/pick?:token")]
+    ContactPicker { token: String },
+
     // ======================================================================
     // Authenticated routes. The `AuthGuard` layout below renders nothing
     // (and synchronously navigates to /login) whenever the in-memory
@@ -1526,6 +1537,21 @@ fn ContactResetPassword(slug: String, token: String) -> Element {
     rsx! { contact_portal::reset_password::ContactResetPasswordPage { slug, token } }
 }
 
+// MAPPS-572 (prompt 010): the slug-less magic-link finder + the
+// picker/redemption landing page. Both public (no AuthGuard). The
+// finder's `?:email` query segment is optional; when absent the router
+// hands the wrapper an empty string, which the page treats as "no
+// pre-fill".
+#[component]
+fn ContactMagicLinkLogin(email: String) -> Element {
+    rsx! { contact_portal::magic_link_login::ContactMagicLinkLoginPage { email } }
+}
+
+#[component]
+fn ContactPicker(token: String) -> Element {
+    rsx! { contact_portal::picker::ContactPickerPage { token } }
+}
+
 #[component]
 fn RequestForm(token: String) -> Element {
     rsx! { request_form::RequestFormPage { token } }
@@ -1637,6 +1663,41 @@ mod contact_portal_routes {
                 assert_eq!(token, "xyz");
             }
             other => panic!("expected ContactResetPassword, got {other:?}"),
+        }
+    }
+
+    // MAPPS-572 (prompt 010): pin the two slug-less magic-link routes.
+    // Same shape as the four routes above (query-segment `?:token` /
+    // `?:email` per MAPPS-560) so the emailed magic link a server
+    // builds under a bare `/portal/pick?token=...` URL round-trips
+    // through the router without stripping the token.
+    #[test]
+    fn magic_link_login_resolves() {
+        let route = Route::from_str("/portal/login").expect("magic-link login parses");
+        match route {
+            Route::ContactMagicLinkLogin { email } => assert_eq!(email, ""),
+            other => panic!("expected ContactMagicLinkLogin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn magic_link_login_carries_email() {
+        let route = Route::from_str("/portal/login?email=alice%40example.com")
+            .expect("magic-link login with email parses");
+        match route {
+            Route::ContactMagicLinkLogin { email } => {
+                assert_eq!(email, "alice@example.com");
+            }
+            other => panic!("expected ContactMagicLinkLogin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn picker_carries_token() {
+        let route = Route::from_str("/portal/pick?token=xyz").expect("picker parses");
+        match route {
+            Route::ContactPicker { token } => assert_eq!(token, "xyz"),
+            other => panic!("expected ContactPicker, got {other:?}"),
         }
     }
 }

@@ -275,6 +275,24 @@ pub fn ContactLoginPage(slug: String) -> Element {
                             "Forgot password?"
                         }
                     }
+                    // MAPPS-572 (prompt 010): magic-link escape hatch.
+                    // Hands the typed email over via the `?email=`
+                    // query so the finder can pre-fill without a
+                    // re-type. Rendered as a plain link (not a full
+                    // Button) so it does not compete visually with
+                    // the primary sign-in / forgot-password affordances.
+                    div { class: "pt-4 text-center",
+                        {
+                            let hop_email = email.read().trim().to_string();
+                            rsx! {
+                                Link {
+                                    to: Route::ContactMagicLinkLogin { email: hop_email },
+                                    class: "text-sm text-accent hover:underline",
+                                    "Or sign in without a password"
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

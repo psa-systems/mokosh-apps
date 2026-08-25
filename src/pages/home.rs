@@ -23,13 +23,22 @@ pub fn HomePage() -> Element {
                         // both sign in at `/login` (`Route::Login`);
                         // the page tries the platform credential
                         // first and falls back to the tenant
-                        // credential on 401. The prior split "Login"
-                        // + "Client Portal" nav pair is retired here
-                        // because both destinations now collapse to
-                        // one URL; MSP customers arrive on their
-                        // tenant subdomain
-                        // (`<slug>.client.<suffix>`) directly, not
-                        // via the mokosh marketing landing.
+                        // credential on 401.
+                        //
+                        // MAPPS-572 (prompt 010): "Client portal"
+                        // rejoins the nav as a secondary affordance
+                        // beside the staff sign-in. It hops to the
+                        // slug-less magic-link finder, which reveals
+                        // nothing pre-auth about any specific Company
+                        // or portal, so putting it back on the
+                        // marketing landing does not leak the
+                        // enumeration signal the MAPPS-520 collapse
+                        // was worried about.
+                        Link {
+                            to: Route::ContactMagicLinkLogin { email: String::new() },
+                            class: "text-white border border-white/60 px-4 py-2 rounded-md font-medium hover:bg-white/10 transition-colors", // theme-guard-allow: marketing hero CTA on brand gradient
+                            "Client portal"
+                        }
                         Link {
                             to: Route::Login {},
                             class: "bg-white text-blue-600 px-4 py-2 rounded-md font-medium hover:bg-blue-50 transition-colors", // theme-guard-allow: marketing hero CTA on brand gradient
