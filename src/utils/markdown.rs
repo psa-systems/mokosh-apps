@@ -142,18 +142,13 @@ fn find_url(s: &str) -> Option<Found> {
         return None;
     }
     let mut trimmed = body;
-    loop {
-        let last = match trimmed.chars().next_back() {
-            Some(c) => c,
-            None => break,
-        };
+    while let Some(last) = trimmed.chars().next_back() {
         let drop = matches!(last, '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '*' | '_')
             || (last == ')' && trimmed.matches(')').count() > trimmed.matches('(').count());
-        if drop {
-            trimmed = &trimmed[..trimmed.len() - last.len_utf8()];
-        } else {
+        if !drop {
             break;
         }
+        trimmed = &trimmed[..trimmed.len() - last.len_utf8()];
     }
     if trimmed.len() <= scheme_len {
         return None;
@@ -597,5 +592,66 @@ mod tests {
         assert!(!out.contains("<script"), "{out}");
         // The angle brackets did not become tags.
         assert!(!out.contains("< b"), "{out}");
+    }
+}
+
+#[cfg(test)]
+mod reported_article {
+    use super::*;
+    const SRC: &str = r#"# Description
+
+Features
+
+* [ ] <span style="color:red">**REST API**</span> - @niceguyit
+    - [ ] Secrets and tokens stored in Infisical
+* [x] Ticketing. **Built** (PSA-19).
+
+# Build status
+
+Verified by reading code on `main`: mokosh-server `bfeaf92e`. See https://dev.a8n.run/psa-systems for more.
+
+| Issue | Area | Status |
+|---|---|---|
+| PSA-19 | Help desk | Mostly built |
+
+```bash
+just check   # runs the guards
+export TOKEN="$MOKOSH_TOKEN"
+```
+"#;
+
+    #[test]
+    fn the_reported_article_renders_every_fixed_element() {
+        let out = render_markdown(SRC);
+        assert!(out.contains(r#"style="color:red""#), "colour kept: {out}");
+        assert!(out.contains("<table>"), "table renders: {out}");
+        assert_eq!(out.matches("type=\"checkbox\"").count(), 3, "{out}");
+        assert!(out.contains("<code>main</code>"), "inline code: {out}");
+        assert!(
+            out.contains(r#"<a href="https://dev.a8n.run/psa-systems""#),
+            "bare URL autolinked: {out}"
+        );
+        assert!(
+            out.contains(r#"<span class="hl-com"># runs the guards</span>"#),
+            "shell comment highlighted: {out}"
+        );
+        assert!(
+            out.contains(r#"<span class="hl-var">$MOKOSH_TOKEN</span>"#),
+            "variable inside the quoted string highlighted: {out}"
+        );
+        assert!(out.contains(r#"<code class="language-bash""#), "{out}");
+    }
+
+    #[test]
+    fn the_same_article_toggles_its_checkboxes() {
+        let out = render_markdown_interactive(SRC);
+        assert!(!out.contains("disabled"), "{out}");
+        for i in 0..3 {
+            assert!(out.contains(&format!("data-ti=\"{i}\"")), "{out}");
+        }
+        // And the toggle maps back onto the right source line.
+        let flipped = toggle_task(SRC, 1).expect("nested item is index 1");
+        assert!(flipped.contains("- [x] Secrets and tokens stored in Infisical"));
+        assert!(flipped.contains("* [ ] <span style=\"color:red\">**REST API**</span>"));
     }
 }
