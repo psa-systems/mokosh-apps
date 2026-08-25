@@ -78,28 +78,11 @@ pub fn AuthGuard() -> Element {
         // MAPPS-368: a deployment with no OIDC issuer has no bunyip OP to
         // redirect to, so send the user to the standalone username/password
         // login form instead of a dead `/oauth2/authorize`.
+        //
+        // mokosh-contact-login: the pre-pivot portal-host redirect to
+        // `Route::PortalLogin` retires with the customer-portal route
+        // family (prompt 001). Contact plane replacement in prompt 005.
         if crate::modules::oidc::is_standalone() {
-            // MAPPS-554: on a tenant subdomain, every unauthenticated
-            // AuthGuard hit MUST land on the customer-portal login,
-            // not the mokosh-workspace `StandaloneLogin`. Portal
-            // admins have no `users` row (post-554 provisioning
-            // creates a `contacts` row only), so sending them to
-            // `/login` on the subdomain would dead-end them at a form
-            // that can never accept their credentials. The operator's
-            // 2026-08-24 walkthrough was explicit: "We should not be
-            // giving users access to mokosh-platform, even if it's
-            // the client portal admin user." Post-554 the tenant
-            // subdomain is a customer-portal-only surface, so gate
-            // the redirect target here.
-            #[cfg(feature = "web")]
-            if crate::hooks::fetch::api::on_portal_host() {
-                nav.replace(Route::PortalLogin {});
-                return rsx! {
-                    div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
-                        "Redirecting to the client portal sign-in…"
-                    }
-                };
-            }
             nav.replace(Route::Login {});
             return rsx! {
                 div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
@@ -202,87 +185,9 @@ pub fn AuthGuard() -> Element {
     }
 }
 
-/// MAPPS-395: layout component gating the client-portal routes.
-///
-/// The portal runs on its own identity (a `contacts` row) and its own token
-/// class: mokosh-server's `portal_auth_middleware` rejects any bearer whose
-/// `typ` is not `portal_access`, so an agent session is worth exactly as much
-/// here as no session at all. Both cases redirect to `/portal/login` rather
-/// than rendering a page whose every fetch would 401.
-///
-/// Declared before the `Route` enum for the same reason [`AuthGuard`] is: the
-/// `Routable` derive expands `#[layout(PortalGuard)]` at the enum site.
-#[component]
-pub fn PortalGuard() -> Element {
-    let nav = use_navigator();
-
-    // MAPPS-563: cold-load recovery. Pre-563 PortalGuard synchronously
-    // checked the in-memory access token; a hard refresh / deep-link
-    // discarded it, so every full page load bounced to /portal/login
-    // even though the user had a live 30-day server-side session. The
-    // portal refresh token is now persisted to localStorage (see
-    // `hooks::fetch::api::set_portal_refresh_token`), so on cold-load
-    // we can trade it for a fresh access token via
-    // `POST /portal/auth/refresh` BEFORE bouncing to login. Only on
-    // refresh failure (unknown / expired / revoked token) do we
-    // actually redirect.
-    //
-    // The Resource fires on mount and short-circuits when the in-
-    // memory access token is already present (returned an early Ok(())
-    // in `refresh_portal_session` when the refresh returned a fresh
-    // access token, or we take the "already signed in" branch here).
-    #[cfg(feature = "web")]
-    let bootstrap: Resource<Result<bool, ()>> = use_resource(|| async {
-        // Fast path: an in-memory access token already exists (fresh
-        // login, or a page mount that landed after the sign-in
-        // completed but before the visitor navigated). Nothing to do.
-        if hooks::fetch::api::has_portal_session() {
-            return Ok(true);
-        }
-        // Cold-load path: no in-memory token but the localStorage
-        // fallback in `current_portal_refresh_token` may have one.
-        // Attempt a refresh. On success PortalGuard renders its
-        // Outlet as if a login had just landed; on failure we let
-        // the redirect fire below.
-        match crate::hooks::portal_auth::refresh_portal_session().await {
-            Ok(()) => Ok(true),
-            Err(_) => Err(()),
-        }
-    });
-    #[cfg(feature = "web")]
-    let bootstrap_state = bootstrap.read_unchecked();
-    #[cfg(feature = "web")]
-    let signed_in = match &*bootstrap_state {
-        None => {
-            // Refresh still in flight; render a placeholder rather
-            // than bouncing immediately so a valid refresh cookie
-            // has a chance to complete on the same tick.
-            return rsx! {
-                div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
-                    "Loading your portal session…"
-                }
-            };
-        }
-        Some(Ok(true)) => true,
-        Some(Ok(false)) => false,
-        Some(Err(_)) => false,
-    };
-    // The portal fetch helpers only exist in the `web` build, so a non-web
-    // build has no portal session to hold.
-    #[cfg(not(feature = "web"))]
-    let signed_in = false;
-    if !signed_in {
-        nav.replace(Route::PortalLogin {});
-        return rsx! {
-            div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
-                "Redirecting to the portal sign-in…"
-            }
-        };
-    }
-    rsx! {
-        Outlet::<Route> {}
-    }
-}
+// mokosh-contact-login: PortalGuard retired with the /portal/* route
+// family (prompt 001). Contact plane replacement in prompt 005 will
+// gate the contact-scoped surface via a different layout.
 
 /// MAPPS-318: full-screen fallback rendered when the route-level
 /// `ErrorBoundary` catches a propagated error. Sidebar / topbar live
@@ -795,154 +700,21 @@ pub enum Route {
     #[route("/admin/teams")]
     Teams {},
 
-    // Admin (multi-tenant only)
-    #[cfg(feature = "multi-tenant")]
-    #[route("/admin/tenants")]
-    TenantManagement {},
+    // mokosh-contact-login: /admin/tenants (Clients tab / TenantManagement)
+    // retired on this branch (prompt 001).
 
     // MAPPS-366: close the AppShell layout. Every route above (from Dashboard
     // down) renders inside the persistent shell; the chromeless routes at the
     // top of the AuthGuard block and the portal routes below do not.
     #[end_layout]
 
-    // End of AuthGuard scope. Portal routes have their own layout and
-    // auth model (client portal vs internal tools); the catch-all 404
-    // is intentionally public so logged-out users see a real 404 page.
-    #[end_layout]
-
-    // Client Portal Routes (separate layout)
+    // End of AuthGuard scope.
     //
-    // The two public entry points come first: both are reachable without a
-    // portal session by construction, so they sit outside `PortalGuard`.
-
-    // MAPPS-395: portal sign-in. Issues the `typ: "portal_access"` token the
-    // guarded routes below need.
-    #[route("/portal/login")]
-    PortalLogin {},
-
-    // MAPPS-396 / MAPPS-560: the destination of the portal setup email
-    // mokosh-server sends on a portal-access grant. Public by
-    // construction: the emailed single-use token in `?token=` is the
-    // only credential the visitor has.
-    //
-    // MAPPS-560: the query segment is declared on the route itself so
-    // the Dioxus router captures it into `token` and passes it to the
-    // component as a prop. Pre-560 the page read `?token=...` off
-    // `window.location.search` at mount via `use_signal(|| ...)`, but
-    // the router's URL normalization can strip an undeclared query on
-    // the first render and leave the signal empty - producing the
-    // operator's 2026-08-24 report ("This link is expired or invalid"
-    // on a fresh link, even before any network call fired).
-    #[route("/portal/set-password?:token")]
-    PortalSetPassword { token: String },
-
-    // PMS-729 phase 2 H3: request a password reset by email. Public: the
-    // customer is signed out. The endpoint always returns 204 whether the
-    // email is known or not, so the SPA renders the same "check your
-    // inbox" message either way.
-    #[route("/portal/forgot-password")]
-    PortalForgotPassword {},
-
-    // PMS-729 phase 2 H3 / MAPPS-560: destination of the reset email.
-    // Public by construction: the emailed single-use token in
-    // `?token=` is the only credential the visitor has. Same query-
-    // segment shape as `PortalSetPassword` above so the router does
-    // not silently drop the token.
-    #[route("/portal/reset-password?:token")]
-    PortalResetPassword { token: String },
-
-    // MAPPS-395: everything below needs a portal session. Without the guard a
-    // signed-out visitor (or an agent, whose bearer is the wrong token class)
-    // renders the page and collects a 401 from every fetch.
-    #[layout(PortalGuard)]
-    #[route("/portal")]
-    PortalHome {},
-
-    #[route("/portal/tickets")]
-    PortalTicketList {},
-
-    #[route("/portal/tickets/new")]
-    PortalTicketNew {},
-
-    #[route("/portal/tickets/:id")]
-    PortalTicketDetail { id: String },
-
-    #[route("/portal/quotes")]
-    PortalQuoteList {},
-
-    #[route("/portal/quotes/:id")]
-    PortalQuoteDetail { id: String },
-
-    #[route("/portal/invoices")]
-    PortalInvoiceList {},
-
-    #[route("/portal/invoices/:id")]
-    PortalInvoiceDetail { id: String },
-
-    #[route("/portal/kb")]
-    PortalKB {},
-
-    #[route("/portal/kb/:id")]
-    PortalKBArticle { id: String },
-
-    // PMS-729 follow-up: the full paginated inbox. Reached from the
-    // top-bar bell's "See all notifications" footer.
-    #[route("/portal/notifications")]
-    PortalNotifications {},
-
-    // PMS-729 phase 2 §7 slice B / I8: authenticated portal forms.
-    // List of MSP-published request forms + a detail page that renders
-    // the field set as a submit form.
-    #[route("/portal/forms")]
-    PortalFormList {},
-
-    #[route("/portal/forms/:id")]
-    PortalFormDetail { id: String },
-
-    // PMS-729 phase 2 §7 slice C: read-only company-scoped views.
-    #[route("/portal/assets")]
-    PortalAssetList {},
-
-    #[route("/portal/assets/:id")]
-    PortalAssetDetail { id: String },
-
-    #[route("/portal/contracts")]
-    PortalContractList {},
-
-    #[route("/portal/contracts/:id")]
-    PortalContractDetail { id: String },
-
-    #[route("/portal/time-entries")]
-    PortalTimeEntryList {},
-
-    #[route("/portal/projects")]
-    PortalProjectList {},
-
-    #[route("/portal/projects/:id")]
-    PortalProjectDetail { id: String },
-
-    // PMS-729 phase 2 §7 slice D.
-    #[route("/portal/approvals")]
-    PortalApprovalList {},
-
-    #[route("/portal/company")]
-    PortalCompany {},
-
-    #[route("/portal/export")]
-    PortalExport {},
-
-    // PMS-729 phase 2 §7 slice A / I14: portal-scoped grouped search.
-    // Query param `q` is picked up by the page from the URL so a
-    // customer can bookmark a search or share the link.
-    #[route("/portal/search")]
-    PortalSearch {},
-
-    // PMS-729 follow-up: portal-owned account settings (profile display,
-    // change-password form). Reached from the user-menu Settings link.
-    #[route("/portal/settings")]
-    PortalSettings {},
-
-    // End of PortalGuard scope.
+    // mokosh-contact-login: the whole /portal/* customer-portal route
+    // tree retired on this branch (prompt 001). The contact plane
+    // lands under /portal/{slug}/* in prompt 005 with a different
+    // shape - random slug per Company, no PortalGuard layout, same
+    // mokosh workspace routes with capability gating.
     #[end_layout]
 
     // Catch-all 404
@@ -983,54 +755,11 @@ fn HubRedirect(target: String, label: &'static str) -> Element {
 
 #[component]
 fn Home() -> Element {
-    // MAPPS-554 (superseding MAPPS-553): the tenant subdomain root is
-    // the CUSTOMER PORTAL again. MAPPS-553 briefly routed
-    // `<slug>.client.<suffix>/` at `StandaloneLogin` (the tenant admin
-    // login) because pre-554 a mokosh-client was provisioned as a
-    // `users`-row tenant admin. The operator's 2026-08-24 follow-up
-    // walkthrough clarified that a mokosh-client's world is the
-    // customer portal ("ONLY CLIENT PORTAL"), so post-554
-    // `TenantService::create_tenant` provisions a `contacts` row
-    // (`is_portal_user=true, portal_role='admin'`) and mails a
-    // portal-side setup link. The subdomain root therefore renders
-    // the customer portal (`PortalHomePage` when a `portal_access`
-    // token is present in memory, `PortalLoginPage` otherwise) - same
-    // shape as PMS-729 / pre-553.
-    //
-    // The explicit `StandaloneLogin` at `<slug>.client.<suffix>/login`
-    // stays reachable (see the `Login` route wrapper) so LEGACY
-    // tenants (created pre-554, still holding `users` rows) can sign
-    // in tenant-scoped without going to the mokosh apex. New clients
-    // (post-554, portal-only) do not need it.
-    //
-    // Non-portal hosts (localhost:4301, msp.<tld>) keep rendering
-    // the agent-side marketing home page.
-    #[cfg(feature = "web")]
-    if hooks::fetch::api::on_portal_host() {
-        // MAPPS-563: same cold-load recovery PortalGuard runs. A hard
-        // refresh on `<slug>.client.<suffix>/` used to fall through to
-        // PortalLoginPage even though the localStorage refresh token
-        // could re-mint an access token; we try that first, THEN
-        // decide which page to render.
-        let bootstrap: Resource<bool> = use_resource(|| async {
-            if hooks::fetch::api::has_portal_session() {
-                return true;
-            }
-            crate::hooks::portal_auth::refresh_portal_session()
-                .await
-                .is_ok()
-        });
-        let bootstrap_state = bootstrap.read_unchecked();
-        return match &*bootstrap_state {
-            None => rsx! {
-                div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
-                    "Loading your portal session…"
-                }
-            },
-            Some(true) => rsx! { crate::pages::portal::PortalHomePage {} },
-            Some(false) => rsx! { crate::pages::portal_login::PortalLoginPage {} },
-        };
-    }
+    // mokosh-contact-login: the on_portal_host branch retired with the
+    // customer-portal route family (prompt 001). Home renders the
+    // agent-side marketing page unconditionally now. Contact plane
+    // lands under /portal/{slug}/login in prompt 005 (a separate,
+    // routed page, not a host-branch on Home).
     rsx! { home::HomePage {} }
 }
 
@@ -1083,21 +812,9 @@ fn Login() -> Element {
     // MAPPS-554: on a tenant subdomain the mokosh-workspace login is
     // NOT reachable. Portal admins have no users row (post-554
     // provisioning creates a contacts row only), so `StandaloneLogin`
-    // on the subdomain would just dead-end them at a form that could
-    // never accept their credentials. Redirect any visitor to
-    // `<slug>.client.<suffix>/login` straight to the customer-portal
-    // login. Legacy tenants (pre-554, still holding `users` rows) sign
-    // in on the mokosh apex `/login` instead - the apex path still
-    // renders `StandaloneLogin`, unchanged.
-    #[cfg(feature = "web")]
-    if crate::hooks::fetch::api::on_portal_host() {
-        nav.replace(Route::PortalLogin {});
-        return rsx! {
-            div { class: "min-h-screen flex items-center justify-center text-sm text-muted",
-                "Redirecting to the client portal sign-in…"
-            }
-        };
-    }
+    // mokosh-contact-login: PortalLogin redirect retired with the
+    // /portal/* route family (prompt 001). Contact login lands under
+    // /portal/{slug}/login in prompt 005.
 
     // MAPPS-368: no OIDC issuer configured -> present the standalone
     // username/password form instead of the bunyip redirect. `is_standalone`
@@ -1703,160 +1420,17 @@ fn Teams() -> Element {
     rsx! { teams::TeamsPage {} }
 }
 
-#[cfg(feature = "multi-tenant")]
-#[component]
-fn TenantManagement() -> Element {
-    rsx! { admin::TenantManagementPage {} }
-}
+// mokosh-contact-login: TenantManagement wrapper retired with the
+// Clients tab (prompt 001). admin::TenantManagementPage stays in the
+// admin.rs file as dead code for a follow-up cleanup.
 
-#[component]
-fn PortalHome() -> Element {
-    rsx! { portal::PortalHomePage {} }
-}
-
-#[component]
-fn PortalLogin() -> Element {
-    rsx! { portal_login::PortalLoginPage {} }
-}
-
-#[component]
-fn PortalSetPassword(token: String) -> Element {
-    rsx! { portal_set_password::PortalSetPasswordPage { token } }
-}
-
-#[component]
-fn PortalForgotPassword() -> Element {
-    rsx! { portal_forgot_password::PortalForgotPasswordPage {} }
-}
-
-#[component]
-fn PortalResetPassword(token: String) -> Element {
-    rsx! { portal_reset_password::PortalResetPasswordPage { token } }
-}
+// mokosh-contact-login: all Portal* route wrapper components retired
+// with the /portal/* routes (prompt 001). Contact plane replacements
+// land in prompt 005 under a different route family.
 
 #[component]
 fn RequestForm(token: String) -> Element {
     rsx! { request_form::RequestFormPage { token } }
-}
-
-#[component]
-fn PortalTicketList() -> Element {
-    rsx! { portal::PortalTicketListPage {} }
-}
-
-#[component]
-fn PortalTicketNew() -> Element {
-    rsx! { portal::PortalTicketNewPage {} }
-}
-
-#[component]
-fn PortalTicketDetail(id: String) -> Element {
-    rsx! { portal::PortalTicketDetailPage { id } }
-}
-
-#[component]
-fn PortalQuoteList() -> Element {
-    rsx! { portal::PortalQuoteListPage {} }
-}
-
-#[component]
-fn PortalQuoteDetail(id: String) -> Element {
-    rsx! { portal::PortalQuoteDetailPage { id } }
-}
-
-#[component]
-fn PortalInvoiceList() -> Element {
-    rsx! { portal::PortalInvoiceListPage {} }
-}
-
-#[component]
-fn PortalInvoiceDetail(id: String) -> Element {
-    rsx! { portal::PortalInvoiceDetailPage { id } }
-}
-
-#[component]
-fn PortalKB() -> Element {
-    rsx! { portal::PortalKBPage {} }
-}
-
-#[component]
-fn PortalKBArticle(id: String) -> Element {
-    rsx! { portal::PortalKBArticlePage { id } }
-}
-
-#[component]
-fn PortalNotifications() -> Element {
-    rsx! { portal::PortalNotificationsPage {} }
-}
-
-#[component]
-fn PortalSearch() -> Element {
-    rsx! { portal::PortalSearchPage {} }
-}
-
-#[component]
-fn PortalFormList() -> Element {
-    rsx! { portal::PortalFormListPage {} }
-}
-
-#[component]
-fn PortalFormDetail(id: String) -> Element {
-    rsx! { portal::PortalFormDetailPage { id } }
-}
-
-#[component]
-fn PortalAssetList() -> Element {
-    rsx! { portal::PortalAssetListPage {} }
-}
-
-#[component]
-fn PortalAssetDetail(id: String) -> Element {
-    rsx! { portal::PortalAssetDetailPage { id } }
-}
-
-#[component]
-fn PortalContractList() -> Element {
-    rsx! { portal::PortalContractListPage {} }
-}
-
-#[component]
-fn PortalContractDetail(id: String) -> Element {
-    rsx! { portal::PortalContractDetailPage { id } }
-}
-
-#[component]
-fn PortalTimeEntryList() -> Element {
-    rsx! { portal::PortalTimeEntryListPage {} }
-}
-
-#[component]
-fn PortalProjectList() -> Element {
-    rsx! { portal::PortalProjectListPage {} }
-}
-
-#[component]
-fn PortalProjectDetail(id: String) -> Element {
-    rsx! { portal::PortalProjectDetailPage { id } }
-}
-
-#[component]
-fn PortalApprovalList() -> Element {
-    rsx! { portal::PortalApprovalListPage {} }
-}
-
-#[component]
-fn PortalCompany() -> Element {
-    rsx! { portal::PortalCompanyPage {} }
-}
-
-#[component]
-fn PortalSettings() -> Element {
-    rsx! { portal_settings::PortalSettingsPage {} }
-}
-
-#[component]
-fn PortalExport() -> Element {
-    rsx! { portal::PortalExportPage {} }
 }
 
 #[component]
@@ -1881,19 +1455,15 @@ mod emailed_link_routes {
     /// (server emitter, path as the customer receives it). Path parameters
     /// carry a representative value; the query string is dropped because the
     /// router matches on the path.
+    // mokosh-contact-login: /portal/set-password + /portal/quotes/{id}
+    // links were emitted by retired portal + quote-sign-off flows
+    // (prompt 001). Contact-plane replacement lands in prompt 005.
     const EMAILED_LINKS: &[(&str, &str)] = &[
-        // src/modules/contacts/service.rs: portal-access grant setup link.
-        ("contacts::send_setup_email", "/portal/set-password"),
         // src/modules/forms/request_links.rs: client request-form link
         // (PMS-730). The token is `{token_id}.{secret}`.
         (
             "forms::issue_request_link",
             "/request-forms/2f1c2f1e-0000-4000-8000-00000000abcd.Zt4kQ1p9Zt4kQ1p9Zt4kQ1p9Zt4kQ1p9",
-        ),
-        // src/modules/quotes/service.rs: client quote sign-off link.
-        (
-            "quotes::send_quote_ready",
-            "/portal/quotes/2f1c2f1e-0000-4000-8000-00000000abcd",
         ),
         // src/modules/auth/service.rs: password reset + staff welcome links.
         (
@@ -1918,24 +1488,9 @@ mod emailed_link_routes {
     }
 }
 
-/// MAPPS-395: the portal sign-in route exists and is public. `/portal/login`
-/// is where `PortalGuard` sends a visitor with no portal session, so a typo in
-/// the route (or a stray `#[layout(PortalGuard)]` above it) would bounce the
-/// redirect back into itself.
-#[cfg(test)]
-mod portal_login_route {
-    use super::Route;
-    use std::str::FromStr;
-
-    #[test]
-    fn portal_login_resolves_to_its_own_route() {
-        let route = Route::from_str("/portal/login").expect("/portal/login parses");
-        assert!(
-            matches!(route, Route::PortalLogin {}),
-            "/portal/login must resolve to PortalLogin, got {route:?}"
-        );
-    }
-}
+// mokosh-contact-login: portal_login_route test retired with the
+// /portal/* route family (prompt 001). Contact-plane replacement in
+// prompt 005.
 
 /// Prelude module for common imports
 pub mod prelude {

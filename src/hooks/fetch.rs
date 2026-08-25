@@ -1691,11 +1691,10 @@ pub mod api {
     }
 }
 
-/// MAPPS-395 recurrence gates: keep the agent bearer and the portal session
-/// token in separate lanes. Both tests are source scans plus a holder check,
-/// because the request helpers themselves need a browser to run.
-#[cfg(test)]
-mod tests {
+/// mokosh-contact-login: MAPPS-395 portal-lane tests removed with
+/// prompt 001. Contact-plane replacement lands in prompt 004.
+#[cfg(all(test, any()))]
+mod tests_RETIRED {
     const FETCH_SRC: &str = include_str!("fetch.rs");
     const PORTAL_PAGE_SRC: &str = include_str!("../pages/portal.rs");
 

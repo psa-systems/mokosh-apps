@@ -265,12 +265,11 @@ pub fn StandaloneLogin() -> Element {
                 // `/platform/login` from a subdomain would either be
                 // a wasted round-trip or (worse) install a platform
                 // bearer under the wrong origin's sessionStorage.
-                let on_portal = crate::hooks::fetch::api::on_portal_host();
-                let host_slug = if on_portal {
-                    crate::modules::runtime_config::tenant_slug_from_current_host()
-                } else {
-                    None
-                };
+                // mokosh-contact-login: on_portal_host branch retired with
+                // the /portal/* route family (prompt 001). The apex login
+                // stays; the pre-pivot tenant-slug derivation is gone.
+                let on_portal = false;
+                let host_slug: Option<String> = None;
 
                 // MAPPS-520: unified /login. Try the platform-admin
                 // plane FIRST (only when there is no MFA / approval
@@ -418,9 +417,9 @@ pub fn StandaloneLogin() -> Element {
                             // installed it) is used implicitly by
                             // every tenant-scoped fetch elsewhere in
                             // the SPA.
-                            #[cfg(feature = "multi-tenant")]
-                            nav.push(Route::TenantManagement {});
-                            #[cfg(not(feature = "multi-tenant"))]
+                            // mokosh-contact-login: TenantManagement route
+                            // retired with the Clients tab (prompt 001).
+                            // Land on the standard dashboard.
                             nav.push(Route::Dashboard {});
                             saving.set(false);
                             return;
@@ -597,18 +596,8 @@ pub fn StandaloneLogin() -> Element {
     // response handler above navigates to those routes after
     // populating the shared `PENDING_LOGIN` signal.
 
-    // MAPPS-553: on a tenant subdomain this page is the tenant admin
-    // login. A customer of the MSP who accidentally lands on
-    // `<slug>.client.<suffix>/` (rather than the `/portal/login`
-    // link their MSP emailed them) needs a way to reach the
-    // customer portal without knowing the URL, so append a small
-    // footer link. Absent on the apex where the customer portal is
-    // not addressable at all.
-    #[cfg(feature = "web")]
-    let show_portal_footer = crate::hooks::fetch::api::on_portal_host();
-    #[cfg(not(feature = "web"))]
-    let show_portal_footer = false;
-
+    // mokosh-contact-login: portal-footer link retired with the
+    // /portal/* route family (prompt 001).
     rsx! {
         AuthLayout {
             div { class: "text-center mb-6",
@@ -695,17 +684,6 @@ pub fn StandaloneLogin() -> Element {
                 }
             }
 
-            if show_portal_footer {
-                p { class: "mt-6 text-center text-xs text-muted",
-                    "Are you a customer of this MSP? "
-                    Link {
-                        to: Route::PortalLogin {},
-                        class: "text-accent hover:underline",
-                        "Sign in to the customer portal"
-                    }
-                    "."
-                }
-            }
         }
     }
 }

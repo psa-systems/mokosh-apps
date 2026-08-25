@@ -33,12 +33,9 @@ pub mod not_found;
 pub mod onboarding;
 pub mod pick_tenant;
 pub mod platform_login;
-pub mod portal;
-pub mod portal_forgot_password;
-pub mod portal_login;
-pub mod portal_reset_password;
-pub mod portal_set_password;
-pub mod portal_settings;
+// mokosh-contact-login: /portal/* customer-portal pages retired on this
+// branch (prompt 001). Contact plane lands under a new module in
+// prompt 005.
 pub mod profile;
 pub mod projects;
 pub mod quotes;

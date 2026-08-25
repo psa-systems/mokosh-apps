@@ -14,10 +14,8 @@ pub mod auth;
 pub mod edit_queue;
 pub mod fetch;
 pub mod pending_login;
-pub mod portal_auth;
-pub mod portal_branding;
-pub mod portal_me;
-pub mod portal_theme;
+// mokosh-contact-login: portal_* hooks retired on this branch (prompt
+// 001). Contact plane hooks land in prompts 004-006.
 pub mod remote_data;
 pub mod server_status;
 mod sidebar;
