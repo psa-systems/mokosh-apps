@@ -85,6 +85,13 @@ cell_out=$(
   find src -name '*.rs' -print0 | xargs -0 awk -v colour="$colour" '
     /TableCell \{[ \t]*$/ { cell = 1; next }
     cell {
+      # MAPPS-569: a name cell may now carry attributes before its children -
+      # `onactivate` makes the cell the row keyboard path - so skip comment and
+      # attribute lines rather than testing only the line immediately after
+      # `TableCell {`. Without this the guard silently stopped seeing twelve of
+      # the settings name cells and failed on its own floor instead of on a
+      # missing colour token.
+      if ($0 ~ /^[ \t]*\/\// || $0 ~ /^[ \t]*[a-z_]+:/) { next }
       cell = 0
       if ($0 ~ /span \{ class: "/) {
         match($0, /class: "[^"]*"/)
