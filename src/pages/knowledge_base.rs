@@ -3688,6 +3688,88 @@ mod editor_ux_tests {
         );
     }
 
+    /// MAPPS-579 AC1 and AC3. The toolbar wraps at narrow widths rather than
+    /// scrolling actions off the edge, which is the collapse strategy the issue
+    /// asked to be chosen and stated rather than left to overflow.
+    #[test]
+    fn the_body_has_a_toolbar_that_wraps_rather_than_scrolling() {
+        let code = code_only();
+        assert!(
+            code.contains("crate::components::MarkdownToolbar {"),
+            "the body field needs a formatting toolbar"
+        );
+        const TOOLBAR: &str = include_str!("../components/markdown_toolbar.rs");
+        assert!(
+            TOOLBAR.contains("flex flex-wrap items-center"),
+            "the toolbar wraps at narrow widths; without `flex-wrap` the later \
+             groups scroll off the edge and become unreachable"
+        );
+        assert!(
+            TOOLBAR.contains(r#"role: "toolbar""#)
+                && TOOLBAR.contains(r#"aria_label: "Formatting""#),
+            "and is announced as one thing rather than a run of loose buttons"
+        );
+    }
+
+    /// AC2. The shortcut has to reach both audiences: a `title` is invisible to
+    /// a screen reader and an `aria-label` is invisible to a mouse user.
+    #[test]
+    fn every_toolbar_button_names_its_action_and_shortcut_to_both_audiences() {
+        const TOOLBAR: &str = include_str!("../components/markdown_toolbar.rs");
+        assert!(
+            TOOLBAR.contains(r#"title: "{described}""#)
+                && TOOLBAR.contains(r#"aria_label: "{described}""#),
+            "the same description feeds the tooltip and the accessible name"
+        );
+        assert!(
+            TOOLBAR.contains(r#"format!("{label} ({k})")"#),
+            "and it carries the shortcut, not just the action name"
+        );
+    }
+
+    /// AC5. The marks have shortcuts, and the link shortcut opens the dialog
+    /// rather than wrapping bare syntax, because a link needs a URL.
+    #[test]
+    fn the_body_field_takes_the_formatting_shortcuts() {
+        let code = code_only();
+        assert!(
+            code.contains("crate::components::shortcut_action(chord, &key)"),
+            "the body field routes Ctrl/Cmd chords to the shared mapping"
+        );
+        assert!(
+            code.contains("mods.ctrl() || mods.meta()"),
+            "both modifiers, so the same shortcut works on macOS and elsewhere \
+             without the component asking which platform it is on"
+        );
+        assert!(
+            code.contains(r#"key.eq_ignore_ascii_case("k")"#)
+                && code.contains("link_shortcut.set(true)"),
+            "Ctrl+K opens the link dialog, since a link needs a URL rather than a wrap"
+        );
+    }
+
+    /// AC10. The metadata block collapses, but never while the author still
+    /// owes a required field: hiding an unfinished form hides the work.
+    #[test]
+    fn the_metadata_block_collapses_but_not_while_it_is_incomplete() {
+        let code = code_only();
+        assert!(
+            code.contains(
+                "let incomplete = title_v.trim().is_empty() || slug_v.trim().is_empty();"
+            ),
+            "an unfinished form is not collapsible"
+        );
+        assert!(
+            code.contains("let open = incomplete || meta_open();"),
+            "and incompleteness wins over the toggle, rather than the toggle \
+             being able to hide a field the author still has to fill"
+        );
+        assert!(
+            code.contains(r#"aria_expanded: if open { "true" } else { "false" }"#),
+            "the disclosure state is exposed, not implied by a caret"
+        );
+    }
+
     /// AC7. The KB body renders through `components::Markdown`, which is where
     /// PMS-348's interactive checkbox path lives. Calling `render_markdown`
     /// with `dangerous_inner_html` directly, which is what it did, means the
