@@ -1470,6 +1470,8 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     // MAPPS-189: the Delete button opens the styled ConfirmDialog; the
     // actual DELETE fires from `on_confirm_delete` when confirmed.
     let mut confirming_delete = use_signal(|| false);
+    // MAPPS-574: the server's reason for refusing this delete.
+    let mut delete_error = use_signal(String::new);
 
     // MAPPS-231: add/remove asset credentials. The vault endpoints support
     // create (`POST /assets/{id}/credentials`) and delete
@@ -1521,16 +1523,28 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         }
         let id = id_for_delete.clone();
         deleting.set(true);
+        delete_error.set(String::new());
         spawn(async move {
             #[cfg(feature = "web")]
             {
                 let path = format!("/assets/{id}");
-                if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
-                    navigator.push(Route::AssetList {});
+                // MAPPS-574: report the refusal instead of discarding it. The
+                // old `.is_ok()` closed the dialog on failure and said nothing,
+                // so a server that declined and a button that did nothing
+                // looked identical.
+                match crate::hooks::fetch::api::delete_authed(&path).await {
+                    Ok(()) => {
+                        crate::hooks::toast::push_toast(
+                            crate::components::AlertType::Success,
+                            "Asset deleted.",
+                        );
+                        confirming_delete.set(false);
+                        navigator.push(Route::AssetList {});
+                    }
+                    Err(err) => delete_error.set(err),
                 }
             }
             deleting.set(false);
-            confirming_delete.set(false);
         });
     };
 
@@ -1624,11 +1638,13 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
             confirm_text: "Delete".to_string(),
             cancel_text: "Cancel".to_string(),
             destructive: true,
+            error: delete_error.read().clone(),
             loading: *deleting.read(),
             onconfirm: on_confirm_delete,
             oncancel: move |_| {
                 if !*deleting.read() {
                     confirming_delete.set(false);
+                    delete_error.set(String::new());
                 }
             },
         }

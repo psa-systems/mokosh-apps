@@ -2219,6 +2219,8 @@ fn RowActions(
     let mut open = use_signal(|| false);
     let mut confirming = use_signal(|| false);
     let mut deleting = use_signal(|| false);
+    // MAPPS-574: the server's reason for refusing this row's delete.
+    let mut delete_error = use_signal(String::new);
     // MAPPS-357: gate the row Delete while the server is unreachable. Edit is
     // pure navigation and stays enabled.
     let can_mutate = crate::hooks::use_can_mutate();
@@ -2237,14 +2239,23 @@ fn RowActions(
             return;
         }
         deleting.set(true);
+        delete_error.set(String::new());
         let path = path.clone();
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
-                    confirming.set(false);
-                    open.set(false);
-                    on_deleted.call(());
+                // MAPPS-574: this row menu deletes whatever `delete_path`
+                // points at, so it inherits every refusal the detail pages get.
+                // It used to leave the dialog open on failure with the spinner
+                // simply stopped, which reads as a hung request rather than a
+                // decision the server made.
+                match crate::hooks::fetch::api::delete_authed(&path).await {
+                    Ok(()) => {
+                        confirming.set(false);
+                        open.set(false);
+                        on_deleted.call(());
+                    }
+                    Err(err) => delete_error.set(err),
                 }
             }
             deleting.set(false);
@@ -2306,11 +2317,13 @@ fn RowActions(
             confirm_text: "Delete".to_string(),
             cancel_text: "Cancel".to_string(),
             destructive: true,
+            error: delete_error.read().clone(),
             loading: deleting(),
             onconfirm: on_confirm_delete,
             oncancel: move |_| {
                 if !deleting() {
                     confirming.set(false);
+                    delete_error.set(String::new());
                 }
             },
         }
@@ -5102,6 +5115,9 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     let edit_id = id_for_edit.clone();
     let delete_id = id_for_delete.clone();
     let mut confirming_delete = use_signal(|| false);
+    // MAPPS-574: same swallow the company delete had - hold the server's reason
+    // instead of discarding it.
+    let mut delete_error = use_signal(String::new);
     // MAPPS-357: gate the destructive Delete while the server is unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
     let on_confirm_delete = move |_: ()| {
@@ -5110,16 +5126,24 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
         }
         let id = delete_id.clone();
         deleting.set(true);
+        delete_error.set(String::new());
         spawn(async move {
             #[cfg(feature = "web")]
             {
                 let path = format!("/contacts/contacts/{id}");
-                if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
-                    navigator.push(Route::ContactList {});
+                match crate::hooks::fetch::api::delete_authed(&path).await {
+                    Ok(()) => {
+                        crate::hooks::toast::push_toast(
+                            crate::components::AlertType::Success,
+                            "Contact deleted.",
+                        );
+                        confirming_delete.set(false);
+                        navigator.push(Route::ContactList {});
+                    }
+                    Err(err) => delete_error.set(err),
                 }
             }
             deleting.set(false);
-            confirming_delete.set(false);
         });
     };
 
@@ -5143,11 +5167,13 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
             confirm_text: "Delete".to_string(),
             cancel_text: "Cancel".to_string(),
             destructive: true,
+            error: delete_error.read().clone(),
             loading: *deleting.read(),
             onconfirm: on_confirm_delete,
             oncancel: move |_| {
                 if !*deleting.read() {
                     confirming_delete.set(false);
+                    delete_error.set(String::new());
                 }
             },
         }
