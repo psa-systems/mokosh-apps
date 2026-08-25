@@ -203,6 +203,10 @@ struct RemoteCompany {
     name: String,
     #[serde(default)]
     company_type: String,
+    // MAPPS-575: `active` | `inactive` | `prospect`. Absent on an older server,
+    // which `#[serde(default)]` renders as empty and the UI treats as active.
+    #[serde(default)]
+    status: String,
     #[serde(default)]
     account_manager_name: Option<String>,
     #[serde(default)]
@@ -303,6 +307,12 @@ struct PaginatedContacts {
 pub fn CompanyListPage() -> Element {
     let mut search = use_signal(String::new);
     let mut type_filter = use_signal(String::new);
+    // MAPPS-575: default to active, which is what makes archiving worth doing.
+    // The Select renders this value, so the default is STATED rather than
+    // silently applied: a user who cannot find a company they archived can see
+    // that the list is filtered and change it, instead of concluding it was
+    // deleted.
+    let mut status_filter = use_signal(|| "active".to_string());
     let mut sort = use_signal(|| None::<(CompanySortKey, SortDirection)>);
     let mut page = use_signal(|| 1usize);
 
@@ -312,9 +322,16 @@ pub fn CompanyListPage() -> Element {
         SelectOption::new("prospect", "Prospect"),
         SelectOption::new("vendor", "Vendor"),
     ];
+    let status_options = vec![
+        SelectOption::new("active", "Active"),
+        SelectOption::new("inactive", "Inactive (archived)"),
+        SelectOption::new("prospect", "Prospect"),
+        SelectOption::new("", "Any status"),
+    ];
 
     let search_text = search.read().trim().to_string();
     let type_text = type_filter.read().clone();
+    let status_text = status_filter.read().clone();
     let current_page = (*page.read()).max(1);
     let sort_snapshot = *sort.read();
 
@@ -330,6 +347,7 @@ pub fn CompanyListPage() -> Element {
     let companies_resource = use_resource(move || {
         let q = search.read().trim().to_string();
         let type_filter = type_filter.read().clone();
+        let status_filter = status_filter.read().clone();
         let sort = company_sort_query(*sort.read());
         let current_page = (*page.read()).max(1);
         async move {
@@ -348,6 +366,12 @@ pub fn CompanyListPage() -> Element {
                     urlencoding_minimal(&type_filter)
                 ));
             }
+            // Server-side (`CompanyFilter::status`), not a client-side pass over
+            // the current page: filtering after paging would show a short page
+            // and a wrong total.
+            if !status_filter.is_empty() {
+                path.push_str(&format!("&status={}", urlencoding_minimal(&status_filter)));
+            }
             if let Some((field, dir)) = sort {
                 path.push_str(&format!("&sort={field}&sort_dir={dir}"));
             }
@@ -364,7 +388,10 @@ pub fn CompanyListPage() -> Element {
         Some(Some(resp)) => (resp.data.clone(), resp.meta.total),
         _ => (Vec::new(), 0),
     };
-    let has_filters = !search_text.is_empty() || !type_text.is_empty();
+    // The status filter counts as a filter only when it is NOT the default:
+    // a brand-new tenant with no companies must read as "No companies yet",
+    // not as "No companies match your filters".
+    let has_filters = !search_text.is_empty() || !type_text.is_empty() || status_text != "active";
 
     use_page_title("Companies");
 
@@ -423,6 +450,15 @@ pub fn CompanyListPage() -> Element {
                         page.set(1);
                     },
                 }
+                Select {
+                    name: "status",
+                    options: status_options,
+                    value: status_filter.read().clone(),
+                    onchange: move |e: FormEvent| {
+                        status_filter.set(e.value());
+                        page.set(1);
+                    },
+                }
             }
         }
 
@@ -470,6 +506,7 @@ pub fn CompanyListPage() -> Element {
                                     onclick: move |_| {
                                         search.set(String::new());
                                         type_filter.set(String::new());
+                                        status_filter.set("active".to_string());
                                     },
                                     "Clear filters"
                                 }
@@ -500,6 +537,7 @@ pub fn CompanyListPage() -> Element {
                                 id: company.id.to_string(),
                                 name: company.name,
                                 company_type: humanize_company_type(&company.company_type),
+                                status: company.status,
                                 primary_contact: company.account_manager_name.unwrap_or_default(),
                                 open_tickets: company.open_ticket_count.unwrap_or(0).max(0) as u32,
                             }
@@ -516,6 +554,9 @@ struct CompanyRowProps {
     id: String,
     name: String,
     company_type: String,
+    /// MAPPS-575: raw `companies.status`. Only `inactive` renders anything, so
+    /// an older server that omits the field reads as active.
+    status: String,
     primary_contact: String,
     open_tickets: u32,
 }
@@ -541,6 +582,14 @@ fn CompanyRow(props: CompanyRowProps) -> Element {
                     to: Route::CompanyDetail { id: props.id.clone() },
                     class: "font-medium text-accent hover:opacity-90",
                     "{props.name}"
+                }
+                // MAPPS-575: an archived company is reachable from "Any status",
+                // and once it is on screen it has to be distinguishable from an
+                // active one. Beside the name rather than in its own column: the
+                // default view is active-only, so a whole column would be empty
+                // almost always.
+                if props.status == "inactive" {
+                    Badge { variant: BadgeVariant::Gray, class: "ml-2", "Archived" }
                 }
             }
             TableCell {
@@ -635,6 +684,7 @@ pub fn CompanyEditPage(props: CompanyEditPageProps) -> Element {
                 let initial = CompanyFormValues {
                     name: payload.name.clone(),
                     company_type: payload.company_type.clone(),
+                    status: payload.status.clone(),
                     industry: payload.industry.clone().unwrap_or_default(),
                     website: payload.website.clone().unwrap_or_default(),
                     phone: payload.phone.clone().unwrap_or_default(),
@@ -663,6 +713,8 @@ struct CompanyEditPayload {
     #[serde(default)]
     company_type: String,
     #[serde(default)]
+    status: String,
+    #[serde(default)]
     industry: Option<String>,
     #[serde(default)]
     website: Option<String>,
@@ -676,6 +728,7 @@ struct CompanyEditPayload {
 struct CompanyFormValues {
     name: String,
     company_type: String,
+    status: String,
     industry: String,
     website: String,
     phone: String,
@@ -709,8 +762,18 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         initial.company_type.clone()
     };
 
+    // MAPPS-575: archiving is what an operator almost always wants when they
+    // reach for Delete on a company that has history, and it is the alternative
+    // the server's own delete refusal names (PMS-920). The column and the API
+    // have carried it since migration 004; only the form was missing.
+    let initial_status = if initial.status.is_empty() {
+        "active".to_string()
+    } else {
+        initial.status.clone()
+    };
     let mut name = use_signal(|| initial.name.clone());
     let mut company_type = use_signal(|| initial_type.clone());
+    let mut status = use_signal(|| initial_status.clone());
     let mut industry = use_signal(|| initial.industry.clone());
     // PMS-601: industry suggestions come from the tenant's editable lookup
     // (Settings > Company Industries), not a hardcoded list. Active names only.
@@ -774,8 +837,12 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         }
         let same_type_default =
             initial_for_dirty.company_type.is_empty() && *company_type.read() == "client";
+        // Same shape as the type default above: a blank incoming status renders
+        // as "active", which is not an edit.
+        let same_status_default = initial_for_dirty.status.is_empty() && *status.read() == "active";
         *name.read() != initial_for_dirty.name
             || (*company_type.read() != initial_for_dirty.company_type && !same_type_default)
+            || (*status.read() != initial_for_dirty.status && !same_status_default)
             || *industry.read() != initial_for_dirty.industry
             || *website.read() != initial_for_dirty.website
             || *phone.read() != initial_for_dirty.phone
@@ -806,6 +873,22 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                 current.clone(),
                 humanize_company_type(&current),
             ));
+        }
+        opts
+    };
+
+    // MAPPS-575: the three values `companies_status_check` allows. Preserve any
+    // value outside the list as its own option, the same way `type_options`
+    // does, so editing a company never silently retypes it.
+    let status_options = {
+        let current = status.read().clone();
+        let mut opts = vec![
+            SelectOption::new("active", "Active"),
+            SelectOption::new("inactive", "Inactive (archived)"),
+            SelectOption::new("prospect", "Prospect"),
+        ];
+        if !current.is_empty() && !opts.iter().any(|o| o.value == current) {
+            opts.push(SelectOption::new(current.clone(), current.clone()));
         }
         opts
     };
@@ -986,6 +1069,7 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
         let body = serde_json::json!({
             "name": name_value,
             "company_type": company_type.read().clone(),
+            "status": status.read().clone(),
             "industry": optional_string(&industry.read()),
             "website": website_value,
             "phone": phone_value,
@@ -1120,6 +1204,18 @@ fn CompanyForm(props: CompanyFormProps) -> Element {
                         options: type_options,
                         value: company_type.read().clone(),
                         onchange: move |e: FormEvent| company_type.set(e.value()),
+                    }
+                    Select {
+                        name: "status",
+                        label: "Status",
+                        options: status_options,
+                        // MAPPS-575: say what archiving DOES, because the
+                        // alternative the user was reaching for is Delete, and
+                        // the difference that matters to them is whether the
+                        // company's history survives.
+                        help: "Inactive archives the company: its history is kept and it drops out of the default lists and pickers.",
+                        value: status.read().clone(),
+                        onchange: move |e: FormEvent| status.set(e.value()),
                     }
                     crate::components::SuggestInput {
                         name: "industry",
@@ -1853,6 +1949,9 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     // unavailable state instead of "Could not load company" (kept below for a
     // 4xx while still reachable).
     let fetch_failed = matches!(*company_snapshot, Some(None));
+    // MAPPS-575: read here rather than inside the body's match, because the
+    // banner renders above the header and outside that arm.
+    let archived_banner = matches!(&*company_snapshot, Some(Some(c)) if c.status == "inactive");
     let reachable = crate::hooks::use_server_reachable();
     if fetch_failed && !reachable {
         return rsx! {
@@ -1887,6 +1986,18 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                     delete_error.set(String::new());
                 }
             },
+        }
+        // MAPPS-575: an archived company is out of the default lists and
+        // pickers, so anyone who reaches this page has arrived by a link or a
+        // deliberate filter change. Say so at the top: a field in the sidebar
+        // is easy to miss, and the consequence (it will not appear where they
+        // expect to pick it) is not something a Status badge conveys.
+        if archived_banner {
+            crate::components::StatusBanner {
+                tone: crate::components::BannerTone::Info,
+                class: "mb-4",
+                "This company is archived. Its history is kept, and it stays out of the default company list and pickers until its status is set back to Active."
+            }
         }
         PageHeader {
             title: "{header_title}",
@@ -1959,6 +2070,15 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                 .filter(|s| !s.is_empty())
                 .collect();
                 let type_label = humanize_company_type(&company.company_type);
+                let is_archived = company.status == "inactive";
+                let status_label = match company.status.as_str() {
+                    "inactive" => "Inactive (archived)",
+                    "prospect" => "Prospect",
+                    // Empty from an older server reads as the default the
+                    // column itself carries.
+                    "" | "active" => "Active",
+                    other => other,
+                };
                 let website = company.website.clone();
                 let phone = company.phone.clone();
                 let industry = company.industry.clone();
@@ -2023,6 +2143,20 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
                                     div { class: "flex justify-between",
                                         dt { class: "text-sm text-muted", "Type" }
                                         dd { Badge { variant: BadgeVariant::Green, "{type_label}" } }
+                                    }
+                                    // MAPPS-575: the field the archive lives in,
+                                    // shown for every value rather than only the
+                                    // archived one, so "Active" is a fact the
+                                    // page states rather than an absence the
+                                    // reader has to infer.
+                                    div { class: "flex justify-between",
+                                        dt { class: "text-sm text-muted", "Status" }
+                                        dd {
+                                            Badge {
+                                                variant: if is_archived { BadgeVariant::Gray } else { BadgeVariant::Green },
+                                                "{status_label}"
+                                            }
+                                        }
                                     }
                                     if let Some(industry) = industry {
                                         if !industry.is_empty() {
@@ -2132,6 +2266,8 @@ struct CompanyDetail {
     name: String,
     #[serde(default)]
     company_type: String,
+    #[serde(default)]
+    status: String,
     #[serde(default)]
     industry: Option<String>,
     #[serde(default)]
