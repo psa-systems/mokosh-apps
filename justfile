@@ -47,7 +47,7 @@ pre-commit: css-build
 
 # Umbrella check: build + clippy + fmt + docker builder stage.
 [group: 'check']
-check: check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin
+check: check-ci-parity check-doc-links check-web check-desktop check-clippy check-fmt check-theme-tokens check-defined-colors check-runner-labels check-cancel-routes check-auth-error-prose check-confirm-destructive check-delete-result check-class-omissions check-kit-adoption check-ellipsis-glyph check-empty-state check-status-banner check-no-demo-rows check-email-affordance check-dev-sso-scheme check-sort-keys check-per-page-cap check-types-pin
 
 # Check web/WASM compilation
 [group: 'check']
@@ -93,6 +93,12 @@ check-auth-error-prose:
 check-confirm-destructive:
     bash scripts/check-confirm-destructive.sh --self-test
     bash scripts/check-confirm-destructive.sh
+
+# MAPPS-574: keep a destructive delete reporting the server's refusal, never reducing it to .is_ok()
+[group: 'check']
+check-delete-result:
+    bash scripts/check-delete-result.sh --self-test
+    bash scripts/check-delete-result.sh
 
 # MAPPS-446: keep headings declaring a weight, two-up form grids on sm:, and table name cells naming their colour token
 [group: 'check']
