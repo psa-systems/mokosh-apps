@@ -1470,6 +1470,8 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
     // MAPPS-189: the Delete button opens the styled ConfirmDialog; the
     // actual DELETE fires from `on_confirm_delete` when confirmed.
     let mut confirming_delete = use_signal(|| false);
+    // MAPPS-574: the server's reason for refusing this delete.
+    let mut delete_error = use_signal(String::new);
 
     // MAPPS-231: add/remove asset credentials. The vault endpoints support
     // create (`POST /assets/{id}/credentials`) and delete
@@ -1494,6 +1496,8 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
 
     let mut confirming_cred_delete = use_signal(|| Option::<uuid::Uuid>::None);
     let mut cred_deleting = use_signal(|| false);
+    // MAPPS-574: the server's reason for refusing this removal.
+    let mut cred_delete_error = use_signal(String::new);
 
     // MAPPS-233: add/remove asset relationships. The server exposes create
     // (`POST /assets/{id}/relationships`) and delete
@@ -1514,6 +1518,8 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
 
     let mut confirming_rel_delete = use_signal(|| Option::<uuid::Uuid>::None);
     let mut rel_deleting = use_signal(|| false);
+    // MAPPS-574: the server's reason for refusing this removal.
+    let mut rel_delete_error = use_signal(String::new);
 
     let on_confirm_delete = move |_: ()| {
         if *deleting.read() {
@@ -1521,16 +1527,28 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
         }
         let id = id_for_delete.clone();
         deleting.set(true);
+        delete_error.set(String::new());
         spawn(async move {
             #[cfg(feature = "web")]
             {
                 let path = format!("/assets/{id}");
-                if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
-                    navigator.push(Route::AssetList {});
+                // MAPPS-574: report the refusal instead of discarding it. The
+                // old `.is_ok()` closed the dialog on failure and said nothing,
+                // so a server that declined and a button that did nothing
+                // looked identical.
+                match crate::hooks::fetch::api::delete_authed(&path).await {
+                    Ok(()) => {
+                        crate::hooks::toast::push_toast(
+                            crate::components::AlertType::Success,
+                            "Asset deleted.",
+                        );
+                        confirming_delete.set(false);
+                        navigator.push(Route::AssetList {});
+                    }
+                    Err(err) => delete_error.set(err),
                 }
             }
             deleting.set(false);
-            confirming_delete.set(false);
         });
     };
 
@@ -1624,11 +1642,13 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
             confirm_text: "Delete".to_string(),
             cancel_text: "Cancel".to_string(),
             destructive: true,
+            error: delete_error.read().clone(),
             loading: *deleting.read(),
             onconfirm: on_confirm_delete,
             oncancel: move |_| {
                 if !*deleting.read() {
                     confirming_delete.set(false);
+                    delete_error.set(String::new());
                 }
             },
         }
@@ -2617,6 +2637,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     confirm_text: "Remove".to_string(),
                     cancel_text: "Cancel".to_string(),
                     destructive: true,
+                    error: cred_delete_error.read().clone(),
                     loading: *cred_deleting.read(),
                     onconfirm: move |_| {
                         if *cred_deleting.read() {
@@ -2626,25 +2647,30 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                             return;
                         };
                         cred_deleting.set(true);
+                        cred_delete_error.set(String::new());
                         spawn(async move {
                             #[cfg(feature = "web")]
                             {
                                 let path = format!("/credentials/{crid}");
-                                if crate::hooks::fetch::api::delete_authed(&path)
-                                    .await
-                                    .is_ok()
-                                {
-                                    cred_res.restart();
-                                    audit_res.restart();
+                                // MAPPS-574: report the refusal rather than
+                                // closing on it. The old `.is_ok()` left the
+                                // dialog gone and the row still there.
+                                match crate::hooks::fetch::api::delete_authed(&path).await {
+                                    Ok(()) => {
+                                        cred_res.restart();
+                                        audit_res.restart();
+                                        confirming_cred_delete.set(None);
+                                    }
+                                    Err(err) => cred_delete_error.set(err),
                                 }
                             }
                             cred_deleting.set(false);
-                            confirming_cred_delete.set(None);
                         });
                     },
                     oncancel: move |_| {
                         if !*cred_deleting.read() {
                             confirming_cred_delete.set(None);
+                            cred_delete_error.set(String::new());
                         }
                     },
                 }
@@ -2863,6 +2889,7 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                     confirm_text: "Remove".to_string(),
                     cancel_text: "Cancel".to_string(),
                     destructive: true,
+                    error: rel_delete_error.read().clone(),
                     loading: *rel_deleting.read(),
                     onconfirm: move |_| {
                         if *rel_deleting.read() {
@@ -2872,25 +2899,30 @@ pub fn AssetDetailPage(props: AssetDetailPageProps) -> Element {
                             return;
                         };
                         rel_deleting.set(true);
+                        rel_delete_error.set(String::new());
                         spawn(async move {
                             #[cfg(feature = "web")]
                             {
                                 let path = format!("/asset-relationships/{rid}");
-                                if crate::hooks::fetch::api::delete_authed(&path)
-                                    .await
-                                    .is_ok()
-                                {
-                                    rel_res.restart();
-                                    audit_res.restart();
+                                // MAPPS-574: report the refusal rather than
+                                // closing on it. The old `.is_ok()` left the
+                                // dialog gone and the row still there.
+                                match crate::hooks::fetch::api::delete_authed(&path).await {
+                                    Ok(()) => {
+                                        rel_res.restart();
+                                        audit_res.restart();
+                                        confirming_rel_delete.set(None);
+                                    }
+                                    Err(err) => rel_delete_error.set(err),
                                 }
                             }
                             rel_deleting.set(false);
-                            confirming_rel_delete.set(None);
                         });
                     },
                     oncancel: move |_| {
                         if !*rel_deleting.read() {
                             confirming_rel_delete.set(None);
+                            rel_delete_error.set(String::new());
                         }
                     },
                 }

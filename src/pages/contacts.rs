@@ -1806,6 +1806,11 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
     let edit_id = company_id_for_edit.clone();
     let delete_id = company_id_for_delete.clone();
     let mut confirming_delete = use_signal(|| false);
+    // MAPPS-574: why the last delete attempt was refused. The server answers a
+    // blocked delete with 400 and an actionable message ("Cannot delete company
+    // with existing tickets", or the PMS-170 related-records list); this holds
+    // it for the dialog.
+    let mut delete_error = use_signal(String::new);
     // MAPPS-357: gate the destructive Delete while the server is unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
     let on_confirm_delete = move |_: ()| {
@@ -1814,16 +1819,32 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         }
         let id = delete_id.clone();
         deleting.set(true);
+        delete_error.set(String::new());
         spawn(async move {
             #[cfg(feature = "web")]
             {
                 let path = format!("/contacts/companies/{id}");
-                if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
-                    navigator.push(Route::CompanyList {});
+                // MAPPS-574: a refusal is a normal outcome here, not an edge
+                // case - a company with a single ticket or project cannot be
+                // deleted - so it has to be reported. The previous
+                // `.is_ok()` discarded the message and closed the dialog, which
+                // left the user on the unchanged page with nothing to read and
+                // no way to tell a refusal from a dead button. The dialog stays
+                // open on failure so the reason sits next to the control that
+                // produced it.
+                match crate::hooks::fetch::api::delete_authed(&path).await {
+                    Ok(()) => {
+                        crate::hooks::toast::push_toast(
+                            crate::components::AlertType::Success,
+                            "Company deleted.",
+                        );
+                        confirming_delete.set(false);
+                        navigator.push(Route::CompanyList {});
+                    }
+                    Err(err) => delete_error.set(err),
                 }
             }
             deleting.set(false);
-            confirming_delete.set(false);
         });
     };
 
@@ -1843,18 +1864,27 @@ pub fn CompanyDetailPage(props: CompanyDetailPageProps) -> Element {
         crate::components::ConfirmDialog {
             open: confirming_delete(),
             title: "Delete company".to_string(),
-            message: "Delete this company? This will also remove its sites and unlink its contacts/tickets.".to_string(),
+            // MAPPS-574: the old wording ("unlink its contacts/tickets") was
+            // wrong about tickets, and wrong in the direction that makes a
+            // refusal read as a broken button: a ticket is not unlinked, it
+            // blocks the delete outright. Sites and contacts were right - sites
+            // CASCADE (migration 004) and `contacts.company_id` is SET NULL
+            // (migration 110, PMS-812) - so say what actually happens, and say
+            // what stops it, before the name is typed rather than after.
+            message: "Delete this company? Its sites are removed and its contacts are unlinked, and this cannot be undone. A company that still has tickets, contracts, invoices, payments, projects, assets, time entries, appointments or sub-companies cannot be deleted; remove those first.".to_string(),
             confirm_text: "Delete".to_string(),
             cancel_text: "Cancel".to_string(),
             destructive: true,
-            // PMS-369: this delete cascades (removes sites, unlinks
-            // contacts/tickets), so gate it behind typing the company name.
+            // PMS-369: this delete cascades (removes sites, unlinks contacts),
+            // so gate it behind typing the company name.
             confirm_phrase: header_title.clone(),
+            error: delete_error.read().clone(),
             loading: *deleting.read(),
             onconfirm: on_confirm_delete,
             oncancel: move |_| {
                 if !*deleting.read() {
                     confirming_delete.set(false);
+                    delete_error.set(String::new());
                 }
             },
         }
@@ -2189,6 +2219,8 @@ fn RowActions(
     let mut open = use_signal(|| false);
     let mut confirming = use_signal(|| false);
     let mut deleting = use_signal(|| false);
+    // MAPPS-574: the server's reason for refusing this row's delete.
+    let mut delete_error = use_signal(String::new);
     // MAPPS-357: gate the row Delete while the server is unreachable. Edit is
     // pure navigation and stays enabled.
     let can_mutate = crate::hooks::use_can_mutate();
@@ -2207,14 +2239,23 @@ fn RowActions(
             return;
         }
         deleting.set(true);
+        delete_error.set(String::new());
         let path = path.clone();
         spawn(async move {
             #[cfg(feature = "web")]
             {
-                if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
-                    confirming.set(false);
-                    open.set(false);
-                    on_deleted.call(());
+                // MAPPS-574: this row menu deletes whatever `delete_path`
+                // points at, so it inherits every refusal the detail pages get.
+                // It used to leave the dialog open on failure with the spinner
+                // simply stopped, which reads as a hung request rather than a
+                // decision the server made.
+                match crate::hooks::fetch::api::delete_authed(&path).await {
+                    Ok(()) => {
+                        confirming.set(false);
+                        open.set(false);
+                        on_deleted.call(());
+                    }
+                    Err(err) => delete_error.set(err),
                 }
             }
             deleting.set(false);
@@ -2276,11 +2317,13 @@ fn RowActions(
             confirm_text: "Delete".to_string(),
             cancel_text: "Cancel".to_string(),
             destructive: true,
+            error: delete_error.read().clone(),
             loading: deleting(),
             onconfirm: on_confirm_delete,
             oncancel: move |_| {
                 if !deleting() {
                     confirming.set(false);
+                    delete_error.set(String::new());
                 }
             },
         }
@@ -5072,6 +5115,9 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
     let edit_id = id_for_edit.clone();
     let delete_id = id_for_delete.clone();
     let mut confirming_delete = use_signal(|| false);
+    // MAPPS-574: same swallow the company delete had - hold the server's reason
+    // instead of discarding it.
+    let mut delete_error = use_signal(String::new);
     // MAPPS-357: gate the destructive Delete while the server is unreachable.
     let can_mutate = crate::hooks::use_can_mutate();
     let on_confirm_delete = move |_: ()| {
@@ -5080,16 +5126,24 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
         }
         let id = delete_id.clone();
         deleting.set(true);
+        delete_error.set(String::new());
         spawn(async move {
             #[cfg(feature = "web")]
             {
                 let path = format!("/contacts/contacts/{id}");
-                if crate::hooks::fetch::api::delete_authed(&path).await.is_ok() {
-                    navigator.push(Route::ContactList {});
+                match crate::hooks::fetch::api::delete_authed(&path).await {
+                    Ok(()) => {
+                        crate::hooks::toast::push_toast(
+                            crate::components::AlertType::Success,
+                            "Contact deleted.",
+                        );
+                        confirming_delete.set(false);
+                        navigator.push(Route::ContactList {});
+                    }
+                    Err(err) => delete_error.set(err),
                 }
             }
             deleting.set(false);
-            confirming_delete.set(false);
         });
     };
 
@@ -5113,11 +5167,13 @@ pub fn ContactDetailPage(props: ContactDetailPageProps) -> Element {
             confirm_text: "Delete".to_string(),
             cancel_text: "Cancel".to_string(),
             destructive: true,
+            error: delete_error.read().clone(),
             loading: *deleting.read(),
             onconfirm: on_confirm_delete,
             oncancel: move |_| {
                 if !*deleting.read() {
                     confirming_delete.set(false);
+                    delete_error.set(String::new());
                 }
             },
         }

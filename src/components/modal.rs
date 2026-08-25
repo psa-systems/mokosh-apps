@@ -3,6 +3,7 @@
 use dioxus::prelude::*;
 
 use super::button::{Button, ButtonVariant};
+use super::error_banner::ErrorBanner;
 use super::icon_button::IconButton;
 use super::icons::XMarkIcon;
 
@@ -225,6 +226,16 @@ pub struct ConfirmDialogProps {
     /// plain one-click confirm, which is enough for non-cascading deletes.
     #[props(default)]
     confirm_phrase: String,
+    /// MAPPS-574: why the confirmed action did not happen, rendered inside the
+    /// dialog. Empty (default) = nothing to report.
+    ///
+    /// The dialog is the right home for it rather than a banner on the page
+    /// behind: the caller keeps `open` true on failure, so the reason appears
+    /// next to the button that produced it and above the phrase the user
+    /// already typed, instead of on a page they have just been dropped back
+    /// onto with no obvious link to what they did.
+    #[props(default)]
+    error: String,
     /// Confirm handler
     onconfirm: EventHandler<()>,
     /// Cancel/close handler
@@ -240,10 +251,55 @@ pub fn confirm_phrase_satisfied(typed: &str, required: &str) -> bool {
     required.is_empty() || typed.trim().eq_ignore_ascii_case(required)
 }
 
-/// Confirmation dialog component
+/// Confirmation dialog component.
+///
+/// MAPPS-574: the open dialog is a child component, for the same reason
+/// [`Modal`] splits out [`ModalDialog`]. The type-to-confirm phrase is state
+/// that must not outlive the dialog it belongs to, and `ConfirmDialog` itself
+/// does not unmount when the dialog closes - the caller keeps it mounted and
+/// flips `open`. Holding `typed` here meant cancelling and reopening found the
+/// phrase still in the box and the destructive button already enabled, so every
+/// attempt after the first was a one-click delete. Mounting the state with the
+/// dialog re-arms the gate on every open, with no reset to remember.
 #[component]
 pub fn ConfirmDialog(props: ConfirmDialogProps) -> Element {
-    let confirm_variant = if props.destructive {
+    if !props.open {
+        return rsx! {};
+    }
+
+    rsx! {
+        OpenConfirmDialog {
+            title: props.title.clone(),
+            message: props.message.clone(),
+            confirm_text: props.confirm_text.clone(),
+            cancel_text: props.cancel_text.clone(),
+            destructive: props.destructive,
+            loading: props.loading,
+            confirm_phrase: props.confirm_phrase.clone(),
+            error: props.error.clone(),
+            onconfirm: props.onconfirm,
+            oncancel: props.oncancel,
+        }
+    }
+}
+
+/// The dialog itself. Only mounted while open, so its phrase state is born and
+/// dies with one confirmation attempt.
+#[component]
+#[allow(clippy::too_many_arguments)]
+fn OpenConfirmDialog(
+    title: String,
+    message: String,
+    confirm_text: String,
+    cancel_text: String,
+    destructive: bool,
+    loading: bool,
+    confirm_phrase: String,
+    error: String,
+    onconfirm: EventHandler<()>,
+    oncancel: EventHandler<()>,
+) -> Element {
+    let confirm_variant = if destructive {
         ButtonVariant::Danger
     } else {
         ButtonVariant::Primary
@@ -254,34 +310,44 @@ pub fn ConfirmDialog(props: ConfirmDialogProps) -> Element {
     // (or empty) phrase keeps the button disabled, so a different entity's
     // name never carries over an enabled state.
     let mut typed = use_signal(String::new);
-    let gated = !props.confirm_phrase.trim().is_empty();
-    let satisfied = confirm_phrase_satisfied(&typed.read(), &props.confirm_phrase);
-    let confirm_disabled = props.loading || !satisfied;
-    let phrase = props.confirm_phrase.clone();
+    let gated = !confirm_phrase.trim().is_empty();
+    let satisfied = confirm_phrase_satisfied(&typed.read(), &confirm_phrase);
+    let confirm_disabled = loading || !satisfied;
+    let phrase = confirm_phrase.clone();
 
     rsx! {
         Modal {
-            open: props.open,
-            title: props.title.clone(),
+            open: true,
+            title: title.clone(),
             size: ModalSize::Small,
-            onclose: move |_| props.oncancel.call(()),
+            onclose: move |_| oncancel.call(()),
             footer: rsx! {
                 Button {
                     variant: ButtonVariant::Secondary,
-                    onclick: move |_| props.oncancel.call(()),
-                    disabled: props.loading,
-                    "{props.cancel_text}"
+                    onclick: move |_| oncancel.call(()),
+                    disabled: loading,
+                    "{cancel_text}"
                 }
                 Button {
                     variant: confirm_variant,
-                    onclick: move |_| props.onconfirm.call(()),
-                    loading: props.loading,
+                    onclick: move |_| onconfirm.call(()),
+                    loading: loading,
                     disabled: confirm_disabled,
-                    "{props.confirm_text}"
+                    "{confirm_text}"
                 }
             },
             p { class: "text-sm text-muted",
-                "{props.message}"
+                "{message}"
+            }
+            // MAPPS-574: why the last attempt did not happen. Above the phrase
+            // input, so the reason and the control the user is about to reuse
+            // are read in that order. `ErrorBanner` carries `role="alert"`, so
+            // a refusal arriving into an already-open dialog is announced
+            // rather than only appearing.
+            if !error.is_empty() {
+                div { class: "mt-3",
+                    ErrorBanner { "{error}" }
+                }
             }
             if gated {
                 div { class: "mt-3 space-y-1",
@@ -608,6 +674,141 @@ mod tests {
     fn ungated_when_required_blank() {
         assert!(confirm_phrase_satisfied("", ""));
         assert!(confirm_phrase_satisfied("anything", "   "));
+    }
+
+    /// MAPPS-574: a dialog whose confirmed action was refused. Rendered
+    /// through the REAL `ConfirmDialog`, so the test moves when it does.
+    #[component]
+    fn RefusedDialog() -> Element {
+        rsx! {
+            ConfirmDialog {
+                open: true,
+                title: "Delete company".to_string(),
+                message: "BODY-MARKER".to_string(),
+                destructive: true,
+                confirm_phrase: "Acme Corp".to_string(),
+                error: "Cannot delete company with existing tickets".to_string(),
+                onconfirm: move |_| {},
+                oncancel: move |_| {},
+            }
+        }
+    }
+
+    #[component]
+    fn AcceptedDialog() -> Element {
+        rsx! {
+            ConfirmDialog {
+                open: true,
+                title: "Delete company".to_string(),
+                message: "BODY-MARKER".to_string(),
+                destructive: true,
+                confirm_phrase: "Acme Corp".to_string(),
+                onconfirm: move |_| {},
+                oncancel: move |_| {},
+            }
+        }
+    }
+
+    #[component]
+    fn ClosedDialog() -> Element {
+        rsx! {
+            ConfirmDialog {
+                open: false,
+                title: "Delete company".to_string(),
+                message: "BODY-MARKER".to_string(),
+                confirm_phrase: "Acme Corp".to_string(),
+                error: "Cannot delete company with existing tickets".to_string(),
+                onconfirm: move |_| {},
+                oncancel: move |_| {},
+            }
+        }
+    }
+
+    fn render(app: fn() -> Element) -> String {
+        let mut dom = VirtualDom::new(app);
+        dom.rebuild_in_place();
+        dioxus_ssr::render(&dom)
+    }
+
+    /// MAPPS-574: the server's reason for refusing reaches the user. Before
+    /// this, the company delete ran `.is_ok()` on the result and a refused
+    /// delete closed the dialog saying nothing at all, so the reason was
+    /// visible only in devtools.
+    #[test]
+    fn a_refusal_is_rendered_inside_the_dialog() {
+        let html = render(RefusedDialog);
+        assert!(
+            html.contains("Cannot delete company with existing tickets"),
+            "the server's own message must be shown verbatim; got: {html}"
+        );
+        assert!(
+            html.contains(r#"role="alert""#),
+            "a refusal arriving into an already-open dialog must be announced,              not merely drawn; got: {html}"
+        );
+    }
+
+    /// The reason sits above the phrase input, so it is read before the control
+    /// the user is about to reuse rather than after it.
+    #[test]
+    fn the_refusal_precedes_the_phrase_input() {
+        let html = render(RefusedDialog);
+        let banner = html
+            .find("Cannot delete company with existing tickets")
+            .expect("the refusal renders");
+        let input = html.find("<input").expect("the phrase input renders");
+        assert!(
+            banner < input,
+            "the reason must come before the input it explains; got: {html}"
+        );
+    }
+
+    /// The slot is optional, and a dialog with nothing to report must render
+    /// exactly what it did before: no empty banner above the phrase box.
+    #[test]
+    fn no_refusal_means_no_banner() {
+        let html = render(AcceptedDialog);
+        assert!(html.contains("BODY-MARKER"), "the dialog still renders");
+        assert!(
+            !html.contains(r#"role="alert""#),
+            "an empty error must not render a banner; got: {html}"
+        );
+    }
+
+    /// MAPPS-574: closing renders nothing, which is what makes the phrase state
+    /// unable to survive into the next open. Pinned as behaviour so the
+    /// early-return cannot be "simplified" back into passing `open` down.
+    #[test]
+    fn a_closed_dialog_renders_nothing() {
+        let html = render(ClosedDialog);
+        assert!(
+            html.is_empty(),
+            "a closed ConfirmDialog must render nothing at all; got: {html}"
+        );
+    }
+
+    /// The re-arm itself: `typed` must be owned by the component that mounts
+    /// with the dialog, never by `ConfirmDialog`, which the caller keeps
+    /// mounted across closes. Held there, the phrase survived a cancel and the
+    /// destructive button came back already enabled, so every attempt after the
+    /// first was a one-click delete. That is a lifecycle property, and the DOM
+    /// transition it depends on is not reachable from the host test harness
+    /// (no wasm/browser runner; see docs/destructive-actions.md), so the
+    /// ownership is asserted where it is decided.
+    #[test]
+    fn the_phrase_state_is_owned_by_the_open_dialog_only() {
+        const SRC: &str = include_str!("modal.rs");
+        let start = SRC
+            .find("pub fn ConfirmDialog(")
+            .expect("ConfirmDialog is defined here");
+        let end = SRC
+            .find("fn OpenConfirmDialog(")
+            .expect("the open dialog is a separate component");
+        assert!(start < end, "OpenConfirmDialog follows ConfirmDialog");
+        let wrapper = &SRC[start..end];
+        assert!(
+            !wrapper.contains("use_signal"),
+            "ConfirmDialog does not unmount when the dialog closes, so any state              it holds outlives the attempt it belongs to. Put it in              OpenConfirmDialog, which mounts with the dialog. Found in: {wrapper}"
+        );
     }
 
     #[test]

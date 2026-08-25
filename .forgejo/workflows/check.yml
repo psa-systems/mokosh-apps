@@ -84,6 +84,16 @@ jobs:
           bash scripts/check-confirm-destructive.sh --self-test
           bash scripts/check-confirm-destructive.sh
 
+      # MAPPS-574: a destructive delete that reduces the server's answer to
+      # .is_ok() throws away the refusal, so the dialog closes and nothing says
+      # why. Eight call sites had it; the reason was devtools-only.
+      - name: Delete-result guard
+        # --self-test first, so a guard that has stopped guarding fails loudly
+        # rather than reporting clean.
+        run: |
+          bash scripts/check-delete-result.sh --self-test
+          bash scripts/check-delete-result.sh
+
       # MAPPS-446: three class omissions with no effect in the default theme
       # (a heading with no weight, a form grid gated at md:, a name cell with
       # no colour token), so review does not catch them coming back.
