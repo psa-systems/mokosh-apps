@@ -3736,6 +3736,8 @@ mod tests {
 /// and the decision is visible in the source.
 #[cfg(test)]
 mod editor_ux_tests {
+    use super::body_pane_class;
+
     const SRC: &str = include_str!("knowledge_base.rs");
 
     /// The page's code, with two things removed.
@@ -3811,6 +3813,46 @@ mod editor_ux_tests {
             !code.contains("match tab()"),
             "a match on the tab unmounts the inactive pane, which is the behaviour this \
              replaced"
+        );
+    }
+
+    /// MAPPS-573 and MAPPS-584 together. Hiding is not unmounting: the caret
+    /// and the textarea's scroll offset only survive a trip to Preview because
+    /// the element stays in the DOM. Every branch of the helper has to hide.
+    #[test]
+    fn an_inactive_pane_is_hidden_rather_than_unmounted() {
+        assert_eq!(body_pane_class(true, false), "min-w-0");
+        assert_eq!(body_pane_class(true, true), "min-w-0");
+        for split in [false, true] {
+            assert!(
+                body_pane_class(false, split).starts_with("hidden"),
+                "an inactive pane is hidden, never dropped (split={split})"
+            );
+        }
+    }
+
+    /// MAPPS-584 AC1. With split view off the editor is tabs at EVERY width.
+    /// The bug being fixed is that `lg:block` was unconditional, so anyone on a
+    /// laptop got both panes whether they wanted them or not.
+    #[test]
+    fn split_view_is_the_only_thing_that_puts_both_panes_on_the_page() {
+        assert!(
+            !body_pane_class(false, false).contains("lg:block"),
+            "with split off the inactive pane must stay hidden at every width"
+        );
+        assert!(
+            body_pane_class(false, true).contains("lg:block"),
+            "and split view is what brings it back"
+        );
+        let code = code_only();
+        assert!(
+            code.contains(r#"prefs::get_bool("kb_split_preview", false)"#),
+            "split view defaults to off, and reads back what the author last chose"
+        );
+        assert!(
+            code.contains(r#"prefs::set_bool("kb_split_preview", next)"#),
+            "and the choice is persisted, or it is a setting that resets on every \
+             article"
         );
     }
 
