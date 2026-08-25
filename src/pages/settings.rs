@@ -2153,8 +2153,14 @@ fn WorkTypesSettingsBody() -> Element {
                                 };
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell {
@@ -2506,8 +2512,14 @@ fn TaskStatusesSettingsBody() -> Element {
                                 let completed = row.is_completed;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell { ColorSwatch { color } }
@@ -2839,8 +2851,14 @@ fn AssetTypesSettingsBody() -> Element {
                                 let active = row.is_active;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell {
@@ -3169,8 +3187,14 @@ fn CompanyIndustriesSettingsBody() -> Element {
                                 let active = row.is_active;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell { ActiveBadge { active } }
@@ -3466,8 +3490,14 @@ fn ProjectTypesSettingsBody() -> Element {
                                 let system = row.is_system;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             div { class: "flex items-center gap-2",
                                                 span { class: "font-medium text-accent", "{name}" }
                                                 if system {
@@ -3807,8 +3837,14 @@ fn PaymentTermsSettingsBody() -> Element {
                                 let active = row.is_active;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell {
@@ -4132,8 +4168,14 @@ fn TicketStatusesSettingsBody() -> Element {
                                 let default = row.is_default;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell { ColorSwatch { color } }
@@ -4480,8 +4522,14 @@ fn TicketPrioritiesSettingsBody() -> Element {
                                 let default = row.is_default;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell { ColorSwatch { color } }
@@ -4841,8 +4889,14 @@ fn TicketTypesSettingsBody() -> Element {
                                 let active = row.is_active;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell {
@@ -5175,8 +5229,14 @@ fn TicketQueuesSettingsBody() -> Element {
                                 let default = row.is_default;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell {
@@ -5560,8 +5620,14 @@ fn TicketCategoriesSettingsBody() -> Element {
                                 let active = row.is_active;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell {
@@ -5988,8 +6054,14 @@ fn RmmConnectionsSettingsBody() -> Element {
                                 let active = row.is_active;
                                 rsx! {
                                     TableRow { key: "{key}", clickable: true,
-                                        onclick: move |_| editing.set(Some(edit_state.clone())),
+                                        onclick: {
+                                            let edit_state = edit_state.clone();
+                                            move |_| editing.set(Some(edit_state.clone()))
+                                        },
                                         TableCell {
+                                            // MAPPS-569: the row's click opens a modal, so there is no
+                                            // route to link to; this cell is the keyboard path instead.
+                                            onactivate: move |_| editing.set(Some(edit_state.clone())),
                                             span { class: "font-medium text-accent", "{name}" }
                                         }
                                         TableCell { "{provider}" }
