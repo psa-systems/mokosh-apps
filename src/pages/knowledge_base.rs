@@ -2028,6 +2028,13 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
     ];
 
     let mut tab = use_signal(|| BodyTab::Write);
+    // MAPPS-579: Ctrl+K in the body asks the toolbar to open its link dialog.
+    // A signal rather than a direct call because the shortcut fires on the
+    // textarea and the dialog belongs to the toolbar.
+    let mut link_shortcut = use_signal(|| false);
+    // MAPPS-579: whether the metadata block is expanded. Starts closed; a form
+    // missing Title or Slug forces it open regardless (see the block itself).
+    let mut meta_open = use_signal(|| false);
     // MAPPS-573: Cancel with unsaved work asks first.
     let mut confirming_cancel = use_signal(|| false);
 
@@ -2259,185 +2266,246 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                     ErrorBanner { "{unresolved_note}" }
                 }
 
-                crate::components::Input {
-                    name: "title",
-                    label: "Title",
-                    placeholder: "How to …",
-                    required: true,
-                    maxlength: TITLE_MAX as i64,
-                    rules: vec![Rule::Required],
-                    error: title_error.read().clone(),
-                    value: title.read().clone(),
-                    oninput: move |e: FormEvent| {
-                        title_error.set(String::new());
-                        title.set(e.value());
-                        if let Some(s) = next_slug(&e.value(), slug_touched()) {
-                            slug.set(s);
-                        }
-                    },
-                }
-
-                crate::components::Input {
-                    name: "slug",
-                    label: "Slug",
-                    placeholder: "Leave blank to derive from the title",
-                    help: "URL-safe identifier; normalized to lowercase hyphenated form on save, and auto-generated from the title when blank.",
-                    maxlength: SLUG_MAX as i64,
-                    value: slug.read().clone(),
-                    oninput: move |e: FormEvent| {
-                        slug_touched.set(true);
-                        slug.set(e.value());
-                    },
-                }
-
-                crate::components::Input {
-                    name: "summary",
-                    label: "Summary",
-                    placeholder: "Short one-line description (optional)",
-                    maxlength: SUMMARY_MAX as i64,
-                    value: summary.read().clone(),
-                    oninput: move |e: FormEvent| summary.set(e.value()),
-                }
-
-                div { class: "grid grid-cols-1 gap-6 sm:grid-cols-3",
-                    Select {
-                        name: "category",
-                        label: "Category",
-                        options: category_options,
-                        value: category_id.read().clone(),
-                        onchange: move |e: FormEvent| category_id.set(e.value()),
-                    }
-                    div { class: "space-y-1",
-                        Select {
-                            name: "visibility",
-                            label: "Visibility",
-                            options: visibility_options,
-                            value: visibility.read().clone(),
-                            onchange: move |e: FormEvent| {
-                                company_error.set(String::new());
-                                visibility.set(e.value());
-                            },
-                        }
-                        // MAPPS-515: the server clears the stored scope under
-                        // any other visibility. Say so, in the author's own
-                        // values, instead of letting the save do it silently.
-                        if !scope_clear_note.is_empty() {
-                            p { class: "text-xs text-muted", role: "status", "{scope_clear_note}" }
-                        }
-                    }
-                    Select {
-                        name: "status",
-                        label: "Status",
-                        options: status_options,
-                        value: status.read().clone(),
-                        onchange: move |e: FormEvent| status.set(e.value()),
-                    }
-                }
-
-                // MAPPS-515: the company scope. Only a `client_specific`
-                // article has one, and the server requires it to be non-empty.
-                if show_company_block {
-                    fieldset { class: "space-y-2",
-                        legend { class: "block text-sm font-medium text-content", "Companies" }
-                        p { class: "text-xs text-muted",
-                            "Only these companies see this article in the client portal."
-                        }
-                        for (index , (company_id , company_name)) in company_rows.iter().cloned().enumerate() {
-                            div {
-                                key: "{company_id}",
-                                class: "flex items-center justify-between gap-3 rounded-md border border-line p-3",
+                // MAPPS-579: the eight metadata controls collapse to a summary
+                // row once the required ones are filled, so the body gets the
+                // screen instead of starting below the fold. Always expanded
+                // while Title or Slug is still empty, because collapsing a form
+                // the author has not finished hides the work they still owe.
+                //
+                // Not sticky across articles: the state is per-mount, so opening
+                // a different article starts from the same place rather than
+                // from whatever the last one was left in.
+                {
+                    let title_v = title.read().clone();
+                    let slug_v = slug.read().clone();
+                    let incomplete = title_v.trim().is_empty() || slug_v.trim().is_empty();
+                    let open = incomplete || meta_open();
+                    // Named apart from the form's own `summary` field, which
+                    // is one of the controls being collapsed.
+                    let meta_summary = {
+                        let cat = category_options
+                            .iter()
+                            .find(|o| o.value == *category_id.read())
+                            .map(|o| o.label.clone())
+                            .unwrap_or_else(|| "Uncategorized".to_string());
+                        let (vis, _) = visibility_label(&visibility.read());
+                        let (_, st) = kb_article_status_badge(&status.read());
+                        format!("{vis} · {st} · {cat}")
+                    };
+                    rsx! {
+                        div { class: "rounded border border-line",
+                            div { class: "flex items-center justify-between gap-3 px-3 py-2",
                                 div { class: "min-w-0",
-                                    p { class: "text-sm font-medium text-content truncate",
-                                        {company_label(&company_id, &company_name)}
+                                    p { class: "truncate text-sm font-medium text-content",
+                                        if title_v.trim().is_empty() { "Untitled article" } else { "{title_v}" }
                                     }
-                                    if company_name.trim().is_empty() {
-                                        p { class: "text-xs text-muted",
-                                            "Name unavailable. This company stays scoped to the article."
+                                    if !open {
+                                        p { class: "truncate text-xs text-muted", "{meta_summary}" }
+                                    }
+                                }
+                                if !incomplete {
+                                    button {
+                                        r#type: "button",
+                                        class: "shrink-0 rounded px-2 py-1 text-xs font-medium text-accent hover:bg-surface-2 focus:outline-none focus:ring-2 focus:ring-accent",
+                                        // The control is a disclosure, so its
+                                        // state is exposed rather than implied
+                                        // by the caret's direction alone.
+                                        aria_expanded: if open { "true" } else { "false" },
+                                        aria_controls: "kb-article-meta",
+                                        onclick: move |e: MouseEvent| {
+                                            e.prevent_default();
+                                            meta_open.toggle();
+                                        },
+                                        if open { "Hide details" } else { "Edit details" }
+                                    }
+                                }
+                            }
+                            div {
+                                id: "kb-article-meta",
+                                class: if open { "space-y-4 border-t border-line p-3" } else { "hidden" },
+                    crate::components::Input {
+                        name: "title",
+                        label: "Title",
+                        placeholder: "How to …",
+                        required: true,
+                        maxlength: TITLE_MAX as i64,
+                        rules: vec![Rule::Required],
+                        error: title_error.read().clone(),
+                        value: title.read().clone(),
+                        oninput: move |e: FormEvent| {
+                            title_error.set(String::new());
+                            title.set(e.value());
+                            if let Some(s) = next_slug(&e.value(), slug_touched()) {
+                                slug.set(s);
+                            }
+                        },
+                    }
+
+                    crate::components::Input {
+                        name: "slug",
+                        label: "Slug",
+                        placeholder: "Leave blank to derive from the title",
+                        help: "URL-safe identifier; normalized to lowercase hyphenated form on save, and auto-generated from the title when blank.",
+                        maxlength: SLUG_MAX as i64,
+                        value: slug.read().clone(),
+                        oninput: move |e: FormEvent| {
+                            slug_touched.set(true);
+                            slug.set(e.value());
+                        },
+                    }
+
+                    crate::components::Input {
+                        name: "summary",
+                        label: "Summary",
+                        placeholder: "Short one-line description (optional)",
+                        maxlength: SUMMARY_MAX as i64,
+                        value: summary.read().clone(),
+                        oninput: move |e: FormEvent| summary.set(e.value()),
+                    }
+
+                    div { class: "grid grid-cols-1 gap-6 sm:grid-cols-3",
+                        Select {
+                            name: "category",
+                            label: "Category",
+                            options: category_options,
+                            value: category_id.read().clone(),
+                            onchange: move |e: FormEvent| category_id.set(e.value()),
+                        }
+                        div { class: "space-y-1",
+                            Select {
+                                name: "visibility",
+                                label: "Visibility",
+                                options: visibility_options,
+                                value: visibility.read().clone(),
+                                onchange: move |e: FormEvent| {
+                                    company_error.set(String::new());
+                                    visibility.set(e.value());
+                                },
+                            }
+                            // MAPPS-515: the server clears the stored scope under
+                            // any other visibility. Say so, in the author's own
+                            // values, instead of letting the save do it silently.
+                            if !scope_clear_note.is_empty() {
+                                p { class: "text-xs text-muted", role: "status", "{scope_clear_note}" }
+                            }
+                        }
+                        Select {
+                            name: "status",
+                            label: "Status",
+                            options: status_options,
+                            value: status.read().clone(),
+                            onchange: move |e: FormEvent| status.set(e.value()),
+                        }
+                    }
+
+                    // MAPPS-515: the company scope. Only a `client_specific`
+                    // article has one, and the server requires it to be non-empty.
+                    if show_company_block {
+                        fieldset { class: "space-y-2",
+                            legend { class: "block text-sm font-medium text-content", "Companies" }
+                            p { class: "text-xs text-muted",
+                                "Only these companies see this article in the client portal."
+                            }
+                            for (index , (company_id , company_name)) in company_rows.iter().cloned().enumerate() {
+                                div {
+                                    key: "{company_id}",
+                                    class: "flex items-center justify-between gap-3 rounded-md border border-line p-3",
+                                    div { class: "min-w-0",
+                                        p { class: "text-sm font-medium text-content truncate",
+                                            {company_label(&company_id, &company_name)}
+                                        }
+                                        if company_name.trim().is_empty() {
+                                            p { class: "text-xs text-muted",
+                                                "Name unavailable. This company stays scoped to the article."
+                                            }
                                         }
                                     }
-                                }
-                                crate::components::IconButton {
-                                    label: "Remove company".to_string(),
-                                    class: "p-1 text-subtle hover:text-red-600 dark:hover:text-red-400".to_string(),
-                                    onclick: move |_| {
-                                        companies.write().remove(index);
-                                        company_add_note.set(String::new());
-                                    },
-                                    TrashIcon { size: IconSize::Small }
-                                }
-                            }
-                        }
-                        if picker_open {
-                            crate::components::CompanyPicker {
-                                value: String::new(),
-                                selected_id: None,
-                                label: String::new(),
-                                required: false,
-                                // Scoping an article is not the place to create a
-                                // CRM company record; the contact and project
-                                // forms remain the paths that do.
-                                allow_inline_create: false,
-                                // MAPPS-322: the submit guard's message lands
-                                // here, beside the control that fixes it.
-                                error: company_error.read().clone(),
-                                onselect: move |(id, name): (String, String)| {
-                                    if companies.read().iter().any(|(existing, _)| existing == &id) {
-                                        company_add_note
-                                            .set(format!("{name} is already scoped to this article."));
-                                        return;
+                                    crate::components::IconButton {
+                                        label: "Remove company".to_string(),
+                                        class: "p-1 text-subtle hover:text-red-600 dark:hover:text-red-400".to_string(),
+                                        onclick: move |_| {
+                                            companies.write().remove(index);
+                                            company_add_note.set(String::new());
+                                        },
+                                        TrashIcon { size: IconSize::Small }
                                     }
-                                    companies.write().push((id, name));
-                                    company_error.set(String::new());
-                                    company_add_note.set(String::new());
-                                    adding_company.set(false);
-                                },
-                                onclear: move |_| { company_add_note.set(String::new()); },
+                                }
                             }
-                        }
-                        if !company_add_note.read().is_empty() {
-                            p { class: "text-xs text-muted", role: "status", "{company_add_note}" }
-                        }
-                        div { class: "flex flex-wrap items-center gap-3",
                             if picker_open {
-                                button {
-                                    r#type: "button",
-                                    class: "inline-flex items-center text-xs text-accent hover:opacity-90",
-                                    onclick: move |_| {
+                                crate::components::CompanyPicker {
+                                    value: String::new(),
+                                    selected_id: None,
+                                    label: String::new(),
+                                    required: false,
+                                    // Scoping an article is not the place to create a
+                                    // CRM company record; the contact and project
+                                    // forms remain the paths that do.
+                                    allow_inline_create: false,
+                                    // MAPPS-322: the submit guard's message lands
+                                    // here, beside the control that fixes it.
+                                    error: company_error.read().clone(),
+                                    onselect: move |(id, name): (String, String)| {
+                                        if companies.read().iter().any(|(existing, _)| existing == &id) {
+                                            company_add_note
+                                                .set(format!("{name} is already scoped to this article."));
+                                            return;
+                                        }
+                                        companies.write().push((id, name));
+                                        company_error.set(String::new());
                                         company_add_note.set(String::new());
                                         adding_company.set(false);
                                     },
-                                    "Don't add a company"
-                                }
-                            } else {
-                                Button {
-                                    variant: ButtonVariant::Secondary,
-                                    size: ButtonSize::Small,
-                                    onclick: move |_| {
-                                        company_add_note.set(String::new());
-                                        adding_company.set(true);
-                                    },
-                                    PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
-                                    {add_scope_company_label(company_rows.len())}
+                                    onclear: move |_| { company_add_note.set(String::new()); },
                                 }
                             }
-                        }
-                        // The picker owns the inline message while it is open;
-                        // with it closed the guard's message would have nowhere
-                        // to render, so the block carries it here.
-                        if !picker_open && !company_error.read().is_empty() {
-                            p { class: "text-xs text-red-600 dark:text-red-400", role: "alert",
-                                "{company_error}"
+                            if !company_add_note.read().is_empty() {
+                                p { class: "text-xs text-muted", role: "status", "{company_add_note}" }
+                            }
+                            div { class: "flex flex-wrap items-center gap-3",
+                                if picker_open {
+                                    button {
+                                        r#type: "button",
+                                        class: "inline-flex items-center text-xs text-accent hover:opacity-90",
+                                        onclick: move |_| {
+                                            company_add_note.set(String::new());
+                                            adding_company.set(false);
+                                        },
+                                        "Don't add a company"
+                                    }
+                                } else {
+                                    Button {
+                                        variant: ButtonVariant::Secondary,
+                                        size: ButtonSize::Small,
+                                        onclick: move |_| {
+                                            company_add_note.set(String::new());
+                                            adding_company.set(true);
+                                        },
+                                        PlusIcon { size: IconSize::Small, class: "mr-2".to_string() }
+                                        {add_scope_company_label(company_rows.len())}
+                                    }
+                                }
+                            }
+                            // The picker owns the inline message while it is open;
+                            // with it closed the guard's message would have nowhere
+                            // to render, so the block carries it here.
+                            if !picker_open && !company_error.read().is_empty() {
+                                p { class: "text-xs text-red-600 dark:text-red-400", role: "alert",
+                                    "{company_error}"
+                                }
                             }
                         }
                     }
-                }
 
-                crate::components::Input {
-                    name: "tags",
-                    label: "Tags",
-                    placeholder: "Comma-separated, e.g. vpn, network",
-                    value: tags.read().clone(),
-                    oninput: move |e: FormEvent| tags.set(e.value()),
+                    crate::components::Input {
+                        name: "tags",
+                        label: "Tags",
+                        placeholder: "Comma-separated, e.g. vpn, network",
+                        value: tags.read().clone(),
+                        oninput: move |e: FormEvent| tags.set(e.value()),
+                    }
+                            }
+                        }
+                    }
                 }
 
                 // MAPPS-573: both panes stay mounted and the panel carries a
@@ -2473,28 +2541,107 @@ fn ArticleForm(props: ArticleFormProps) -> Element {
                             "Preview"
                         }
                     }
-                    div { class: "min-h-[26rem]",
-                        div { class: if tab() == BodyTab::Write { "" } else { "hidden" },
+                    // MAPPS-579: source and preview side by side from `lg` up,
+                    // stacked behind the tabs below it. Both panes stay mounted
+                    // and the panel keeps its floor, so neither the breakpoint
+                    // nor the tab can shrink the document and scroll the page
+                    // (MAPPS-573).
+                    div { class: "min-h-[26rem] lg:grid lg:grid-cols-2 lg:gap-4",
+                        div {
+                            class: if tab() == BodyTab::Write { "min-w-0" } else { "hidden lg:block lg:min-w-0" },
+                            crate::components::MarkdownToolbar {
+                                target_id: "content".to_string(),
+                                value: content.read().clone(),
+                                disabled: !can_mutate,
+                                open_link: link_shortcut,
+                                onchange: move |next: String| {
+                                    content_error.set(String::new());
+                                    content.set(next);
+                                },
+                            }
                             crate::components::Textarea {
                                 name: "content",
                                 label: "Body (Markdown)",
                                 placeholder: "## Overview\n\nWrite the article in Markdown…",
-                                rows: 16,
+                                rows: 18,
                                 required: true,
                                 maxlength: BODY_MAX as i64,
                                 rules: vec![Rule::Required],
+                                // The toolbar draws the top border and corners,
+                                // so the field joins onto it instead of sitting
+                                // in its own box below one.
+                                class: "rounded-t-none resize-y".to_string(),
                                 error: content_error.read().clone(),
                                 value: content.read().clone(),
                                 oninput: move |e: FormEvent| {
                                     content_error.set(String::new());
                                     content.set(e.value());
                                 },
+                                onkeydown: move |e: KeyboardEvent| {
+                                    let mods = e.modifiers();
+                                    let chord = mods.ctrl() || mods.meta();
+                                    let key = match e.key() {
+                                        Key::Character(c) => c,
+                                        _ => String::new(),
+                                    };
+                                    // Link opens a dialog rather than applying a
+                                    // transform, so it is handled here while the
+                                    // marks go through the shared mapping.
+                                    if chord && key.eq_ignore_ascii_case("k") {
+                                        e.prevent_default();
+                                        link_shortcut.set(true);
+                                        return;
+                                    }
+                                    if let Some(action) =
+                                        crate::components::shortcut_action(chord, &key)
+                                    {
+                                        e.prevent_default();
+                                        let handler = EventHandler::new(move |next: String| {
+                                            content_error.set(String::new());
+                                            content.set(next);
+                                        });
+                                        crate::components::run_action(
+                                            "content",
+                                            &content.read().clone(),
+                                            &action,
+                                            &handler,
+                                        );
+                                    }
+                                },
+                            }
+                            // MAPPS-579: what the author is up against. The body
+                            // has a server-side cap, so the character count is
+                            // the one that can actually block a save.
+                            {
+                                let body = content.read();
+                                let words = body.split_whitespace().count();
+                                let chars = body.chars().count();
+                                rsx! {
+                                    p { class: "mt-1 text-xs text-subtle", role: "status",
+                                        "{words} words · {chars} of {BODY_MAX} characters"
+                                    }
+                                }
                             }
                         }
-                        div { class: if tab() == BodyTab::Preview { "" } else { "hidden" },
-                            article {
-                                class: "prose dark:prose-invert max-w-none p-2 border border-line rounded",
-                                dangerous_inner_html: crate::utils::markdown::render_markdown(&content.read()),
+                        div {
+                            class: if tab() == BodyTab::Preview { "min-w-0" } else { "hidden lg:block lg:min-w-0" },
+                            p { class: "mb-1 text-xs font-medium text-muted", "Preview" }
+                            // MAPPS-579: the SAME component the published
+                            // article renders through, not just the same
+                            // function. Calling `render_markdown` directly here
+                            // meant the preview silently differed from the
+                            // article in three ways: no resolved @mentions
+                            // (MAPPS-578), checkboxes rendered disabled, and a
+                            // fixed prose density instead of the reader's.
+                            // A preview that is not the article is the bug this
+                            // whole surface exists to avoid.
+                            crate::components::Markdown {
+                                // No floor of its own: the panel above sets the
+                                // height and the grid row stretches both columns
+                                // to it. Two competing minimums is what made the
+                                // tab swap shrink the document (MAPPS-573).
+                                class: "p-2 border border-line rounded h-full".to_string(),
+                                content: content.read().clone(),
                             }
                         }
                     }
@@ -3476,7 +3623,10 @@ mod editor_ux_tests {
                 None => l,
             })
             .collect::<Vec<_>>()
-            .join("\n")
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// AC1, the jump. The panes were swapped by a `match` on the tab, so the
@@ -3488,7 +3638,7 @@ mod editor_ux_tests {
     fn the_body_panel_cannot_shrink_when_the_tab_changes() {
         let code = code_only();
         assert!(
-            code.contains(r#"div { class: "min-h-[26rem]""#),
+            code.contains(r#"class: "min-h-[26rem]"#),
             "the tab panel needs a height floor, or switching to Preview shrinks the \
              document and the browser scrolls the page up"
         );
@@ -3506,7 +3656,7 @@ mod editor_ux_tests {
     fn the_write_pane_stays_mounted_while_previewing() {
         let code = code_only();
         assert!(
-            code.contains(r#"if tab() == BodyTab::Write { "" } else { "hidden" }"#),
+            code.contains(r#"if tab() == BodyTab::Write { "min-w-0" } else { "hidden"#),
             "the write pane must be hidden rather than unmounted, or the caret and the \
              textarea's scroll position are discarded on every preview"
         );
@@ -3538,6 +3688,88 @@ mod editor_ux_tests {
         );
     }
 
+    /// MAPPS-579 AC1 and AC3. The toolbar wraps at narrow widths rather than
+    /// scrolling actions off the edge, which is the collapse strategy the issue
+    /// asked to be chosen and stated rather than left to overflow.
+    #[test]
+    fn the_body_has_a_toolbar_that_wraps_rather_than_scrolling() {
+        let code = code_only();
+        assert!(
+            code.contains("crate::components::MarkdownToolbar {"),
+            "the body field needs a formatting toolbar"
+        );
+        const TOOLBAR: &str = include_str!("../components/markdown_toolbar.rs");
+        assert!(
+            TOOLBAR.contains("flex flex-wrap items-center"),
+            "the toolbar wraps at narrow widths; without `flex-wrap` the later \
+             groups scroll off the edge and become unreachable"
+        );
+        assert!(
+            TOOLBAR.contains(r#"role: "toolbar""#)
+                && TOOLBAR.contains(r#"aria_label: "Formatting""#),
+            "and is announced as one thing rather than a run of loose buttons"
+        );
+    }
+
+    /// AC2. The shortcut has to reach both audiences: a `title` is invisible to
+    /// a screen reader and an `aria-label` is invisible to a mouse user.
+    #[test]
+    fn every_toolbar_button_names_its_action_and_shortcut_to_both_audiences() {
+        const TOOLBAR: &str = include_str!("../components/markdown_toolbar.rs");
+        assert!(
+            TOOLBAR.contains(r#"title: "{described}""#)
+                && TOOLBAR.contains(r#"aria_label: "{described}""#),
+            "the same description feeds the tooltip and the accessible name"
+        );
+        assert!(
+            TOOLBAR.contains(r#"format!("{label} ({k})")"#),
+            "and it carries the shortcut, not just the action name"
+        );
+    }
+
+    /// AC5. The marks have shortcuts, and the link shortcut opens the dialog
+    /// rather than wrapping bare syntax, because a link needs a URL.
+    #[test]
+    fn the_body_field_takes_the_formatting_shortcuts() {
+        let code = code_only();
+        assert!(
+            code.contains("crate::components::shortcut_action(chord, &key)"),
+            "the body field routes Ctrl/Cmd chords to the shared mapping"
+        );
+        assert!(
+            code.contains("mods.ctrl() || mods.meta()"),
+            "both modifiers, so the same shortcut works on macOS and elsewhere \
+             without the component asking which platform it is on"
+        );
+        assert!(
+            code.contains(r#"key.eq_ignore_ascii_case("k")"#)
+                && code.contains("link_shortcut.set(true)"),
+            "Ctrl+K opens the link dialog, since a link needs a URL rather than a wrap"
+        );
+    }
+
+    /// AC10. The metadata block collapses, but never while the author still
+    /// owes a required field: hiding an unfinished form hides the work.
+    #[test]
+    fn the_metadata_block_collapses_but_not_while_it_is_incomplete() {
+        let code = code_only();
+        assert!(
+            code.contains(
+                "let incomplete = title_v.trim().is_empty() || slug_v.trim().is_empty();"
+            ),
+            "an unfinished form is not collapsible"
+        );
+        assert!(
+            code.contains("let open = incomplete || meta_open();"),
+            "and incompleteness wins over the toggle, rather than the toggle \
+             being able to hide a field the author still has to fill"
+        );
+        assert!(
+            code.contains(r#"aria_expanded: if open { "true" } else { "false" }"#),
+            "the disclosure state is exposed, not implied by a caret"
+        );
+    }
+
     /// AC7. The KB body renders through `components::Markdown`, which is where
     /// PMS-348's interactive checkbox path lives. Calling `render_markdown`
     /// with `dangerous_inner_html` directly, which is what it did, means the
@@ -3555,15 +3787,18 @@ mod editor_ux_tests {
             "and opt into the interactive checkbox path, gated on reachability because \
              a toggle PUTs the whole article"
         );
-        // The editor's own preview is the one place a direct call is still
-        // right: it is not interactive, and its content is a signal rather than
-        // a saved article, so there is nothing to persist a toggle to.
+        // MAPPS-579 closed the last one. The editor preview used to call
+        // `render_markdown` directly, which is how it came to differ from the
+        // published article in three ways at once: no resolved @mentions,
+        // checkboxes rendered disabled, and a fixed prose density instead of
+        // the reader's. A preview that is not the article is the defect the
+        // preview exists to prevent.
         assert_eq!(
             code.matches("dangerous_inner_html: crate::utils::markdown::render_markdown")
                 .count(),
-            1,
-            "only the editor preview may render markdown directly; every reader surface \
-             goes through the component"
+            0,
+            "no surface may render markdown directly any more; the editor preview and \
+             the published article must go through the same component or they drift"
         );
     }
 }

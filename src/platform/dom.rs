@@ -190,6 +190,42 @@ impl FocusToken {
     pub fn restore(&self) {}
 }
 
+/// MAPPS-579: the selection on a `<textarea>`, in UTF-16 code units, or the
+/// end of `fallback_len` when the element cannot be reached.
+///
+/// UTF-16 because that is what `selectionStart` counts. The caller converts;
+/// see `crate::utils::md_edit`, which documents why mixing those up with byte
+/// offsets survives every English-language test and then corrupts the first
+/// article containing an accent.
+#[cfg(target_arch = "wasm32")]
+pub fn textarea_selection(id: &str, fallback_end: u32) -> (u32, u32) {
+    use wasm_bindgen::JsCast;
+    let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(id))
+        .and_then(|e| e.dyn_into::<web_sys::HtmlTextAreaElement>().ok())
+    else {
+        return (fallback_end, fallback_end);
+    };
+    let start = el.selection_start().ok().flatten().unwrap_or(fallback_end);
+    let end = el.selection_end().ok().flatten().unwrap_or(start);
+    (start, end)
+}
+
+/// Focus a `<textarea>` and put its selection back, in UTF-16 code units.
+#[cfg(target_arch = "wasm32")]
+pub fn set_textarea_selection(id: &str, start: u32, end: u32) {
+    use wasm_bindgen::JsCast;
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(id))
+        .and_then(|e| e.dyn_into::<web_sys::HtmlTextAreaElement>().ok())
+    {
+        let _ = el.focus();
+        let _ = el.set_selection_range(start, end);
+    }
+}
+
 /// Current scroll offset of the element with this id.
 #[cfg(target_arch = "wasm32")]
 pub fn scroll_top(id: &str) -> Option<i32> {
@@ -386,4 +422,21 @@ fn js_string(s: &str) -> String {
     // so a future change that makes it fallible produces a script that
     // matches no element rather than one that is syntactically broken.
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
+}
+
+/// Desktop: the selection cannot be read back synchronously (see the module
+/// header on reads), so the caller is told the caret is at the end and the
+/// transform appends rather than guessing at a selection it cannot see.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn textarea_selection(_id: &str, fallback_end: u32) -> (u32, u32) {
+    (fallback_end, fallback_end)
+}
+
+/// Desktop: a write, so it CAN be done through `eval`.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn set_textarea_selection(id: &str, start: u32, end: u32) {
+    eval(&format!(
+        "{{const e=document.getElementById({});if(e){{e.focus();e.setSelectionRange({start},{end});}}}}",
+        js_string(id)
+    ));
 }
